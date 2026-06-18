@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Presentación WPF (MVVM). Composition root de la aplicación de escritorio.
+    Hospeda la UI, el Generic Host (background services) y la API embebida.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Baioss.Record.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Baioss.Record.Application\Baioss.Record.Application.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Infrastructure\Baioss.Record.Infrastructure.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Engine.FFmpeg\Baioss.Record.Engine.FFmpeg.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Api\Baioss.Record.Api.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>

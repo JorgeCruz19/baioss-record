@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Baioss.Record.Domain/Baioss.Record.Domain.csproj" />
+    <Project Path="src/Baioss.Record.Application/Baioss.Record.Application.csproj" />
+    <Project Path="src/Baioss.Record.Infrastructure/Baioss.Record.Infrastructure.csproj" />
+    <Project Path="src/Baioss.Record.Engine.FFmpeg/Baioss.Record.Engine.FFmpeg.csproj" />
+    <Project Path="src/Baioss.Record.Api/Baioss.Record.Api.csproj" />
+    <Project Path="src/Baioss.Record.App/Baioss.Record.App.csproj" />
+  </Folder>
+</Solution>

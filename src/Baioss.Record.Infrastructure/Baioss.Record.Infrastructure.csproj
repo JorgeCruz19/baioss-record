@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Infraestructura general: persistencia (EF Core SQLite/PostgreSQL), captura,
+    almacenamiento, monitor de rendimiento, bus de eventos y composición DI.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Baioss.Record.Domain\Baioss.Record.Domain.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Application\Baioss.Record.Application.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Engine.FFmpeg\Baioss.Record.Engine.FFmpeg.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.6" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

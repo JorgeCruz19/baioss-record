@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Capa de Dominio.
+    POCOs, value objects, enums y eventos de dominio.
+    REGLA: no referencia ninguna otra capa ni paquete de infraestructura.
+  -->
+  <PropertyGroup>
+    <RootNamespace>Baioss.Record.Domain</RootNamespace>
+    <AssemblyName>Baioss.Record.Domain</AssemblyName>
+  </PropertyGroup>
+
+</Project>

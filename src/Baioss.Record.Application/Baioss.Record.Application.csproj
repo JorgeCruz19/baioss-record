@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Capa de Aplicación.
+    Casos de uso (CQRS) y PUERTOS (interfaces) que la infraestructura implementa.
+    Solo depende del Dominio. Define el contrato de cada módulo desacoplado.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Baioss.Record.Domain\Baioss.Record.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

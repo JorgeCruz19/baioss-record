@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Motor FFmpeg.
+    Implementa IRecorderEngine / ISegmenter / IProxyGenerator construyendo y
+    supervisando procesos FFmpeg. Es infraestructura: depende de Application + Domain.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Baioss.Record.Domain\Baioss.Record.Domain.csproj" />
+    <ProjectReference Include="..\Baioss.Record.Application\Baioss.Record.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Logging estructurado; el resto de FFmpeg se invoca como proceso externo. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+</Project>

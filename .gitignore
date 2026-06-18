@@ -1,0 +1,17 @@
+## .NET / Visual Studio
+bin/
+obj/
+.vs/
+*.user
+*.suo
+/src/Baioss.Record.Engine.FFmpeg/FFmpeg/*
+## Logs y artefactos de runtime
+logs/
+recordings/
+proxies/
+*.db
+*.db-shm
+*.db-wal
+
+## FFmpeg binarios (se distribuyen aparte / por instalador)
+tools/ffmpeg/

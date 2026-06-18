@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Herramienta de verificación (no forma parte del producto ni del .slnx).
+    Graba un clip real con el motor FFmpeg para validar builder + supervisor + engine.
+    Argumentos: [dirFfmpeg] [clip] [segundos].
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Baioss.Record.Domain\Baioss.Record.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Baioss.Record.Application\Baioss.Record.Application.csproj" />
+    <ProjectReference Include="..\..\src\Baioss.Record.Engine.FFmpeg\Baioss.Record.Engine.FFmpeg.csproj" />
+    <ProjectReference Include="..\..\src\Baioss.Record.Infrastructure\Baioss.Record.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

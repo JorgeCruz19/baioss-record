@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Propiedades compartidas por todos los proyectos de la solución.
+    Mantiene una única fuente de verdad para versión de framework, lenguaje y metadatos.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 1591 = miembros públicos sin XML doc; se silencia durante el scaffolding. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Product>Baioss Record</Product>
+    <Company>Baioss</Company>
+    <Authors>Baioss</Authors>
+    <Version>0.1.0</Version>
+    <Copyright>© Baioss</Copyright>
+  </PropertyGroup>
+
+</Project>

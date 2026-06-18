@@ -1,0 +1,180 @@
+<UserControl x:Class="Baioss.Record.App.ChannelView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Baioss.Record.App">
+    <Border Margin="10" Padding="14" CornerRadius="10"
+            Background="{StaticResource PanelBrush}"
+            BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Cabecera -->
+            <Grid Grid.Row="0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Background="{StaticResource AccentBrush}" CornerRadius="6" Width="40" Height="40">
+                        <TextBlock Text="{Binding Key}" FontSize="22" FontWeight="Bold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="Canal" FontSize="18" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0"
+                                Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                        <Ellipse Width="11" Height="11" Fill="{StaticResource RecBrush}" VerticalAlignment="Center"/>
+                        <TextBlock Text="REC" Foreground="{StaticResource RecBrush}" FontWeight="Bold"
+                                   Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <Border CornerRadius="4" Padding="10,5" VerticalAlignment="Center">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{StaticResource SignalGrayBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding SignalState}" Value="Locked">
+                                        <Setter Property="Background" Value="{StaticResource SignalGreenBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding SignalState}" Value="Unstable">
+                                        <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="{Binding SignalText}" FontSize="12" FontWeight="Bold"/>
+                    </Border>
+                </StackPanel>
+            </Grid>
+
+            <!-- Fuente / perfil -->
+            <Grid Grid.Row="1" Margin="0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="FUENTE" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding SourceText}" FontSize="13"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="PERFIL" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding ProfileText}" FontSize="13"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Preview + medidores de audio -->
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Preview (placeholder; producción: textura D3D11 vía D3DImage) -->
+                <Border Grid.Column="0" Background="{StaticResource PreviewBrush}" CornerRadius="6">
+                    <Grid Margin="12">
+                        <TextBlock Text="PGM" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                        <TextBlock Text="PREVIEW" FontSize="13" Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" Opacity="0.5"/>
+                        <TextBlock Text="{Binding FormatText}" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
+                        <StackPanel HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                            <TextBlock Text="{Binding Timecode}" FontFamily="Consolas" FontSize="30" FontWeight="Bold"
+                                       HorizontalAlignment="Right"/>
+                            <TextBlock Text="{Binding FrameCount, StringFormat=frame {0}}" FontFamily="Consolas"
+                                       FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Right"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Medidores VU / Peak estéreo -->
+                <Border Grid.Column="1" Width="96" Margin="12,0,0,0" Padding="10,8"
+                        Background="#12161E" CornerRadius="6">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Text="AUDIO dBFS" FontSize="10"
+                                   Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center"/>
+
+                        <Grid Grid.Row="1" Margin="0,4,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding LeftPeakDb}" FontFamily="Consolas" FontSize="11"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Grid.Column="1" Text="{Binding RightPeakDb}" FontFamily="Consolas" FontSize="11"
+                                       HorizontalAlignment="Center"/>
+                        </Grid>
+
+                        <Grid Grid.Row="2" MinHeight="120">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <local:VuMeter Grid.Column="0" Level="{Binding LeftLevel}" Peak="{Binding LeftPeak}"
+                                           HorizontalAlignment="Center"/>
+                            <local:VuMeter Grid.Column="1" Level="{Binding RightLevel}" Peak="{Binding RightPeak}"
+                                           HorizontalAlignment="Center"/>
+                        </Grid>
+
+                        <Grid Grid.Row="3" Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="L" FontSize="11" HorizontalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBlock Grid.Column="1" Text="R" FontSize="11" HorizontalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                        </Grid>
+
+                        <Border Grid.Row="4" Margin="0,8,0,0" CornerRadius="3" Padding="0,3"
+                                Background="{StaticResource RecBrush}"
+                                Visibility="{Binding Clipping, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="CLIP" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- Telemetría -->
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="2,12">
+                <StackPanel Margin="0,0,26,0">
+                    <TextBlock Text="FPS SALIDA" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding OutputFps, StringFormat={}{0:0.#}}" FontSize="18" FontWeight="Bold"/>
+                </StackPanel>
+                <StackPanel Margin="0,0,26,0">
+                    <TextBlock Text="BITRATE" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding BitrateText}" FontSize="18" FontWeight="Bold"/>
+                </StackPanel>
+                <StackPanel Margin="0,0,26,0">
+                    <TextBlock Text="DROPPED" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding DroppedFrames}" FontSize="18" FontWeight="Bold"/>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="ESTADO" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding RecordingState}" FontSize="18" FontWeight="Bold"/>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Transporte -->
+            <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,6,0,0">
+                <Button Content="● Grabar"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
+                <Button Content="■ Detener"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"/>
+                <Button Content="❚❚ Pausa"   Command="{Binding PauseCommand}"  Style="{StaticResource TransportButton}"/>
+                <Button Content="▶ Reanudar" Command="{Binding ResumeCommand}" Style="{StaticResource TransportButton}"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>
