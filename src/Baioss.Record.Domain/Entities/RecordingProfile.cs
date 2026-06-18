@@ -15,6 +15,22 @@ public sealed class RecordingProfile
     public VideoCodec VideoCodec { get; set; } = VideoCodec.HevcNvenc;
     public HwAccel HwAccel { get; set; } = HwAccel.Nvenc;
     public Bitrate VideoBitrate { get; set; } = Bitrate.FromMbps(50);
+
+    /// <summary>Resolución de salida. <c>null</c> = nativa de la fuente (sin escalado).</summary>
+    public Resolution? TargetResolution { get; set; }
+
+    /// <summary>Frecuencia de cuadro de salida. <c>null</c> = la de la fuente (sin re-temporizar).</summary>
+    public FrameRate? OutputFrameRate { get; set; }
+
+    /// <summary>Escaneo de salida: progresivo o entrelazado (TFF/BFF).</summary>
+    public ScanType ScanType { get; set; } = ScanType.Progressive;
+
+    /// <summary>Modo de control de tasa (CBR/VBR/calidad constante).</summary>
+    public RateControlMode RateControl { get; set; } = RateControlMode.ConstantBitrate;
+
+    /// <summary>Valor de calidad (CRF/CQ) cuando <see cref="RateControl"/> = ConstantQuality. Menor = mejor.</summary>
+    public int Quality { get; set; } = 23;
+
     public int GopSize { get; set; } = 50;
     public bool ClosedGop { get; set; } = true;
 

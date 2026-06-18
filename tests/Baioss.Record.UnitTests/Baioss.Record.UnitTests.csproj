@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests unitarios rápidos (sin I/O): value objects, builder de argumentos FFmpeg,
+    parser de progreso, bus de eventos y monitor de señal.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- Los proyectos de test no necesitan docs XML ni analizadores de producción. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Baioss.Record.Engine.FFmpeg\Baioss.Record.Engine.FFmpeg.csproj" />
+    <ProjectReference Include="..\..\src\Baioss.Record.Infrastructure\Baioss.Record.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

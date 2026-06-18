@@ -15,6 +15,7 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     private readonly ILogger _log;
     private Process? _process;
     private CancellationTokenSource? _cts;
+    private Task? _runLoop;
     private DateTimeOffset _lastProgress;
     private int _restartCount;
 
@@ -37,7 +38,7 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     public Task StartAsync(IReadOnlyList<string> arguments, CancellationToken ct = default)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _ = RunWithRestartAsync(arguments, _cts.Token);
+        _runLoop = RunWithRestartAsync(arguments, _cts.Token);
         _ = WatchdogAsync(arguments, _cts.Token);
         return Task.CompletedTask;
     }
@@ -139,8 +140,19 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Cancela y espera a que el bucle termine: su ruta de cancelación ya hace el cierre ordenado
+        // (envía 'q' y espera el flush del contenedor). Evita un GracefulStopAsync concurrente que
+        // podría matar FFmpeg a mitad de la finalización del archivo (MP4 corrupto).
         if (_cts is not null) await _cts.CancelAsync().ConfigureAwait(false);
-        await GracefulStopAsync().ConfigureAwait(false);
+        if (_runLoop is not null)
+        {
+            try { await _runLoop.ConfigureAwait(false); }
+            catch { /* el bucle no propaga; cierre ordenado garantizado */ }
+        }
+        else
+        {
+            await GracefulStopAsync().ConfigureAwait(false);
+        }
         _process?.Dispose();
         _cts?.Dispose();
     }

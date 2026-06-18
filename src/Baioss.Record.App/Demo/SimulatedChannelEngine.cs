@@ -1,4 +1,5 @@
 using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
@@ -12,8 +13,20 @@ namespace Baioss.Record.App.Demo;
 /// peak-hold. En producción se sustituye por el ChannelEngine real (FFmpeg) cambiando
 /// solo el registro en DI — la UI no cambia porque ambos implementan <see cref="IChannelEngine"/>.
 /// </summary>
-public sealed class SimulatedChannelEngine : IChannelEngine
+public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecording
 {
+    /// <summary>Perfil editable desde la UI (en demo no afecta a la grabación simulada).</summary>
+    public RecordingProfile Profile { get; set; } = new()
+    {
+        Name = "Demo", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
+        VideoBitrate = Bitrate.FromMbps(8), TargetResolution = Resolution.Hd1080,
+        AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+    };
+
+    /// <summary>Carpeta de destino (en demo no se escribe nada).</summary>
+    public string OutputDirectory { get; set; } =
+        System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Baioss");
+
     private readonly System.Timers.Timer _timer = new(100) { AutoReset = true };
     private readonly DateTimeOffset _bootedAt = DateTimeOffset.UtcNow;
     private readonly Random _rng = new();

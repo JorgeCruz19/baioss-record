@@ -1,4 +1,5 @@
 using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Recording;
 
@@ -42,6 +43,19 @@ public interface IChannelEngine : IAsyncDisposable
 
     /// <summary>Activa el modo continuo 24/7 con watchdog y auto-recuperación.</summary>
     Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Implementado por los motores cuyo perfil de grabación (formato, tamaño, códec, bitrate, audio)
+/// puede elegir el operador antes de grabar. La UI lo edita; el motor graba con el perfil vigente.
+/// </summary>
+public interface IConfigurableRecording
+{
+    /// <summary>Perfil con el que se grabará al pulsar REC. Editable solo cuando el canal está inactivo.</summary>
+    RecordingProfile Profile { get; set; }
+
+    /// <summary>Carpeta de destino donde se escriben las grabaciones del canal.</summary>
+    string OutputDirectory { get; set; }
 }
 
 /// <summary>Registro de los canales activos del despliegue (A, B, …).</summary>

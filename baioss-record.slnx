@@ -7,4 +7,8 @@
     <Project Path="src/Baioss.Record.Api/Baioss.Record.Api.csproj" />
     <Project Path="src/Baioss.Record.App/Baioss.Record.App.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Baioss.Record.UnitTests/Baioss.Record.UnitTests.csproj" />
+    <Project Path="tests/Baioss.Record.IntegrationTests/Baioss.Record.IntegrationTests.csproj" />
+  </Folder>
 </Solution>

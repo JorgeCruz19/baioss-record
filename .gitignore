@@ -9,6 +9,7 @@ obj/
 logs/
 recordings/
 proxies/
+data/
 *.db
 *.db-shm
 *.db-wal

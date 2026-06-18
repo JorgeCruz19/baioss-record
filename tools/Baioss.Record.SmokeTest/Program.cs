@@ -6,10 +6,28 @@ using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Capture;
 
 // --- Argumentos ---
+// Por defecto se localiza el FFmpeg y el clip incluidos en el repo (carpeta tools/),
+// subiendo desde el ejecutable; así no depende de rutas absolutas de una máquina concreta.
 string ffmpegDir = args.Length > 0 ? args[0]
-    : @"C:\Users\jcruz\Documents\Projects\baioss-record\src\Baioss.Record.Engine.FFmpeg\ffmpeg";
-string clip = args.Length > 1 ? args[1] : "tools/test/clip.mp4";
+    : FindUpwards(Path.Combine("tools", "ffmpeg", "ffmpeg.exe")) is { } exe ? Path.GetDirectoryName(exe)! : "ffmpeg";
+string clip = args.Length > 1 ? args[1]
+    : FindUpwards(Path.Combine("tools", "test", "clip.mp4")) ?? "tools/test/clip.mp4";
 int seconds = args.Length > 2 && int.TryParse(args[2], out var s) ? s : 6;
+
+static string? FindUpwards(string relative)
+{
+    foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+    {
+        var dir = new DirectoryInfo(start);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, relative);
+            if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+    }
+    return null;
+}
 
 var locator = new FfmpegLocator(ffmpegDir);
 Console.WriteLine($"ffmpeg : {locator.FfmpegPath}");

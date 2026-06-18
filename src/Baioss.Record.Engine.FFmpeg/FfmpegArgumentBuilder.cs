@@ -55,10 +55,12 @@ public sealed class FfmpegArgumentBuilder
         // 2) Entrada (cada ICaptureSource aporta sus flags de protocolo).
         args.AddRange(source.BuildInputArguments());
 
-        // 3) Filtros: solo si hay proxy o burn-in de timecode.
+        // 3) Filtros: si hay proxy, burn-in, un tamaño elegido (escalado) o salida entrelazada.
         bool gpu = FfmpegCodecMap.IsGpuEncoder(profile.VideoCodec);
         bool hasProxy = profile.Proxy is not null;
-        bool needFilter = hasProxy || profile.BurnTimecode;
+        bool needFilter = hasProxy || profile.BurnTimecode
+                          || profile.TargetResolution is not null
+                          || profile.ScanType is not ScanType.Progressive;
         string mainVideo = "0:v:0";
 
         if (needFilter)
@@ -76,6 +78,20 @@ public sealed class FfmpegArgumentBuilder
         // 5) Encoders.
         args.AddRange(VideoEncoderArgs(profile));
         args.AddRange(AudioEncoderArgs(profile));
+
+        // 5b) Opciones de salida de video: frecuencia de cuadro y orden de campo (escaneo).
+        if (profile.OutputFrameRate is { } fr)
+        {
+            args.Add("-r");
+            args.Add(string.Create(CultureInfo.InvariantCulture, $"{fr.Numerator}/{fr.Denominator}"));
+        }
+        string? fieldOrder = profile.ScanType switch
+        {
+            ScanType.InterlacedTff => "tt",
+            ScanType.InterlacedBff => "bb",
+            _ => null // progresivo
+        };
+        if (fieldOrder is not null) { args.Add("-field_order"); args.Add(fieldOrder); }
 
         // 6) Salida principal.
         bool hasStreams = profile.StreamTargets.Any(t => t.Enabled);
@@ -125,45 +141,68 @@ public sealed class FfmpegArgumentBuilder
 
     private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy)
     {
-        string scale = gpu ? "scale_cuda" : "scale";
         var sb = new StringBuilder();
+        string mainIn;
 
         if (hasProxy)
         {
             var px = p.Proxy!;
+            string proxyScale = gpu ? "scale_cuda" : "scale";
             sb.Append("[0:v]split=2[main][prx];");
-            sb.Append(CultureInfo.InvariantCulture, $"[prx]{scale}={px.Resolution.Width}:{px.Resolution.Height}[proxout]");
+            sb.Append(CultureInfo.InvariantCulture, $"[prx]{proxyScale}={px.Resolution.Width}:{px.Resolution.Height}[proxout]");
+            mainIn = "[main]";
         }
         else
         {
-            sb.Append("[0:v]null[main]");
+            mainIn = "[0:v]";
         }
 
+        // Cadena de filtros del video principal: escalado al tamaño elegido y/o burn-in de timecode.
+        // El escalado va por software (scale): así el encoder (incl. NVENC) funciona con frames de CPU
+        // sin exigir una cadena _cuda completa, manteniéndolo robusto en cualquier GPU.
+        var chain = new List<string>();
+        if (p.TargetResolution is { } r)
+            chain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
+        // Marca los cuadros como entrelazados (campo TFF/BFF) para que el encoder los codifique así.
+        if (p.ScanType is ScanType.InterlacedTff)
+            chain.Add("setfield=mode=tff");
+        else if (p.ScanType is ScanType.InterlacedBff)
+            chain.Add("setfield=mode=bff");
         if (p.BurnTimecode)
         {
-            // drawtext requiere frames en CPU; sobre GPU se baja con hwdownload.
             string tc = "drawtext=timecode='00\\:00\\:00\\:00':rate=25:fontcolor=white:" +
                         "box=1:boxcolor=black@0.5:x=20:y=20";
-            sb.Append(gpu
-                ? $";[main]hwdownload,format=nv12,{tc}[mainb]"
-                : $";[main]{tc}[mainb]");
-            return (sb.ToString(), "[mainb]");
+            chain.Add(gpu ? $"hwdownload,format=nv12,{tc}" : tc);
         }
-        return (sb.ToString(), "[main]");
+
+        if (chain.Count == 0)
+            return (sb.ToString(), mainIn); // solo proxy: el principal va directo
+
+        if (hasProxy) sb.Append(';');
+        sb.Append(CultureInfo.InvariantCulture, $"{mainIn}{string.Join(',', chain)}[mainout]");
+        return (sb.ToString(), "[mainout]");
     }
 
     private IEnumerable<string> VideoEncoderArgs(RecordingProfile p)
     {
         var list = new List<string> { "-c:v", FfmpegCodecMap.VideoEncoder(p.VideoCodec) };
+        string bitrate = p.VideoBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture);
+        string quality = p.Quality.ToString(CultureInfo.InvariantCulture);
+        string gop = p.GopSize.ToString(CultureInfo.InvariantCulture);
 
         if (FfmpegCodecMap.IsGpuEncoder(p.VideoCodec))
         {
-            list.AddRange(new[]
+            list.AddRange(new[] { "-preset", "p5", "-tune", "hq" });
+            switch (p.RateControl)
             {
-                "-preset", "p5", "-tune", "hq", "-rc", "cbr",
-                "-b:v", p.VideoBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture),
-                "-g", p.GopSize.ToString(CultureInfo.InvariantCulture), "-bf", "0",
-            });
+                case RateControlMode.ConstantQuality:
+                    list.AddRange(new[] { "-rc", "constqp", "-qp", quality }); break;
+                case RateControlMode.VariableBitrate:
+                    list.AddRange(new[] { "-rc", "vbr", "-b:v", bitrate }); break;
+                default: // CBR
+                    list.AddRange(new[] { "-rc", "cbr", "-b:v", bitrate }); break;
+            }
+            list.AddRange(new[] { "-g", gop, "-bf", "0" });
             if (p.ClosedGop) list.Add("-no-scenecut");
         }
         else if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr)
@@ -176,12 +215,25 @@ public sealed class FfmpegArgumentBuilder
         }
         else // libx264 / libx265
         {
-            list.AddRange(new[]
+            list.AddRange(new[] { "-preset", "veryfast", "-pix_fmt", "yuv420p" });
+            switch (p.RateControl)
             {
-                "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                "-b:v", p.VideoBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture),
-                "-g", p.GopSize.ToString(CultureInfo.InvariantCulture),
-            });
+                case RateControlMode.ConstantQuality:
+                    list.AddRange(new[] { "-crf", quality }); break;
+                case RateControlMode.VariableBitrate:
+                    list.AddRange(new[] { "-b:v", bitrate }); break;
+                default: // CBR aproximado: tasa objetivo = máxima con buffer acotado
+                    list.AddRange(new[]
+                    {
+                        "-b:v", bitrate, "-maxrate", bitrate,
+                        "-bufsize", (p.VideoBitrate.BitsPerSecond * 2).ToString(CultureInfo.InvariantCulture),
+                    });
+                    break;
+            }
+            list.Add("-g"); list.Add(gop);
+            // Codificación entrelazada (campo) para x264/x265.
+            if (p.ScanType is ScanType.InterlacedTff or ScanType.InterlacedBff)
+            { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
         return list;
     }

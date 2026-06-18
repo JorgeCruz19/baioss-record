@@ -88,6 +88,22 @@ public enum SignalState
     Locked
 }
 
+/// <summary>Tipo de escaneo de la salida de video.</summary>
+public enum ScanType
+{
+    Progressive,    // progresivo (1080p, 720p…)
+    InterlacedTff,  // entrelazado, campo superior primero (1080i TFF)
+    InterlacedBff   // entrelazado, campo inferior primero (BFF)
+}
+
+/// <summary>Modo de control de tasa del encoder de video.</summary>
+public enum RateControlMode
+{
+    ConstantBitrate,   // CBR: tasa fija (broadcast/transporte)
+    VariableBitrate,   // VBR: tasa media objetivo, varía con la complejidad
+    ConstantQuality    // calidad constante (CRF/CQ): tamaño variable
+}
+
 /// <summary>Origen del timecode aplicado a la grabación.</summary>
 public enum TimecodeSource
 {
