@@ -16,6 +16,12 @@ public sealed class RecordingProfile
     public HwAccel HwAccel { get; set; } = HwAccel.Nvenc;
     public Bitrate VideoBitrate { get; set; } = Bitrate.FromMbps(50);
 
+    /// <summary>Tasa máxima (VBV/pico). <c>null</c> = sin límite explícito (se deriva del control de tasa).</summary>
+    public Bitrate? MaxBitrate { get; set; }
+
+    /// <summary>Formato de píxel de salida. <see cref="PixelFormat.Auto"/> = el predeterminado del códec.</summary>
+    public PixelFormat PixelFormat { get; set; } = PixelFormat.Auto;
+
     /// <summary>Resolución de salida. <c>null</c> = nativa de la fuente (sin escalado).</summary>
     public Resolution? TargetResolution { get; set; }
 
@@ -43,6 +49,9 @@ public sealed class RecordingProfile
     // --- Contenedor / overlays ---
     public ContainerFormat Container { get; set; } = ContainerFormat.Mxf;
     public bool BurnTimecode { get; set; }
+
+    /// <summary>Grabar solo audio (sin pista de video).</summary>
+    public bool AudioOnly { get; set; }
 
     // --- Sub-políticas (todas opcionales) ---
     public SegmentationPolicy? Segmentation { get; set; }

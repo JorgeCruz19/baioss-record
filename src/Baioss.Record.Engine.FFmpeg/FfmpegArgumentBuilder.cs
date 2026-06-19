@@ -42,6 +42,9 @@ public sealed class FfmpegArgumentBuilder
         var profile = _profile ?? throw new InvalidOperationException("Falta el perfil.");
         var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
 
+        if (profile.AudioOnly)
+            return BuildAudioOnly(source, profile, recMux, recExt);
+
         var args = new List<string>
         {
             // Sin -nostdin: el supervisor envía 'q' por stdin para el cierre ordenado.
@@ -190,6 +193,11 @@ public sealed class FfmpegArgumentBuilder
         string quality = p.Quality.ToString(CultureInfo.InvariantCulture);
         string gop = p.GopSize.ToString(CultureInfo.InvariantCulture);
 
+        long maxBps = (p.MaxBitrate ?? p.VideoBitrate).BitsPerSecond;
+        string maxrate = maxBps.ToString(CultureInfo.InvariantCulture);
+        string bufsize = (maxBps * 2).ToString(CultureInfo.InvariantCulture);
+        bool interlaced = p.ScanType is ScanType.InterlacedTff or ScanType.InterlacedBff;
+
         if (FfmpegCodecMap.IsGpuEncoder(p.VideoCodec))
         {
             list.AddRange(new[] { "-preset", "p5", "-tune", "hq" });
@@ -198,45 +206,73 @@ public sealed class FfmpegArgumentBuilder
                 case RateControlMode.ConstantQuality:
                     list.AddRange(new[] { "-rc", "constqp", "-qp", quality }); break;
                 case RateControlMode.VariableBitrate:
-                    list.AddRange(new[] { "-rc", "vbr", "-b:v", bitrate }); break;
+                    list.AddRange(new[] { "-rc", "vbr", "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize }); break;
                 default: // CBR
                     list.AddRange(new[] { "-rc", "cbr", "-b:v", bitrate }); break;
             }
             list.AddRange(new[] { "-g", gop, "-bf", "0" });
             if (p.ClosedGop) list.Add("-no-scenecut");
         }
+        else if (p.VideoCodec is VideoCodec.Mpeg2Video)
+        {
+            // MPEG-2 broadcast (XDCAM/IMX/PS/TS): CBR con VBV acotado.
+            list.AddRange(new[] { "-b:v", bitrate, "-minrate", bitrate, "-maxrate", maxrate, "-bufsize", bufsize, "-g", gop });
+            if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
+        }
         else if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr)
         {
-            list.AddRange(new[] { "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p" });
+            // HQX admite 10-bit (yuv422p10le); HQ es 8-bit (yuv422p).
+            bool tenBit = p.PixelFormat is PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le;
+            list.AddRange(new[] { "-profile:v", tenBit ? "dnxhr_hqx" : "dnxhr_hq" });
         }
         else if (p.VideoCodec is VideoCodec.ProRes)
         {
-            list.AddRange(new[] { "-profile:v", "3", "-pix_fmt", "yuv422p10le" });
+            list.AddRange(new[] { "-profile:v", "3" }); // ProRes 422 HQ
         }
         else // libx264 / libx265
         {
-            list.AddRange(new[] { "-preset", "veryfast", "-pix_fmt", "yuv420p" });
+            list.AddRange(new[] { "-preset", "veryfast" });
             switch (p.RateControl)
             {
                 case RateControlMode.ConstantQuality:
                     list.AddRange(new[] { "-crf", quality }); break;
                 case RateControlMode.VariableBitrate:
-                    list.AddRange(new[] { "-b:v", bitrate }); break;
+                    list.AddRange(new[] { "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize }); break;
                 default: // CBR aproximado: tasa objetivo = máxima con buffer acotado
-                    list.AddRange(new[]
-                    {
-                        "-b:v", bitrate, "-maxrate", bitrate,
-                        "-bufsize", (p.VideoBitrate.BitsPerSecond * 2).ToString(CultureInfo.InvariantCulture),
-                    });
-                    break;
+                    list.AddRange(new[] { "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bufsize }); break;
             }
             list.Add("-g"); list.Add(gop);
-            // Codificación entrelazada (campo) para x264/x265.
-            if (p.ScanType is ScanType.InterlacedTff or ScanType.InterlacedBff)
-            { list.Add("-flags"); list.Add("+ilme+ildct"); }
+            if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
+
+        // Formato de píxel: override del perfil, o el predeterminado del códec.
+        var pix = FfmpegCodecMap.PixelFormatArg(p.PixelFormat) ?? DefaultPixelFormat(p.VideoCodec);
+        if (pix is not null) { list.Add("-pix_fmt"); list.Add(pix); }
         return list;
     }
+
+    /// <summary>Comando de grabación solo-audio: sin video, codec de audio al contenedor elegido.</summary>
+    private IReadOnlyList<string> BuildAudioOnly(ICaptureSource source, RecordingProfile profile, string recMux, string recExt)
+    {
+        OutputFilePath = Path.Combine(_outputDirectory, $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
+        var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
+        args.AddRange(source.BuildInputArguments());
+        args.Add("-vn");
+        args.Add("-map"); args.Add("0:a?");
+        args.AddRange(AudioEncoderArgs(profile));
+        args.Add("-af"); args.Add("ebur128=peak=true"); // niveles para los medidores VU
+        args.Add("-f"); args.Add(recMux);
+        args.Add("-y"); args.Add(OutputFilePath);
+        return args;
+    }
+
+    private static string? DefaultPixelFormat(VideoCodec codec) => codec switch
+    {
+        VideoCodec.ProRes => "yuv422p10le",
+        VideoCodec.DnxHd or VideoCodec.DnxHr => "yuv422p",
+        VideoCodec.Mpeg2Video or VideoCodec.H264x264 or VideoCodec.H265x265 => "yuv420p",
+        _ => null // NVENC: el encoder elige (nv12/p010)
+    };
 
     private IEnumerable<string> AudioEncoderArgs(RecordingProfile p)
     {

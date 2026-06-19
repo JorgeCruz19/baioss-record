@@ -4,12 +4,14 @@ using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Persistence;
+using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Storage;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Capture;
 using Baioss.Record.Infrastructure.Cqrs;
 using Baioss.Record.Infrastructure.Messaging;
 using Baioss.Record.Infrastructure.Persistence;
+using Baioss.Record.Infrastructure.Presets;
 using Baioss.Record.Infrastructure.Storage;
 using Baioss.Record.Infrastructure.Time;
 
@@ -50,6 +52,10 @@ public static class DependencyInjection
         services.AddSingleton<IRepository<Segment>, EfRepository<Segment>>();
 
         services.AddSingleton<IStorageManager, StorageManager>();
+
+        // Presets de encoding: built-in + personalizados en JSON, junto a la base de datos.
+        var presetsPath = Path.Combine(Path.GetDirectoryName(sqliteDbPath) ?? ".", "presets.json");
+        services.AddSingleton<IPresetStore>(_ => new JsonPresetStore(presetsPath));
 
         // Captura y monitoreo de señal.
         services.AddSingleton<ICaptureSourceFactory, FileCaptureSourceFactory>();

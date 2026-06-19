@@ -15,6 +15,7 @@ internal static class FfmpegCodecMap
         VideoCodec.ProRes    => "prores_ks",
         VideoCodec.DnxHd     => "dnxhd",
         VideoCodec.DnxHr     => "dnxhd", // DNxHR vía -profile dnxhr_hq
+        VideoCodec.Mpeg2Video => "mpeg2video",
         _ => throw new ArgumentOutOfRangeException(nameof(codec))
     };
 
@@ -25,7 +26,18 @@ internal static class FfmpegCodecMap
         AudioCodec.FdkAac => "libfdk_aac",
         AudioCodec.Opus   => "libopus",
         AudioCodec.Mp3    => "libmp3lame",
+        AudioCodec.Mp2    => "mp2",
         _ => throw new ArgumentOutOfRangeException(nameof(codec))
+    };
+
+    /// <summary>Argumento de <c>-pix_fmt</c>, o <c>null</c> para dejar el predeterminado del códec.</summary>
+    public static string? PixelFormatArg(PixelFormat fmt) => fmt switch
+    {
+        PixelFormat.Yuv420p     => "yuv420p",
+        PixelFormat.Yuv422p     => "yuv422p",
+        PixelFormat.Yuv420p10le => "yuv420p10le",
+        PixelFormat.Yuv422p10le => "yuv422p10le",
+        _ => null // Auto
     };
 
     /// <summary>
@@ -44,6 +56,10 @@ internal static class FfmpegCodecMap
         ContainerFormat.Mxf => ("mxf", "mxf"),
         ContainerFormat.Mkv => ("matroska", "mkv"),
         ContainerFormat.Ts  => ("mpegts", "ts"),
+        ContainerFormat.Avi => ("avi", "avi"),
+        ContainerFormat.ProgramStream => ("mpeg", "mpg"),
+        ContainerFormat.Wav => ("wav", "wav"),
+        ContainerFormat.Mp3Audio => ("mp3", "mp3"),
         _ => throw new ArgumentOutOfRangeException(nameof(format))
     };
 

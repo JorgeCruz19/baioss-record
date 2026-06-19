@@ -36,7 +36,8 @@ public enum VideoCodec
     H265x265,
     ProRes,
     DnxHd,
-    DnxHr
+    DnxHr,
+    Mpeg2Video // MPEG-2 (PS/TS, XDCAM HD422)
 }
 
 /// <summary>Códec de audio de grabación.</summary>
@@ -46,7 +47,8 @@ public enum AudioCodec
     Aac,
     FdkAac,
     Opus,
-    Mp3
+    Mp3,
+    Mp2 // MPEG-1/2 Audio Layer II (broadcast clásico)
 }
 
 /// <summary>Contenedor de salida.</summary>
@@ -56,7 +58,11 @@ public enum ContainerFormat
     Mov,
     Mxf,
     Mkv,
-    Ts
+    Ts,
+    Avi,
+    ProgramStream, // MPEG-2 Program Stream (.mpg)
+    Wav,           // audio: WAV/PCM
+    Mp3Audio       // audio: MP3
 }
 
 /// <summary>Distribución de canales de audio.</summary>
@@ -164,4 +170,14 @@ public enum EventSeverity
     Warning,
     Error,
     Critical
+}
+
+/// <summary>Formato de muestreo de píxel (profundidad de bits y submuestreo de croma).</summary>
+public enum PixelFormat
+{
+    Auto,        // el predeterminado del códec
+    Yuv420p,     // 8-bit 4:2:0 (H.264/HEVC/MPEG-2 SD/HD)
+    Yuv422p,     // 8-bit 4:2:2 (DNxHD, XDCAM HD422)
+    Yuv420p10le, // 10-bit 4:2:0 (HEVC Main10)
+    Yuv422p10le  // 10-bit 4:2:2 (ProRes, DNxHR HQX, broadcast 10-bit)
 }

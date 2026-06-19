@@ -209,6 +209,14 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         var p = _config.Profile;
         OutputDirectory = _config.OutputDirectory;
         BurnTimecode = p.BurnTimecode;
+        SetSelectionsFrom(p);
+        _initializing = false;
+        ApplyProfile();
+    }
+
+    /// <summary>Posiciona los combos para reflejar un perfil dado (aproxima al subconjunto del editor).</summary>
+    private void SetSelectionsFrom(RecordingProfile p)
+    {
         SelectedContainer = Containers.FirstOrDefault(o => o.Value == p.Container) ?? Containers[0];
         SelectedSize = Sizes.FirstOrDefault(o => o.Value == p.TargetResolution) ?? Sizes[0];
         SelectedScanType = ScanTypes.FirstOrDefault(o => o.Value == p.ScanType) ?? ScanTypes[0];
@@ -221,8 +229,26 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         SelectedAudioLayout = AudioLayouts.FirstOrDefault(o => o.Value == p.AudioLayout) ?? AudioLayouts[1];
         SelectedSampleRate = SampleRates.FirstOrDefault(o => o.Value == p.AudioSampleRate) ?? SampleRates[0];
         SelectedAudioBitrate = AudioBitrates.FirstOrDefault(o => o.Value.BitsPerSecond == p.AudioBitrate.BitsPerSecond) ?? AudioBitrates[2];
+    }
+
+    /// <summary>
+    /// Aplica un preset completo: fija el perfil exacto en el motor (incluidos campos que el editor
+    /// inline no expone, como pixel format o max bitrate) y refresca los combos para reflejarlo.
+    /// </summary>
+    public void ApplyPreset(Baioss.Record.Application.Presets.EncodingPreset preset)
+    {
+        if (_config is null || IsRecording) return;
+        var current = _config.Profile;
+        var profile = preset.ToProfile(current.Id, current.Name); // conserva la identidad persistida
+        _config.Profile = profile;
+
+        _initializing = true;                 // refresca la UI sin reconstruir (no pisar el perfil)
+        BurnTimecode = profile.BurnTimecode;
+        SetSelectionsFrom(profile);
         _initializing = false;
-        ApplyProfile();
+
+        ProfileText = $"{profile.VideoCodec} · {profile.VideoBitrate} · " +
+                      $"{(profile.TargetResolution?.ToString() ?? "nativa")} · {profile.Container}";
     }
 
     /// <summary>Reconstruye el <see cref="RecordingProfile"/> a partir de las selecciones y lo fija en el motor.</summary>
@@ -249,6 +275,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             Quality = SelectedQuality.Value,
             GopSize = current.GopSize,
             ClosedGop = current.ClosedGop,
+            MaxBitrate = current.MaxBitrate,   // preserva lo no editable por combos
+            PixelFormat = current.PixelFormat,
+            AudioOnly = current.AudioOnly,
             BurnTimecode = BurnTimecode,
             AudioCodec = SelectedAudioCodec.Value,
             AudioLayout = SelectedAudioLayout.Value,
