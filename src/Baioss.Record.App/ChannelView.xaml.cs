@@ -8,7 +8,7 @@ namespace Baioss.Record.App;
 /// <summary>Vista de un canal. Su DataContext es un <see cref="ChannelViewModel"/>.</summary>
 public partial class ChannelView : UserControl
 {
-    private FfmpegPreviewEngine? _preview;
+    private IChannelPreviewSource? _preview;
     private PreviewSurface? _surface;
     private PreviewFrame? _pending;
     private bool _renderQueued;

@@ -50,25 +50,21 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Configuración de grabación: salida, vídeo y audio elegibles por el operador -->
+            <!-- Destino de grabación + perfil activo. El formato/codificación se elige en el gestor
+                 de presets (botón «⚙ Presets de grabación» de la barra superior). -->
             <Border Grid.Row="1" Margin="0,10" Padding="12,10" CornerRadius="8"
                     Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
                     Visibility="{Binding IsConfigurable, Converter={StaticResource BoolToVis}}">
                 <StackPanel>
                     <Grid>
-                        <TextBlock Text="CONFIGURACIÓN DE GRABACIÓN" FontSize="10" FontWeight="Bold"
+                        <TextBlock Text="CARPETA DE DESTINO" FontSize="10" FontWeight="Bold"
                                    Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding ProfileText}" FontSize="11" HorizontalAlignment="Right"
                                    Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                     </Grid>
-
-                    <!-- SALIDA -->
-                    <TextBlock Text="SALIDA" FontSize="9" FontWeight="Bold" Margin="0,10,0,4"
-                               Foreground="{StaticResource AccentBrush}"/>
-                    <Grid>
+                    <Grid Margin="0,6,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBox Grid.Column="0" Text="{Binding OutputDirectory}" IsReadOnly="True" Height="30"
@@ -77,80 +73,9 @@
                                  BorderBrush="{StaticResource PanelBorderBrush}"/>
                         <Button Grid.Column="1" Content="Examinar…" Command="{Binding BrowseOutputCommand}"
                                 IsEnabled="{Binding CanConfigure}" Style="{StaticResource TransportButton}" Margin="8,0,0,0"/>
-                        <ComboBox Grid.Column="2" Width="120" Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                  ItemsSource="{Binding Containers}" SelectedItem="{Binding SelectedContainer}"/>
                     </Grid>
-
-                    <!-- VÍDEO -->
-                    <TextBlock Text="VÍDEO" FontSize="9" FontWeight="Bold" Margin="0,10,0,4"
-                               Foreground="{StaticResource AccentBrush}"/>
-                    <UniformGrid Columns="4">
-                        <StackPanel Margin="0,0,6,6">
-                            <TextBlock Text="TAMAÑO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding Sizes}" SelectedItem="{Binding SelectedSize}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,6">
-                            <TextBlock Text="ESCANEO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding ScanTypes}" SelectedItem="{Binding SelectedScanType}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,6">
-                            <TextBlock Text="FPS" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding FrameRates}" SelectedItem="{Binding SelectedFrameRate}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,0,6">
-                            <TextBlock Text="CÓDEC" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding VideoCodecs}" SelectedItem="{Binding SelectedVideoCodec}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="CONTROL DE TASA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding RateControls}" SelectedItem="{Binding SelectedRateControl}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="BITRATE" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding Bitrates}" SelectedItem="{Binding SelectedBitrate}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="CALIDAD (CRF)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding Qualities}" SelectedItem="{Binding SelectedQuality}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,0,0" VerticalAlignment="Bottom">
-                            <CheckBox Content="Quemar timecode" IsChecked="{Binding BurnTimecode}" IsEnabled="{Binding CanConfigure}"
-                                      Foreground="{StaticResource TextPrimaryBrush}" FontSize="12" Margin="0,0,0,6"/>
-                        </StackPanel>
-                    </UniformGrid>
-
-                    <!-- AUDIO -->
-                    <TextBlock Text="AUDIO" FontSize="9" FontWeight="Bold" Margin="0,10,0,4"
-                               Foreground="{StaticResource AccentBrush}"/>
-                    <UniformGrid Columns="4">
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="CÓDEC" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding AudioCodecs}" SelectedItem="{Binding SelectedAudioCodec}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="CANALES" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding AudioLayouts}" SelectedItem="{Binding SelectedAudioLayout}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,6,0">
-                            <TextBlock Text="FRECUENCIA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding SampleRates}" SelectedItem="{Binding SelectedSampleRate}"/>
-                        </StackPanel>
-                        <StackPanel Margin="0,0,0,0">
-                            <TextBlock Text="BITRATE" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                            <ComboBox Style="{StaticResource ConfigCombo}" IsEnabled="{Binding CanConfigure}"
-                                      ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding SelectedAudioBitrate}"/>
-                        </StackPanel>
-                    </UniformGrid>
+                    <TextBlock Text="El formato y la codificación se eligen en «⚙ Presets de grabación»."
+                               FontSize="10" Foreground="{StaticResource TextSecondaryBrush}" Margin="2,8,0,0"/>
                 </StackPanel>
             </Border>
 

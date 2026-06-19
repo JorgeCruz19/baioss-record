@@ -37,6 +37,7 @@ internal static class FfmpegCodecMap
         PixelFormat.Yuv422p     => "yuv422p",
         PixelFormat.Yuv420p10le => "yuv420p10le",
         PixelFormat.Yuv422p10le => "yuv422p10le",
+        PixelFormat.Yuv444p10le => "yuv444p10le",
         _ => null // Auto
     };
 

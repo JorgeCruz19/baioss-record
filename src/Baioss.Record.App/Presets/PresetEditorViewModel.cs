@@ -22,6 +22,7 @@ public sealed class PresetEditorViewModel
     public Array ScanTypeValues => Enum.GetValues<ScanType>();
     public Array RateControlValues => Enum.GetValues<RateControlMode>();
     public Array PixelFormatValues => Enum.GetValues<PixelFormat>();
+    public Array EncoderProfileValues => Enum.GetValues<EncoderProfile>();
 
     // Proxies numéricos (0 = nativa/auto) para enlazar TextBox sin lidiar con nullables.
     public int WidthValue { get => Preset.Width ?? 0; set => Preset.Width = value <= 0 ? null : value; }

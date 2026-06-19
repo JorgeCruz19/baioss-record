@@ -46,10 +46,20 @@ public sealed class SqlitePersistenceTests : IDisposable
         {
             Name = "MP4", VideoCodec = VideoCodec.H264x264,
             VideoBitrate = Bitrate.FromMbps(8), AudioBitrate = Bitrate.FromKbps(256), Container = ContainerFormat.Mp4,
+            MaxBitrate = Bitrate.FromMbps(12), PixelFormat = PixelFormat.Yuv422p10le, AudioOnly = false,
+        };
+        // Perfil con MaxBitrate nulo: cubre la rama null del conversor nullable (el caso por defecto
+        // de la app). Un MaxBitrate sin conversor rompía el modelo EF y tiraba la app a modo simulado.
+        var audioProfile = new RecordingProfile
+        {
+            Name = "WAV", VideoCodec = VideoCodec.H264x264, AudioOnly = true,
+            VideoBitrate = Bitrate.FromMbps(8), AudioBitrate = Bitrate.FromKbps(256),
+            Container = ContainerFormat.Wav, MaxBitrate = null,
         };
         var channel = new Channel { Key = "A", Name = "Canal A", InputSourceId = source.Id, ProfileId = profile.Id };
         await sources.AddAsync(source);
         await profiles.AddAsync(profile);
+        await profiles.AddAsync(audioProfile);
         await channels.AddAsync(channel);
 
         var session = new RecordingSession
@@ -84,6 +94,14 @@ public sealed class SqlitePersistenceTests : IDisposable
         Assert.NotNull(profileBack);
         Assert.Equal(8_000_000, profileBack!.VideoBitrate.BitsPerSecond);
         Assert.Equal(256_000, profileBack.AudioBitrate.BitsPerSecond);
+        Assert.Equal(12_000_000, profileBack.MaxBitrate!.Value.BitsPerSecond);
+        Assert.Equal(PixelFormat.Yuv422p10le, profileBack.PixelFormat);
+        Assert.False(profileBack.AudioOnly);
+
+        var audioBack = await profiles.GetAsync(audioProfile.Id);
+        Assert.NotNull(audioBack);
+        Assert.Null(audioBack!.MaxBitrate);   // la rama null del conversor sobrevive el round-trip
+        Assert.True(audioBack.AudioOnly);
 
         // Historial por rango de fechas (DateTimeOffset traducido en el servidor).
         var history = await sessions.GetHistoryAsync(

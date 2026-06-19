@@ -6,23 +6,23 @@ using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
-using Baioss.Record.Engine.FFmpeg;
+using Baioss.Record.Infrastructure.Preview;
 
 namespace Baioss.Record.Infrastructure.Channels;
 
 /// <summary>
-/// Orquestador de canal autónomo: compone una <see cref="ICaptureSource"/> con el
-/// <see cref="FfmpegRecorderEngine"/> real para grabar de verdad. La persistencia (sesiones
-/// y segmentos), el bus de eventos y el monitor de señal son opcionales: si se inyectan, la
-/// sesión y sus segmentos se persisten en SQLite y se publican eventos de dominio; si no, el
-/// canal sigue grabando en modo "standalone" sin base de datos. Pensado para la app de
-/// escritorio en Fase 1; la variante completa basada en repositorios es <c>ChannelEngine</c>.
+/// Orquestador de canal autónomo: compone una <see cref="ICaptureSource"/> con el motor de captura
+/// UNIFICADO (<see cref="FfmpegChannelEngine"/>), que abre la fuente una sola vez y produce preview y
+/// grabación a la vez (clave para dispositivos en vivo, que no admiten dos aperturas). La persistencia
+/// (sesiones y segmentos), el bus de eventos y el monitor de señal son opcionales: si se inyectan, se
+/// persiste y se publican eventos; si no, el canal sigue grabando en modo "standalone". Pensado para la
+/// app de escritorio en Fase 1; la variante completa basada en repositorios es <c>ChannelEngine</c>.
 /// </summary>
 public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecording
 {
     private readonly string _key;
     private readonly ICaptureSource _source;
-    private readonly FfmpegRecorderEngine _recorder;
+    private readonly FfmpegChannelEngine _engine;
     private readonly IRecordingSessionRepository? _sessions;
     private readonly IRepository<Segment>? _segments;
     private readonly IRecordingProfileRepository? _profiles;
@@ -38,7 +38,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         string key,
         ICaptureSource source,
         RecordingProfile profile,
-        FfmpegRecorderEngine recorder,
+        FfmpegChannelEngine engine,
         Guid? channelId = null,
         IRecordingSessionRepository? sessions = null,
         IRepository<Segment>? segments = null,
@@ -51,7 +51,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _key = key;
         _source = source;
         Profile = profile;
-        _recorder = recorder;
+        _engine = engine;
         _sessions = sessions;
         _segments = segments;
         _profiles = profiles;
@@ -59,10 +59,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _signalMonitor = signalMonitor;
         _log = log;
 
-        _recorder.StateChanged += (_, _) => Raise();
-        _recorder.StatsUpdated += (_, _) => Raise();
-        _recorder.AudioLevelsUpdated += OnAudioLevels;
-        _recorder.SegmentClosed += OnSegmentClosed;
+        _engine.StateChanged += (_, _) => Raise();
+        _engine.StatsUpdated += (_, _) => Raise();
+        _engine.AudioPeaksUpdated += OnAudioLevels;
+        _engine.SegmentClosed += OnSegmentClosed;
         _source.SignalChanged += (_, _) => Raise();
 
         // Arranca la vigilancia de señal (publica lock/pérdida/silencio en el bus).
@@ -77,12 +77,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// <summary>Carpeta de destino de las grabaciones (raíz; el motor crea una subcarpeta por canal).</summary>
     public string OutputDirectory
     {
-        get => _recorder.OutputRoot;
-        set => _recorder.OutputRoot = value;
+        get => _engine.OutputRoot;
+        set => _engine.OutputRoot = value;
     }
 
     public ChannelStatus Status =>
-        new(ChannelId, _key, _recorder.State, _source.CurrentSignal, _recorder.Stats, _session?.Id, _audio);
+        new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio);
 
     public event EventHandler<ChannelStatus>? StatusChanged;
 
@@ -127,7 +127,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             catch (Exception ex) { _log?.LogError(ex, "No se pudo persistir la sesión {SessionId}.", session.Id); }
         }
 
-        await _recorder.StartAsync(session, profile, _source, ct);
+        // Arma la grabación en el proceso de captura (el preview sigue sin interrumpirse).
+        await _engine.StartRecordingAsync(session.Id, profile, ct);
 
         if (_bus is not null)
             await _bus.PublishAsync(new RecordingStarted(ChannelId, session.Id, @operator), ct);
@@ -137,7 +138,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public async Task StopRecordingAsync(CancellationToken ct = default)
     {
-        await _recorder.StopAsync(ct);
+        await _engine.StopRecordingAsync(ct);
 
         if (_session is not null)
         {
@@ -154,12 +155,11 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
         _session = null;
         _peakL = _peakR = -60;
-        _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
         Raise();
     }
 
-    public Task PauseRecordingAsync(CancellationToken ct = default) => _recorder.PauseAsync(ct);
-    public Task ResumeRecordingAsync(CancellationToken ct = default) => _recorder.ResumeAsync(ct);
+    public Task PauseRecordingAsync(CancellationToken ct = default) => _engine.PauseAsync(ct);
+    public Task ResumeRecordingAsync(CancellationToken ct = default) => _engine.ResumeAsync(ct);
     public Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default) => Task.CompletedTask;
 
     private async void OnSegmentClosed(object? sender, Segment segment)
@@ -193,7 +193,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     public async ValueTask DisposeAsync()
     {
         if (_signalMonitor is not null) await _signalMonitor.DisposeAsync();
-        await _recorder.DisposeAsync();
+        await _engine.DisposeAsync();
         await _source.DisposeAsync();
     }
 }

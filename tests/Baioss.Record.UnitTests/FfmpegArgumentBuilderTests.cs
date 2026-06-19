@@ -28,6 +28,20 @@ public class FfmpegArgumentBuilderTests
         AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
     };
 
+    private static RecordingProfile ProResMov(EncoderProfile profile, PixelFormat pix = PixelFormat.Auto) => new()
+    {
+        Name = "prores", VideoCodec = VideoCodec.ProRes, HwAccel = HwAccel.None, GopSize = 1,
+        EncoderProfile = profile, PixelFormat = pix,
+        AudioCodec = AudioCodec.Pcm, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mov,
+    };
+
+    private static RecordingProfile DnxhrMov(EncoderProfile profile, PixelFormat pix = PixelFormat.Auto) => new()
+    {
+        Name = "dnxhr", VideoCodec = VideoCodec.DnxHr, HwAccel = HwAccel.None, GopSize = 1,
+        EncoderProfile = profile, PixelFormat = pix,
+        AudioCodec = AudioCodec.Pcm, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mov,
+    };
+
     [Fact]
     public void Build_SoftwareMp4_UsesLibx264AndAac()
     {
@@ -134,5 +148,96 @@ public class FfmpegArgumentBuilderTests
 
         Assert.Contains("-c:a aac", joined);                    // promovido automáticamente
         Assert.DoesNotContain("pcm_s24le", joined);
+    }
+
+    // --- Familias ProRes / DNxHR (edición) ---
+
+    [Fact]
+    public void Build_ProRes4444_UsesProfile4AndYuv444()
+    {
+        var (joined, outFile) = Build(ProResMov(EncoderProfile.ProRes4444));
+
+        Assert.Contains("-c:v prores_ks", joined);
+        Assert.Contains("-profile:v 4", joined);                // 4 = ProRes 4444
+        Assert.Contains("-pix_fmt yuv444p10le", joined);        // 4:4:4 obligatorio para 4444
+        Assert.EndsWith(".mov", outFile);
+    }
+
+    [Fact]
+    public void Build_ProResAuto_DefaultsTo422Hq()
+        => Assert.Contains("-profile:v 3", Build(ProResMov(EncoderProfile.Auto)).Joined); // 3 = 422 HQ
+
+    [Theory]
+    [InlineData(EncoderProfile.ProResProxy, "0")]
+    [InlineData(EncoderProfile.ProResLt, "1")]
+    [InlineData(EncoderProfile.ProResStandard, "2")]
+    [InlineData(EncoderProfile.ProRes4444Xq, "5")]
+    public void Build_ProResFamily_MapsProfileNumber(EncoderProfile profile, string expected)
+        => Assert.Contains($"-profile:v {expected}", Build(ProResMov(profile)).Joined);
+
+    [Fact]
+    public void Build_DnxHrHqx_Uses10BitProfile()
+    {
+        var (joined, _) = Build(DnxhrMov(EncoderProfile.DnxHrHqx));
+
+        Assert.Contains("-c:v dnxhd", joined);
+        Assert.Contains("-profile:v dnxhr_hqx", joined);
+        Assert.Contains("-pix_fmt yuv422p10le", joined);
+    }
+
+    [Fact]
+    public void Build_DnxHr444_Uses444ProfileAndPixelFormat()
+    {
+        var (joined, _) = Build(DnxhrMov(EncoderProfile.DnxHr444));
+
+        Assert.Contains("-profile:v dnxhr_444", joined);
+        Assert.Contains("-pix_fmt yuv444p10le", joined);
+    }
+
+    [Theory]
+    [InlineData(EncoderProfile.DnxHrLb, "dnxhr_lb")]
+    [InlineData(EncoderProfile.DnxHrSq, "dnxhr_sq")]
+    [InlineData(EncoderProfile.DnxHrHq, "dnxhr_hq")]
+    public void Build_DnxHrFamily_MapsProfileName(EncoderProfile profile, string expected)
+        => Assert.Contains($"-profile:v {expected}", Build(DnxhrMov(profile)).Joined);
+
+    // --- Pipeline en vivo: preview + grabación en un solo proceso ---
+
+    private static string BuildLive(RecordingProfile profile, bool recording)
+    {
+        var b = new FfmpegArgumentBuilder()
+            .From(new FakeCaptureSource("C:/clips/in.mp4"))
+            .Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001");
+        return string.Join(' ', b.BuildLive(recording, 640, 360));
+    }
+
+    [Fact]
+    public void BuildLive_PreviewOnly_HasPreviewAndMetersButNoEncoder()
+    {
+        var joined = BuildLive(SoftwareMp4(), recording: false);
+
+        Assert.Contains("-progress pipe:1", joined);                        // telemetría/watchdog del supervisor
+        Assert.Contains("[0:v]scale=640:360,format=bgra[pv]", joined);      // rama de preview
+        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        Assert.Contains("ebur128=peak=true", joined);                       // medidores
+        Assert.DoesNotContain("-c:v libx264", joined);                      // idle: NO graba
+        Assert.DoesNotContain("-y", joined);                                // …ni escribe archivo
+        Assert.DoesNotContain("TST_", joined);                              // (in.mp4 de entrada sí lleva .mp4)
+    }
+
+    [Fact]
+    public void BuildLive_Recording_SplitsToPreviewAndFileAtOnce()
+    {
+        var joined = BuildLive(SoftwareMp4(), recording: true);
+
+        Assert.Contains("split=2[vrec][vprev]", joined);                    // una apertura → dos ramas
+        Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", joined);    // preview…
+        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        Assert.Contains("-c:v libx264", joined);                            // …y grabación a la vez
+        Assert.Contains("-movflags +faststart", joined);
+        Assert.Contains("-y", joined);                                      // archivo de salida
+        Assert.Contains("TST_", joined);                                    // nombre de la grabación
+        Assert.Contains("ebur128=peak=true", joined);
     }
 }

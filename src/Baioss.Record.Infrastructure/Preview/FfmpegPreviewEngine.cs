@@ -19,7 +19,7 @@ public sealed record PreviewFrame(byte[] Bgra, int Width, int Height, int Stride
 /// WriteableBitmap (fallback). La ruta de cero copias NVDEC→D3D11 es una optimización futura
 /// sobre este mismo contrato.
 /// </summary>
-public sealed class FfmpegPreviewEngine : IPreviewEngine
+public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
 {
     private readonly IFfmpegLocator _locator;
     private readonly ILogger<FfmpegPreviewEngine> _log;

@@ -57,12 +57,20 @@ public static class DependencyInjection
         var presetsPath = Path.Combine(Path.GetDirectoryName(sqliteDbPath) ?? ".", "presets.json");
         services.AddSingleton<IPresetStore>(_ => new JsonPresetStore(presetsPath));
 
-        // Captura y monitoreo de señal.
+        // Captura y monitoreo de señal: una fábrica por protocolo + resolver que elige por tipo.
         services.AddSingleton<ICaptureSourceFactory, FileCaptureSourceFactory>();
+        services.AddSingleton<ICaptureSourceFactory, DecklinkCaptureSourceFactory>();
+        services.AddSingleton<ICaptureSourceFactory, DirectShowCaptureSourceFactory>();
+        services.AddSingleton<CaptureSourceResolver>();
         services.AddTransient<ISignalMonitor, SignalMonitor>();
+        services.AddSingleton<IDeviceEnumerator, NoOpDeviceEnumerator>(); // fallback (simulado / sin FFmpeg)
 
         if (ffmpegDirectoryOrExe is not null)
+        {
             services.AddSingleton<IFfmpegLocator>(_ => new FfmpegLocator(ffmpegDirectoryOrExe));
+            // Enumeración real de dispositivos (DeckLink/DirectShow) vía FFmpeg: sustituye al fallback.
+            services.AddSingleton<IDeviceEnumerator, FfmpegDeviceEnumerator>();
+        }
 
         return services;
     }

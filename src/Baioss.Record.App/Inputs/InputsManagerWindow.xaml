@@ -1,0 +1,83 @@
+<Window x:Class="Baioss.Record.App.Inputs.InputsManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Entradas de los canales" Height="480" Width="1010"
+        Background="#10131A" WindowStartupLocation="CenterOwner">
+    <DockPanel>
+        <!-- Cabecera + Detectar -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="🔍 Detectar dispositivos" VerticalAlignment="Center"
+                        Command="{Binding DetectCommand}" IsEnabled="{Binding CanRebind}" Style="{StaticResource TransportButton}"/>
+                <StackPanel>
+                    <TextBlock Text="ENTRADAS DE LOS CANALES" FontSize="14" FontWeight="Bold"
+                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBlock Text="Asigna una tarjeta DeckLink (SDI) o una cámara/capturadora DirectShow a cada canal."
+                               FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Barra de estado -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,8">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource TextSecondaryBrush}"
+                       FontSize="12" TextWrapping="Wrap"/>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="16">
+                <ItemsControl ItemsSource="{Binding Channels}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Border Grid.Column="0" Background="{StaticResource AccentBrush}" CornerRadius="6"
+                                            Width="40" Height="40" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Key}" FontSize="20" FontWeight="Bold"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+
+                                    <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
+                                        <TextBlock Text="ENTRADA DE VÍDEO" FontSize="9"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                                        <ComboBox Height="28" ItemsSource="{Binding Devices}"
+                                                  SelectedItem="{Binding SelectedDevice}"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Center">
+                                        <TextBlock Text="AUDIO (DirectShow)" FontSize="9"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                                        <ComboBox Height="28" ItemsSource="{Binding AudioDevices}"
+                                                  SelectedItem="{Binding SelectedAudio}" IsEnabled="{Binding AudioEnabled}"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="3" Margin="0,0,10,0" VerticalAlignment="Center">
+                                        <TextBlock Text="MODO / FORMATO (DeckLink)" FontSize="9"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                                        <ComboBox Height="28" ItemsSource="{Binding Formats}" DisplayMemberPath="Description"
+                                                  SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding FormatEnabled}"/>
+                                    </StackPanel>
+
+                                    <Button Grid.Column="4" Content="Aplicar" Command="{Binding ApplyCommand}"
+                                            Style="{StaticResource StartButton}" VerticalAlignment="Bottom" Height="28"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="2,6,0,0"
+                           Text="Al aplicar, el canal se reconstruye en caliente (suelta la fuente anterior y abre la nueva). Nota: un dispositivo en vivo no se puede abrir por dos procesos a la vez; grabar y previsualizar la misma entrada física a la vez requerirá un único proceso de captura (pendiente)."/>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

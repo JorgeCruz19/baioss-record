@@ -8,8 +8,12 @@
         <!-- Barra de título de la app -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,10">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="⚙ Presets de grabación"
-                        Command="{Binding OpenPresetsCommand}" Style="{StaticResource TransportButton}"/>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button Content="🎛 Entradas"
+                            Command="{Binding OpenInputsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="⚙ Presets de grabación" Margin="8,0,0,0"
+                            Command="{Binding OpenPresetsCommand}" Style="{StaticResource TransportButton}"/>
+                </StackPanel>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="BAIOSS" FontSize="18" FontWeight="Bold" Foreground="#E6E9EF"/>
                     <TextBlock Text="RECORD" FontSize="18" FontWeight="Bold" Foreground="#3B82F6" Margin="6,0,0,0"/>

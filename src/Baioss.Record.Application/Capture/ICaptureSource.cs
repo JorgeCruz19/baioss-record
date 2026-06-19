@@ -45,10 +45,25 @@ public interface ICaptureSourceFactory
     ICaptureSource Create(InputSource definition);
 }
 
+/// <summary>Modo/formato de vídeo de un dispositivo (DeckLink): <see cref="Code"/> es el valor de
+/// <c>-format_code</c> (p. ej. "Hp50"); <see cref="Description"/> es legible (p. ej. "1920x1080 50p").</summary>
+public sealed record DeviceFormat(string Code, string Description)
+{
+    /// <summary>Opción de autodetección (sin <c>-format_code</c>): los drivers modernos detectan la señal.</summary>
+    public static readonly DeviceFormat Auto = new("", "Automático (autodetección)");
+}
+
 /// <summary>Enumera dispositivos físicos disponibles (DeckLink, DirectShow, NDI sources…).</summary>
 public interface IDeviceEnumerator
 {
+    /// <summary>Entradas de vídeo del tipo indicado, listas para asignar a un canal.</summary>
     Task<IReadOnlyList<InputSource>> DiscoverAsync(InputType type, CancellationToken ct = default);
+
+    /// <summary>Dispositivos de audio (DirectShow) para emparejar con una entrada de vídeo. Vacío si no aplica.</summary>
+    Task<IReadOnlyList<string>> DiscoverAudioDevicesAsync(InputType type, CancellationToken ct = default);
+
+    /// <summary>Modos/formatos SDI soportados por un dispositivo (DeckLink). Vacío si no aplica o se autodetecta.</summary>
+    Task<IReadOnlyList<DeviceFormat>> DiscoverFormatsAsync(InputType type, string deviceId, CancellationToken ct = default);
 }
 
 /// <summary>

@@ -179,5 +179,28 @@ public enum PixelFormat
     Yuv420p,     // 8-bit 4:2:0 (H.264/HEVC/MPEG-2 SD/HD)
     Yuv422p,     // 8-bit 4:2:2 (DNxHD, XDCAM HD422)
     Yuv420p10le, // 10-bit 4:2:0 (HEVC Main10)
-    Yuv422p10le  // 10-bit 4:2:2 (ProRes, DNxHR HQX, broadcast 10-bit)
+    Yuv422p10le, // 10-bit 4:2:2 (ProRes, DNxHR HQX, broadcast 10-bit)
+    Yuv444p10le  // 10-bit 4:4:4 (ProRes 4444/4444 XQ, DNxHR 444)
+}
+
+/// <summary>
+/// Perfil/calidad dentro de una familia de códec intra (ProRes, DNxHR). <see cref="Auto"/> deja
+/// que el motor elija el predeterminado del códec (ProRes 422 HQ, DNxHR HQ/HQX según profundidad).
+/// </summary>
+public enum EncoderProfile
+{
+    Auto,
+    // Apple ProRes (prores_ks -profile:v 0..5)
+    ProResProxy,     // 0 · offline/proxy
+    ProResLt,        // 1 · ligero
+    ProResStandard,  // 2 · ProRes 422
+    ProResHq,        // 3 · ProRes 422 HQ
+    ProRes4444,      // 4 · 4:4:4 (+alfa)
+    ProRes4444Xq,    // 5 · 4:4:4 máxima calidad
+    // Avid DNxHR (dnxhd -profile:v dnxhr_*)
+    DnxHrLb,         // low bandwidth (offline)
+    DnxHrSq,         // standard quality
+    DnxHrHq,         // high quality 8-bit
+    DnxHrHqx,        // high quality 10-bit
+    DnxHr444         // 4:4:4 10-bit
 }

@@ -26,6 +26,7 @@ public sealed class FfmpegArgumentBuilder
     private string _outputDirectory = ".";
     private string _proxyDirectory = ".";
     private string _channelKey = "A";
+    private string _previewSink = "";
 
     /// <summary>Ruta absoluta del archivo principal cuando NO hay segmentación.</summary>
     public string OutputFilePath { get; private set; } = "";
@@ -35,6 +36,9 @@ public sealed class FfmpegArgumentBuilder
     public FfmpegArgumentBuilder ToDirectory(string dir) { _outputDirectory = dir; return this; }
     public FfmpegArgumentBuilder ProxyToDirectory(string dir) { _proxyDirectory = dir; return this; }
     public FfmpegArgumentBuilder ForChannel(string key) { _channelKey = key; return this; }
+
+    /// <summary>Destino (URL FFmpeg, p. ej. <c>tcp://127.0.0.1:9001</c>) de los frames BGRA de preview.</summary>
+    public FfmpegArgumentBuilder WithPreviewSink(string ffmpegUrl) { _previewSink = ffmpegUrl; return this; }
 
     public IReadOnlyList<string> Build()
     {
@@ -142,6 +146,101 @@ public sealed class FfmpegArgumentBuilder
         return args;
     }
 
+    /// <summary>
+    /// Construye el argv del proceso ÚNICO de captura de un canal: abre la fuente una sola vez y la
+    /// bifurca (<c>split</c>) en preview (BGRA al destino de <see cref="WithPreviewSink"/>) + medidores
+    /// (ebur128) y, cuando <paramref name="recording"/> es true, también la salida de grabación. Así
+    /// preview y grabación coexisten sobre un dispositivo en vivo, que no admite dos aperturas.
+    /// </summary>
+    public IReadOnlyList<string> BuildLive(bool recording, int previewWidth, int previewHeight)
+    {
+        var source = _source ?? throw new InvalidOperationException("Falta la fuente de captura.");
+        var profile = _profile ?? throw new InvalidOperationException("Falta el perfil.");
+        if (string.IsNullOrEmpty(_previewSink))
+            throw new InvalidOperationException("Falta el destino de preview (WithPreviewSink).");
+
+        var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
+        args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
+        args.AddRange(source.BuildInputArguments());
+
+        string previewChain = string.Create(CultureInfo.InvariantCulture, $"scale={previewWidth}:{previewHeight},format=bgra");
+        var filter = new StringBuilder();
+        string recLabel = "0:v:0";
+
+        if (recording && !profile.AudioOnly)
+        {
+            // Bifurca el vídeo: una rama a grabación (con su escala/escaneo/burn-in), otra a preview.
+            var recChain = new List<string>();
+            if (profile.TargetResolution is { } r)
+                recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
+            if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
+            else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
+            if (profile.BurnTimecode)
+                recChain.Add("drawtext=timecode='00\\:00\\:00\\:00':rate=25:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20");
+
+            filter.Append("[0:v]split=2[vrec][vprev];");
+            if (recChain.Count > 0)
+            {
+                filter.Append(CultureInfo.InvariantCulture, $"[vrec]{string.Join(',', recChain)}[vmain];");
+                recLabel = "[vmain]";
+            }
+            else recLabel = "[vrec]";
+            filter.Append(CultureInfo.InvariantCulture, $"[vprev]{previewChain}[pv]");
+        }
+        else
+        {
+            filter.Append(CultureInfo.InvariantCulture, $"[0:v]{previewChain}[pv]");
+        }
+
+        args.Add("-filter_complex"); args.Add(filter.ToString());
+
+        // Salida A — preview BGRA por TCP (lo lee la app y lo sube a la textura/bitmap).
+        args.Add("-map"); args.Add("[pv]");
+        args.Add("-f"); args.Add("rawvideo");
+        args.Add(_previewSink);
+
+        // Salida B — medidores VU: ebur128 sobre el audio de entrada, descartado a null.
+        args.Add("-map"); args.Add("0:a:0?");
+        args.Add("-af"); args.Add("ebur128=peak=true");
+        args.Add("-f"); args.Add("null"); args.Add("-");
+
+        // Salida C — grabación (solo cuando se graba).
+        if (recording)
+        {
+            var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
+            OutputFilePath = Path.Combine(_outputDirectory, $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
+
+            if (profile.AudioOnly)
+            {
+                args.Add("-map"); args.Add("0:a:0?");
+                args.AddRange(AudioEncoderArgs(profile));
+            }
+            else
+            {
+                args.Add("-map"); args.Add(recLabel);
+                args.Add("-map"); args.Add("0:a:0?");
+                args.AddRange(VideoEncoderArgs(profile));
+                args.AddRange(AudioEncoderArgs(profile));
+                if (profile.OutputFrameRate is { } fr)
+                {
+                    args.Add("-r");
+                    args.Add(string.Create(CultureInfo.InvariantCulture, $"{fr.Numerator}/{fr.Denominator}"));
+                }
+                string? fieldOrder = profile.ScanType switch
+                {
+                    ScanType.InterlacedTff => "tt", ScanType.InterlacedBff => "bb", _ => null
+                };
+                if (fieldOrder is not null) { args.Add("-field_order"); args.Add(fieldOrder); }
+                if (profile.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
+                { args.Add("-movflags"); args.Add("+faststart"); }
+            }
+            args.Add("-f"); args.Add(recMux);
+            args.Add("-y"); args.Add(OutputFilePath);
+        }
+
+        return args;
+    }
+
     private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy)
     {
         var sb = new StringBuilder();
@@ -221,13 +320,32 @@ public sealed class FfmpegArgumentBuilder
         }
         else if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr)
         {
-            // HQX admite 10-bit (yuv422p10le); HQ es 8-bit (yuv422p).
-            bool tenBit = p.PixelFormat is PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le;
-            list.AddRange(new[] { "-profile:v", tenBit ? "dnxhr_hqx" : "dnxhr_hq" });
+            string dnxProfile = p.EncoderProfile switch
+            {
+                EncoderProfile.DnxHrLb  => "dnxhr_lb",
+                EncoderProfile.DnxHrSq  => "dnxhr_sq",
+                EncoderProfile.DnxHrHq  => "dnxhr_hq",
+                EncoderProfile.DnxHrHqx => "dnxhr_hqx",
+                EncoderProfile.DnxHr444 => "dnxhr_444",
+                // Auto: heurística por profundidad (hqx si 10-bit, si no hq) — comportamiento previo.
+                _ => p.PixelFormat is PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le or PixelFormat.Yuv444p10le
+                        ? "dnxhr_hqx" : "dnxhr_hq",
+            };
+            list.AddRange(new[] { "-profile:v", dnxProfile });
         }
         else if (p.VideoCodec is VideoCodec.ProRes)
         {
-            list.AddRange(new[] { "-profile:v", "3" }); // ProRes 422 HQ
+            string proresProfile = p.EncoderProfile switch
+            {
+                EncoderProfile.ProResProxy    => "0",
+                EncoderProfile.ProResLt       => "1",
+                EncoderProfile.ProResStandard => "2",
+                EncoderProfile.ProResHq       => "3",
+                EncoderProfile.ProRes4444     => "4",
+                EncoderProfile.ProRes4444Xq   => "5",
+                _ => "3", // Auto = ProRes 422 HQ (comportamiento previo)
+            };
+            list.AddRange(new[] { "-profile:v", proresProfile });
         }
         else // libx264 / libx265
         {
@@ -245,8 +363,11 @@ public sealed class FfmpegArgumentBuilder
             if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
 
-        // Formato de píxel: override del perfil, o el predeterminado del códec.
-        var pix = FfmpegCodecMap.PixelFormatArg(p.PixelFormat) ?? DefaultPixelFormat(p.VideoCodec);
+        // Formato de píxel: override explícito del perfil → píxel natural del perfil intra
+        // (p. ej. 4444/444 exigen 4:4:4) → predeterminado del códec.
+        var pix = FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
+                  ?? ProfilePixelFormat(p.EncoderProfile)
+                  ?? DefaultPixelFormat(p.VideoCodec);
         if (pix is not null) { list.Add("-pix_fmt"); list.Add(pix); }
         return list;
     }
@@ -265,6 +386,14 @@ public sealed class FfmpegArgumentBuilder
         args.Add("-y"); args.Add(OutputFilePath);
         return args;
     }
+
+    /// <summary>Píxel natural de un perfil intra cuando el preset no fija PixelFormat explícito.</summary>
+    private static string? ProfilePixelFormat(EncoderProfile profile) => profile switch
+    {
+        EncoderProfile.ProRes4444 or EncoderProfile.ProRes4444Xq or EncoderProfile.DnxHr444 => "yuv444p10le",
+        EncoderProfile.DnxHrHqx => "yuv422p10le",
+        _ => null
+    };
 
     private static string? DefaultPixelFormat(VideoCodec codec) => codec switch
     {

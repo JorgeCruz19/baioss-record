@@ -22,6 +22,9 @@ public sealed class RecordingProfile
     /// <summary>Formato de píxel de salida. <see cref="PixelFormat.Auto"/> = el predeterminado del códec.</summary>
     public PixelFormat PixelFormat { get; set; } = PixelFormat.Auto;
 
+    /// <summary>Perfil dentro de la familia del códec intra (ProRes/DNxHR). <see cref="EncoderProfile.Auto"/> = predeterminado.</summary>
+    public EncoderProfile EncoderProfile { get; set; } = EncoderProfile.Auto;
+
     /// <summary>Resolución de salida. <c>null</c> = nativa de la fuente (sin escalado).</summary>
     public Resolution? TargetResolution { get; set; }
 

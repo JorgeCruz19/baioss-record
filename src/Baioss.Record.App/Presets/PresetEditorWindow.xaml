@@ -10,8 +10,8 @@
             <Setter Property="Margin" Value="0,0,8,0"/>
             <Setter Property="FontSize" Value="12"/>
         </Style>
-        <Style TargetType="ComboBox"><Setter Property="Margin" Value="0,4"/><Setter Property="Height" Value="26"/></Style>
-        <Style TargetType="TextBox"><Setter Property="Margin" Value="0,4"/><Setter Property="Height" Value="24"/></Style>
+        <Style TargetType="ComboBox" BasedOn="{StaticResource ConfigCombo}"><Setter Property="Margin" Value="0,4"/><Setter Property="Height" Value="26"/></Style>
+        <Style TargetType="TextBox" BasedOn="{StaticResource DarkTextBox}"><Setter Property="Margin" Value="0,4"/><Setter Property="Height" Value="24"/></Style>
     </Window.Resources>
 
     <Border Padding="18">
@@ -34,6 +34,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
                         <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                        <RowDefinition/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Nombre"/>
@@ -82,6 +83,10 @@
                     <ComboBox Grid.Row="9" Grid.Column="1" ItemsSource="{Binding AudioCodecValues}" SelectedItem="{Binding Preset.AudioCodec}"/>
                     <TextBlock Grid.Row="9" Grid.Column="2" Text="Canales"/>
                     <ComboBox Grid.Row="9" Grid.Column="3" ItemsSource="{Binding AudioLayoutValues}" SelectedItem="{Binding Preset.AudioLayout}"/>
+
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Perfil intra"/>
+                    <ComboBox Grid.Row="10" Grid.Column="1" ItemsSource="{Binding EncoderProfileValues}" SelectedItem="{Binding Preset.EncoderProfile}"/>
+                    <TextBlock Grid.Row="10" Grid.Column="2" Grid.ColumnSpan="2" Text="(solo ProRes / DNxHR)"/>
                 </Grid>
             </ScrollViewer>
         </DockPanel>

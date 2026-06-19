@@ -1,46 +1,41 @@
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain;
-using Baioss.Record.Domain.Entities;
-using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Channels;
-using Baioss.Record.App.Recording;
+using Baioss.Record.Application.Presets;
 using Baioss.Record.Infrastructure.Preview;
 
 namespace Baioss.Record.App;
 
 /// <summary>
 /// ViewModel de un canal (A/B). Enlaza el estado del <see cref="IChannelEngine"/> con la UI:
-/// transporte, señal, telemetría, medidores VU y la CONFIGURACIÓN de grabación completa
-/// (carpeta de destino, formato, tamaño, escaneo, fps, códec, control de tasa, burn-in y audio)
-/// que el operador elige antes de grabar.
+/// transporte, señal, telemetría y medidores VU. La codificación (formato, tamaño, códec,
+/// bitrate, audio…) se elige aplicando un <see cref="EncodingPreset"/> desde el gestor de
+/// presets; aquí solo se fija la CARPETA DE DESTINO y se muestra el resumen del perfil vigente.
 /// </summary>
 public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 {
     private readonly IChannelEngine _engine;
     private readonly IConfigurableRecording? _config;
-    private bool _initializing;
 
-    public ChannelViewModel(IChannelEngine engine, FfmpegPreviewEngine? preview = null, bool gpuAvailable = false)
+    public ChannelViewModel(IChannelEngine engine, IChannelPreviewSource? preview = null)
     {
         _engine = engine;
         _config = engine as IConfigurableRecording;
         IsConfigurable = _config is not null;
         Preview = preview;
 
-        VideoCodecs = BuildVideoCodecs(gpuAvailable);
-        InitSelectionsFromProfile();
+        InitFromProfile();
 
         _engine.StatusChanged += OnStatusChanged;
         if (Preview is not null) Preview.AudioPeaksUpdated += OnPreviewAudio;
         Sync(engine.Status);
     }
 
-    public FfmpegPreviewEngine? Preview { get; }
+    public IChannelPreviewSource? Preview { get; }
     public string Key => _engine.Status.Key;
+    public Guid ChannelId => _engine.ChannelId;
 
     private double _peakHoldL = -60, _peakHoldR = -60;
 
@@ -66,7 +61,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _clipping;
 
     // ---------------------------------------------------------------------
-    //  Configuración de grabación
+    //  Destino y perfil activo
     // ---------------------------------------------------------------------
 
     public bool IsConfigurable { get; }
@@ -74,104 +69,6 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
     /// <summary>Carpeta de destino elegida por el operador (se edita con el botón Examinar).</summary>
     [ObservableProperty] private string _outputDirectory = "";
-
-    /// <summary>Quemar el timecode sobre la imagen grabada (overlay).</summary>
-    [ObservableProperty] private bool _burnTimecode;
-
-    public IReadOnlyList<NamedOption<ContainerFormat>> Containers { get; } = new NamedOption<ContainerFormat>[]
-    {
-        new("MP4", ContainerFormat.Mp4), new("MOV", ContainerFormat.Mov), new("MXF", ContainerFormat.Mxf),
-        new("MKV", ContainerFormat.Mkv), new("MPEG-TS", ContainerFormat.Ts),
-    };
-
-    public IReadOnlyList<NamedOption<Resolution?>> Sizes { get; } = new NamedOption<Resolution?>[]
-    {
-        new("Fuente (nativa)", null), new("720p (1280×720)", Resolution.Hd720),
-        new("1080p (1920×1080)", Resolution.Hd1080), new("4K UHD (3840×2160)", Resolution.Uhd4K),
-    };
-
-    public IReadOnlyList<NamedOption<ScanType>> ScanTypes { get; } = new NamedOption<ScanType>[]
-    {
-        new("Progresivo", ScanType.Progressive),
-        new("Entrelazado (TFF)", ScanType.InterlacedTff),
-        new("Entrelazado (BFF)", ScanType.InterlacedBff),
-    };
-
-    public IReadOnlyList<NamedOption<FrameRate?>> FrameRates { get; } = new NamedOption<FrameRate?>[]
-    {
-        new("Fuente", null), new("23.976", new FrameRate(24000, 1001)), new("24", FrameRate.P24),
-        new("25", FrameRate.P25), new("29.97", FrameRate.P2997), new("30", FrameRate.P30),
-        new("50", FrameRate.P50), new("59.94", FrameRate.P5994), new("60", FrameRate.P60),
-    };
-
-    public IReadOnlyList<NamedOption<RateControlMode>> RateControls { get; } = new NamedOption<RateControlMode>[]
-    {
-        new("CBR (tasa fija)", RateControlMode.ConstantBitrate),
-        new("VBR (tasa media)", RateControlMode.VariableBitrate),
-        new("Calidad constante", RateControlMode.ConstantQuality),
-    };
-
-    public IReadOnlyList<NamedOption<int>> Qualities { get; } = new NamedOption<int>[]
-    {
-        new("18 (alta)", 18), new("20", 20), new("23 (media)", 23), new("26", 26), new("30 (baja)", 30),
-    };
-
-    public IReadOnlyList<NamedOption<Bitrate>> Bitrates { get; } = new NamedOption<Bitrate>[]
-    {
-        new("8 Mbps", Bitrate.FromMbps(8)), new("16 Mbps", Bitrate.FromMbps(16)), new("25 Mbps", Bitrate.FromMbps(25)),
-        new("50 Mbps", Bitrate.FromMbps(50)), new("100 Mbps", Bitrate.FromMbps(100)),
-    };
-
-    public IReadOnlyList<NamedOption<AudioCodec>> AudioCodecs { get; } = new NamedOption<AudioCodec>[]
-    {
-        new("AAC", AudioCodec.Aac), new("PCM 24-bit", AudioCodec.Pcm), new("Opus", AudioCodec.Opus), new("MP3", AudioCodec.Mp3),
-    };
-
-    public IReadOnlyList<NamedOption<AudioLayout>> AudioLayouts { get; } = new NamedOption<AudioLayout>[]
-    {
-        new("Mono", AudioLayout.Mono), new("Estéreo", AudioLayout.Stereo),
-        new("5.1", AudioLayout.Surround51), new("7.1", AudioLayout.Surround71),
-    };
-
-    public IReadOnlyList<NamedOption<int>> SampleRates { get; } = new NamedOption<int>[]
-    {
-        new("48 kHz", 48_000), new("44.1 kHz", 44_100), new("96 kHz", 96_000),
-    };
-
-    public IReadOnlyList<NamedOption<Bitrate>> AudioBitrates { get; } = new NamedOption<Bitrate>[]
-    {
-        new("128 kbps", Bitrate.FromKbps(128)), new("192 kbps", Bitrate.FromKbps(192)),
-        new("256 kbps", Bitrate.FromKbps(256)), new("384 kbps", Bitrate.FromKbps(384)),
-    };
-
-    public IReadOnlyList<NamedOption<VideoCodec>> VideoCodecs { get; }
-
-    [ObservableProperty] private NamedOption<ContainerFormat>? _selectedContainer;
-    [ObservableProperty] private NamedOption<Resolution?>? _selectedSize;
-    [ObservableProperty] private NamedOption<ScanType>? _selectedScanType;
-    [ObservableProperty] private NamedOption<FrameRate?>? _selectedFrameRate;
-    [ObservableProperty] private NamedOption<VideoCodec>? _selectedVideoCodec;
-    [ObservableProperty] private NamedOption<RateControlMode>? _selectedRateControl;
-    [ObservableProperty] private NamedOption<int>? _selectedQuality;
-    [ObservableProperty] private NamedOption<Bitrate>? _selectedBitrate;
-    [ObservableProperty] private NamedOption<AudioCodec>? _selectedAudioCodec;
-    [ObservableProperty] private NamedOption<AudioLayout>? _selectedAudioLayout;
-    [ObservableProperty] private NamedOption<int>? _selectedSampleRate;
-    [ObservableProperty] private NamedOption<Bitrate>? _selectedAudioBitrate;
-
-    partial void OnSelectedContainerChanged(NamedOption<ContainerFormat>? value) => ApplyProfile();
-    partial void OnSelectedSizeChanged(NamedOption<Resolution?>? value) => ApplyProfile();
-    partial void OnSelectedScanTypeChanged(NamedOption<ScanType>? value) => ApplyProfile();
-    partial void OnSelectedFrameRateChanged(NamedOption<FrameRate?>? value) => ApplyProfile();
-    partial void OnSelectedVideoCodecChanged(NamedOption<VideoCodec>? value) => ApplyProfile();
-    partial void OnSelectedRateControlChanged(NamedOption<RateControlMode>? value) => ApplyProfile();
-    partial void OnSelectedQualityChanged(NamedOption<int>? value) => ApplyProfile();
-    partial void OnSelectedBitrateChanged(NamedOption<Bitrate>? value) => ApplyProfile();
-    partial void OnSelectedAudioCodecChanged(NamedOption<AudioCodec>? value) => ApplyProfile();
-    partial void OnSelectedAudioLayoutChanged(NamedOption<AudioLayout>? value) => ApplyProfile();
-    partial void OnSelectedSampleRateChanged(NamedOption<int>? value) => ApplyProfile();
-    partial void OnSelectedAudioBitrateChanged(NamedOption<Bitrate>? value) => ApplyProfile();
-    partial void OnBurnTimecodeChanged(bool value) => ApplyProfile();
 
     partial void OnOutputDirectoryChanged(string value)
     {
@@ -186,111 +83,41 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         if (dialog.ShowDialog() == true) OutputDirectory = dialog.FolderName;
     }
 
-    private static IReadOnlyList<NamedOption<VideoCodec>> BuildVideoCodecs(bool gpu)
-    {
-        var list = new List<NamedOption<VideoCodec>>();
-        if (gpu)
-        {
-            list.Add(new("H.264 (NVENC)", VideoCodec.H264Nvenc));
-            list.Add(new("HEVC (NVENC)", VideoCodec.HevcNvenc));
-            list.Add(new("AV1 (NVENC)", VideoCodec.Av1Nvenc));
-        }
-        list.Add(new("H.264 (x264)", VideoCodec.H264x264));
-        list.Add(new("H.265 (x265)", VideoCodec.H265x265));
-        list.Add(new("ProRes", VideoCodec.ProRes));
-        list.Add(new("DNxHR", VideoCodec.DnxHr));
-        return list;
-    }
-
-    private void InitSelectionsFromProfile()
+    private void InitFromProfile()
     {
         if (_config is null) return;
-        _initializing = true;
-        var p = _config.Profile;
         OutputDirectory = _config.OutputDirectory;
-        BurnTimecode = p.BurnTimecode;
-        SetSelectionsFrom(p);
-        _initializing = false;
-        ApplyProfile();
-    }
-
-    /// <summary>Posiciona los combos para reflejar un perfil dado (aproxima al subconjunto del editor).</summary>
-    private void SetSelectionsFrom(RecordingProfile p)
-    {
-        SelectedContainer = Containers.FirstOrDefault(o => o.Value == p.Container) ?? Containers[0];
-        SelectedSize = Sizes.FirstOrDefault(o => o.Value == p.TargetResolution) ?? Sizes[0];
-        SelectedScanType = ScanTypes.FirstOrDefault(o => o.Value == p.ScanType) ?? ScanTypes[0];
-        SelectedFrameRate = FrameRates.FirstOrDefault(o => o.Value == p.OutputFrameRate) ?? FrameRates[0];
-        SelectedVideoCodec = VideoCodecs.FirstOrDefault(o => o.Value == p.VideoCodec) ?? VideoCodecs[0];
-        SelectedRateControl = RateControls.FirstOrDefault(o => o.Value == p.RateControl) ?? RateControls[0];
-        SelectedQuality = Qualities.FirstOrDefault(o => o.Value == p.Quality) ?? Qualities[2];
-        SelectedBitrate = Bitrates.FirstOrDefault(o => o.Value.BitsPerSecond == p.VideoBitrate.BitsPerSecond) ?? Bitrates[0];
-        SelectedAudioCodec = AudioCodecs.FirstOrDefault(o => o.Value == p.AudioCodec) ?? AudioCodecs[0];
-        SelectedAudioLayout = AudioLayouts.FirstOrDefault(o => o.Value == p.AudioLayout) ?? AudioLayouts[1];
-        SelectedSampleRate = SampleRates.FirstOrDefault(o => o.Value == p.AudioSampleRate) ?? SampleRates[0];
-        SelectedAudioBitrate = AudioBitrates.FirstOrDefault(o => o.Value.BitsPerSecond == p.AudioBitrate.BitsPerSecond) ?? AudioBitrates[2];
+        RefreshProfileText();
     }
 
     /// <summary>
-    /// Aplica un preset completo: fija el perfil exacto en el motor (incluidos campos que el editor
-    /// inline no expone, como pixel format o max bitrate) y refresca los combos para reflejarlo.
+    /// Aplica un preset de encoding al canal: fija el perfil completo en el motor (conservando la
+    /// identidad persistida del canal) y refresca el resumen. La carpeta de destino no la toca un
+    /// preset; es una propiedad operativa por canal.
     /// </summary>
-    public void ApplyPreset(Baioss.Record.Application.Presets.EncodingPreset preset)
+    public void ApplyPreset(EncodingPreset preset)
     {
         if (_config is null || IsRecording) return;
         var current = _config.Profile;
-        var profile = preset.ToProfile(current.Id, current.Name); // conserva la identidad persistida
-        _config.Profile = profile;
-
-        _initializing = true;                 // refresca la UI sin reconstruir (no pisar el perfil)
-        BurnTimecode = profile.BurnTimecode;
-        SetSelectionsFrom(profile);
-        _initializing = false;
-
-        ProfileText = $"{profile.VideoCodec} · {profile.VideoBitrate} · " +
-                      $"{(profile.TargetResolution?.ToString() ?? "nativa")} · {profile.Container}";
+        _config.Profile = preset.ToProfile(current.Id, current.Name); // conserva Id/Name persistidos
+        RefreshProfileText();
     }
 
-    /// <summary>Reconstruye el <see cref="RecordingProfile"/> a partir de las selecciones y lo fija en el motor.</summary>
-    private void ApplyProfile()
+    /// <summary>Resumen legible del perfil vigente (lo que se grabará): códec · tasa · tamaño · contenedor.</summary>
+    private void RefreshProfileText()
     {
-        if (_initializing || _config is null) return;
-        if (SelectedContainer is null || SelectedSize is null || SelectedScanType is null || SelectedFrameRate is null
-            || SelectedVideoCodec is null || SelectedRateControl is null || SelectedQuality is null || SelectedBitrate is null
-            || SelectedAudioCodec is null || SelectedAudioLayout is null || SelectedSampleRate is null || SelectedAudioBitrate is null)
-            return;
-
-        var current = _config.Profile;
-        _config.Profile = new RecordingProfile
+        if (_config is null) { ProfileText = "—"; return; }
+        var p = _config.Profile;
+        if (p.AudioOnly)
         {
-            Id = current.Id,           // conserva la identidad (misma fila persistida del canal)
-            Name = current.Name,
-            VideoCodec = SelectedVideoCodec.Value,
-            HwAccel = HwAccel.None,    // decode por software; el encoder (incl. NVENC) recibe frames de CPU
-            VideoBitrate = SelectedBitrate.Value,
-            TargetResolution = SelectedSize.Value,
-            OutputFrameRate = SelectedFrameRate.Value,
-            ScanType = SelectedScanType.Value,
-            RateControl = SelectedRateControl.Value,
-            Quality = SelectedQuality.Value,
-            GopSize = current.GopSize,
-            ClosedGop = current.ClosedGop,
-            MaxBitrate = current.MaxBitrate,   // preserva lo no editable por combos
-            PixelFormat = current.PixelFormat,
-            AudioOnly = current.AudioOnly,
-            BurnTimecode = BurnTimecode,
-            AudioCodec = SelectedAudioCodec.Value,
-            AudioLayout = SelectedAudioLayout.Value,
-            AudioBitrate = SelectedAudioBitrate.Value,
-            AudioSampleRate = SelectedSampleRate.Value,
-            Container = SelectedContainer.Value,
-        };
-
-        string rateLabel = SelectedRateControl.Value == RateControlMode.ConstantQuality
-            ? $"CRF {SelectedQuality.Value}"
-            : SelectedBitrate.Label;
-        ProfileText = $"{SelectedVideoCodec.Label} · {rateLabel} · " +
-                      $"{(SelectedSize.Value?.ToString() ?? "nativa")} · {SelectedFrameRate.Label} · {SelectedContainer.Label}";
+            ProfileText = $"Solo audio · {p.AudioCodec} · {p.Container}";
+            return;
+        }
+        string rate = p.RateControl == RateControlMode.ConstantQuality
+            ? $"CRF {p.Quality}"
+            : p.VideoBitrate.ToString();
+        string res = p.TargetResolution?.ToString() ?? "nativa";
+        ProfileText = $"{p.VideoCodec} · {rate} · {res} · {p.Container}";
     }
 
     // ---------------------------------------------------------------------

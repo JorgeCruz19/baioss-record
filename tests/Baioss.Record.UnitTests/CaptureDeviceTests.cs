@@ -1,0 +1,132 @@
+using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
+using Baioss.Record.Application.Capture;
+using Baioss.Record.Infrastructure.Capture;
+using Xunit;
+
+namespace Baioss.Record.UnitTests;
+
+public class CaptureDeviceTests
+{
+    // Salida real de `ffmpeg -f dshow -list_devices true -i dummy` (recortada).
+    private const string DshowSample = """
+        [in#0 @ 000] "USB2.0 HD UVC WebCam" (video)
+        [in#0 @ 000]   Alternative name "@device_pnp_\\?\usb#vid_13d3&pid_56a2"
+        [in#0 @ 000] "OBS Virtual Camera" (video)
+        [in#0 @ 000]   Alternative name "@device_sw_{860BB310}"
+        [in#0 @ 000] "Varios micrófonos (Realtek(R) Audio)" (audio)
+        [in#0 @ 000] "CABLE Output (VB-Audio Virtual Cable)" (audio)
+        """;
+
+    // Salida de `ffmpeg -f decklink -list_devices 1 -i dummy` cuando hay tarjeta.
+    private const string DecklinkSample = """
+        [Blackmagic DeckLink indev @ 000] Blackmagic DeckLink devices:
+        [Blackmagic DeckLink indev @ 000]     'DeckLink Mini Recorder'
+        [Blackmagic DeckLink indev @ 000]     'DeckLink Duo (1)'
+        """;
+
+    [Fact]
+    public void ParseDshowVideo_ExtractsOnlyVideoDevices()
+    {
+        var devices = FfmpegDeviceEnumerator.ParseDshowVideo(DshowSample);
+
+        Assert.Equal(2, devices.Count);
+        Assert.All(devices, d => Assert.Equal(InputType.DirectShow, d.Type));
+        Assert.Contains(devices, d => d.Name == "USB2.0 HD UVC WebCam" && d.Uri == "USB2.0 HD UVC WebCam");
+        Assert.Contains(devices, d => d.Name == "OBS Virtual Camera");
+        Assert.DoesNotContain(devices, d => d.Name.Contains("Realtek")); // el audio no entra como vídeo
+    }
+
+    [Fact]
+    public void ParseDshowAudio_ExtractsAudioDevices_IncludingNamesWithParentheses()
+    {
+        var audio = FfmpegDeviceEnumerator.ParseDshowAudio(DshowSample);
+
+        Assert.Equal(2, audio.Count);
+        Assert.Contains("Varios micrófonos (Realtek(R) Audio)", audio); // paréntesis internos respetados
+        Assert.Contains("CABLE Output (VB-Audio Virtual Cable)", audio);
+    }
+
+    [Fact]
+    public void ParseDshowVideo_StableId_SameDeviceSameGuid()
+    {
+        var a = FfmpegDeviceEnumerator.ParseDshowVideo(DshowSample);
+        var b = FfmpegDeviceEnumerator.ParseDshowVideo(DshowSample);
+        Assert.Equal(a[0].Id, b[0].Id); // Id determinista → misma fila al reasignar
+    }
+
+    // Salida de `ffmpeg -f decklink -list_formats 1 -i 'DeckLink Mini Recorder'`.
+    private const string DecklinkFormatsSample = """
+        [Blackmagic DeckLink indev @ 000] Supported formats for 'DeckLink Mini Recorder':
+        [Blackmagic DeckLink indev @ 000]   format_code  description
+        [Blackmagic DeckLink indev @ 000]     ntsc        720x486 at 30000/1001 fps (interlaced, lower field first)
+        [Blackmagic DeckLink indev @ 000]     pal         720x576 at 25/1 fps (interlaced, upper field first)
+        [Blackmagic DeckLink indev @ 000]     Hp50        1920x1080 at 50/1 fps
+        [Blackmagic DeckLink indev @ 000]     Hi50        1920x1080 at 25/1 fps (interlaced, upper field first)
+        """;
+
+    [Fact]
+    public void ParseDecklinkFormats_ExtractsCodeAndDescription_SkippingHeader()
+    {
+        var formats = FfmpegDeviceEnumerator.ParseDecklinkFormats(DecklinkFormatsSample);
+
+        Assert.Equal(4, formats.Count); // 4 modos; la cabecera 'format_code description' no entra
+        Assert.Contains(formats, f => f.Code == "Hp50" && f.Description.StartsWith("1920x1080"));
+        Assert.Contains(formats, f => f.Code == "ntsc" && f.Description.StartsWith("720x486"));
+        Assert.DoesNotContain(formats, f => f.Code == "format_code");
+    }
+
+    [Fact]
+    public void ParseDecklink_ExtractsQuotedDeviceNames()
+    {
+        var devices = FfmpegDeviceEnumerator.ParseDecklink(DecklinkSample);
+
+        Assert.Equal(2, devices.Count);
+        Assert.All(devices, d => Assert.Equal(InputType.DecklinkSdi, d.Type));
+        Assert.Contains(devices, d => d.Name == "DeckLink Mini Recorder");
+        Assert.Contains(devices, d => d.Name == "DeckLink Duo (1)"); // paréntesis dentro de comillas simples
+    }
+
+    [Fact]
+    public void Resolver_PicksFactoryByType()
+    {
+        var resolver = new CaptureSourceResolver(new ICaptureSourceFactory[]
+        {
+            new FileCaptureSourceFactory(), new DecklinkCaptureSourceFactory(), new DirectShowCaptureSourceFactory(),
+        });
+
+        Assert.IsType<DirectShowCaptureSource>(resolver.Create(Def(InputType.DirectShow, "Cam")));
+        Assert.IsType<DecklinkCaptureSource>(resolver.Create(Def(InputType.DecklinkSdi, "DeckLink Mini")));
+        Assert.IsType<FileCaptureSource>(resolver.Create(Def(InputType.File, @"C:\x\clip.mp4")));
+        Assert.True(resolver.CanHandle(InputType.DecklinkSdi));
+        Assert.False(resolver.CanHandle(InputType.Ndi));
+        Assert.Throws<NotSupportedException>(() => resolver.Create(Def(InputType.Ndi, "x")));
+    }
+
+    [Fact]
+    public void Decklink_BuildArgs_EmitsDeviceAndFormatCode()
+    {
+        var def = Def(InputType.DecklinkSdi, "DeckLink Mini Recorder");
+        def.Parameters["format_code"] = "Hp50";
+
+        var joined = string.Join(' ', new DecklinkCaptureSource(def).BuildInputArguments());
+
+        Assert.Contains("-f decklink", joined);
+        Assert.Contains("-format_code Hp50", joined);
+        Assert.Contains("-i DeckLink Mini Recorder", joined);
+    }
+
+    [Fact]
+    public void DirectShow_BuildArgs_PairsVideoAndAudio()
+    {
+        var def = Def(InputType.DirectShow, "My Cam");
+        def.Parameters["audio"] = "My Mic";
+
+        var joined = string.Join(' ', new DirectShowCaptureSource(def).BuildInputArguments());
+
+        Assert.Contains("-f dshow", joined);
+        Assert.Contains("video=My Cam:audio=My Mic", joined);
+    }
+
+    private static InputSource Def(InputType type, string uri) => new() { Name = uri, Type = type, Uri = uri };
+}

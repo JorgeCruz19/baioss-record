@@ -62,28 +62,60 @@ public static class PresetCatalog
           p.FrameRateNum = 50; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 45; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p10le;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
-        // ---------------- DNxHD / DNxHR ----------------
-        Make("DNxHR HQ · 1080p25", PresetCategory.DnxHd, "1920×1080p25 4:2:2 8-bit, intra, MOV, audio PCM.", p =>
+        // ---------------- DNxHR (Avid, edición) ----------------
+        Make("DNxHR LB · 1080p25 (offline)", PresetCategory.DnxHd, "Low Bandwidth: 1920×1080p25 4:2:2 8-bit, intra, MOV, PCM. Edición offline/proxy.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrLb; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("DNxHR HQX · 1080p25 10-bit", PresetCategory.DnxHd, "1920×1080p25 4:2:2 10-bit, intra, MOV, audio PCM.", p =>
+        Make("DNxHR SQ · 1080p25", PresetCategory.DnxHd, "Standard Quality: 1920×1080p25 4:2:2 8-bit, intra, MOV, PCM.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrSq; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("DNxHD · 1080i25 (MXF)", PresetCategory.DnxHd, "1920×1080i25 4:2:2 8-bit, MXF OP1A, audio PCM.", p =>
+        Make("DNxHR HQ · 1080p25", PresetCategory.DnxHd, "High Quality: 1920×1080p25 4:2:2 8-bit, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("DNxHR HQX · 1080p25 10-bit", PresetCategory.DnxHd, "High Quality 10-bit: 1920×1080p25 4:2:2, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.DnxHrHqx; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("DNxHR 444 · 1080p25 10-bit", PresetCategory.DnxHd, "4:4:4 10-bit (grading/masterización): 1920×1080p25, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.DnxHr444; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("DNxHR HQ · 1080i25 (MXF)", PresetCategory.DnxHd, "1920×1080i25 4:2:2 8-bit, MXF OP1A, audio PCM (entrega broadcast).", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.ScanType = ScanType.InterlacedTff;
-          p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
 
-        // ---------------- ProRes ----------------
-        Make("ProRes 422 HQ · 1080p25", PresetCategory.ProRes, "1920×1080p25 4:2:2 10-bit, MOV, audio PCM.", p =>
+        // ---------------- Apple ProRes (edición) ----------------
+        Make("ProRes 422 Proxy · 1080p25", PresetCategory.ProRes, "Proxy (offline): 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResProxy; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 422 LT · 1080p25", PresetCategory.ProRes, "Ligero: 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResLt; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 422 · 1080p25", PresetCategory.ProRes, "Estándar: 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResStandard; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 422 HQ · 1080p25", PresetCategory.ProRes, "Alta calidad: 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 4444 · 1080p25", PresetCategory.ProRes, "4:4:4 10-bit (grading, soporta alfa): 1920×1080p25, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.ProRes4444; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 4444 XQ · 1080p25", PresetCategory.ProRes, "4:4:4 10-bit máxima calidad: 1920×1080p25, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.ProRes4444Xq; p.AudioCodec = AudioCodec.Pcm; }),
 
         Make("ProRes 422 HQ · 4K 2160p25", PresetCategory.ProRes, "3840×2160p25 4:2:2 10-bit, MOV, audio PCM.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 3840; p.Height = 2160;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
 
         // ---------------- XDCAM ----------------
         Make("XDCAM HD422 · 1080i25 50 Mbps", PresetCategory.Xdcam, "MPEG-2 4:2:2 50 Mbps CBR, MXF, audio PCM (estándar broadcast).", p =>
@@ -104,7 +136,7 @@ public static class PresetCatalog
 
         Make("MXF OP1A · DNxHR HQ 1080p25", PresetCategory.Mxf, "MXF OP1A con DNxHR HQ 4:2:2, audio PCM.", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq; p.AudioCodec = AudioCodec.Pcm; }),
 
         // ---------------- AVI ----------------
         Make("AVI · H.264 1080p25", PresetCategory.Avi, "AVI con H.264 1920×1080p25, 20 Mbps, audio PCM.", p =>
@@ -151,7 +183,7 @@ public static class PresetCatalog
 
         Make("Archive · ProRes 422 1080p", PresetCategory.Archive, "Masterización: ProRes 422 HQ 1080p25 10-bit, MOV, PCM.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.AudioCodec = AudioCodec.Pcm; }),
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
 
         // ---------------- Streaming (IPTV / RTMP / SRT) ----------------
         Make("IPTV · H.264 720p TS (UDP)", PresetCategory.Streaming, "1280×720p25, 4 Mbps CBR, MPEG-TS para UDP/IPTV.", p =>

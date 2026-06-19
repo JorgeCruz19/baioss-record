@@ -48,6 +48,10 @@ public sealed class EncodingPreset
     public double MaxBitrateMbps { get; set; }      // 0 = sin límite explícito
     public int GopSize { get; set; } = 50;
     public PixelFormat PixelFormat { get; set; } = PixelFormat.Auto;
+
+    /// <summary>Perfil dentro de la familia del códec intra (ProRes/DNxHR). Auto = predeterminado.</summary>
+    public EncoderProfile EncoderProfile { get; set; } = EncoderProfile.Auto;
+
     public ScanType ScanType { get; set; } = ScanType.Progressive;
     public RateControlMode RateControl { get; set; } = RateControlMode.ConstantBitrate;
     public int Quality { get; set; } = 23;
@@ -86,6 +90,7 @@ public sealed class EncodingPreset
         TargetResolution = Width is { } w && Height is { } h ? new Resolution(w, h) : null,
         OutputFrameRate = FrameRateNum > 0 ? new FrameRate(FrameRateNum, FrameRateDen) : null,
         PixelFormat = PixelFormat,
+        EncoderProfile = EncoderProfile,
         ScanType = ScanType,
         RateControl = RateControl,
         Quality = Quality,

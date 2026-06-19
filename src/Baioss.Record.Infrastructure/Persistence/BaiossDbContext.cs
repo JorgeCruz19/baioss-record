@@ -39,6 +39,12 @@ public sealed class BaiossDbContext(DbContextOptions<BaiossDbContext> options)
         v => v.BitsPerSecond,
         v => new Bitrate(v));
 
+    // MaxBitrate es opcional (Bitrate?): null = sin límite explícito. Necesita su propio
+    // conversor nullable porque Bitrate es un struct y EF no lo mapea por convención.
+    private static readonly ValueConverter<Bitrate?, long?> NullableBitrateConverter = new(
+        v => v.HasValue ? v.Value.BitsPerSecond : null,
+        v => v.HasValue ? new Bitrate(v.Value) : null);
+
     private static readonly ValueConverter<Timecode, string> TimecodeConverter = new(
         v => v.ToString(),
         v => Timecode.Parse(v));
@@ -87,6 +93,7 @@ public sealed class BaiossDbContext(DbContextOptions<BaiossDbContext> options)
         {
             e.Property(p => p.VideoBitrate).HasConversion(BitrateConverter);
             e.Property(p => p.AudioBitrate).HasConversion(BitrateConverter);
+            e.Property(p => p.MaxBitrate).HasConversion(NullableBitrateConverter);
             e.Property(p => p.TargetResolution).HasConversion(ResolutionConverter);
             e.Property(p => p.OutputFrameRate).HasConversion(FrameRateConverter);
             // Sub-políticas y destinos de streaming se persisten en Fase 2 (owned/JSON dedicado).
