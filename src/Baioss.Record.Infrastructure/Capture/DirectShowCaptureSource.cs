@@ -17,9 +17,13 @@ public sealed class DirectShowCaptureSource(InputSource definition) : ICaptureSo
 
     public Task OpenAsync(CancellationToken ct = default)
     {
+        // Solo hay pista de audio si se emparejó un dispositivo de audio DirectShow (va en :audio=…).
+        // Muchas cámaras y la "OBS Virtual Camera" son SOLO-VÍDEO; declararlo evita pedirle a FFmpeg
+        // una salida de medición sin streams (que abortaría el proceso, y con él preview y grabación).
+        bool hasAudio = Definition.Parameters.TryGetValue("audio", out var audio) && !string.IsNullOrWhiteSpace(audio);
         CurrentSignal = new SignalInfo(SignalState.Locked,
             Definition.ExpectedResolution, Definition.ExpectedFrameRate,
-            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null);
+            hasAudio ? Definition.ExpectedAudioLayout : null, HasAudio: hasAudio, Timecode: null, Bitrate: null);
         SignalChanged?.Invoke(this, CurrentSignal);
         return Task.CompletedTask;
     }

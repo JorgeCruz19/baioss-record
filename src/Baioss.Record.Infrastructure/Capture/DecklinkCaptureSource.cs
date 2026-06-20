@@ -17,7 +17,17 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
 
     public Task OpenAsync(CancellationToken ct = default)
     {
-        // TODO: abrir el dispositivo vía DeckLink SDK / ffprobe y poblar CurrentSignal.
+        // Marca LOCK al asignar el dispositivo (igual que DirectShow y el archivo demo), de modo que el
+        // canal habilite el botón Grabar. El SDI lleva audio embebido y el demuxer decklink siempre
+        // expone una pista de audio (silencio si la fuente no la trae), así que se declara audio para
+        // habilitar medidores y grabar la pista.
+        // NOTA: es un lock optimista al asignar; la detección real de presencia/ausencia de señal y de
+        // resolución/fps vía DeckLink SDK / ffprobe queda pendiente (no puede sondear un dispositivo en
+        // vivo exclusivo sin chocar con el proceso de captura).
+        CurrentSignal = new SignalInfo(SignalState.Locked,
+            Definition.ExpectedResolution, Definition.ExpectedFrameRate,
+            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null);
+        SignalChanged?.Invoke(this, CurrentSignal);
         return Task.CompletedTask;
     }
 

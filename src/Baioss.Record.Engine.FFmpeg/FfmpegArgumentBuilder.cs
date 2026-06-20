@@ -159,6 +159,10 @@ public sealed class FfmpegArgumentBuilder
         if (string.IsNullOrEmpty(_previewSink))
             throw new InvalidOperationException("Falta el destino de preview (WithPreviewSink).");
 
+        // Una fuente sin pista de audio (cámara/dispositivo solo-vídeo) no admite el medidor ebur128
+        // ni un mapeo de audio: un output solo-audio sin streams haría abortar a FFmpeg.
+        bool hasAudio = source.CurrentSignal.HasAudio;
+
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
         args.AddRange(source.BuildInputArguments());
@@ -199,10 +203,15 @@ public sealed class FfmpegArgumentBuilder
         args.Add("-f"); args.Add("rawvideo");
         args.Add(_previewSink);
 
-        // Salida B — medidores VU: ebur128 sobre el audio de entrada, descartado a null.
-        args.Add("-map"); args.Add("0:a:0?");
-        args.Add("-af"); args.Add("ebur128=peak=true");
-        args.Add("-f"); args.Add("null"); args.Add("-");
+        // Salida B — medidores VU: ebur128 sobre el audio de entrada, descartado a null. Solo si la
+        // fuente declara audio: sin pista, este output quedaría sin streams y FFmpeg abortaría todo
+        // (preview incluido). Un dispositivo solo-vídeo simplemente no alimenta medidores.
+        if (hasAudio)
+        {
+            args.Add("-map"); args.Add("0:a:0?");
+            args.Add("-af"); args.Add("ebur128=peak=true");
+            args.Add("-f"); args.Add("null"); args.Add("-");
+        }
 
         // Salida C — grabación (solo cuando se graba).
         if (recording)
@@ -218,9 +227,9 @@ public sealed class FfmpegArgumentBuilder
             else
             {
                 args.Add("-map"); args.Add(recLabel);
-                args.Add("-map"); args.Add("0:a:0?");
+                if (hasAudio) { args.Add("-map"); args.Add("0:a:0?"); }
                 args.AddRange(VideoEncoderArgs(profile));
-                args.AddRange(AudioEncoderArgs(profile));
+                if (hasAudio) args.AddRange(AudioEncoderArgs(profile));
                 if (profile.OutputFrameRate is { } fr)
                 {
                     args.Add("-r");

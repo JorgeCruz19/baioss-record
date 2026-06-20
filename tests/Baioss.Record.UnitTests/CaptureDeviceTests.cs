@@ -76,6 +76,32 @@ public class CaptureDeviceTests
         Assert.DoesNotContain(formats, f => f.Code == "format_code");
     }
 
+    // Salida REAL de un build reciente (git-2026) para una DeckLink Duo: las líneas NO llevan el
+    // prefijo de log "[Blackmagic DeckLink indev @ ...]". El parser debe anclarse en la descripción.
+    private const string DecklinkFormatsNoPrefixSample = """
+        Supported formats for 'DeckLink Duo (1)':
+                format_code     description
+                ntsc            720x486 at 30000/1001 fps (interlaced, lower field first)
+                pal             720x576 at 25000/1000 fps (interlaced, upper field first)
+                23ps            1920x1080 at 24000/1001 fps
+                Hp59            1920x1080 at 60000/1001 fps
+                Hi50            1920x1080 at 25000/1000 fps (interlaced, upper field first)
+                hp60            1280x720 at 60000/1000 fps
+        """;
+
+    [Fact]
+    public void ParseDecklinkFormats_HandlesOutputWithoutLogPrefix()
+    {
+        var formats = FfmpegDeviceEnumerator.ParseDecklinkFormats(DecklinkFormatsNoPrefixSample);
+
+        Assert.Equal(6, formats.Count); // 6 modos; ni la cabecera ni "Supported formats for…" entran
+        Assert.Contains(formats, f => f.Code == "Hp59" && f.Description.StartsWith("1920x1080"));
+        Assert.Contains(formats, f => f.Code == "23ps" && f.Description.StartsWith("1920x1080")); // código que empieza por dígitos
+        Assert.Contains(formats, f => f.Code == "hp60" && f.Description.StartsWith("1280x720"));   // 720p
+        Assert.Contains(formats, f => f.Code == "ntsc" && f.Description.StartsWith("720x486"));
+        Assert.DoesNotContain(formats, f => f.Code == "format_code");
+    }
+
     [Fact]
     public void ParseDecklink_ExtractsQuotedDeviceNames()
     {

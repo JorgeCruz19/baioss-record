@@ -1,6 +1,7 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
+using Baioss.Record.Application.Capture;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.UnitTests.Fakes;
 using Xunit;
@@ -203,10 +204,15 @@ public class FfmpegArgumentBuilderTests
 
     // --- Pipeline en vivo: preview + grabación en un solo proceso ---
 
-    private static string BuildLive(RecordingProfile profile, bool recording)
+    private static string BuildLive(RecordingProfile profile, bool recording, bool hasAudio = true)
     {
+        var source = new FakeCaptureSource("C:/clips/in.mp4");
+        // La fuente declara (o no) pista de audio: un dispositivo solo-vídeo (cámara/OBS) no tiene
+        // audio que medir ni grabar, y el builder debe omitir esas salidas en consecuencia.
+        source.Emit(new SignalInfo(SignalState.Locked, new Resolution(1920, 1080), new FrameRate(25, 1),
+            hasAudio ? AudioLayout.Stereo : null, HasAudio: hasAudio, Timecode: null, Bitrate: null));
         var b = new FfmpegArgumentBuilder()
-            .From(new FakeCaptureSource("C:/clips/in.mp4"))
+            .From(source)
             .Using(profile).ForChannel("TST").ToDirectory("C:/out")
             .WithPreviewSink("tcp://127.0.0.1:9001");
         return string.Join(' ', b.BuildLive(recording, 640, 360));
@@ -239,5 +245,32 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("-y", joined);                                      // archivo de salida
         Assert.Contains("TST_", joined);                                    // nombre de la grabación
         Assert.Contains("ebur128=peak=true", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PreviewOnly_NoAudioSource_KeepsPreviewButOmitsMeter()
+    {
+        var joined = BuildLive(SoftwareMp4(), recording: false, hasAudio: false);
+
+        // El preview sigue funcionando (es la regresión que reportó el usuario con OBS solo-vídeo)…
+        Assert.Contains("[0:v]scale=640:360,format=bgra[pv]", joined);
+        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        // …pero no se pide medición ni un output solo-audio sin streams (que abortaría todo FFmpeg).
+        Assert.DoesNotContain("ebur128", joined);
+        Assert.DoesNotContain("-f null", joined);
+        Assert.DoesNotContain("0:a:0?", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Recording_NoAudioSource_RecordsVideoOnly()
+    {
+        var joined = BuildLive(SoftwareMp4(), recording: true, hasAudio: false);
+
+        Assert.Contains("split=2[vrec][vprev]", joined);    // sigue bifurcando a preview + grabación
+        Assert.Contains("-c:v libx264", joined);            // graba vídeo…
+        Assert.Contains("-y", joined);
+        Assert.DoesNotContain("-c:a", joined);              // …sin pista ni códec de audio
+        Assert.DoesNotContain("0:a:0?", joined);
+        Assert.DoesNotContain("ebur128", joined);
     }
 }

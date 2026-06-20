@@ -159,11 +159,19 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             AudioDevices.Add(InputDeviceOption.NoAudio);
             SeedFileOption();
 
+            int decklinks = 0, decklinkWithModes = 0;
             foreach (var d in await _devices.DiscoverAsync(InputType.DecklinkSdi))
             {
+                decklinks++;
                 var formats = new List<DeviceFormat> { DeviceFormat.Auto };
-                try { formats.AddRange(await _devices.DiscoverFormatsAsync(InputType.DecklinkSdi, d.Uri ?? d.Name)); }
-                catch { /* sin modos detectables: queda solo "Automático" */ }
+                try
+                {
+                    var modes = await _devices.DiscoverFormatsAsync(InputType.DecklinkSdi, d.Uri ?? d.Name);
+                    formats.AddRange(modes);
+                    if (modes.Count > 0) decklinkWithModes++;
+                    else Serilog.Log.Warning("DeckLink «{Device}»: -list_formats no devolvió modos (¿tarjeta en uso por otra captura, o driver < 12.9?).", d.Name);
+                }
+                catch (Exception ex) { Serilog.Log.Warning(ex, "DeckLink «{Device}»: fallo al detectar formatos.", d.Name); }
                 VideoDevices.Add(new InputDeviceOption { Label = $"DeckLink — {d.Name}", Type = InputType.DecklinkSdi, DeviceId = d.Uri, Id = d.Id, Formats = formats });
             }
             foreach (var d in await _devices.DiscoverAsync(InputType.DirectShow))
@@ -172,9 +180,14 @@ public sealed partial class InputsManagerViewModel : ObservableObject
                 AudioDevices.Add(a);
 
             int cards = VideoDevices.Count(d => d.Type is not InputType.File);
+            // Aviso si hay tarjetas DeckLink pero ninguna expuso sus modos: el desplegable quedaría solo
+            // con «Automático». Causa típica: la tarjeta ya está abierta por la captura del canal.
+            string modesHint = decklinks > 0 && decklinkWithModes == 0
+                ? " · DeckLink: no se detectaron modos (cierra cualquier captura que use la tarjeta y reintenta; revisa logs)."
+                : "";
             StatusMessage = cards == 0
                 ? "No se detectaron tarjetas ni cámaras. (¿Drivers DeckLink instalados? ¿cámara conectada?)"
-                : $"{cards} entrada(s) de vídeo y {AudioDevices.Count - 1} de audio detectadas.";
+                : $"{cards} entrada(s) de vídeo y {AudioDevices.Count - 1} de audio detectadas." + modesHint;
         }
         catch (Exception ex)
         {

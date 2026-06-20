@@ -5,6 +5,8 @@ obj/
 *.user
 *.suo
 /src/Baioss.Record.Engine.FFmpeg/FFmpeg/*
+## Salida de release (carpeta portable self-contained)
+publish/
 ## Logs y artefactos de runtime
 logs/
 recordings/

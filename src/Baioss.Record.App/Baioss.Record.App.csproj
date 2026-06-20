@@ -10,6 +10,10 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>Baioss.Record.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- RID soportado para publicar el release portable (self-contained). -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Trim de recursos satélite: el release solo necesita el idioma neutro. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <!-- La app aloja Kestrel (API REST + WebSocket) además de la UI WPF: necesita el shared framework de ASP.NET Core. -->
@@ -33,5 +37,37 @@
     <PackageReference Include="Vortice.Direct3D9" Version="3.8.3" />
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
   </ItemGroup>
+
+  <!-- ============================================================
+       Empaquetado de release: copia los binarios de FFmpeg (ffmpeg + ffprobe;
+       ffplay NO se usa) y el clip demo DENTRO de la carpeta publicada, en
+       tools\, junto al .exe. Así App.FindUpwards("tools") los localiza en el
+       equipo destino y ancla ahí data\, logs\ y recordings\.
+       Solo corre en 'dotnet publish' (no afecta a las compilaciones normales).
+       Si faltan los binarios (tools\ffmpeg\ está en .gitignore), avisa pero no
+       falla: el release quedaría en modo simulado hasta copiarlos.
+       ============================================================ -->
+  <PropertyGroup>
+    <RepoRoot>$(MSBuildThisFileDirectory)..\..\</RepoRoot>
+  </PropertyGroup>
+
+  <Target Name="BundleToolsOnPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_FfmpegBin Include="$(RepoRoot)tools\ffmpeg\ffmpeg.exe" />
+      <_FfmpegBin Include="$(RepoRoot)tools\ffmpeg\ffprobe.exe" />
+      <_FfmpegBin Include="$(RepoRoot)tools\ffmpeg\LICENSE" />
+      <_DemoClip Include="$(RepoRoot)tools\test\clip.mp4" />
+    </ItemGroup>
+
+    <Warning Condition="!Exists('$(RepoRoot)tools\ffmpeg\ffmpeg.exe')"
+             Text="FFmpeg no encontrado en tools\ffmpeg\ffmpeg.exe: el release se publicará SIN FFmpeg (modo simulado). Copia ffmpeg.exe y ffprobe.exe ahí y vuelve a publicar." />
+
+    <Copy SourceFiles="@(_FfmpegBin)" DestinationFolder="$(PublishDir)tools\ffmpeg"
+          SkipUnchangedFiles="true" Condition="Exists('%(FullPath)')" />
+    <Copy SourceFiles="@(_DemoClip)" DestinationFolder="$(PublishDir)tools\test"
+          SkipUnchangedFiles="true" Condition="Exists('%(FullPath)')" />
+
+    <Message Importance="high" Text="Release: FFmpeg + clip demo empaquetados en $(PublishDir)tools\" />
+  </Target>
 
 </Project>

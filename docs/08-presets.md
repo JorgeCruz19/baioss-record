@@ -45,7 +45,7 @@ Barra de herramientas: **Nuevo · Editar · Duplicar · Eliminar · Importar · 
 
 > El campo `AudioOnly` produce comandos sin video (`-vn`) para los presets de la categoría Audio.
 
-## Catálogo de fábrica (32 presets)
+## Catálogo de fábrica (64 presets)
 
 [`PresetCatalog`](../src/Baioss.Record.Application/Presets/PresetCatalog.cs) — todos verificados
 grabando material real (ver más abajo).
@@ -53,12 +53,12 @@ grabando material real (ver más abajo).
 | Categoría | Presets |
 |-----------|---------|
 | **MPEG-2** | PS SD PAL · TS HD 1080i25 · TS SD PAL |
-| **H.264** | HD 720p50 · FullHD 1080p25 · 1080i25 TS · 4K UHD 2160p50 · SD PAL |
-| **H.265/HEVC** | FullHD 1080p25 · 4K UHD 2160p50 10-bit |
-| **DNxHD/DNxHR** | DNxHR HQ 1080p25 · DNxHR HQX 10-bit · DNxHD 1080i25 (MXF) |
-| **ProRes** | 422 HQ 1080p25 · 422 HQ 4K 2160p25 |
+| **H.264** | HD 720p50 · FullHD 1080p25 · 1080i25 TS · 4K UHD 2160p50 · SD PAL · **59.94/60/50:** 1080p59.94 · 1080p60 · 1080p50 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080i59.94 TS · 4K 2160p59.94 |
+| **H.265/HEVC** | FullHD 1080p25 · 4K UHD 2160p50 10-bit · **59.94:** 1080p59.94 · 4K 2160p59.94 10-bit |
+| **DNxHD/DNxHR** | DNxHR HQ 1080p25 · DNxHR HQX 10-bit · DNxHD 1080i25 (MXF) · DNxHR HQ 1080p59.94 (MOV) |
+| **ProRes** | 422 HQ 1080p25 · 422 HQ 4K 2160p25 · 422 HQ 1080p59.94 |
 | **XDCAM** | HD422 1080i25 50 Mbps · HD 1080i25 35 Mbps |
-| **MXF OP1A** | XDCAM HD422 50 · DNxHR HQ 1080p25 |
+| **MXF OP1A** | XDCAM HD422 50 (1080i25) · DNxHR HQ 1080p25 · **59.94 (NTSC):** XDCAM HD422 1080i59.94 · 1080p59.94 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080p60 · DNxHR HQ 1080i59.94 · DNxHR HQ 1080p59.94 · DNxHR HQX 1080p59.94 10-bit · **50 Hz (PAL):** XDCAM HD422 1080p50 · 720p50 · DNxHR HQ 1080p50 |
 | **AVI** | H.264 1080p25 |
 | **MKV** | H.264 1080p25 · HEVC 4K 10-bit |
 | **Audio** | WAV PCM 48k 24-bit · AAC 256k (M4A) · MP3 320k |
@@ -84,6 +84,11 @@ ffmpeg ... -filter_complex "[0:v]scale=1920:1080,setfield=mode=tff[mainout]" ...
   -c:v mpeg2video -b:v 50000000 -minrate 50000000 -maxrate 50000000 -bufsize 100000000 -g 12 \
   -flags +ilme+ildct -pix_fmt yuv422p -c:a pcm_s24le -ar 48000 -ac 2 -field_order tt -f mxf -y <salida>
 
+# MXF · XDCAM HD422 1080p59.94 50 (60000/1001 progresivo)
+ffmpeg ... -filter_complex "[0:v]scale=1920:1080[mainout]" -map "[mainout]" -map 0:a? \
+  -c:v mpeg2video -b:v 50000000 -minrate 50000000 -maxrate 50000000 -bufsize 100000000 -g 15 \
+  -pix_fmt yuv422p -c:a pcm_s24le -ar 48000 -ac 2 -r 60000/1001 -f mxf -y <salida>
+
 # Audio · WAV PCM 48k 24-bit (solo audio)
 ffmpeg ... -i <entrada> -vn -map 0:a? -c:a pcm_s24le -ar 48000 -ac 2 -af ebur128=peak=true -f wav -y <salida>
 ```
@@ -92,7 +97,7 @@ ffmpeg ... -i <entrada> -vn -map 0:a? -c:a pcm_s24le -ar 48000 -ac 2 -af ebur128
 
 ```mermaid
 flowchart TD
-    CAT["PresetCatalog<br/>(32 built-in)"] --> STORE["IPresetStore / JsonPresetStore<br/>built-in + custom (JSON)"]
+    CAT["PresetCatalog<br/>(64 built-in)"] --> STORE["IPresetStore / JsonPresetStore<br/>built-in + custom (JSON)"]
     STORE --> VM["PresetManagerViewModel<br/>filtrar · CRUD · favoritos · import/export"]
     VM -->|ToProfile| PROF["RecordingProfile"]
     PROF --> BLD["FfmpegArgumentBuilder<br/>línea de comandos / argv"]
@@ -137,14 +142,17 @@ recibe una identidad nueva como personalizado.
 ## Verificación
 
 El smoke test [`tools/Baioss.Record.SmokeTest`](../tools/Baioss.Record.SmokeTest/Program.cs)
-genera la línea de comandos de los 32 presets y **graba material real** con cada uno (≤ 1080p):
+genera la línea de comandos de los 64 presets y **graba material real** con cada uno (≤ 1080p;
+los 6 presets en 4K se omiten de la grabación):
 
 ```
-Resultado grabación: 28 OK, 0 fallidos.
+Resultado grabación: 58 OK, 0 fallidos.
 ```
 
-Cubre MPEG-2 PS/TS, H.264/265, DNxHR HQ/HQX, ProRes, XDCAM, MXF OP1A, AVI, MKV, WAV/AAC/MP3,
-Proxy, Archive e IPTV/RTMP/SRT; todos producen archivos válidos (verificados con `ffprobe`).
+Cubre MPEG-2 PS/TS, H.264/265 (incl. **familia de cadencias 59.94/60/50/29.97/23.98** en MP4/TS),
+DNxHR HQ/HQX, ProRes, XDCAM, **MXF OP1A (familias 59.94 y 50 Hz: 1080i/1080p/720p en XDCAM HD422 y
+DNxHR)**, AVI, MKV, WAV/AAC/MP3, Proxy, Archive e IPTV/RTMP/SRT; todos producen archivos válidos
+(verificados con `ffprobe`).
 
 ## Extender el catálogo
 

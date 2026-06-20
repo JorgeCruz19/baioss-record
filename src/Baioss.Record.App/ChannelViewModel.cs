@@ -169,12 +169,29 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         };
         FormatText = status.Signal is { Resolution: { } r, FrameRate: { } f } ? $"{r} · {f}" : "—";
 
-        Timecode = status.Stats.Timecode.ToString();
-        FrameCount = status.Stats.FrameCount;
-        OutputFps = status.Stats.OutputFps;
-        DroppedFrames = status.Stats.DroppedFrames;
-        BitrateText = status.Stats.Bitrate.BitsPerSecond > 0 ? status.Stats.Bitrate.ToString() : "—";
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;
+
+        // FPS de salida es del preview en vivo (el motor unificado siempre tiene un FFmpeg de preview
+        // activo): legítimo mostrarlo en cuanto hay señal.
+        OutputFps = status.Stats.OutputFps;
+
+        // Timer (timecode), bitrate, cuadros y dropped pertenecen a la GRABACIÓN. Como ese mismo
+        // proceso de preview corre con -progress, avanzarían en reposo aunque no se grabe; se muestran
+        // solo durante REC/Pausa y en reposo se dejan en valores idle (el timer arranca de 0 al grabar).
+        if (IsRecording)
+        {
+            Timecode = status.Stats.Timecode.ToString();
+            FrameCount = status.Stats.FrameCount;
+            DroppedFrames = status.Stats.DroppedFrames;
+            BitrateText = status.Stats.Bitrate.BitsPerSecond > 0 ? status.Stats.Bitrate.ToString() : "—";
+        }
+        else
+        {
+            Timecode = "00:00:00:00";
+            FrameCount = 0;
+            DroppedFrames = 0;
+            BitrateText = "—";
+        }
 
         // Medidores: en modo real los conduce el audio del preview (ver OnPreviewAudio); aquí solo
         // se actualizan desde el status cuando NO hay preview (canal simulado).

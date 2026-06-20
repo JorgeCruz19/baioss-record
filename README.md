@@ -25,6 +25,7 @@ construido para entornos 24/7 (master control, productoras, ingest, estudios).
 | 06 | [API y seguridad](docs/06-api-seguridad.md) | REST, WebSocket, roles y auditoría |
 | 07 | [Roadmap](docs/07-roadmap.md) | MVP → Enterprise por fases |
 | 08 | [Presets de grabación](docs/08-presets.md) | Presets de encoding (Marsis-style): UI 3 paneles, catálogo, JSON |
+| 09 | [Publicación / Release](docs/09-release.md) | Empaquetado portable self-contained (win-x64), FFmpeg incluido |
 
 ---
 

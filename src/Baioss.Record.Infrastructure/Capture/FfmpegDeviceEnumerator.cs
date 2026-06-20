@@ -135,6 +135,8 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     private static partial Regex DecklinkDeviceRegex();
 
     // decklink -list_formats:  "[... @ ...]    Hp50   1920x1080 at 50/1 fps"  → code=Hp50, desc=1920x1080…
-    [GeneratedRegex(@"\]\s+(?<code>\S+)\s+(?<desc>\d+x\d+[^\r\n]*)")]
+    // Se ancla en la forma de la descripción (WxH … fps), no en el corchete del prefijo de log: así
+    // tolera variaciones del build (con/sin prefijo "[decklink @ 0x…]", tasas tipo 60000/1001 o 59.94).
+    [GeneratedRegex(@"(?<code>[A-Za-z0-9]+)\s+(?<desc>\d+x\d+\s+(?:at\s+)?[\d/.]+\s*fps[^\r\n]*)")]
     private static partial Regex DecklinkFormatRegex();
 }
