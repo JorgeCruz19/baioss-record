@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
 
 namespace Baioss.Record.Engine.FFmpeg;
@@ -12,7 +13,7 @@ namespace Baioss.Record.Engine.FFmpeg;
 ///
 /// Estrategia de salida:
 ///  - solo grabación  → salida directa (más simple y robusta);
-///  - con segmentación → muxer <c>segment</c> (strftime + reset_timestamps);
+///  - con segmentación → muxer <c>segment</c> (prefijo de tiempo + contador + reset_timestamps);
 ///  - con streaming    → muxer <c>tee</c> (grabación + N destinos comparten un encode);
 ///  - con proxy        → salida adicional escalada (split en filter_complex).
 ///
@@ -27,9 +28,24 @@ public sealed class FfmpegArgumentBuilder
     private string _proxyDirectory = ".";
     private string _channelKey = "A";
     private string _previewSink = "";
+    private bool _analyze = true;
+    private string? _baseName;
+    private int _segmentStartNumber = 1;
 
-    /// <summary>Ruta absoluta del archivo principal cuando NO hay segmentación.</summary>
+    // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
+    // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
+    private const string BlackDetect = "blackdetect=d=2:pix_th=0.10";
+    private const string FreezeDetect = "freezedetect=n=-60dB:d=2";
+    private const string SilenceDetect = "silencedetect=n=-50dB:d=2";
+
+    /// <summary>Ruta absoluta del archivo principal cuando NO hay segmentación (vacío si se segmenta).</summary>
     public string OutputFilePath { get; private set; } = "";
+
+    /// <summary>True si la última construcción produjo salida segmentada (muxer <c>segment</c>).</summary>
+    public bool IsSegmentedOutput { get; private set; }
+
+    /// <summary>Patrón glob de los archivos de segmento del canal (p. ej. <c>A_*.mov</c>) para vigilarlos.</summary>
+    public string SegmentFileGlob { get; private set; } = "";
 
     public FfmpegArgumentBuilder From(ICaptureSource source) { _source = source; return this; }
     public FfmpegArgumentBuilder Using(RecordingProfile profile) { _profile = profile; return this; }
@@ -39,6 +55,22 @@ public sealed class FfmpegArgumentBuilder
 
     /// <summary>Destino (URL FFmpeg, p. ej. <c>tcp://127.0.0.1:9001</c>) de los frames BGRA de preview.</summary>
     public FfmpegArgumentBuilder WithPreviewSink(string ffmpegUrl) { _previewSink = ffmpegUrl; return this; }
+
+    /// <summary>Inserta (o no) los filtros de análisis de señal (negro/congelado/silencio) en <see cref="BuildLive"/>.</summary>
+    public FfmpegArgumentBuilder WithSignalAnalysis(bool on) { _analyze = on; return this; }
+
+    /// <summary>
+    /// Nombre base del archivo (sin extensión) elegido por el operador (manual) o derivado de la
+    /// programación (<c>dd-MM-yyyy_Título</c>). <c>null</c> = nombre por defecto <c>{canal}_{fecha_hora}</c>.
+    /// Para salida segmentada el contador de segmento se añade como <c>_1, _2…</c> (1-based) en lugar del
+    /// prefijo de tiempo + <c>%03d</c>. El llamador es responsable de pasar un nombre ÚNICO (sin colisión).
+    /// </summary>
+    public FfmpegArgumentBuilder WithBaseName(string? name)
+    { _baseName = string.IsNullOrWhiteSpace(name) ? null : name.Trim(); return this; }
+
+    /// <summary>Número del PRIMER segmento (1-based). Permite numeración continua entre reinicios/slate.</summary>
+    public FfmpegArgumentBuilder WithSegmentStartNumber(int n)
+    { _segmentStartNumber = n < 1 ? 1 : n; return this; }
 
     public IReadOnlyList<string> Build()
     {
@@ -116,8 +148,7 @@ public sealed class FfmpegArgumentBuilder
         else
         {
             // Salida directa a un único archivo.
-            OutputFilePath = Path.Combine(_outputDirectory,
-                $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
+            OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
             // Medición de loudness/true-peak para los medidores VU (se emite por stderr).
             args.Add("-af"); args.Add("ebur128=peak=true");
             if (profile.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
@@ -159,6 +190,8 @@ public sealed class FfmpegArgumentBuilder
         if (string.IsNullOrEmpty(_previewSink))
             throw new InvalidOperationException("Falta el destino de preview (WithPreviewSink).");
 
+        IsSegmentedOutput = false;
+
         // Una fuente sin pista de audio (cámara/dispositivo solo-vídeo) no admite el medidor ebur128
         // ni un mapeo de audio: un output solo-audio sin streams haría abortar a FFmpeg.
         bool hasAudio = source.CurrentSignal.HasAudio;
@@ -167,7 +200,10 @@ public sealed class FfmpegArgumentBuilder
         args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
         args.AddRange(source.BuildInputArguments());
 
-        string previewChain = string.Create(CultureInfo.InvariantCulture, $"scale={previewWidth}:{previewHeight},format=bgra");
+        // El preview lleva, opcionalmente, los detectores de negro/congelado (pasan los frames sin
+        // alterarlos: solo registran marcas por stderr que se convierten en alarmas).
+        string analyze = _analyze ? $"{BlackDetect},{FreezeDetect}," : "";
+        string previewChain = string.Create(CultureInfo.InvariantCulture, $"scale={previewWidth}:{previewHeight},{analyze}format=bgra");
         var filter = new StringBuilder();
         string recLabel = "0:v:0";
 
@@ -209,7 +245,7 @@ public sealed class FfmpegArgumentBuilder
         if (hasAudio)
         {
             args.Add("-map"); args.Add("0:a:0?");
-            args.Add("-af"); args.Add("ebur128=peak=true");
+            args.Add("-af"); args.Add(_analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true");
             args.Add("-f"); args.Add("null"); args.Add("-");
         }
 
@@ -217,7 +253,6 @@ public sealed class FfmpegArgumentBuilder
         if (recording)
         {
             var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
-            OutputFilePath = Path.Combine(_outputDirectory, $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
 
             if (profile.AudioOnly)
             {
@@ -240,13 +275,161 @@ public sealed class FfmpegArgumentBuilder
                     ScanType.InterlacedTff => "tt", ScanType.InterlacedBff => "bb", _ => null
                 };
                 if (fieldOrder is not null) { args.Add("-field_order"); args.Add(fieldOrder); }
-                if (profile.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
-                { args.Add("-movflags"); args.Add("+faststart"); }
             }
-            args.Add("-f"); args.Add(recMux);
-            args.Add("-y"); args.Add(OutputFilePath);
+            args.AddRange(RecordOutputTail(profile, recMux, recExt));
         }
 
+        return args;
+    }
+
+    /// <summary>
+    /// Cola de la salida de grabación: un único archivo (con <c>+faststart</c> para MP4/MOV) o, si el
+    /// perfil define segmentación, el muxer <c>segment</c> (cada segmento es un archivo COMPLETO, de modo
+    /// que un fallo/cuelgue solo pierde el segmento en curso, no toda la grabación). Fija
+    /// <see cref="OutputFilePath"/> / <see cref="IsSegmentedOutput"/> / <see cref="SegmentFileGlob"/>.
+    /// </summary>
+    private IEnumerable<string> RecordOutputTail(RecordingProfile p, string recMux, string recExt)
+    {
+        if (p.Segmentation is { Trigger: SegmentTrigger.Duration or SegmentTrigger.Size or SegmentTrigger.WallClock } seg)
+        {
+            IsSegmentedOutput = true;
+            OutputFilePath = "";
+            var (pattern, glob) = SegmentNameParts(recExt);
+            SegmentFileGlob = glob;
+            long seconds = SegmentSeconds(p, seg);
+            // Con nombre dado: «{base}_1, _2…» (1-based, sin relleno) con número inicial CONTINUO entre
+            // reinicios/slate (lo fija el motor). Sin nombre (legado): «{canal}_{fecha_hora}_%03d».
+            // Nota: combinar `-strftime 1` con %03d rompe la cabecera del muxer (mpegts: "Could not write
+            // header"); reset_timestamps deja cada segmento empezando en 0.
+            var a = new List<string>
+            {
+                "-f", "segment",
+                "-segment_time", seconds.ToString(CultureInfo.InvariantCulture),
+                "-segment_format", recMux,
+                "-reset_timestamps", "1",
+            };
+            if (_baseName is not null) { a.Add("-segment_start_number"); a.Add(_segmentStartNumber.ToString(CultureInfo.InvariantCulture)); }
+            if (seg.Trigger is SegmentTrigger.WallClock) { a.Add("-segment_atclocktime"); a.Add("1"); }
+            a.Add("-y"); a.Add(pattern);
+            return a;
+        }
+
+        OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
+        var single = new List<string>();
+        if (p.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
+        { single.Add("-movflags"); single.Add("+faststart"); }
+        single.Add("-f"); single.Add(recMux);
+        single.Add("-y"); single.Add(OutputFilePath);
+        return single;
+    }
+
+    /// <summary>
+    /// Duración de cada segmento en segundos. Para corte por tamaño se deriva del bitrate
+    /// (tamaño·8 ÷ bps), ya que el muxer <c>segment</c> corta por tiempo, no por bytes. Mínimo 1 s.
+    /// </summary>
+    private static long SegmentSeconds(RecordingProfile p, SegmentationPolicy seg)
+    {
+        if (seg.Trigger is SegmentTrigger.Size && seg.MaxBytes is { } bytes && bytes > 0)
+        {
+            long bps = (p.MaxBitrate ?? p.VideoBitrate).BitsPerSecond + p.AudioBitrate.BitsPerSecond;
+            if (bps > 0) return Math.Max(1, bytes * 8 / bps);
+        }
+        return Math.Max(1, (long)(seg.Duration ?? TimeSpan.FromMinutes(15)).TotalSeconds);
+    }
+
+    /// <summary>Nombre del archivo único (con extensión): el base elegido o, por defecto, {canal}_{fecha_hora}.</summary>
+    private string SingleFileName(string ext) => $"{ResolvedBase()}.{ext}";
+
+    /// <summary>
+    /// Patrón del muxer <c>segment</c> y su glob asociado, coherentes entre sí. Con nombre dado el contador
+    /// es <c>_%d</c> (1-based, lo completa el muxer); sin nombre, el legado <c>_%03d</c>.
+    /// </summary>
+    private (string Pattern, string Glob) SegmentNameParts(string ext)
+    {
+        string baseName = ResolvedBase();
+        string counter = _baseName is not null ? "%d" : "%03d";
+        // Glob de vigilancia: con nombre dado, específico ({base}_*); sin nombre (legado), amplio por canal
+        // ({canal}_*), porque el prefijo lleva fecha/hora y se siembran los anteriores como ya emitidos.
+        string glob = _baseName is not null ? $"{_baseName}_*.{ext}" : $"{_channelKey}_*.{ext}";
+        return (Path.Combine(_outputDirectory, $"{baseName}_{counter}.{ext}"), glob);
+    }
+
+    /// <summary>Base del nombre: la elegida (manual/programada) o, en su defecto, {canal}_{fecha_hora}.</summary>
+    private string ResolvedBase() => _baseName ?? $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}";
+
+    /// <summary>
+    /// Argv de la CARTA DE AJUSTE (slate): al perder la señal en vivo durante la grabación, sustituye la
+    /// entrada del dispositivo por barras SMPTE + silencio generados con <c>lavfi</c>, conservando las
+    /// MISMAS salidas (preview + medidores + grabación) y la misma resolución/tasa de destino. Así la
+    /// grabación continúa (un nuevo segmento) sin romper la base de tiempo; las barras llevan el rótulo
+    /// «SIN SEÑAL» como evidencia. Pensado para fuentes de vídeo; se reanuda la fuente al volver la señal.
+    /// </summary>
+    public IReadOnlyList<string> BuildSlate(bool recording, int previewWidth, int previewHeight)
+    {
+        var profile = _profile ?? throw new InvalidOperationException("Falta el perfil.");
+        if (string.IsNullOrEmpty(_previewSink))
+            throw new InvalidOperationException("Falta el destino de preview (WithPreviewSink).");
+
+        IsSegmentedOutput = false;
+
+        // Resolución/tasa del slate = las de la grabación, para que sus segmentos concatenen con los de
+        // la fuente real sin saltos de formato.
+        var res = profile.TargetResolution ?? _source?.CurrentSignal.Resolution ?? Resolution.Hd1080;
+        var rate = profile.OutputFrameRate ?? _source?.CurrentSignal.FrameRate ?? FrameRate.P25;
+        string size = string.Create(CultureInfo.InvariantCulture, $"{res.Width}x{res.Height}");
+        string r = string.Create(CultureInfo.InvariantCulture, $"{rate.Numerator}/{rate.Denominator}");
+
+        var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
+        // Entradas generadas: barras de ajuste (0:v) + silencio (1:a), con base de tiempo continua.
+        args.Add("-f"); args.Add("lavfi");
+        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"smptebars=size={size}:rate={r}"));
+        args.Add("-f"); args.Add("lavfi");
+        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"anullsrc=channel_layout=stereo:sample_rate={profile.AudioSampleRate}"));
+
+        string label = "drawtext=text='SIN SEÑAL':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:" +
+                       "x=(w-text_w)/2:y=h*0.12";
+        string previewChain = string.Create(CultureInfo.InvariantCulture, $"scale={previewWidth}:{previewHeight},format=bgra");
+
+        var filter = new StringBuilder();
+        string recLabel;
+        if (recording)
+        {
+            filter.Append(CultureInfo.InvariantCulture, $"[0:v]{label},split=2[vrec][vprev];");
+            filter.Append(CultureInfo.InvariantCulture, $"[vprev]{previewChain}[pv]");
+            recLabel = "[vrec]";
+        }
+        else
+        {
+            filter.Append(CultureInfo.InvariantCulture, $"[0:v]{label},{previewChain}[pv]");
+            recLabel = "[0:v]";
+        }
+        args.Add("-filter_complex"); args.Add(filter.ToString());
+
+        // Salida A — preview de las barras.
+        args.Add("-map"); args.Add("[pv]");
+        args.Add("-f"); args.Add("rawvideo");
+        args.Add(_previewSink);
+
+        // Salida B — medidores sobre el silencio (marcará -inf; sin silencedetect para no duplicar alarma).
+        args.Add("-map"); args.Add("1:a:0");
+        args.Add("-af"); args.Add("ebur128=peak=true");
+        args.Add("-f"); args.Add("null"); args.Add("-");
+
+        // Salida C — grabación del slate (mismo encoder/segmentación que la grabación normal).
+        if (recording)
+        {
+            var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
+            args.Add("-map"); args.Add(recLabel);
+            args.Add("-map"); args.Add("1:a:0");
+            args.AddRange(VideoEncoderArgs(profile));
+            args.AddRange(AudioEncoderArgs(profile));
+            if (profile.OutputFrameRate is { } fr)
+            {
+                args.Add("-r");
+                args.Add(string.Create(CultureInfo.InvariantCulture, $"{fr.Numerator}/{fr.Denominator}"));
+            }
+            args.AddRange(RecordOutputTail(profile, recMux, recExt));
+        }
         return args;
     }
 
@@ -321,6 +504,19 @@ public sealed class FfmpegArgumentBuilder
             list.AddRange(new[] { "-g", gop, "-bf", "0" });
             if (p.ClosedGop) list.Add("-no-scenecut");
         }
+        else if (p.VideoCodec is VideoCodec.H264Qsv or VideoCodec.H264Amf)
+        {
+            // GPU INTEGRADA (Intel QuickSync / AMD AMF): H.264 por bitrate. Args mínimos y portables entre
+            // ambos encoders (evita -preset/-crf/-rc, que difieren); el ritmo va por -b:v/-maxrate/-bufsize.
+            switch (p.RateControl)
+            {
+                case RateControlMode.VariableBitrate:
+                    list.AddRange(new[] { "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize }); break;
+                default: // CBR (y calidad constante: estos HW encoders no comparten un CRF uniforme → bitrate)
+                    list.AddRange(new[] { "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bufsize }); break;
+            }
+            list.Add("-g"); list.Add(gop);
+        }
         else if (p.VideoCodec is VideoCodec.Mpeg2Video)
         {
             // MPEG-2 broadcast (XDCAM/IMX/PS/TS): CBR con VBV acotado.
@@ -384,7 +580,7 @@ public sealed class FfmpegArgumentBuilder
     /// <summary>Comando de grabación solo-audio: sin video, codec de audio al contenedor elegido.</summary>
     private IReadOnlyList<string> BuildAudioOnly(ICaptureSource source, RecordingProfile profile, string recMux, string recExt)
     {
-        OutputFilePath = Path.Combine(_outputDirectory, $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
+        OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(source.BuildInputArguments());
         args.Add("-vn");
@@ -409,6 +605,7 @@ public sealed class FfmpegArgumentBuilder
         VideoCodec.ProRes => "yuv422p10le",
         VideoCodec.DnxHd or VideoCodec.DnxHr => "yuv422p",
         VideoCodec.Mpeg2Video or VideoCodec.H264x264 or VideoCodec.H265x265 => "yuv420p",
+        VideoCodec.H264Qsv or VideoCodec.H264Amf => "nv12", // formato nativo de QSV/AMF
         _ => null // NVENC: el encoder elige (nv12/p010)
     };
 
@@ -437,16 +634,19 @@ public sealed class FfmpegArgumentBuilder
     {
         var seg = p.Segmentation!;
         long seconds = (long)(seg.Duration ?? TimeSpan.FromMinutes(15)).TotalSeconds;
-        string pattern = Path.Combine(_outputDirectory, $"{_channelKey}_%Y%m%d_%H%M%S_%03d.{recExt}");
-        return new[]
+        var (pattern, glob) = SegmentNameParts(recExt); // sin `-strftime 1` (rompía la cabecera)
+        IsSegmentedOutput = true;
+        SegmentFileGlob = glob;
+        var a = new List<string>
         {
             "-f", "segment",
             "-segment_time", seconds.ToString(CultureInfo.InvariantCulture),
             "-segment_format", recMux,
-            "-strftime", "1",
             "-reset_timestamps", "1",
-            "-y", pattern
         };
+        if (_baseName is not null) { a.Add("-segment_start_number"); a.Add(_segmentStartNumber.ToString(CultureInfo.InvariantCulture)); }
+        a.Add("-y"); a.Add(pattern);
+        return a;
     }
 
     /// <summary>Rama de grabación (archivo o segmentos) + ramas de streaming para el muxer tee.</summary>
@@ -458,12 +658,15 @@ public sealed class FfmpegArgumentBuilder
         {
             var seg = p.Segmentation!;
             long seconds = (long)(seg.Duration ?? TimeSpan.FromMinutes(15)).TotalSeconds;
-            string pattern = Path.Combine(_outputDirectory, $"{_channelKey}_%Y%m%d_%H%M%S_%03d.{recExt}");
-            branches.Add($"[f=segment:segment_time={seconds}:segment_format={recMux}:strftime=1:reset_timestamps=1]{pattern}");
+            var (pattern, glob) = SegmentNameParts(recExt);
+            IsSegmentedOutput = true;
+            SegmentFileGlob = glob;
+            string startNum = _baseName is not null ? $":segment_start_number={_segmentStartNumber}" : "";
+            branches.Add($"[f=segment:segment_time={seconds}:segment_format={recMux}:reset_timestamps=1{startNum}]{pattern}");
         }
         else
         {
-            OutputFilePath = Path.Combine(_outputDirectory, $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}.{recExt}");
+            OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
             branches.Add($"[f={recMux}:onfail=ignore]{OutputFilePath}");
         }
 

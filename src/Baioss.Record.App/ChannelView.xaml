@@ -7,11 +7,11 @@
             BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>  <!-- cabecera -->
+                <RowDefinition Height="*"/>     <!-- preview + medidores -->
+                <RowDefinition Height="Auto"/>  <!-- tabla HOY (tareas programadas del día) -->
+                <RowDefinition Height="Auto"/>  <!-- telemetría -->
+                <RowDefinition Height="Auto"/>  <!-- transporte -->
             </Grid.RowDefinitions>
 
             <!-- Cabecera -->
@@ -50,37 +50,9 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Destino de grabación + perfil activo. El formato/codificación se elige en el gestor
-                 de presets (botón «⚙ Presets de grabación» de la barra superior). -->
-            <Border Grid.Row="1" Margin="0,10" Padding="12,10" CornerRadius="8"
-                    Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
-                    Visibility="{Binding IsConfigurable, Converter={StaticResource BoolToVis}}">
-                <StackPanel>
-                    <Grid>
-                        <TextBlock Text="CARPETA DE DESTINO" FontSize="10" FontWeight="Bold"
-                                   Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
-                        <TextBlock Text="{Binding ProfileText}" FontSize="11" HorizontalAlignment="Right"
-                                   Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                    </Grid>
-                    <Grid Margin="0,6,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox Grid.Column="0" Text="{Binding OutputDirectory}" IsReadOnly="True" Height="30"
-                                 VerticalContentAlignment="Center" Padding="8,0" FontSize="12"
-                                 Background="{StaticResource ButtonBrush}" Foreground="{StaticResource TextPrimaryBrush}"
-                                 BorderBrush="{StaticResource PanelBorderBrush}"/>
-                        <Button Grid.Column="1" Content="Examinar…" Command="{Binding BrowseOutputCommand}"
-                                IsEnabled="{Binding CanConfigure}" Style="{StaticResource TransportButton}" Margin="8,0,0,0"/>
-                    </Grid>
-                    <TextBlock Text="El formato y la codificación se eligen en «⚙ Presets de grabación»."
-                               FontSize="10" Foreground="{StaticResource TextSecondaryBrush}" Margin="2,8,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <!-- Preview + medidores de audio -->
-            <Grid Grid.Row="2">
+            <!-- Preview + medidores de audio. (La carpeta de destino y la carta de ajuste se configuran ahora
+                 en «🛠 Configuración» de la barra superior; el formato/codificación en «⚙ Presets».) -->
+            <Grid Grid.Row="1" Margin="0,10,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -90,6 +62,30 @@
                 <Border Grid.Column="0" Background="{StaticResource PreviewBrush}" CornerRadius="6" ClipToBounds="True">
                     <Grid>
                         <Image x:Name="PreviewImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="LowQuality"/>
+
+                        <!-- Franja de alarmas (negro/congelado/silencio/slate/disco): roja, sobre el preview -->
+                        <Border VerticalAlignment="Top" Padding="10,6"
+                                Visibility="{Binding HasAlarms, Converter={StaticResource BoolToVis}}">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSlate}" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding DiskCritical}" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <TextBlock Text="⚠" FontSize="13" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="White"/>
+                                <TextBlock Text="{Binding AlarmsText}" FontSize="12" FontWeight="Bold" Foreground="White"
+                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
                         <Grid Margin="12">
                             <TextBlock Text="PGM" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
                                        HorizontalAlignment="Left" VerticalAlignment="Top"/>
@@ -162,6 +158,59 @@
                 </Border>
             </Grid>
 
+            <!-- Tabla HOY: tareas programadas del día para este canal; la grabación EN CURSO va resaltada.
+                 Si hoy no hay nada pero sí una próxima, se muestra una pista en su lugar. -->
+            <Border Grid.Row="2" Margin="0,10,0,0" Background="#12161E" CornerRadius="8"
+                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
+                    Visibility="{Binding ShowTodaySection, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <TextBlock Text="PROGRAMADAS HOY" FontSize="10" FontWeight="Bold"
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="12,8,12,2"/>
+                    <!-- Hoy no hay: muestra la próxima grabación del canal. -->
+                    <TextBlock Text="{Binding TodayEmptyText}" FontSize="11" Margin="12,2,12,8" TextWrapping="Wrap"
+                               Foreground="{StaticResource TextSecondaryBrush}"
+                               Visibility="{Binding NoTodayTasks, Converter={StaticResource BoolToVis}}"/>
+                    <Grid Margin="12,2,12,2" Visibility="{Binding HasTodayTasks, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="58"/>
+                            <ColumnDefinition Width="58"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="78"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="ENTRADA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <TextBlock Grid.Column="1" Text="SALIDA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <TextBlock Grid.Column="2" Text="TÍTULO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <TextBlock Grid.Column="3" Text="SEGMENTO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    </Grid>
+                    <ScrollViewer MaxHeight="140" VerticalScrollBarVisibility="Auto" Margin="0,0,0,6">
+                        <ItemsControl ItemsSource="{Binding TodayTasks}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding RowBackground}" CornerRadius="4" Margin="6,1" Padding="6,4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="58"/>
+                                                <ColumnDefinition Width="58"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="78"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding EntradaText}" FontFamily="Consolas" FontSize="12"
+                                                       Foreground="{Binding RowForeground}"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding SalidaText}" FontFamily="Consolas" FontSize="12"
+                                                       Foreground="{Binding RowForeground}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" Foreground="{Binding RowForeground}"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding SegmentText}" FontSize="12"
+                                                       Foreground="{Binding RowForeground}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
+
             <!-- Telemetría -->
             <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="2,12">
                 <StackPanel Margin="0,0,26,0">
@@ -176,18 +225,43 @@
                     <TextBlock Text="DROPPED" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
                     <TextBlock Text="{Binding DroppedFrames}" FontSize="18" FontWeight="Bold"/>
                 </StackPanel>
-                <StackPanel>
+                <StackPanel Margin="0,0,26,0">
                     <TextBlock Text="ESTADO" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
                     <TextBlock Text="{Binding RecordingState}" FontSize="18" FontWeight="Bold"/>
+                </StackPanel>
+                <StackPanel VerticalAlignment="Center"
+                            Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="DISCO" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <TextBlock Text="{Binding DiskText}" FontSize="14" FontWeight="Bold">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding DiskWarning}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource SignalAmberBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding DiskCritical}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </StackPanel>
 
             <!-- Transporte -->
             <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,6,0,0">
                 <Button Content="● Grabar"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
-                <Button Content="■ Detener"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"/>
-                <Button Content="❚❚ Pausa"   Command="{Binding PauseCommand}"  Style="{StaticResource TransportButton}"/>
-                <Button Content="▶ Reanudar" Command="{Binding ResumeCommand}" Style="{StaticResource TransportButton}"/>
+                <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
+                <Button Content="■ Detener"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
+                        Visibility="{Binding ShowStopButton, Converter={StaticResource BoolToVis}}"/>
+                <!-- Solo visible cuando hay una grabación PROGRAMADA en curso: la salta (esta ocurrencia)
+                     sin afectar a las siguientes. -->
+                <Button Content="⏏ Detener grabación automática" Command="{Binding SkipScheduledRecordingCommand}"
+                        Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
+                        Foreground="#10131A" FontWeight="Bold"
+                        Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
         </Grid>
     </Border>

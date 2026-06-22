@@ -109,7 +109,7 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
     public Task BindSourceAsync(Guid sourceId, CancellationToken ct = default) => Task.CompletedTask;
     public Task StartPreviewAsync(CancellationToken ct = default) => Task.CompletedTask;
 
-    public Task StartRecordingAsync(Guid profileId, string? @operator, CancellationToken ct = default)
+    public Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
     {
         _recStartedAt = DateTimeOffset.UtcNow;
         _sessionId = Guid.NewGuid();
@@ -123,25 +123,6 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
     {
         _state = RecordingState.Idle;
         _sessionId = null;
-        StatusChanged?.Invoke(this, Status);
-        return Task.CompletedTask;
-    }
-
-    public Task PauseRecordingAsync(CancellationToken ct = default)
-    {
-        if (_state == RecordingState.Recording) _state = RecordingState.Paused;
-        StatusChanged?.Invoke(this, Status);
-        return Task.CompletedTask;
-    }
-
-    public Task ResumeRecordingAsync(CancellationToken ct = default)
-    {
-        if (_state == RecordingState.Paused)
-        {
-            // Reanuda preservando continuidad: ajusta el origen al tiempo ya grabado.
-            _recStartedAt = DateTimeOffset.UtcNow - TimeSpan.FromSeconds(_frame / 25.0);
-            _state = RecordingState.Recording;
-        }
         StatusChanged?.Invoke(this, Status);
         return Task.CompletedTask;
     }

@@ -24,9 +24,12 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         // NOTA: es un lock optimista al asignar; la detección real de presencia/ausencia de señal y de
         // resolución/fps vía DeckLink SDK / ffprobe queda pendiente (no puede sondear un dispositivo en
         // vivo exclusivo sin chocar con el proceso de captura).
+        // Etiqueta legible del modo elegido (p. ej. "1920×1080 · 59.94i") para mostrarla en el preview.
+        Definition.Parameters.TryGetValue("format_label", out var label);
         CurrentSignal = new SignalInfo(SignalState.Locked,
             Definition.ExpectedResolution, Definition.ExpectedFrameRate,
-            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null);
+            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null,
+            FormatLabel: string.IsNullOrWhiteSpace(label) ? null : label);
         SignalChanged?.Invoke(this, CurrentSignal);
         return Task.CompletedTask;
     }

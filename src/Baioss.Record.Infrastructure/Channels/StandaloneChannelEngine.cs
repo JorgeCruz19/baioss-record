@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
@@ -7,6 +8,7 @@ using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Infrastructure.Preview;
+using Baioss.Record.Infrastructure.Storage;
 
 namespace Baioss.Record.Infrastructure.Channels;
 
@@ -18,7 +20,7 @@ namespace Baioss.Record.Infrastructure.Channels;
 /// persiste y se publican eventos; si no, el canal sigue grabando en modo "standalone". Pensado para la
 /// app de escritorio en Fase 1; la variante completa basada en repositorios es <c>ChannelEngine</c>.
 /// </summary>
-public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecording
+public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename
 {
     private readonly string _key;
     private readonly ICaptureSource _source;
@@ -29,10 +31,24 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly IEventBus? _bus;
     private readonly ISignalMonitor? _signalMonitor;
     private readonly ILogger<StandaloneChannelEngine>? _log;
+    private readonly DiskSpaceGuard? _diskGuard;
 
     private RecordingSession? _session;
+
+    // Segmentos persistidos de la sesión en curso + sus tareas de persistencia: para renombrar de forma
+    // CONSISTENTE (que la BD no quede con el nombre temporal) cuando el operador nombra al detener.
+    private readonly object _renameLock = new();
+    private readonly List<Segment> _sessionSegments = new();
+    private readonly List<Task> _pendingPersists = new();
+
     private double _peakL = -60, _peakR = -60;
     private IReadOnlyList<AudioMeter> _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
+
+    // Alarmas activas del canal (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
+    private readonly object _alarmLock = new();
+    private readonly Dictionary<AlarmType, ChannelAlarm> _alarms = new();
+    private StorageInfo _storage = StorageInfo.Unknown;
+    private volatile bool _autoStopping;
 
     public StandaloneChannelEngine(
         string key,
@@ -45,7 +61,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         IEventBus? bus = null,
         ISignalMonitor? signalMonitor = null,
         ILogger<StandaloneChannelEngine>? log = null,
-        IRecordingProfileRepository? profiles = null)
+        IRecordingProfileRepository? profiles = null,
+        DiskSpaceGuard? diskGuard = null)
     {
         ChannelId = channelId ?? Guid.NewGuid();
         _key = key;
@@ -58,11 +75,13 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _bus = bus;
         _signalMonitor = signalMonitor;
         _log = log;
+        _diskGuard = diskGuard;
 
         _engine.StateChanged += (_, _) => Raise();
         _engine.StatsUpdated += (_, _) => Raise();
         _engine.AudioPeaksUpdated += OnAudioLevels;
         _engine.SegmentClosed += OnSegmentClosed;
+        _engine.AlarmChanged += OnEngineAlarm;
         _source.SignalChanged += (_, _) => Raise();
 
         // Arranca la vigilancia de señal (publica lock/pérdida/silencio en el bus).
@@ -81,8 +100,15 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         set => _engine.OutputRoot = value;
     }
 
-    public ChannelStatus Status =>
-        new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio);
+    public ChannelStatus Status
+    {
+        get
+        {
+            ChannelAlarm[] alarms;
+            lock (_alarmLock) alarms = _alarms.Values.ToArray();
+            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage);
+        }
+    }
 
     public event EventHandler<ChannelStatus>? StatusChanged;
 
@@ -94,8 +120,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public Task StartPreviewAsync(CancellationToken ct = default) => Task.CompletedTask;
 
-    public async Task StartRecordingAsync(Guid profileId, string? @operator, CancellationToken ct = default)
+    public async Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
     {
+        lock (_renameLock) { _sessionSegments.Clear(); _pendingPersists.Clear(); }
         var profile = Profile; // el perfil elegido por el operador en la UI
         var signal = _source.CurrentSignal;
         var session = new RecordingSession
@@ -128,7 +155,20 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
 
         // Arma la grabación en el proceso de captura (el preview sigue sin interrumpirse).
-        await _engine.StartRecordingAsync(session.Id, profile, ct);
+        await _engine.StartRecordingAsync(session.Id, profile, recordingName, ct);
+
+        // Vigilancia de disco: estima el tiempo restante con el ritmo de datos REAL (telemetría) y, si
+        // no hay aún, con el bitrate del perfil. El crítico detiene la grabación antes de llenar el disco.
+        _autoStopping = false;
+        if (_diskGuard is not null)
+        {
+            _diskGuard.Updated += OnDiskUpdated;
+            _diskGuard.Start(() => _engine.OutputRoot, () =>
+            {
+                long real = _engine.Stats.Bitrate.BitsPerSecond / 8;
+                return real > 0 ? real : FallbackBytesPerSecond(profile);
+            });
+        }
 
         if (_bus is not null)
             await _bus.PublishAsync(new RecordingStarted(ChannelId, session.Id, @operator), ct);
@@ -136,9 +176,23 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         Raise();
     }
 
+    /// <summary>Ritmo de datos estimado (bytes/s) a partir del perfil, mientras no hay telemetría real.</summary>
+    private static long FallbackBytesPerSecond(RecordingProfile p)
+        => ((p.MaxBitrate ?? p.VideoBitrate).BitsPerSecond + p.AudioBitrate.BitsPerSecond) / 8;
+
     public async Task StopRecordingAsync(CancellationToken ct = default)
     {
+        if (_diskGuard is not null)
+        {
+            _diskGuard.Updated -= OnDiskUpdated;
+            await _diskGuard.StopAsync();
+        }
         await _engine.StopRecordingAsync(ct);
+
+        // Las alarmas operativas de la grabación dejan de aplicar al detener.
+        SetAlarm(AlarmType.DiskLow, false);
+        SetAlarm(AlarmType.DiskCritical, false);
+        _storage = StorageInfo.Unknown;
 
         if (_session is not null)
         {
@@ -158,11 +212,16 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         Raise();
     }
 
-    public Task PauseRecordingAsync(CancellationToken ct = default) => _engine.PauseAsync(ct);
-    public Task ResumeRecordingAsync(CancellationToken ct = default) => _engine.ResumeAsync(ct);
     public Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default) => Task.CompletedTask;
 
-    private async void OnSegmentClosed(object? sender, Segment segment)
+    private void OnSegmentClosed(object? sender, Segment segment)
+    {
+        // Registra el segmento y su tarea de persistencia (no fire-and-forget): al renombrar al detener se
+        // esperan estas tareas antes de corregir la ruta en la BD, evitando una carrera Add/Update.
+        lock (_renameLock) { _sessionSegments.Add(segment); _pendingPersists.Add(PersistSegmentAsync(segment)); }
+    }
+
+    private async Task PersistSegmentAsync(Segment segment)
     {
         try
         {
@@ -173,6 +232,99 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         catch (Exception ex)
         {
             _log?.LogError(ex, "No se pudo persistir el segmento {FilePath}.", segment.FilePath);
+        }
+    }
+
+    /// <summary>
+    /// Renombra la última grabación terminada (grabación manual: el nombre se pide al DETENER). Mueve los
+    /// archivos en segundo plano y corrige la ruta de los segmentos persistidos. Devuelve la nueva ruta
+    /// principal, o null si no había nada que renombrar.
+    /// </summary>
+    public async Task<string?> RenameLastRecordingAsync(string baseName, CancellationToken ct = default)
+    {
+        // File.Move (con reintentos) no debe bloquear el hilo de UI desde el que se llama.
+        var pairs = await Task.Run(() => _engine.RenameSessionFiles(baseName), ct).ConfigureAwait(false);
+        if (pairs.Count == 0) return null;
+
+        // Espera la persistencia en vuelo y corrige la ruta en la BD (que no quede el nombre temporal).
+        Task[] pending;
+        List<Segment> segs;
+        lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _sessionSegments.ToList(); }
+        try { await Task.WhenAll(pending).ConfigureAwait(false); } catch { /* ya registrado en PersistSegmentAsync */ }
+
+        if (_segments is not null)
+        {
+            var map = pairs.ToDictionary(p => p.Old, p => p.New, StringComparer.OrdinalIgnoreCase);
+            foreach (var seg in segs)
+                if (map.TryGetValue(seg.FilePath, out var np))
+                {
+                    seg.FilePath = np;
+                    try { await _segments.UpdateAsync(seg, ct).ConfigureAwait(false); }
+                    catch (Exception ex) { _log?.LogError(ex, "No se pudo actualizar la ruta del segmento {Id}.", seg.Id); }
+                }
+        }
+        return pairs[^1].New;
+    }
+
+    // --- Alarmas del motor (negro/congelado/silencio/slate) ---
+
+    private void OnEngineAlarm(object? sender, (AlarmType Type, bool Active) e)
+    {
+        SetAlarm(e.Type, e.Active);
+
+        // La carta de ajuste (slate) refleja pérdida/recuperación de señal: se publica al bus.
+        if (e.Type == AlarmType.Slate && _bus is not null && _session is { } s)
+        {
+            IDomainEvent evt = e.Active ? new SignalLost(ChannelId) : new RecordingRecovered(ChannelId, s.Id, 1);
+            _ = _bus.PublishAsync(evt);
+        }
+    }
+
+    private void SetAlarm(AlarmType type, bool active)
+    {
+        bool changed;
+        lock (_alarmLock)
+        {
+            if (active) { changed = !_alarms.ContainsKey(type); _alarms[type] = new ChannelAlarm(type, AlarmMessage(type), DateTimeOffset.UtcNow); }
+            else changed = _alarms.Remove(type);
+        }
+        if (changed) Raise();
+    }
+
+    private static string AlarmMessage(AlarmType t) => t switch
+    {
+        AlarmType.SignalLoss => "Sin señal de entrada",
+        AlarmType.VideoBlack => "Imagen en negro",
+        AlarmType.VideoFreeze => "Imagen congelada",
+        AlarmType.AudioSilence => "Silencio de audio",
+        AlarmType.DiskLow => "Espacio en disco bajo",
+        AlarmType.DiskCritical => "Disco casi lleno",
+        AlarmType.Slate => "Sin señal — grabando carta de ajuste",
+        _ => t.ToString(),
+    };
+
+    // --- Guarda de disco ---
+
+    private void OnDiskUpdated(object? sender, (DiskLevel Level, StorageInfo Info) e)
+    {
+        _storage = e.Info;
+        SetAlarm(AlarmType.DiskLow, e.Level == DiskLevel.Low);
+        SetAlarm(AlarmType.DiskCritical, e.Level == DiskLevel.Critical);
+        Raise(); // refresca el "tiempo restante" aunque no cambie el nivel
+
+        if (e.Level != DiskLevel.Ok && _bus is not null)
+            _ = _bus.PublishAsync(new StorageLow(ChannelId, e.Info.FreeBytes, e.Info.EstimatedRemaining ?? TimeSpan.Zero));
+
+        // Crítico → detener ordenadamente (en otra tarea: no se puede parar la guarda desde su propio hilo).
+        if (e.Level == DiskLevel.Critical && !_autoStopping)
+        {
+            _autoStopping = true;
+            _log?.LogWarning("Canal {Key}: disco crítico ({Free:N0} bytes libres); deteniendo la grabación para no corromper el archivo.", _key, e.Info.FreeBytes);
+            _ = Task.Run(async () =>
+            {
+                try { await StopRecordingAsync(); }
+                catch (Exception ex) { _log?.LogError(ex, "Auto-stop por disco falló en el canal {Key}.", _key); }
+            });
         }
     }
 
@@ -192,6 +344,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public async ValueTask DisposeAsync()
     {
+        if (_diskGuard is not null) await _diskGuard.DisposeAsync();
         if (_signalMonitor is not null) await _signalMonitor.DisposeAsync();
         await _engine.DisposeAsync();
         await _source.DisposeAsync();

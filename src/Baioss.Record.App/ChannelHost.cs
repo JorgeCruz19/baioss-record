@@ -187,10 +187,11 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         capture.StartPreviewAsync(source, profile, key).GetAwaiter().GetResult(); // preview siempre activo
 
         var monitor = new SignalMonitor(bus, loggers.CreateLogger<SignalMonitor>()) { ChannelId = channelId };
+        var diskGuard = new Baioss.Record.Infrastructure.Storage.DiskSpaceGuard(loggers.CreateLogger<ChannelHost>());
 
         var engine = new StandaloneChannelEngine(
             key, source, profile, capture, channelId,
-            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo);
+            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard);
         return (engine, capture);
     }
 

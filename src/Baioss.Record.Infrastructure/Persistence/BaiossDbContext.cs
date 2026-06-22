@@ -97,9 +97,12 @@ public sealed class BaiossDbContext(DbContextOptions<BaiossDbContext> options)
             e.Property(p => p.TargetResolution).HasConversion(ResolutionConverter);
             e.Property(p => p.OutputFrameRate).HasConversion(FrameRateConverter);
             // Sub-políticas y destinos de streaming se persisten en Fase 2 (owned/JSON dedicado).
+            // SlateOnSignalLoss va junto a la segmentación: ambos son ajustes operativos por sesión
+            // (ignorados aquí para no cambiar el esquema; se persistirán con las sub-políticas en Fase 2).
             e.Ignore(p => p.StreamTargets);
             e.Ignore(p => p.Segmentation);
             e.Ignore(p => p.Proxy);
+            e.Ignore(p => p.SlateOnSignalLoss);
         });
 
         b.Entity<EventLogEntry>().HasIndex(x => x.Timestamp);

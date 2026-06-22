@@ -37,7 +37,10 @@ public enum VideoCodec
     ProRes,
     DnxHd,
     DnxHr,
-    Mpeg2Video // MPEG-2 (PS/TS, XDCAM HD422)
+    Mpeg2Video, // MPEG-2 (PS/TS, XDCAM HD422)
+    // Encoders por GPU INTEGRADA (al final para no desplazar los enteros ya persistidos en la BD).
+    H264Qsv,    // Intel QuickSync H.264
+    H264Amf     // AMD AMF H.264
 }
 
 /// <summary>Códec de audio de grabación.</summary>
@@ -152,6 +155,24 @@ public enum ScheduledAction
     StopRecording,
     SwitchProfile,
     SwitchSource
+}
+
+/// <summary>Tipo de repetición de un trabajo programado.</summary>
+public enum RecurrenceKind
+{
+    Once,    // una sola vez, en una fecha/hora concreta
+    Daily,   // todos los días a una hora
+    Weekly   // los días de la semana seleccionados, a una hora
+}
+
+/// <summary>Días de la semana seleccionados para una repetición semanal (máscara de bits).</summary>
+[Flags]
+public enum Weekdays
+{
+    None = 0,
+    Monday = 1, Tuesday = 2, Wednesday = 4, Thursday = 8,
+    Friday = 16, Saturday = 32, Sunday = 64,
+    EveryDay = Monday | Tuesday | Wednesday | Thursday | Friday | Saturday | Sunday
 }
 
 /// <summary>Rol de usuario para control de acceso.</summary>

@@ -1,0 +1,30 @@
+<Window x:Class="Baioss.Record.App.RecordingNameWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nombre de la grabación" Width="460" SizeToContent="Height"
+        WindowStyle="ToolWindow" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="#10131A" WindowStartupLocation="CenterOwner">
+    <StackPanel Margin="20,18">
+        <TextBlock Text="NOMBRE DE LA GRABACIÓN" FontSize="11" FontWeight="Bold"
+                   Foreground="{StaticResource TextSecondaryBrush}"/>
+        <TextBlock x:Name="SubtitleText" FontSize="12" Margin="0,2,0,0"
+                   Foreground="{StaticResource TextPrimaryBrush}"/>
+
+        <TextBox x:Name="NameBox" Height="34" Margin="0,10,0,0" FontSize="15"
+                 VerticalContentAlignment="Center" Padding="10,0"
+                 MaxLength="120"/>
+
+        <TextBlock Text="Si ya existe un archivo con ese nombre, se añadirá 1, 2, 3… al final para no chocar."
+                   FontSize="11" TextWrapping="Wrap" Margin="2,8,0,0"
+                   Foreground="{StaticResource TextSecondaryBrush}"/>
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <!-- Padding horizontal explícito (0 vertical): el 14,9 heredado del estilo recortaba el texto
+                 con Height=30 (mismo arreglo que el botón «Aplicar» de Entradas). -->
+            <Button Content="Cancelar" IsCancel="True" MinWidth="96" Height="32" Padding="20,0"
+                    Margin="0,0,10,0" Style="{StaticResource TransportButton}"/>
+            <Button Content="Guardar" IsDefault="True" Click="OnAccept" MinWidth="120" Height="32" Padding="20,0"
+                    Margin="0" Style="{StaticResource StartButton}"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -19,7 +19,9 @@ public sealed record ChannelStatus(
     SignalInfo Signal,
     RecorderStats Stats,
     Guid? SessionId,
-    IReadOnlyList<AudioMeter>? Audio = null);
+    IReadOnlyList<AudioMeter>? Audio = null,
+    IReadOnlyList<ChannelAlarm>? Alarms = null,
+    StorageInfo? Storage = null);
 
 /// <summary>
 /// Orquestador de un canal. Compone captura + monitor de señal + grabación +
@@ -36,10 +38,13 @@ public interface IChannelEngine : IAsyncDisposable
     Task BindSourceAsync(Guid sourceId, CancellationToken ct = default);
     Task StartPreviewAsync(CancellationToken ct = default);
 
-    Task StartRecordingAsync(Guid profileId, string? @operator, CancellationToken ct = default);
+    /// <summary>
+    /// Inicia la grabación. <paramref name="recordingName"/> es el nombre base del archivo (sin extensión):
+    /// el que elige el operador en una grabación manual o el derivado de la programación
+    /// (<c>dd-MM-yyyy_Título</c>). <c>null</c> = nombre por defecto <c>{canal}_{fecha_hora}</c>.
+    /// </summary>
+    Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default);
     Task StopRecordingAsync(CancellationToken ct = default);
-    Task PauseRecordingAsync(CancellationToken ct = default);
-    Task ResumeRecordingAsync(CancellationToken ct = default);
 
     /// <summary>Activa el modo continuo 24/7 con watchdog y auto-recuperación.</summary>
     Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default);
@@ -56,6 +61,19 @@ public interface IConfigurableRecording
 
     /// <summary>Carpeta de destino donde se escriben las grabaciones del canal.</summary>
     string OutputDirectory { get; set; }
+}
+
+/// <summary>
+/// Implementado por los motores cuyo nombre de archivo se decide al DETENER (grabación manual): tras
+/// parar, renombra la grabación recién terminada al nombre que elija el operador, con dedupe « 1», « 2»…
+/// </summary>
+public interface IPostRecordingRename
+{
+    /// <summary>
+    /// Renombra los archivos de la última grabación terminada usando <paramref name="baseName"/> como base
+    /// (con dedupe si ya existe). Devuelve la nueva ruta principal, o <c>null</c> si no había nada que renombrar.
+    /// </summary>
+    Task<string?> RenameLastRecordingAsync(string baseName, CancellationToken ct = default);
 }
 
 /// <summary>Registro de los canales activos del despliegue (A, B, …).</summary>

@@ -1,5 +1,6 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Infrastructure.Capture;
 using Xunit;
@@ -71,8 +72,11 @@ public class CaptureDeviceTests
         var formats = FfmpegDeviceEnumerator.ParseDecklinkFormats(DecklinkFormatsSample);
 
         Assert.Equal(4, formats.Count); // 4 modos; la cabecera 'format_code description' no entra
-        Assert.Contains(formats, f => f.Code == "Hp50" && f.Description.StartsWith("1920x1080"));
-        Assert.Contains(formats, f => f.Code == "ntsc" && f.Description.StartsWith("720x486"));
+        // Resolución/tasa parseadas + etiqueta LEGIBLE (progresivo usa la tasa, entrelazado la de campos).
+        Assert.Contains(formats, f => f.Code == "Hp50" && f.Resolution == new Resolution(1920, 1080)
+                                      && !f.Interlaced && f.Description == "1920×1080 · 50p");
+        Assert.Contains(formats, f => f.Code == "ntsc" && f.Resolution == new Resolution(720, 486)
+                                      && f.Interlaced && f.Description == "720×486 · 59.94i");
         Assert.DoesNotContain(formats, f => f.Code == "format_code");
     }
 
@@ -95,10 +99,10 @@ public class CaptureDeviceTests
         var formats = FfmpegDeviceEnumerator.ParseDecklinkFormats(DecklinkFormatsNoPrefixSample);
 
         Assert.Equal(6, formats.Count); // 6 modos; ni la cabecera ni "Supported formats for…" entran
-        Assert.Contains(formats, f => f.Code == "Hp59" && f.Description.StartsWith("1920x1080"));
-        Assert.Contains(formats, f => f.Code == "23ps" && f.Description.StartsWith("1920x1080")); // código que empieza por dígitos
-        Assert.Contains(formats, f => f.Code == "hp60" && f.Description.StartsWith("1280x720"));   // 720p
-        Assert.Contains(formats, f => f.Code == "ntsc" && f.Description.StartsWith("720x486"));
+        Assert.Contains(formats, f => f.Code == "Hp59" && f.Resolution == new Resolution(1920, 1080) && f.Description == "1920×1080 · 59.94p");
+        Assert.Contains(formats, f => f.Code == "23ps" && f.Resolution == new Resolution(1920, 1080)); // código que empieza por dígitos
+        Assert.Contains(formats, f => f.Code == "hp60" && f.Resolution == new Resolution(1280, 720) && f.Description == "1280×720 · 60p"); // 720p
+        Assert.Contains(formats, f => f.Code == "ntsc" && f.Resolution == new Resolution(720, 486) && f.Interlaced); // NTSC 59.94i
         Assert.DoesNotContain(formats, f => f.Code == "format_code");
     }
 

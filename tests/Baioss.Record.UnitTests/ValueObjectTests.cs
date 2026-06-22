@@ -85,6 +85,31 @@ public class TimecodeTests
     public void FromFrameNumber_ConvertsToHmsf(long frame, int rate, int h, int m, int s, int f)
         => Assert.Equal(new Timecode(h, m, s, f), Timecode.FromFrameNumber(frame, rate));
 
+    [Theory]
+    [InlineData(0L, 25, 0, 0, 0, 0)]
+    [InlineData(1_000_000L, 25, 0, 0, 1, 0)]          // 1 s exacto
+    [InlineData(1_500_000L, 50, 0, 0, 1, 25)]         // 1.5 s a 50 fps → 1 s + 25 cuadros
+    [InlineData(3_661_000_000L, 30, 1, 1, 1, 0)]      // 1 h 1 m 1 s
+    [InlineData(40_000L, 25, 0, 0, 0, 1)]             // 40 ms a 25 fps = 1 cuadro
+    public void FromMicroseconds_TracksRealTime(long us, int rate, int h, int m, int s, int f)
+        => Assert.Equal(new Timecode(h, m, s, f), Timecode.FromMicroseconds(us, rate));
+
+    [Fact]
+    public void FromMicroseconds_SecondsAreRateIndependent()
+    {
+        // El mismo tiempo real (2 s) da los MISMOS segundos a 25, 50 o 60 fps: el contador no se acelera.
+        Assert.Equal(2, Timecode.FromMicroseconds(2_000_000, 25).Seconds);
+        Assert.Equal(2, Timecode.FromMicroseconds(2_000_000, 50).Seconds);
+        Assert.Equal(2, Timecode.FromMicroseconds(2_000_000, 60).Seconds);
+    }
+
+    [Fact]
+    public void FromMicroseconds_ClampsFramesAndHandlesGuards()
+    {
+        Assert.Equal(new Timecode(0, 0, 0, 0), Timecode.FromMicroseconds(-5, 25));   // negativo → 0
+        Assert.Equal(new Timecode(0, 0, 1, 0), Timecode.FromMicroseconds(1_000_000, 0)); // tasa 0 → 25 por defecto
+    }
+
     [Fact]
     public void ToString_RoundTripsThroughParse()
     {

@@ -3,7 +3,7 @@ using Baioss.Record.Domain;
 namespace Baioss.Record.Engine.FFmpeg;
 
 /// <summary>Traduce los enums de dominio a nombres de encoder/muxer de FFmpeg.</summary>
-internal static class FfmpegCodecMap
+public static class FfmpegCodecMap
 {
     public static string VideoEncoder(VideoCodec codec) => codec switch
     {
@@ -12,6 +12,8 @@ internal static class FfmpegCodecMap
         VideoCodec.Av1Nvenc  => "av1_nvenc",
         VideoCodec.H264x264  => "libx264",
         VideoCodec.H265x265  => "libx265",
+        VideoCodec.H264Qsv   => "h264_qsv",  // Intel QuickSync (GPU integrada)
+        VideoCodec.H264Amf   => "h264_amf",  // AMD AMF (GPU integrada)
         VideoCodec.ProRes    => "prores_ks",
         VideoCodec.DnxHd     => "dnxhd",
         VideoCodec.DnxHr     => "dnxhd", // DNxHR vía -profile dnxhr_hq

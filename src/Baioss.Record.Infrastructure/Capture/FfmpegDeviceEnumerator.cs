@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 
@@ -94,8 +96,56 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     {
         var list = new List<DeviceFormat>();
         foreach (Match m in DecklinkFormatRegex().Matches(output))
-            list.Add(new DeviceFormat(m.Groups["code"].Value, m.Groups["desc"].Value.Trim()));
+            list.Add(BuildFormat(m.Groups["code"].Value, m.Groups["desc"].Value.Trim()));
         return list;
+    }
+
+    /// <summary>
+    /// Convierte la descripción cruda ("1920x1080 at 30000/1001 fps (interlaced, upper field first)") en
+    /// un <see cref="DeviceFormat"/> con etiqueta LEGIBLE ("1920×1080 · 59.94i") y resolución/tasa
+    /// parseadas (para poblar la señal del canal). La tasa guardada es la CODIFICADA (29.97 para 1080i),
+    /// correcta para timecode/encoder; la etiqueta usa la de campos en entrelazado (convención broadcast).
+    /// </summary>
+    private static DeviceFormat BuildFormat(string code, string raw)
+    {
+        Resolution? res = null;
+        var rm = ResolutionRegex().Match(raw);
+        if (rm.Success)
+            res = new Resolution(int.Parse(rm.Groups["w"].Value, CultureInfo.InvariantCulture),
+                                 int.Parse(rm.Groups["h"].Value, CultureInfo.InvariantCulture));
+
+        FrameRate? fr = null;
+        var fm = RateRegex().Match(raw);
+        if (fm.Success)
+        {
+            int num = int.Parse(fm.Groups["num"].Value, CultureInfo.InvariantCulture);
+            int den = fm.Groups["den"].Success && fm.Groups["den"].Value.Length > 0
+                ? int.Parse(fm.Groups["den"].Value, CultureInfo.InvariantCulture) : 1;
+            if (num > 0 && den > 0) fr = new FrameRate(num, den);
+        }
+        bool interlaced = raw.Contains("interlaced", StringComparison.OrdinalIgnoreCase);
+
+        return new DeviceFormat(code, FriendlyLabel(res, fr, interlaced) ?? raw)
+        {
+            Resolution = res, FrameRate = fr, Interlaced = interlaced,
+        };
+    }
+
+    private static string? FriendlyLabel(Resolution? res, FrameRate? fr, bool interlaced)
+    {
+        if (res is not { } r || fr is not { } f) return null;
+        double display = interlaced ? f.Value * 2 : f.Value; // entrelazado → tasa de campos (59.94i, 50i)
+        char scan = interlaced ? 'i' : 'p';
+        return $"{r.Width}×{r.Height} · {FormatRate(display)}{scan}";
+    }
+
+    /// <summary>"59.94", "29.97", "23.98" o entero exacto ("25", "50", "60").</summary>
+    private static string FormatRate(double v)
+    {
+        double rounded = Math.Round(v);
+        return Math.Abs(v - rounded) < 0.02
+            ? ((int)rounded).ToString(CultureInfo.InvariantCulture)
+            : v.ToString("0.00", CultureInfo.InvariantCulture);
     }
 
     private static InputSource MakeSource(InputType type, string name) => new()
@@ -139,4 +189,11 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     // tolera variaciones del build (con/sin prefijo "[decklink @ 0x…]", tasas tipo 60000/1001 o 59.94).
     [GeneratedRegex(@"(?<code>[A-Za-z0-9]+)\s+(?<desc>\d+x\d+\s+(?:at\s+)?[\d/.]+\s*fps[^\r\n]*)")]
     private static partial Regex DecklinkFormatRegex();
+
+    // De la descripción: resolución "1920x1080" y tasa "at 30000/1001 fps" (o "at 25/1 fps").
+    [GeneratedRegex(@"(?<w>\d+)x(?<h>\d+)")]
+    private static partial Regex ResolutionRegex();
+
+    [GeneratedRegex(@"at\s+(?<num>\d+)(?:/(?<den>\d+))?\s*fps")]
+    private static partial Regex RateRegex();
 }

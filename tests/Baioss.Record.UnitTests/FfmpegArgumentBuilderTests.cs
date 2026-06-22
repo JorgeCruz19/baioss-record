@@ -73,6 +73,35 @@ public class FfmpegArgumentBuilderTests
     }
 
     [Fact]
+    public void Build_Qsv_UsesQuickSyncEncoderBitrateAndNv12()
+    {
+        var profile = SoftwareMp4();
+        profile.VideoCodec = VideoCodec.H264Qsv;                // GPU integrada Intel
+
+        var (joined, _) = Build(profile);
+
+        Assert.Contains("-c:v h264_qsv", joined);
+        Assert.Contains("-b:v", joined);                        // por bitrate
+        Assert.Contains("-pix_fmt nv12", joined);               // formato nativo QSV
+        Assert.DoesNotContain("-crf", joined);                  // no es software libx264
+        Assert.DoesNotContain("libx264", joined);
+    }
+
+    [Fact]
+    public void Build_Amf_UsesAmfEncoderBitrateAndNv12()
+    {
+        var profile = SoftwareMp4();
+        profile.VideoCodec = VideoCodec.H264Amf;                // GPU integrada AMD
+
+        var (joined, _) = Build(profile);
+
+        Assert.Contains("-c:v h264_amf", joined);
+        Assert.Contains("-b:v", joined);
+        Assert.Contains("-pix_fmt nv12", joined);
+        Assert.DoesNotContain("-crf", joined);
+    }
+
+    [Fact]
     public void Build_WithTargetResolution_AddsScaleFilter()
     {
         var profile = SoftwareMp4();
@@ -204,19 +233,22 @@ public class FfmpegArgumentBuilderTests
 
     // --- Pipeline en vivo: preview + grabación en un solo proceso ---
 
-    private static string BuildLive(RecordingProfile profile, bool recording, bool hasAudio = true)
+    private static FfmpegArgumentBuilder NewLiveBuilder(RecordingProfile profile, bool hasAudio = true, bool analyze = false)
     {
         var source = new FakeCaptureSource("C:/clips/in.mp4");
         // La fuente declara (o no) pista de audio: un dispositivo solo-vídeo (cámara/OBS) no tiene
         // audio que medir ni grabar, y el builder debe omitir esas salidas en consecuencia.
         source.Emit(new SignalInfo(SignalState.Locked, new Resolution(1920, 1080), new FrameRate(25, 1),
             hasAudio ? AudioLayout.Stereo : null, HasAudio: hasAudio, Timecode: null, Bitrate: null));
-        var b = new FfmpegArgumentBuilder()
+        return new FfmpegArgumentBuilder()
             .From(source)
             .Using(profile).ForChannel("TST").ToDirectory("C:/out")
-            .WithPreviewSink("tcp://127.0.0.1:9001");
-        return string.Join(' ', b.BuildLive(recording, 640, 360));
+            .WithPreviewSink("tcp://127.0.0.1:9001")
+            .WithSignalAnalysis(analyze); // por defecto OFF: mantiene precisas las aserciones de la tubería base
     }
+
+    private static string BuildLive(RecordingProfile profile, bool recording, bool hasAudio = true, bool analyze = false)
+        => string.Join(' ', NewLiveBuilder(profile, hasAudio, analyze).BuildLive(recording, 640, 360));
 
     [Fact]
     public void BuildLive_PreviewOnly_HasPreviewAndMetersButNoEncoder()
@@ -272,5 +304,106 @@ public class FfmpegArgumentBuilderTests
         Assert.DoesNotContain("-c:a", joined);              // …sin pista ni códec de audio
         Assert.DoesNotContain("0:a:0?", joined);
         Assert.DoesNotContain("ebur128", joined);
+    }
+
+    // --- Análisis de señal: detectores de negro/congelado/silencio (alarmas) ---
+
+    [Fact]
+    public void BuildLive_WithAnalysis_InsertsBlackFreezeAndSilenceDetectors()
+    {
+        var joined = BuildLive(SoftwareMp4(), recording: false, analyze: true);
+
+        Assert.Contains("blackdetect", joined);                              // negro → rama de preview
+        Assert.Contains("freezedetect", joined);                            // congelado → rama de preview
+        Assert.Contains("silencedetect", joined);                           // silencio → rama de audio
+        Assert.Contains("format=bgra[pv]", joined);                         // el preview sigue saliendo BGRA
+    }
+
+    // --- Segmentación: muxer segment, cada archivo completo es recuperable por separado ---
+
+    private static RecordingProfile SegmentedMp4(int minutes)
+    {
+        var p = SoftwareMp4();
+        p.Segmentation = new SegmentationPolicy { Trigger = SegmentTrigger.Duration, Duration = TimeSpan.FromMinutes(minutes) };
+        return p;
+    }
+
+    [Fact]
+    public void BuildLive_Recording_Segmented_UsesSegmentMuxerAndExposesGlob()
+    {
+        var b = NewLiveBuilder(SegmentedMp4(2));
+        var joined = string.Join(' ', b.BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("-f segment", joined);
+        Assert.Contains("-segment_time 120", joined);                       // 2 min → 120 s
+        Assert.Contains("-reset_timestamps 1", joined);
+        Assert.True(b.IsSegmentedOutput);
+        Assert.Equal("TST_*.mp4", b.SegmentFileGlob);                       // glob para vigilar los segmentos
+        Assert.Empty(b.OutputFilePath);                                     // no hay archivo único
+        Assert.DoesNotContain("-movflags +faststart", joined);             // faststart no aplica por segmento
+    }
+
+    [Fact]
+    public void BuildLive_Recording_SegmentBySize_DerivesDurationFromBitrate()
+    {
+        var p = SoftwareMp4();                                              // 8 Mbps vídeo
+        p.AudioCodec = AudioCodec.Aac; p.AudioBitrate = Bitrate.FromKbps(0); // aísla el cálculo al vídeo
+        // 8 Mbit/s → 1 MByte/s; 50 MB ⇒ ~50 s por segmento.
+        p.Segmentation = new SegmentationPolicy { Trigger = SegmentTrigger.Size, MaxBytes = 50L * 1_000_000 };
+
+        var joined = string.Join(' ', NewLiveBuilder(p).BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("-f segment", joined);
+        Assert.Contains("-segment_time 50", joined);
+    }
+
+    // --- Carta de ajuste (slate): barras + silencio generados, sin tocar el dispositivo ---
+
+    [Fact]
+    public void BuildSlate_Recording_GeneratesBarsAndSilenceKeepingPreviewAndFile()
+    {
+        var b = NewLiveBuilder(SoftwareMp4());
+        var joined = string.Join(' ', b.BuildSlate(recording: true, 640, 360));
+
+        Assert.Contains("smptebars", joined);                               // barras SMPTE…
+        Assert.Contains("anullsrc", joined);                                // …y silencio
+        Assert.Contains("drawtext", joined);                                // rótulo "SIN SEÑAL"
+        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined); // el preview sigue
+        Assert.Contains("-c:v libx264", joined);                            // graba el slate
+        Assert.DoesNotContain("in.mp4", joined);                            // NO abre el dispositivo/fuente
+    }
+
+    // --- Nombre del archivo: manual (nombre del operador) y programada (dd-MM-yyyy_Título_N) ---
+
+    [Fact]
+    public void BuildLive_Recording_WithBaseName_NamesSingleFileByBase()
+    {
+        var b = NewLiveBuilder(SoftwareMp4()).WithBaseName("Partido");
+        var joined = string.Join(' ', b.BuildLive(recording: true, 640, 360));
+
+        Assert.EndsWith("Partido.mp4", b.OutputFilePath);   // usa el nombre dado…
+        Assert.DoesNotContain("TST_", b.OutputFilePath);    // …sin el prefijo de canal ni la fecha
+        Assert.Contains("Partido.mp4", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Recording_Segmented_WithBaseName_UsesUnderscoreCounterAndStartNumber()
+    {
+        var b = NewLiveBuilder(SegmentedMp4(2)).WithBaseName("21-06-2026_Noticias").WithSegmentStartNumber(3);
+        var joined = string.Join(' ', b.BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("21-06-2026_Noticias_%d.mp4", joined);   // «_1, _2…» (1-based, sin relleno)
+        Assert.Contains("-segment_start_number 3", joined);       // numeración CONTINUA entre reinicios/slate
+        Assert.Equal("21-06-2026_Noticias_*.mp4", b.SegmentFileGlob);
+        Assert.DoesNotContain("%03d", joined);                    // no el contador legado relleno
+    }
+
+    [Fact]
+    public void BuildLive_Recording_Segmented_WithoutBaseName_KeepsLegacyPaddedCounter()
+    {
+        var joined = string.Join(' ', NewLiveBuilder(SegmentedMp4(2)).BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("_%03d.mp4", joined);                     // legado: {canal}_{fecha}_%03d
+        Assert.DoesNotContain("-segment_start_number", joined);   // sin numeración forzada
     }
 }

@@ -1,7 +1,10 @@
+using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Infrastructure.Preview;
@@ -18,11 +21,15 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 {
     private readonly IChannelEngine _engine;
     private readonly IConfigurableRecording? _config;
+    private readonly IPostRecordingRename? _renamer;
+    private readonly Func<Guid, Task>? _skipScheduled;
 
-    public ChannelViewModel(IChannelEngine engine, IChannelPreviewSource? preview = null)
+    public ChannelViewModel(IChannelEngine engine, IChannelPreviewSource? preview = null, Func<Guid, Task>? skipScheduled = null)
     {
         _engine = engine;
         _config = engine as IConfigurableRecording;
+        _renamer = engine as IPostRecordingRename;
+        _skipScheduled = skipScheduled;
         IsConfigurable = _config is not null;
         Preview = preview;
 
@@ -60,6 +67,23 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _rightPeakDb = "-∞";
     [ObservableProperty] private bool _clipping;
 
+    // Alarmas operativas (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
+    [ObservableProperty] private bool _hasAlarms;
+    [ObservableProperty] private string _alarmsText = "";
+    [ObservableProperty] private bool _isSlate;
+    [ObservableProperty] private string _diskText = "—";
+    [ObservableProperty] private bool _diskWarning;
+    [ObservableProperty] private bool _diskCritical;
+
+    // Resiliencia de señal POR CANAL: carta de ajuste al perder señal. (La segmentación del vídeo se
+    // configura por grabación programada, en «🕒 Programación», no aquí.)
+    [ObservableProperty] private bool _slateOnSignalLoss;
+
+    partial void OnSlateOnSignalLossChanged(bool value)
+    {
+        if (_config is not null && !IsRecording) _config.Profile.SlateOnSignalLoss = value;
+    }
+
     // ---------------------------------------------------------------------
     //  Destino y perfil activo
     // ---------------------------------------------------------------------
@@ -87,6 +111,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     {
         if (_config is null) return;
         OutputDirectory = _config.OutputDirectory;
+        SlateOnSignalLoss = _config.Profile.SlateOnSignalLoss;
         RefreshProfileText();
     }
 
@@ -100,6 +125,8 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         if (_config is null || IsRecording) return;
         var current = _config.Profile;
         _config.Profile = preset.ToProfile(current.Id, current.Name); // conserva Id/Name persistidos
+        // El slate es operativo por canal, no del preset: se reaplica al nuevo perfil.
+        _config.Profile.SlateOnSignalLoss = SlateOnSignalLoss;
         RefreshProfileText();
     }
 
@@ -125,20 +152,73 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     // ---------------------------------------------------------------------
 
     [RelayCommand(CanExecute = nameof(CanStart))]
-    private Task StartAsync() => _engine.StartRecordingAsync(Guid.Empty, Environment.UserName);
+    private Task StartAsync()
+        // Grabación MANUAL: arranca YA con un nombre temporal ({canal}_{fecha_hora}); el nombre real se
+        // pide al DETENER y se renombra el archivo entonces.
+        => _engine.StartRecordingAsync(Guid.Empty, Environment.UserName);
     private bool CanStart() => !IsRecording && IsLocked;
 
     [RelayCommand(CanExecute = nameof(CanStop))]
-    private Task StopAsync() => _engine.StopRecordingAsync();
+    private async Task StopAsync()
+    {
+        // ¿Era manual? Las programadas ya tienen nombre y las gestiona el scheduler. Se decide ANTES de
+        // parar, porque al detener pueden cambiar los indicadores del canal.
+        bool manual = !IsScheduledRecording && _renamer is not null;
+        await _engine.StopRecordingAsync();
+        if (!manual) return;
+
+        // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).
+        // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
+        var dialog = new RecordingNameWindow(Key, $"Grabación {DateTime.Now:dd-MM-yyyy}")
+        {
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        if (dialog.ShowDialog() == true)
+            await _renamer!.RenameLastRecordingAsync(dialog.RecordingName);
+    }
     private bool CanStop() => IsRecording;
 
-    [RelayCommand(CanExecute = nameof(CanPause))]
-    private Task PauseAsync() => _engine.PauseRecordingAsync();
-    private bool CanPause() => RecordingState == RecordingState.Recording;
+    /// <summary>True cuando una grabación PROGRAMADA está corriendo en este canal (lo fija el shell desde el scheduler).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowStopButton))]
+    private bool _isScheduledRecording;
 
-    [RelayCommand(CanExecute = nameof(CanResume))]
-    private Task ResumeAsync() => _engine.ResumeRecordingAsync();
-    private bool CanResume() => RecordingState == RecordingState.Paused;
+    /// <summary>El botón «Detener» SOLO aplica a grabaciones manuales; en las programadas se usa «saltar».</summary>
+    public bool ShowStopButton => !IsScheduledRecording;
+
+    /// <summary>Salta la grabación programada en curso (solo esta ocurrencia; las siguientes siguen).</summary>
+    [RelayCommand]
+    private Task SkipScheduledRecording() => _skipScheduled?.Invoke(ChannelId) ?? Task.CompletedTask;
+
+    // ---------------------------------------------------------------------
+    //  Tareas programadas de HOY para este canal (tabla bajo el preview)
+    // ---------------------------------------------------------------------
+
+    /// <summary>Grabaciones programadas de hoy en este canal (la en curso va resaltada). La rellena el shell.</summary>
+    public ObservableCollection<TodayTaskRow> TodayTasks { get; } = new();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NoTodayTasks))]
+    private bool _hasTodayTasks;
+
+    /// <summary>Inverso de <see cref="HasTodayTasks"/> (para mostrar el texto «hoy no hay / próxima…»).</summary>
+    public bool NoTodayTasks => !HasTodayTasks;
+
+    /// <summary>Texto cuando hoy no hay grabaciones (p. ej. «Hoy no hay. Próxima: lun 22/06 · 20:00 · …»).</summary>
+    [ObservableProperty] private string _todayEmptyText = "";
+
+    /// <summary>Mostrar la sección «HOY» (hay algo hoy o una próxima ocurrencia); se oculta si el canal no tiene tareas.</summary>
+    [ObservableProperty] private bool _showTodaySection;
+
+    /// <summary>El shell sustituye la lista de tareas de hoy (refresco periódico / al cambiar el estado activo).</summary>
+    public void SetTodayTasks(IReadOnlyList<TodayTaskRow> rows, string emptyText, bool showSection)
+    {
+        TodayTasks.Clear();
+        foreach (var r in rows) TodayTasks.Add(r);
+        HasTodayTasks = TodayTasks.Count > 0;
+        TodayEmptyText = emptyText;
+        ShowTodaySection = showSection;
+    }
 
     private void OnStatusChanged(object? sender, ChannelStatus status)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => Sync(status));
@@ -167,7 +247,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             SignalState.Unstable => "INESTABLE",
             _ => "SIN SEÑAL"
         };
-        FormatText = status.Signal is { Resolution: { } r, FrameRate: { } f } ? $"{r} · {f}" : "—";
+        // Preferimos la etiqueta legible del modo (DeckLink: "1920×1080 · 59.94i"); si no, resolución·fps.
+        FormatText = status.Signal.FormatLabel
+                     ?? (status.Signal is { Resolution: { } r, FrameRate: { } f } ? $"{r} · {f}" : "—");
 
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;
 
@@ -193,6 +275,22 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             BitrateText = "—";
         }
 
+        // Alarmas operativas: negro/congelado/silencio/slate/disco. Se muestran como una franja sobre el
+        // preview; el slate (sin señal pero grabando barras) se resalta aparte.
+        var alarms = status.Alarms ?? Array.Empty<ChannelAlarm>();
+        HasAlarms = alarms.Count > 0;
+        AlarmsText = HasAlarms ? string.Join("   •   ", alarms.Select(a => a.Message)) : "";
+        IsSlate = alarms.Any(a => a.Type == AlarmType.Slate);
+
+        // Disco: tiempo restante estimado durante la grabación; colores por severidad.
+        if (IsRecording && status.Storage is { } st)
+        {
+            DiskText = FormatDisk(st);
+            DiskCritical = alarms.Any(a => a.Type == AlarmType.DiskCritical);
+            DiskWarning = alarms.Any(a => a.Type == AlarmType.DiskLow);
+        }
+        else { DiskText = "—"; DiskWarning = false; DiskCritical = false; }
+
         // Medidores: en modo real los conduce el audio del preview (ver OnPreviewAudio); aquí solo
         // se actualizan desde el status cuando NO hay preview (canal simulado).
         if (Preview is null)
@@ -215,12 +313,22 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
         StartCommand.NotifyCanExecuteChanged();
         StopCommand.NotifyCanExecuteChanged();
-        PauseCommand.NotifyCanExecuteChanged();
-        ResumeCommand.NotifyCanExecuteChanged();
     }
 
     private static double Norm(double db) => Math.Clamp((db + 60) / 60.0, 0, 1);
     private static string Fmt(double db) => db <= -60 ? "-∞" : $"{db:0.0}";
+
+    /// <summary>"820 GB libres · ~1 h 12 min" — espacio libre y tiempo de grabación restante estimado.</summary>
+    private static string FormatDisk(StorageInfo s)
+    {
+        string free = s.FreeGiB >= 1 ? $"{s.FreeGiB:0.0} GB" : $"{s.FreeBytes / 1_048_576d:0} MB";
+        if (s.EstimatedRemaining is { } r)
+        {
+            string t = r.TotalHours >= 1 ? $"{(int)r.TotalHours} h {r.Minutes:00} min" : $"{r.Minutes} min";
+            return $"{free} · ~{t}";
+        }
+        return $"{free} libres";
+    }
 
     public void Dispose()
     {

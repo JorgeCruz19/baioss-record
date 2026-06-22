@@ -56,6 +56,13 @@ public sealed class RecordingProfile
     /// <summary>Grabar solo audio (sin pista de video).</summary>
     public bool AudioOnly { get; set; }
 
+    /// <summary>
+    /// Resiliencia 24/7: al perder la señal de entrada durante la grabación, seguir grabando una carta
+    /// de ajuste (barras SMPTE + silencio) para no romper la base de tiempo, y reanudar la fuente en
+    /// cuanto vuelva. Funciona mejor con segmentación (el relleno queda en su propio segmento).
+    /// </summary>
+    public bool SlateOnSignalLoss { get; set; }
+
     // --- Sub-políticas (todas opcionales) ---
     public SegmentationPolicy? Segmentation { get; set; }
     public ProxyProfile? Proxy { get; set; }

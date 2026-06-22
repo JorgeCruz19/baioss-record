@@ -50,6 +50,11 @@ public sealed class InputDeviceOption
         else if (Type is InputType.DecklinkSdi && format is { Code.Length: > 0 })
         {
             def.Parameters["format_code"] = format.Code; // modo SDI elegido (si no, autodetección)
+            // El modo elegido fija la resolución/tasa esperadas → la señal del canal las muestra en el
+            // preview (1920×1080 · 59.94i). La tasa es la codificada (correcta para timecode/encoder).
+            if (format.Resolution is { } r) def.ExpectedResolution = r;
+            if (format.FrameRate is { } f) def.ExpectedFrameRate = f;
+            def.Parameters["format_label"] = format.Description; // etiqueta legible para el preview
         }
         return def;
     }

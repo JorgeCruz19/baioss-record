@@ -12,7 +12,9 @@ public sealed record SignalInfo(
     AudioLayout? AudioLayout,
     bool HasAudio,
     Timecode? Timecode,
-    Bitrate? Bitrate)
+    Bitrate? Bitrate,
+    // Etiqueta legible del formato de entrada (p. ej. "1920×1080 · 59.94i"); preferida en UI si está.
+    string? FormatLabel = null)
 {
     public static readonly SignalInfo None =
         new(SignalState.NoSignal, null, null, null, false, null, null);
@@ -46,11 +48,24 @@ public interface ICaptureSourceFactory
 }
 
 /// <summary>Modo/formato de vídeo de un dispositivo (DeckLink): <see cref="Code"/> es el valor de
-/// <c>-format_code</c> (p. ej. "Hp50"); <see cref="Description"/> es legible (p. ej. "1920x1080 50p").</summary>
+/// <c>-format_code</c> (p. ej. "Hp50"); <see cref="Description"/> es la etiqueta legible (p. ej.
+/// "1920×1080 · 50p"). Lleva además la resolución/tasa parseadas para poblar la señal del canal.</summary>
 public sealed record DeviceFormat(string Code, string Description)
 {
     /// <summary>Opción de autodetección (sin <c>-format_code</c>): los drivers modernos detectan la señal.</summary>
     public static readonly DeviceFormat Auto = new("", "Automático (autodetección)");
+
+    /// <summary>Resolución del modo, si se pudo parsear de la salida de <c>-list_formats</c>.</summary>
+    public Resolution? Resolution { get; init; }
+
+    /// <summary>Tasa de cuadro CODIFICADA del modo (29.97 para 1080i59.94), no la de campos.</summary>
+    public FrameRate? FrameRate { get; init; }
+
+    /// <summary>True si el modo es entrelazado.</summary>
+    public bool Interlaced { get; init; }
+
+    /// <summary>La caja del combo cae a <c>ToString()</c>: mostramos la etiqueta legible, no el record crudo.</summary>
+    public override string ToString() => Description;
 }
 
 /// <summary>Enumera dispositivos físicos disponibles (DeckLink, DirectShow, NDI sources…).</summary>

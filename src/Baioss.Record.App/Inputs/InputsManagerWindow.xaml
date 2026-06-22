@@ -63,12 +63,17 @@
                                     <StackPanel Grid.Column="3" Margin="0,0,10,0" VerticalAlignment="Center">
                                         <TextBlock Text="MODO / FORMATO (DeckLink)" FontSize="9"
                                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                                        <ComboBox Height="28" ItemsSource="{Binding Formats}" DisplayMemberPath="Description"
+                                        <!-- Sin DisplayMemberPath: DeviceFormat.ToString() da la etiqueta legible
+                                             tanto en la lista como en la caja seleccionada (el estilo del combo
+                                             no aplicaba el SelectionBoxItemTemplate y salía el record crudo). -->
+                                        <ComboBox Height="28" ItemsSource="{Binding Formats}"
                                                   SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding FormatEnabled}"/>
                                     </StackPanel>
 
+                                    <!-- Padding propio (no el 14,9 heredado): con Height=28 ese padding recortaba el texto. -->
                                     <Button Grid.Column="4" Content="Aplicar" Command="{Binding ApplyCommand}"
-                                            Style="{StaticResource StartButton}" VerticalAlignment="Bottom" Height="28"/>
+                                            Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
+                                            Height="28" MinWidth="92" Padding="18,0"/>
                                 </Grid>
                             </Border>
                         </DataTemplate>

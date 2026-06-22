@@ -1,0 +1,208 @@
+<Window x:Class="Baioss.Record.App.Scheduling.ScheduleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Programación de grabaciones" Height="640" Width="920"
+        Background="#10131A" WindowStartupLocation="CenterOwner">
+    <DockPanel>
+        <!-- Cabecera -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="🔄 Actualizar" VerticalAlignment="Center"
+                        Command="{Binding RefreshCommand}" Style="{StaticResource TransportButton}"/>
+                <StackPanel>
+                    <TextBlock Text="PROGRAMACIÓN DE GRABACIONES" FontSize="14" FontWeight="Bold"
+                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBlock Text="Graba automáticamente a la hora indicada, una vez o de forma recurrente. Usa el perfil activo del canal."
+                               FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- HOY: grabaciones programadas del día actual, con su estado (programada / en curso / grabada) -->
+        <Border DockPanel.Dock="Top" Background="#0E1118" Padding="16,10"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,0,1">
+            <StackPanel>
+                <TextBlock Text="HOY" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Text="No hay grabaciones programadas para hoy." FontSize="11" Margin="0,6,0,0"
+                           Foreground="{StaticResource TextSecondaryBrush}"
+                           Visibility="{Binding NoTodayRecordings, Converter={StaticResource BoolToVis}}"/>
+                <ScrollViewer MaxHeight="118" VerticalScrollBarVisibility="Auto" Margin="0,6,0,0">
+                    <ItemsControl ItemsSource="{Binding Today}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,8,8">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border Background="{StaticResource AccentBrush}" CornerRadius="4" Width="24" Height="24"
+                                                VerticalAlignment="Center" Margin="0,0,9,0">
+                                            <TextBlock Text="{Binding ChannelKey}" FontSize="13" FontWeight="Bold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextPrimaryBrush}"
+                                                       TextTrimming="CharacterEllipsis" MaxWidth="180"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
+                                                <TextBlock Text="{Binding TimeText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                                <Ellipse Width="7" Height="7" Margin="8,0,4,0" VerticalAlignment="Center" Fill="{Binding StatusBrush}"/>
+                                                <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{Binding StatusBrush}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </StackPanel>
+        </Border>
+
+        <!-- Estado -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,8">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource TextSecondaryBrush}"
+                       FontSize="12" TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- Formulario de nueva programación -->
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,0" Padding="16,12">
+            <StackPanel>
+                <TextBlock Text="NUEVA PROGRAMACIÓN" FontSize="11" FontWeight="Bold"
+                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                        <TextBlock Text="CANAL" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <ComboBox Height="28" ItemsSource="{Binding Channels}" SelectedItem="{Binding SelectedChannel}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                        <TextBlock Text="REPETICIÓN" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <ComboBox Height="28" ItemsSource="{Binding Recurrences}" SelectedItem="{Binding SelectedRecurrence}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Margin="0,0,8,0" Width="120"
+                                Visibility="{Binding IsOnce, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="FECHA (yyyy-MM-dd)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBox Height="28" Text="{Binding Date}" VerticalContentAlignment="Center" Padding="6,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="3" Margin="0,0,8,0" Width="70">
+                        <TextBlock Text="HORA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBox Height="28" Text="{Binding Time}" VerticalContentAlignment="Center"
+                                 HorizontalContentAlignment="Center" Padding="6,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="4">
+                        <TextBlock Text="DURACIÓN (min)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBox Height="28" Text="{Binding DurationMinutes}" VerticalContentAlignment="Center"
+                                 HorizontalContentAlignment="Center" Padding="6,0"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Días de la semana (solo repetición semanal) -->
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0"
+                            Visibility="{Binding IsWeekly, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="DÍAS" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <CheckBox Content="L" IsChecked="{Binding Mon}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="M" IsChecked="{Binding Tue}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="X" IsChecked="{Binding Wed}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="J" IsChecked="{Binding Thu}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="V" IsChecked="{Binding Fri}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="S" IsChecked="{Binding Sat}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="D" IsChecked="{Binding Sun}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                </StackPanel>
+
+                <!-- Segmentación: propia de esta grabación programada (cada archivo es recuperable) -->
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0" VerticalAlignment="Center">
+                    <CheckBox Content="Segmentar cada" IsChecked="{Binding SegmentEnabled}"
+                              Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                    <TextBox Width="48" Height="26" Margin="6,0" Text="{Binding SegmentMinutes}"
+                             VerticalContentAlignment="Center" HorizontalContentAlignment="Center" FontSize="12"
+                             IsEnabled="{Binding SegmentEnabled}"/>
+                    <TextBlock Text="min  (cada archivo queda completo; si se corrompe uno, no pierdes toda la grabación)"
+                               VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11"/>
+                </StackPanel>
+
+                <!-- Aviso en vivo: cruce de medianoche / segmentos ≥ duración (informativo) -->
+                <TextBlock Text="{Binding FormHint}" Foreground="{StaticResource SignalAmberBrush}" FontSize="11"
+                           FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0"/>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                        <TextBlock Text="TÍTULO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBox Height="28" Text="{Binding Title}" VerticalContentAlignment="Center" Padding="6,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="＋ Programar" Command="{Binding AddCommand}"
+                            Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
+                            Height="28" MinWidth="120" Padding="18,0"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Lista de programaciones -->
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Jobs}" Margin="16,12">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}"
+                                BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Border Grid.Column="0" Background="{StaticResource AccentBrush}" CornerRadius="6"
+                                        Width="34" Height="34" VerticalAlignment="Center" Margin="0,0,12,0">
+                                    <TextBlock Text="{Binding ChannelKey}" FontSize="16" FontWeight="Bold"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimaryBrush}"/>
+                                    <TextBlock Text="{Binding WhenText}" FontSize="11"
+                                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="10,0,16,0">
+                                    <TextBlock Text="PRÓXIMA" FontSize="8" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="{Binding NextRunText}" FontSize="12" FontWeight="Bold"
+                                               Foreground="{StaticResource AccentBrush}"/>
+                                </StackPanel>
+
+                                <Button Grid.Column="3" Content="{Binding EnabledText}" Margin="0,0,8,0"
+                                        Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource TransportButton}"
+                                        Command="{Binding DataContext.ToggleEnabledCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Grid.Column="4" Content="Eliminar"
+                                        Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource StopButton}"
+                                        Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

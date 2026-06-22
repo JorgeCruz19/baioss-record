@@ -83,8 +83,11 @@ public sealed class ChannelEngine : IChannelEngine
         // El IPreviewEngine se adjunta aquí en la implementación completa (ver docs/04-flujos).
         => Task.CompletedTask;
 
-    public async Task StartRecordingAsync(Guid profileId, string? @operator, CancellationToken ct = default)
+    public async Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
     {
+        // recordingName: lo aprovecha el motor unificado (StandaloneChannelEngine); esta variante completa
+        // basada en IRecorderEngine aún no nombra por sesión (Fase 2).
+        _ = recordingName;
         if (_source is null) throw new InvalidOperationException("No hay fuente vinculada.");
         if (_signal.State != SignalState.Locked)
             _log.LogWarning("Iniciando grabación sin lock de señal en canal {Key}.", _channel.Key);
@@ -124,9 +127,6 @@ public sealed class ChannelEngine : IChannelEngine
         }
         RaiseStatus();
     }
-
-    public Task PauseRecordingAsync(CancellationToken ct = default) => _recorder.PauseAsync(ct);
-    public Task ResumeRecordingAsync(CancellationToken ct = default) => _recorder.ResumeAsync(ct);
 
     public Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default)
     {

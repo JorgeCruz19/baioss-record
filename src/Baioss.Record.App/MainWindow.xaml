@@ -2,15 +2,19 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Baioss.Record.App"
-        Title="Baioss Record" Height="900" Width="1600"
+        Title="Baioss Record" Height="900" Width="1600" WindowState="Maximized"
         Background="#10131A" WindowStartupLocation="CenterScreen">
     <DockPanel>
         <!-- Barra de título de la app -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,10">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="🎛 Entradas"
+                    <Button Content="🛠 Configuración"
+                            Command="{Binding OpenGeneralSettingsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="🎛 Entradas" Margin="8,0,0,0"
                             Command="{Binding OpenInputsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="🕒 Programación" Margin="8,0,0,0"
+                            Command="{Binding OpenScheduleCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="⚙ Presets de grabación" Margin="8,0,0,0"
                             Command="{Binding OpenPresetsCommand}" Style="{StaticResource TransportButton}"/>
                 </StackPanel>

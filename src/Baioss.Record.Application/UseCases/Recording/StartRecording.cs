@@ -15,7 +15,7 @@ public sealed class StartRecordingHandler(IChannelManager channels)
     public async Task<StartRecordingResult> HandleAsync(StartRecordingCommand command, CancellationToken ct = default)
     {
         var channel = channels.Get(command.ChannelId);
-        await channel.StartRecordingAsync(command.ProfileId, command.Operator, ct);
+        await channel.StartRecordingAsync(command.ProfileId, command.Operator, ct: ct);
         return new StartRecordingResult(channel.Status.SessionId
             ?? throw new InvalidOperationException("El canal no devolvió una sesión activa."));
     }

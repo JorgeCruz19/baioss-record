@@ -29,6 +29,13 @@ public partial class ChannelView : UserControl
 
     private IChannelPreviewSource? CurrentPreview => (DataContext as ChannelViewModel)?.Preview;
 
+    // La superficie cambió su ImageSource (cayó a CPU porque la GPU no se recuperó): re-apunta el control.
+    private void OnSurfaceImageSourceChanged(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _surface) && _surface is not null)
+            PreviewImage.Source = _surface.ImageSource;
+    }
+
     /// <summary>
     /// Engancha la vista a una fuente de preview (o la desengancha con <c>null</c>). Idempotente: si ya
     /// está enlazada a la misma fuente no hace nada. Al cambiar de fuente, desmonta la superficie y la
@@ -40,6 +47,7 @@ public partial class ChannelView : UserControl
 
         // Desengancha la fuente anterior y libera su superficie.
         if (_preview is not null) _preview.FrameReady -= OnFrameReady;
+        if (_surface is not null) _surface.ImageSourceChanged -= OnSurfaceImageSourceChanged;
         _surface?.Dispose();
         _surface = null;
         _pending = null;           // descarta cualquier frame en cola de la fuente anterior
@@ -50,6 +58,7 @@ public partial class ChannelView : UserControl
         var surface = new PreviewSurface(preview.FrameWidth, preview.FrameHeight);
         _surface = surface;
         PreviewImage.Source = surface.ImageSource;
+        surface.ImageSourceChanged += OnSurfaceImageSourceChanged; // p. ej. si la GPU no vuelve y cae a CPU
         preview.FrameReady += OnFrameReady;
         Serilog.Log.Information("Preview canal {Key}: render {Mode}.",
             (DataContext as ChannelViewModel)?.Key, surface.IsGpu ? "D3D11/D3DImage (GPU)" : "WriteableBitmap (CPU)");

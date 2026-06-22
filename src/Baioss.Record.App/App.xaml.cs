@@ -15,6 +15,8 @@ using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
+using Baioss.Record.Application.Scheduling;
+using Baioss.Record.Infrastructure.Scheduling;
 using Baioss.Record.App.Demo;
 using Baioss.Record.App.Preview;
 using Baioss.Record.App.Recording;
@@ -53,9 +55,9 @@ public partial class App : System.Windows.Application
         var dbPath = Path.Combine(root, "data", "baioss.db");
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
-        // Selección de encoder (una sola vez): NVENC si el driver responde, si no libx264.
-        var (real, codec) = await ProbeEngineAsync(ffmpegDir, clipPath);
-        var gpuEncoders = real && codec == VideoCodec.H264Nvenc; // hay NVENC utilizable → ofrecer códecs GPU en la UI
+        // Selección de encoder (una sola vez): GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264).
+        var (real, codec, encoderNotes) = await ProbeEngineAsync(ffmpegDir, clipPath);
+        var gpuEncoders = real && codec == VideoCodec.H264Nvenc; // NVENC utilizable → ofrecer códecs GPU en la UI
 
         // El host es una WebApplication (Kestrel) que además levanta la UI y los servicios de fondo:
         // un único contenedor DI compartido por la UI, los canales y la API de automatización.
@@ -76,6 +78,10 @@ public partial class App : System.Windows.Application
         s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec));
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
+        // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.
+        s.AddSingleton<SchedulerService>();
+        s.AddSingleton<ISchedulerService>(sp => sp.GetRequiredService<SchedulerService>());
+        s.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 
@@ -86,23 +92,44 @@ public partial class App : System.Windows.Application
 
         await app.StartAsync();
         Serilog.Log.Information("API REST + WebSocket escuchando en {Url} (solo loopback).", ApiUrl);
+        // Cascada GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264): por qué se descartó cada
+        // GPU (p. ej. driver NVIDIA viejo para este FFmpeg) y cuál quedó como encoder por defecto.
+        Serilog.Log.Information("Cascada de encoder: {Count} GPU(s) descartada(s) antes del elegido.", encoderNotes.Count);
+        foreach (var note in encoderNotes) Serilog.Log.Information(" - {Note}", note);
+        Serilog.Log.Information("Encoder de video por defecto: {Codec} ({Mode}).", codec, real ? "real" : "simulado");
         app.Services.GetRequiredService<MainWindow>().Show();
     }
 
-    /// <summary>Determina si se puede grabar de verdad y con qué encoder de video.</summary>
-    private static async Task<(bool Real, VideoCodec Codec)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
+    /// <summary>
+    /// Determina si se puede grabar de verdad y con qué encoder (cascada NVENC → QSV → AMF → CPU);
+    /// <c>Notes</c> lleva el motivo por el que se descartó cada GPU, para registrarlo al arrancar.
+    /// </summary>
+    private static async Task<(bool Real, VideoCodec Codec, IReadOnlyList<string> Notes)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
     {
-        if (ffmpegDir is null || clipPath is null) return (false, VideoCodec.H264x264);
+        var notes = new List<string>();
+        if (ffmpegDir is null || clipPath is null) return (false, VideoCodec.H264x264, notes);
         try
         {
             var locator = new FfmpegLocator(ffmpegDir);
-            var nvenc = await locator.IsVideoEncoderUsableAsync("h264_nvenc");
-            return (true, nvenc ? VideoCodec.H264Nvenc : VideoCodec.H264x264);
+            // Cascada: GPU dedicada (NVIDIA NVENC) → GPU integrada (Intel QSV → AMD AMF) → CPU (libx264).
+            var cascade = new[]
+            {
+                ("h264_nvenc", VideoCodec.H264Nvenc),
+                ("h264_qsv",   VideoCodec.H264Qsv),
+                ("h264_amf",   VideoCodec.H264Amf),
+            };
+            foreach (var (name, codecOption) in cascade)
+            {
+                var (ok, detail) = await locator.ProbeVideoEncoderAsync(name);
+                if (ok) return (true, codecOption, notes);
+                notes.Add($"Encoder GPU «{name}» no utilizable: {detail}");
+            }
+            return (true, VideoCodec.H264x264, notes); // ninguna GPU utilizable → software (CPU)
         }
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "FFmpeg no utilizable; los canales caerán a modo simulado.");
-            return (false, VideoCodec.H264x264); // sin FFmpeg utilizable → simulado
+            return (false, VideoCodec.H264x264, notes); // sin FFmpeg utilizable → simulado
         }
     }
 
