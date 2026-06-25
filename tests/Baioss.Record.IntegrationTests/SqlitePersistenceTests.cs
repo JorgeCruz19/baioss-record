@@ -3,6 +3,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Persistence;
+using Baioss.Record.Application.Storage;
 using Baioss.Record.Infrastructure;
 using Xunit;
 
@@ -113,6 +114,119 @@ public sealed class SqlitePersistenceTests : IDisposable
         var segmentBack = Assert.Single(sessionBack.Segments);
         Assert.Equal(12_345, segmentBack.SizeBytes);
         Assert.Equal(new Timecode(0, 15, 0, 0), segmentBack.EndTimecode);
+    }
+
+    [Fact]
+    public async Task CloseOrphaned_ClosesActiveSessions_LeavesFinishedUntouched()
+    {
+        var sources = _sp.GetRequiredService<IInputSourceRepository>();
+        var profiles = _sp.GetRequiredService<IRecordingProfileRepository>();
+        var channels = _sp.GetRequiredService<IChannelRepository>();
+        var sessions = _sp.GetRequiredService<IRecordingSessionRepository>();
+
+        var source = new InputSource { Name = "Clip", Type = InputType.File, Uri = @"C:\x\c.mp4" };
+        var profile = new RecordingProfile
+        {
+            Name = "MP4", VideoCodec = VideoCodec.H264x264,
+            VideoBitrate = Bitrate.FromMbps(8), AudioBitrate = Bitrate.FromKbps(256), Container = ContainerFormat.Mp4,
+        };
+        var channel = new Channel { Key = "A", Name = "Canal A", InputSourceId = source.Id, ProfileId = profile.Id };
+        await sources.AddAsync(source);
+        await profiles.AddAsync(profile);
+        await channels.AddAsync(channel);
+
+        // Huérfana: quedó «grabando» sin EndedAt (simula un crash a mitad de grabación).
+        var orphan = new RecordingSession
+        {
+            ChannelId = channel.Id, ProfileId = profile.Id, InputSourceId = source.Id,
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-30), State = RecordingState.Recording,
+        };
+        // Terminada correctamente: Idle + EndedAt → NO debe tocarse.
+        var done = new RecordingSession
+        {
+            ChannelId = channel.Id, ProfileId = profile.Id, InputSourceId = source.Id,
+            StartedAt = DateTimeOffset.UtcNow.AddHours(-1), EndedAt = DateTimeOffset.UtcNow.AddMinutes(-50),
+            State = RecordingState.Idle,
+        };
+        await sessions.AddAsync(orphan);
+        await sessions.AddAsync(done);
+
+        int closed = await sessions.CloseOrphanedAsync(DateTimeOffset.UtcNow);
+
+        Assert.Equal(1, closed); // solo la huérfana
+        var orphanBack = await sessions.GetAsync(orphan.Id);
+        Assert.Equal(RecordingState.Error, orphanBack!.State);
+        Assert.NotNull(orphanBack.EndedAt);
+        var doneBack = await sessions.GetAsync(done.Id);
+        Assert.Equal(RecordingState.Idle, doneBack!.State); // la terminada queda intacta
+    }
+
+    [Fact]
+    public async Task ApplyRetention_DeletesOldRecordings_KeepsRecent()
+    {
+        var storage = _sp.GetRequiredService<IStorageManager>();
+        var sources = _sp.GetRequiredService<IInputSourceRepository>();
+        var profiles = _sp.GetRequiredService<IRecordingProfileRepository>();
+        var channels = _sp.GetRequiredService<IChannelRepository>();
+        var sessions = _sp.GetRequiredService<IRecordingSessionRepository>();
+        var segments = _sp.GetRequiredService<IRepository<Segment>>();
+
+        var source = new InputSource { Name = "C", Type = InputType.File, Uri = @"C:\x\c.mp4" };
+        var profile = new RecordingProfile
+        {
+            Name = "MP4", VideoCodec = VideoCodec.H264x264,
+            VideoBitrate = Bitrate.FromMbps(8), AudioBitrate = Bitrate.FromKbps(256), Container = ContainerFormat.Mp4,
+        };
+        var channel = new Channel { Key = "A", Name = "Canal A", InputSourceId = source.Id, ProfileId = profile.Id };
+        await sources.AddAsync(source);
+        await profiles.AddAsync(profile);
+        await channels.AddAsync(channel);
+
+        var dir = Path.Combine(Path.GetTempPath(), $"baioss-ret-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var oldFile = Path.Combine(dir, "old.mp4"); await File.WriteAllTextAsync(oldFile, "x");
+            var newFile = Path.Combine(dir, "new.mp4"); await File.WriteAllTextAsync(newFile, "x");
+            var now = DateTimeOffset.UtcNow;
+
+            // Grabación terminada hace 40 días → expira con RetentionDays=30.
+            var oldSession = new RecordingSession
+            {
+                ChannelId = channel.Id, ProfileId = profile.Id, InputSourceId = source.Id,
+                StartedAt = now.AddDays(-41), EndedAt = now.AddDays(-40), State = RecordingState.Idle,
+            };
+            await sessions.AddAsync(oldSession);
+            await segments.AddAsync(new Segment
+            {
+                SessionId = oldSession.Id, Index = 0, FilePath = oldFile,
+                Status = SegmentStatus.Completed, StartedAt = oldSession.StartedAt, EndedAt = oldSession.EndedAt!.Value,
+            });
+
+            // Grabación de ayer → se conserva.
+            var newSession = new RecordingSession
+            {
+                ChannelId = channel.Id, ProfileId = profile.Id, InputSourceId = source.Id,
+                StartedAt = now.AddDays(-2), EndedAt = now.AddDays(-1), State = RecordingState.Idle,
+            };
+            await sessions.AddAsync(newSession);
+            await segments.AddAsync(new Segment
+            {
+                SessionId = newSession.Id, Index = 0, FilePath = newFile,
+                Status = SegmentStatus.Completed, StartedAt = newSession.StartedAt, EndedAt = newSession.EndedAt!.Value,
+            });
+
+            await storage.ApplyRetentionAsync(new RetentionPolicy
+            {
+                ChannelId = channel.Id, RetentionDays = 30, Action = RetentionAction.Delete,
+            });
+
+            Assert.False(File.Exists(oldFile), "El archivo de >30 días debió borrarse.");
+            Assert.True(File.Exists(newFile), "El archivo reciente debe conservarse.");
+            Assert.Null(await sessions.GetAsync(oldSession.Id));    // la sesión vieja se retiró de la BD
+            Assert.NotNull(await sessions.GetAsync(newSession.Id)); // la reciente queda intacta
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ } }
     }
 
     public void Dispose()

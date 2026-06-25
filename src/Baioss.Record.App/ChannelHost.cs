@@ -7,6 +7,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
+using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.App.Demo;
@@ -19,8 +20,9 @@ using Baioss.Record.Infrastructure.Preview;
 
 namespace Baioss.Record.App;
 
-/// <summary>Entorno de composición (modo real, rutas y códec demo), calculado al arrancar la app.</summary>
-public sealed record ChannelCompositionContext(bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec);
+/// <summary>Entorno de composición (modo real, rutas, códec demo y nº de canales), calculado al arrancar.</summary>
+public sealed record ChannelCompositionContext(
+    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount);
 
 /// <summary>
 /// Compone y MANTIENE el runtime de cada canal (fuente + grabador + monitor + preview + motor), y
@@ -30,13 +32,17 @@ public sealed record ChannelCompositionContext(bool Real, string Root, string? F
 /// </summary>
 public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
 {
-    private static readonly string[] ChannelKeys = { "A", "B" };
+    /// <summary>Keys de los canales (A, B, C, …) según el nº configurado; nombran y siembran cada canal.</summary>
+    private readonly string[] _channelKeys;
 
     private readonly IServiceProvider _sp;
     private readonly PreviewCatalog _previews;
     private readonly ChannelCompositionContext _ctx;
     private readonly Dictionary<Guid, IChannelEngine> _engines = new();
     private readonly Dictionary<Guid, string> _keys = new();
+    // Entrada vigente de cada canal: para impedir que dos canales reciban el MISMO dispositivo de captura
+    // exclusivo (cámara DirectShow / tarjeta DeckLink), que haría fallar al segundo al abrir.
+    private readonly Dictionary<Guid, InputSource> _sources = new();
 
     /// <summary>Se eleva (channelId) tras reconstruir un canal; la UI reemplaza su ViewModel.</summary>
     public event Action<Guid>? ChannelRebound;
@@ -46,6 +52,8 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         _sp = sp;
         _previews = previews;
         _ctx = ctx;
+        // A, B, C, … hasta el nº de canales configurado (ya acotado en el arranque): 'A' + índice.
+        _channelKeys = Enumerable.Range(0, ctx.ChannelCount).Select(i => ((char)('A' + i)).ToString()).ToArray();
         Initialize();
     }
 
@@ -68,7 +76,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         try
         {
             _sp.EnsureBaiossDatabaseCreated();
-            foreach (var key in ChannelKeys)
+            foreach (var key in _channelKeys)
             {
                 var (channelId, def, profile) = SeedAndResolve(key);
                 var (engine, preview) = BuildRuntime(key, channelId, def, profile);
@@ -89,7 +97,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
 
     private void BuildSimulated()
     {
-        foreach (var key in ChannelKeys)
+        foreach (var key in _channelKeys)
         {
             var sim = new SimulatedChannelEngine(key);
             _engines[sim.ChannelId] = sim;
@@ -108,6 +116,14 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         if (_engines.TryGetValue(channelId, out var current) &&
             current.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
             throw new InvalidOperationException("Detén la grabación antes de cambiar la entrada del canal.");
+
+        // Exclusividad: una cámara DirectShow o una tarjeta DeckLink no admiten dos canales a la vez. Si otro
+        // canal ya usa ese dispositivo, no reasignar (el segundo fallaría a abrir y se quedaría sin grabar).
+        foreach (var (otherId, otherDef) in _sources)
+            if (otherId != channelId && DeviceExclusivity.Conflicts(newDef, otherDef))
+                throw new InvalidOperationException(
+                    $"«{newDef.Name}» ya está asignada al Canal {_keys.GetValueOrDefault(otherId, "?")}. " +
+                    "Un dispositivo de captura no admite dos canales a la vez.");
 
         var sources = _sp.GetRequiredService<IInputSourceRepository>();
         var channels = _sp.GetRequiredService<IChannelRepository>();
@@ -192,6 +208,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var engine = new StandaloneChannelEngine(
             key, source, profile, capture, channelId,
             sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard);
+        _sources[channelId] = def; // entrada vigente del canal (para el chequeo de exclusividad al reasignar)
         return (engine, capture);
     }
 

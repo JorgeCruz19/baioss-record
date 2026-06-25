@@ -15,6 +15,12 @@ public sealed class TodayTaskRow
     public required string SegmentText { get; init; }
     public required bool IsRunning { get; init; }
 
+    /// <summary>Rango compacto «18:00 → 19:00» (entrada→salida) para la fila de una sola línea.</summary>
+    public string RangeText => $"{EntradaText} → {SalidaText}";
+
+    /// <summary>True si la grabación está segmentada (para mostrar el badge de duración del segmento).</summary>
+    public bool HasSegment => !string.IsNullOrEmpty(SegmentText);
+
     /// <summary>Fondo de la fila: verde "al aire" si está en ejecución; transparente si no.</summary>
     public Brush RowBackground => IsRunning ? RunningBg : Brushes.Transparent;
 

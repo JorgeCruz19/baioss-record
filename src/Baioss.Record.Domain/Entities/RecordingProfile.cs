@@ -67,6 +67,14 @@ public sealed class RecordingProfile
     public SegmentationPolicy? Segmentation { get; set; }
     public ProxyProfile? Proxy { get; set; }
     public IList<StreamTarget> StreamTargets { get; init; } = new List<StreamTarget>();
+
+    /// <summary>
+    /// Copia superficial del perfil. Pensada para VARIACIONES efímeras de un solo proceso —p. ej. el
+    /// fallback de codificador, que cambia <see cref="VideoCodec"/>/<see cref="HwAccel"/> sin alterar el
+    /// perfil persistido del canal—. Comparte las sub-políticas (<see cref="Segmentation"/>,
+    /// <see cref="Proxy"/>, <see cref="StreamTargets"/>) por referencia: esas variaciones no las modifican.
+    /// </summary>
+    public RecordingProfile Clone() => (RecordingProfile)MemberwiseClone();
 }
 
 /// <summary>Define cuándo cortar a un nuevo archivo de segmento.</summary>

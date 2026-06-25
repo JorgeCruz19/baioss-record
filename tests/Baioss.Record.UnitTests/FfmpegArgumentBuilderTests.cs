@@ -53,7 +53,7 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("-c:a aac", joined);
         Assert.Contains("-ac 2", joined);                       // estéreo
         Assert.Contains("ebur128=peak=true", joined);           // metering para VU
-        Assert.Contains("-movflags +faststart", joined);        // MP4
+        Assert.Contains("-movflags +frag_keyframe+empty_moov+default_base_moof", joined); // MP4 robusto (fMP4)
         Assert.EndsWith(".mp4", outFile);
         Assert.Contains("TST_", outFile);                       // patrón con la clave de canal
     }
@@ -273,7 +273,7 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", joined);    // preview…
         Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
         Assert.Contains("-c:v libx264", joined);                            // …y grabación a la vez
-        Assert.Contains("-movflags +faststart", joined);
+        Assert.Contains("-movflags +frag_keyframe+empty_moov+default_base_moof", joined); // fMP4: archivo siempre reproducible
         Assert.Contains("-y", joined);                                      // archivo de salida
         Assert.Contains("TST_", joined);                                    // nombre de la grabación
         Assert.Contains("ebur128=peak=true", joined);
@@ -340,7 +340,7 @@ public class FfmpegArgumentBuilderTests
         Assert.True(b.IsSegmentedOutput);
         Assert.Equal("TST_*.mp4", b.SegmentFileGlob);                       // glob para vigilar los segmentos
         Assert.Empty(b.OutputFilePath);                                     // no hay archivo único
-        Assert.DoesNotContain("-movflags +faststart", joined);             // faststart no aplica por segmento
+        Assert.DoesNotContain("-movflags", joined);                        // los movflags del archivo único no aplican por segmento
     }
 
     [Fact]

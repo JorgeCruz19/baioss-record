@@ -164,6 +164,12 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
             FileName = locator.FfmpegPath,
             RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false, CreateNoWindow = true,
+            // FFmpeg emite los nombres de dispositivo en UTF-8. Sin fijarlo, .NET los lee con la codepage de
+            // consola (CP1252/850 en Windows ES) y los acentos se corrompen: «Varios micrófonos» →
+            // «Varios micrÃ³fonos». Ese nombre corrupto se persiste y se le devuelve a dshow, que NO lo
+            // encuentra → «Could not find audio device» / I/O error (-5) al abrir. Leerlo como UTF-8 lo evita.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
 

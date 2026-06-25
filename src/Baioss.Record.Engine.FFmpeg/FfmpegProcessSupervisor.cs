@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Baioss.Record.Engine.FFmpeg;
@@ -18,6 +19,7 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     private Task? _runLoop;
     private DateTimeOffset _lastProgress;
     private int _restartCount;
+    private volatile bool _closing;   // true durante el cierre ordenado: el watchdog NO debe matar entonces.
 
     public FfmpegProcessSupervisor(string ffmpegPath, ILogger log)
     {
@@ -26,6 +28,8 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     }
 
     public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(10);
+    /// <summary>Espera máxima al cierre ordenado (flush/cierre del contenedor) antes de forzar el cierre.</summary>
+    public TimeSpan GracefulTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public int MaxRestarts { get; init; } = int.MaxValue; // 24/7: reintentar indefinidamente
 
     public event EventHandler<string>? ProgressLine;   // stdout (key=value)
@@ -79,6 +83,10 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            // FFmpeg emite progreso (ASCII) y logs en UTF-8. Leerlo como UTF-8 deja los nombres con acentos
+            // legibles en el log (p. ej. el dispositivo «Varios micrófonos») sin afectar al parseo ASCII.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var a in arguments) psi.ArgumentList.Add(a);
 
@@ -116,7 +124,7 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             try { await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
-            if (_process is { HasExited: false } &&
+            if (!_closing && _process is { HasExited: false } &&
                 DateTimeOffset.UtcNow - _lastProgress > StallTimeout)
             {
                 _log.LogError("Watchdog: sin progreso por {Timeout}. Forzando reinicio.", StallTimeout);
@@ -129,11 +137,21 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     private async Task GracefulStopAsync()
     {
         if (_process is null || _process.HasExited) return;
+        _closing = true; // el watchdog NO debe matar mientras FFmpeg finaliza/cierra el contenedor.
         try
         {
             await _process.StandardInput.WriteAsync('q').ConfigureAwait(false);
             await _process.StandardInput.FlushAsync().ConfigureAwait(false);
-            if (!_process.WaitForExit(5000)) _process.Kill(entireProcessTree: true);
+            // Espera generosa (hasta GracefulTimeout) a que FFmpeg cierre el contenedor; solo si se agota se
+            // fuerza el cierre. Antes eran 5 s fijos: en grabaciones grandes o con varios canales cerrando a
+            // la vez, el flush no llegaba a tiempo y se mataba a mitad → archivo corrupto.
+            using var timeout = new CancellationTokenSource(GracefulTimeout);
+            try { await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException)
+            {
+                _log.LogWarning("FFmpeg no finalizó en {Timeout} tras 'q'; forzando cierre.", GracefulTimeout);
+                try { _process.Kill(entireProcessTree: true); } catch { /* noop */ }
+            }
         }
         catch { try { _process.Kill(entireProcessTree: true); } catch { /* noop */ } }
     }

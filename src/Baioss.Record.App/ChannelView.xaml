@@ -2,35 +2,88 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Baioss.Record.App">
+    <UserControl.Resources>
+        <!-- Caja de telemetría (FPS / BITRATE / DROPPED / DISCO·ESTADO): mismo fondo, borde y radio. -->
+        <Style x:Key="StatBox" TargetType="Border">
+            <Setter Property="Background" Value="#12161E"/>
+            <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="12,8"/>
+        </Style>
+        <Style x:Key="StatLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+        </Style>
+        <Style x:Key="StatValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Margin" Value="0,2,0,0"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+        </Style>
+    </UserControl.Resources>
+
     <Border Margin="10" Padding="14" CornerRadius="10"
             Background="{StaticResource PanelBrush}"
             BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>  <!-- cabecera -->
-                <RowDefinition Height="*"/>     <!-- preview + medidores -->
-                <RowDefinition Height="Auto"/>  <!-- tabla HOY (tareas programadas del día) -->
-                <RowDefinition Height="Auto"/>  <!-- telemetría -->
-                <RowDefinition Height="Auto"/>  <!-- transporte -->
+                <RowDefinition Height="Auto"/>  <!-- cabecera (nombre + formato + REC + señal) -->
+                <RowDefinition Height="Auto"/>  <!-- métricas (cajas, arriba del preview) -->
+                <RowDefinition Height="*"/>     <!-- preview -->
+                <RowDefinition Height="Auto"/>  <!-- franja de audio -->
+                <RowDefinition Height="Auto"/>  <!-- transporte + estado -->
+                <RowDefinition Height="Auto"/>  <!-- tabla HOY (alto fijo, siempre presente) -->
             </Grid.RowDefinitions>
 
-            <!-- Cabecera -->
+            <!-- Cabecera: avatar con la letra del canal, nombre descriptivo y formato de entrada;
+                 a la derecha el badge REC (pulsa al grabar) y el estado de señal. -->
             <Grid Grid.Row="0">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Background="{StaticResource AccentBrush}" CornerRadius="6" Width="40" Height="40">
-                        <TextBlock Text="{Binding Key}" FontSize="22" FontWeight="Bold"
+                    <Border Background="{StaticResource AccentBrush}" CornerRadius="8" Width="40" Height="40">
+                        <TextBlock Text="{Binding Key}" FontSize="20" FontWeight="Bold"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <TextBlock Text="Canal" FontSize="18" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                    <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding DisplayName}" FontSize="16" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding FormatText}" FontSize="11" Margin="0,1,0,0"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0"
-                                Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
-                        <Ellipse Width="11" Height="11" Fill="{StaticResource RecBrush}" VerticalAlignment="Center"/>
-                        <TextBlock Text="REC" Foreground="{StaticResource RecBrush}" FontWeight="Bold"
-                                   Margin="6,0,0,0" VerticalAlignment="Center"/>
-                    </StackPanel>
+                    <!-- REC: badge con punto que parpadea mientras se graba. -->
+                    <Border CornerRadius="4" Padding="9,5" Margin="0,0,8,0" Background="#2A1416"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="10" Height="10" Fill="{StaticResource RecBrush}" VerticalAlignment="Center">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                                <DataTrigger.EnterActions>
+                                                    <BeginStoryboard x:Name="HeaderDotPulse">
+                                                        <Storyboard>
+                                                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                             From="1.0" To="0.15" Duration="0:0:0.7"
+                                                                             AutoReverse="True" RepeatBehavior="Forever"/>
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </DataTrigger.EnterActions>
+                                                <DataTrigger.ExitActions>
+                                                    <StopStoryboard BeginStoryboardName="HeaderDotPulse"/>
+                                                </DataTrigger.ExitActions>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="REC" Foreground="{StaticResource RecBrush}" FontWeight="Bold"
+                                       FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
                     <Border CornerRadius="4" Padding="10,5" VerticalAlignment="Center">
                         <Border.Style>
                             <Style TargetType="Border">
@@ -50,219 +103,284 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Preview + medidores de audio. (La carpeta de destino y la carta de ajuste se configuran ahora
-                 en «🛠 Configuración» de la barra superior; el formato/codificación en «⚙ Presets».) -->
-            <Grid Grid.Row="1" Margin="0,10,0,0">
+            <!-- Métricas (arriba del preview): FPS de salida, bitrate, cuadros perdidos y disco/estado. -->
+            <Grid Grid.Row="1" Margin="0,12,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Preview: textura D3D11 vía D3DImage (fallback WriteableBitmap), con overlays encima -->
-                <Border Grid.Column="0" Background="{StaticResource PreviewBrush}" CornerRadius="6" ClipToBounds="True">
-                    <Grid>
-                        <Image x:Name="PreviewImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="LowQuality"/>
-
-                        <!-- Franja de alarmas (negro/congelado/silencio/slate/disco): roja, sobre el preview -->
-                        <Border VerticalAlignment="Top" Padding="10,6"
-                                Visibility="{Binding HasAlarms, Converter={StaticResource BoolToVis}}">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsSlate}" Value="True">
-                                            <Setter Property="Background" Value="{StaticResource RecBrush}"/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding DiskCritical}" Value="True">
-                                            <Setter Property="Background" Value="{StaticResource RecBrush}"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                                <TextBlock Text="⚠" FontSize="13" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="White"/>
-                                <TextBlock Text="{Binding AlarmsText}" FontSize="12" FontWeight="Bold" Foreground="White"
-                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Border>
-
-                        <Grid Margin="12">
-                            <TextBlock Text="PGM" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
-                                       HorizontalAlignment="Left" VerticalAlignment="Top"/>
-                            <TextBlock Text="{Binding FormatText}" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
-                                       HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
-                            <StackPanel HorizontalAlignment="Right" VerticalAlignment="Bottom">
-                                <TextBlock Text="{Binding Timecode}" FontFamily="Consolas" FontSize="30" FontWeight="Bold"
-                                           HorizontalAlignment="Right"/>
-                                <TextBlock Text="{Binding FrameCount, StringFormat=frame {0}}" FontFamily="Consolas"
-                                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Right"/>
-                            </StackPanel>
-                        </Grid>
-                    </Grid>
+                <Border Grid.Column="0" Style="{StaticResource StatBox}" Margin="0,0,5,0">
+                    <StackPanel>
+                        <TextBlock Text="FPS OUT" Style="{StaticResource StatLabel}"/>
+                        <TextBlock Text="{Binding OutputFps, StringFormat={}{0:0.#}}" Style="{StaticResource StatValue}"/>
+                    </StackPanel>
                 </Border>
 
-                <!-- Medidores VU / Peak estéreo -->
-                <Border Grid.Column="1" Width="96" Margin="12,0,0,0" Padding="10,8"
-                        Background="#12161E" CornerRadius="6">
+                <Border Grid.Column="1" Style="{StaticResource StatBox}" Margin="5,0,5,0">
+                    <StackPanel>
+                        <TextBlock Text="BITRATE" Style="{StaticResource StatLabel}"/>
+                        <TextBlock Text="{Binding BitrateText}" Style="{StaticResource StatValue}"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Style="{StaticResource StatBox}" Margin="5,0,5,0">
+                    <StackPanel>
+                        <TextBlock Text="DROPPED" Style="{StaticResource StatLabel}"/>
+                        <TextBlock Text="{Binding DroppedFrames}" Style="{StaticResource StatValue}"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Cuarta caja: DISCO (tiempo restante) al grabar; ESTADO del motor en reposo. -->
+                <Border Grid.Column="3" Style="{StaticResource StatBox}" Margin="5,0,0,0">
                     <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Text="AUDIO dBFS" FontSize="10"
-                                   Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center"/>
-
-                        <Grid Grid.Row="1" Margin="0,4,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="{Binding LeftPeakDb}" FontFamily="Consolas" FontSize="11"
-                                       HorizontalAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Text="{Binding RightPeakDb}" FontFamily="Consolas" FontSize="11"
-                                       HorizontalAlignment="Center"/>
-                        </Grid>
-
-                        <Grid Grid.Row="2" MinHeight="120">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <local:VuMeter Grid.Column="0" Level="{Binding LeftLevel}" Peak="{Binding LeftPeak}"
-                                           HorizontalAlignment="Center"/>
-                            <local:VuMeter Grid.Column="1" Level="{Binding RightLevel}" Peak="{Binding RightPeak}"
-                                           HorizontalAlignment="Center"/>
-                        </Grid>
-
-                        <Grid Grid.Row="3" Margin="0,4,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="L" FontSize="11" HorizontalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondaryBrush}"/>
-                            <TextBlock Grid.Column="1" Text="R" FontSize="11" HorizontalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondaryBrush}"/>
-                        </Grid>
-
-                        <Border Grid.Row="4" Margin="0,8,0,0" CornerRadius="3" Padding="0,3"
-                                Background="{StaticResource RecBrush}"
-                                Visibility="{Binding Clipping, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="CLIP" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center"/>
-                        </Border>
+                        <StackPanel Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="DISCO" Style="{StaticResource StatLabel}"/>
+                            <TextBlock Text="{Binding DiskText}" FontSize="15" FontWeight="Bold" Margin="0,2,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding DiskWarning}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource SignalAmberBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding DiskCritical}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                        <StackPanel Visibility="{Binding NotRecording, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="ESTADO" Style="{StaticResource StatLabel}"/>
+                            <TextBlock Text="{Binding RecordingState}" Style="{StaticResource StatValue}"/>
+                        </StackPanel>
                     </Grid>
                 </Border>
             </Grid>
 
-            <!-- Tabla HOY: tareas programadas del día para este canal; la grabación EN CURSO va resaltada.
-                 Si hoy no hay nada pero sí una próxima, se muestra una pista en su lugar. -->
-            <Border Grid.Row="2" Margin="0,10,0,0" Background="#12161E" CornerRadius="8"
-                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
-                    Visibility="{Binding ShowTodaySection, Converter={StaticResource BoolToVis}}">
-                <StackPanel>
-                    <TextBlock Text="PROGRAMADAS HOY" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource TextSecondaryBrush}" Margin="12,8,12,2"/>
-                    <!-- Hoy no hay: muestra la próxima grabación del canal. -->
-                    <TextBlock Text="{Binding TodayEmptyText}" FontSize="11" Margin="12,2,12,8" TextWrapping="Wrap"
-                               Foreground="{StaticResource TextSecondaryBrush}"
-                               Visibility="{Binding NoTodayTasks, Converter={StaticResource BoolToVis}}"/>
-                    <Grid Margin="12,2,12,2" Visibility="{Binding HasTodayTasks, Converter={StaticResource BoolToVis}}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="58"/>
-                            <ColumnDefinition Width="58"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="78"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="ENTRADA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <TextBlock Grid.Column="1" Text="SALIDA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <TextBlock Grid.Column="2" Text="TÍTULO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <TextBlock Grid.Column="3" Text="SEGMENTO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    </Grid>
-                    <ScrollViewer MaxHeight="140" VerticalScrollBarVisibility="Auto" Margin="0,0,0,6">
-                        <ItemsControl ItemsSource="{Binding TodayTasks}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Background="{Binding RowBackground}" CornerRadius="4" Margin="6,1" Padding="6,4">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="58"/>
-                                                <ColumnDefinition Width="58"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="78"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{Binding EntradaText}" FontFamily="Consolas" FontSize="12"
-                                                       Foreground="{Binding RowForeground}"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding SalidaText}" FontFamily="Consolas" FontSize="12"
-                                                       Foreground="{Binding RowForeground}"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis" Foreground="{Binding RowForeground}"/>
-                                            <TextBlock Grid.Column="3" Text="{Binding SegmentText}" FontSize="12"
-                                                       Foreground="{Binding RowForeground}"/>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </StackPanel>
-            </Border>
+            <!-- Preview: textura D3D11 vía D3DImage (fallback WriteableBitmap), con overlays encima. -->
+            <Border Grid.Row="2" Margin="0,12,0,0" Background="{StaticResource PreviewBrush}"
+                    CornerRadius="8" ClipToBounds="True">
+                <Grid>
+                    <Image x:Name="PreviewImage" Stretch="Uniform" RenderOptions.BitmapScalingMode="LowQuality"/>
 
-            <!-- Telemetría -->
-            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="2,12">
-                <StackPanel Margin="0,0,26,0">
-                    <TextBlock Text="FPS SALIDA" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    <TextBlock Text="{Binding OutputFps, StringFormat={}{0:0.#}}" FontSize="18" FontWeight="Bold"/>
-                </StackPanel>
-                <StackPanel Margin="0,0,26,0">
-                    <TextBlock Text="BITRATE" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    <TextBlock Text="{Binding BitrateText}" FontSize="18" FontWeight="Bold"/>
-                </StackPanel>
-                <StackPanel Margin="0,0,26,0">
-                    <TextBlock Text="DROPPED" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    <TextBlock Text="{Binding DroppedFrames}" FontSize="18" FontWeight="Bold"/>
-                </StackPanel>
-                <StackPanel Margin="0,0,26,0">
-                    <TextBlock Text="ESTADO" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    <TextBlock Text="{Binding RecordingState}" FontSize="18" FontWeight="Bold"/>
-                </StackPanel>
-                <StackPanel VerticalAlignment="Center"
-                            Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="DISCO" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                    <TextBlock Text="{Binding DiskText}" FontSize="14" FontWeight="Bold">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                    <!-- TALLY: marco rojo que PULSA mientras se graba (el monitor «en rojo» = en grabación). -->
+                    <Border CornerRadius="8" BorderThickness="3" BorderBrush="{StaticResource RecBrush}"
+                            IsHitTestVisible="False">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Opacity" Value="0"/>
                                 <Style.Triggers>
-                                    <DataTrigger Binding="{Binding DiskWarning}" Value="True">
-                                        <Setter Property="Foreground" Value="{StaticResource SignalAmberBrush}"/>
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding DiskCritical}" Value="True">
-                                        <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                    <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                        <DataTrigger.EnterActions>
+                                            <BeginStoryboard x:Name="TallyPulse">
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                     From="1.0" To="0.2" Duration="0:0:0.85"
+                                                                     AutoReverse="True" RepeatBehavior="Forever"/>
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.EnterActions>
+                                        <DataTrigger.ExitActions>
+                                            <StopStoryboard BeginStoryboardName="TallyPulse"/>
+                                        </DataTrigger.ExitActions>
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
-                </StackPanel>
-            </StackPanel>
+                        </Border.Style>
+                    </Border>
 
-            <!-- Transporte -->
-            <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,6,0,0">
-                <Button Content="● Grabar"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
-                <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
-                <Button Content="■ Detener"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
-                        Visibility="{Binding ShowStopButton, Converter={StaticResource BoolToVis}}"/>
-                <!-- Solo visible cuando hay una grabación PROGRAMADA en curso: la salta (esta ocurrencia)
-                     sin afectar a las siguientes. -->
-                <Button Content="⏏ Detener grabación automática" Command="{Binding SkipScheduledRecordingCommand}"
-                        Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
-                        Foreground="#10131A" FontWeight="Bold"
-                        Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
-            </StackPanel>
+                    <!-- Alarma operativa (negro/congelado/silencio/slate/disco) como badge centrado arriba. -->
+                    <Border VerticalAlignment="Top" HorizontalAlignment="Center" CornerRadius="5"
+                            Padding="11,6" Margin="0,12,0,0"
+                            Visibility="{Binding HasAlarms, Converter={StaticResource BoolToVis}}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSlate}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding DiskCritical}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⚠" FontSize="13" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="White"/>
+                            <TextBlock Text="{Binding AlarmsText}" FontSize="12" FontWeight="Bold" Foreground="White"
+                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Margin="12">
+                        <TextBlock Text="PGM" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                        <!-- Abajo-izquierda: «frame N» mientras graba; el formato de la señal en reposo. -->
+                        <TextBlock Text="{Binding FrameCount, StringFormat=frame {0}}" FontFamily="Consolas" FontSize="12"
+                                   Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                   Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}"/>
+                        <TextBlock Text="{Binding FormatText}" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                   Visibility="{Binding NotRecording, Converter={StaticResource BoolToVis}}"/>
+                        <!-- Abajo-derecha: timecode grande. -->
+                        <TextBlock Text="{Binding Timecode}" FontFamily="Consolas" FontSize="30" FontWeight="Bold"
+                                   HorizontalAlignment="Right" VerticalAlignment="Bottom"/>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- Franja de audio: medidores VU/Peak estéreo, valores dBFS y formato del audio de entrada. -->
+            <Border Grid.Row="3" Margin="0,10,0,0" Background="#12161E" CornerRadius="8"
+                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1" Padding="12,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="AUDIO dBFS" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                            <StackPanel Margin="0,0,14,0">
+                                <TextBlock Text="{Binding LeftPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="L" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
+                                           HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="{Binding RightPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="R" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
+                                           HorizontalAlignment="Center"/>
+                            </StackPanel>
+                            <Grid Width="40" Height="34" VerticalAlignment="Center">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <local:VuMeter Grid.Column="0" Level="{Binding LeftLevel}" Peak="{Binding LeftPeak}"
+                                               HorizontalAlignment="Center"/>
+                                <local:VuMeter Grid.Column="1" Level="{Binding RightLevel}" Peak="{Binding RightPeak}"
+                                               HorizontalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                        <TextBlock Text="{Binding AudioFormatText}" FontSize="12" HorizontalAlignment="Right"
+                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <Border CornerRadius="3" Padding="7,2" Margin="0,5,0,0" HorizontalAlignment="Right"
+                                Background="{StaticResource RecBrush}"
+                                Visibility="{Binding Clipping, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="CLIP" FontSize="10" FontWeight="Bold" Foreground="White"/>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Transporte: controles de grabación + badge de estado (Grabando/Inactivo) a la derecha. -->
+            <Grid Grid.Row="4" Margin="0,10,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="● Grabar"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
+                    <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
+                    <Button Content="■ Detener"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
+                            Visibility="{Binding ShowStopButton, Converter={StaticResource BoolToVis}}"/>
+                    <!-- Solo con una grabación PROGRAMADA en curso: la salta (esta ocurrencia) sin afectar a las siguientes. -->
+                    <Button Content="⏏ Detener grabación automática" Command="{Binding SkipScheduledRecordingCommand}"
+                            Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
+                            Foreground="#10131A" FontWeight="Bold"
+                            Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+
+                <!-- Estado del motor: rojo «● Grabando» al grabar, gris «Inactivo» en reposo. -->
+                <Border HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="5" Padding="11,7">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Background" Value="#1B2029"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                    <Setter Property="Background" Value="#2A1416"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="8" Height="8" VerticalAlignment="Center">
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse">
+                                    <Setter Property="Fill" Value="{StaticResource SignalGrayBrush}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                            <Setter Property="Fill" Value="{StaticResource RecBrush}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Text" Value="Inactivo"/>
+                                    <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                            <Setter Property="Text" Value="Grabando"/>
+                                            <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- Programación: en el panel solo se muestra la grabación EN CURSO (alto fijo, uniforme entre
+                 canales); el botón abre una ventana con toda la programación de hoy del canal. -->
+            <Border Grid.Row="5" Height="116" Margin="0,10,0,0" Background="#12161E" CornerRadius="8"
+                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1">
+                <Grid Margin="10,8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Grabación programada EN CURSO (verde «al aire»). -->
+                    <Border Grid.Row="0" Background="{StaticResource SignalGreenBrush}" CornerRadius="6" Padding="10,7"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding HasActiveTask, Converter={StaticResource BoolToVis}}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,9,0" VerticalAlignment="Center" Fill="#0C0F15"/>
+                            <TextBlock Grid.Column="1" Text="{Binding ActiveTask.RangeText}" FontFamily="Consolas" FontSize="12"
+                                       FontWeight="SemiBold" Margin="0,0,12,0" VerticalAlignment="Center" Foreground="#0C0F15"/>
+                            <TextBlock Grid.Column="2" Text="{Binding ActiveTask.Title}" FontSize="12" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis" Foreground="#0C0F15"/>
+                            <TextBlock Grid.Column="3" Text="EN CURSO" FontSize="10" FontWeight="Bold"
+                                       VerticalAlignment="Center" Foreground="#0C0F15"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Sin grabación en curso: el espacio se mantiene (alto fijo). -->
+                    <TextBlock Grid.Row="0" Text="Sin grabación en curso" FontSize="12" FontStyle="Italic"
+                               Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Visibility="{Binding NoActiveTask, Converter={StaticResource BoolToVis}}"/>
+
+                    <Button Grid.Row="1" Content="🕒 Mostrar programación" Command="{Binding ShowScheduleCommand}"
+                            Style="{StaticResource TransportButton}" Padding="14,6" Margin="0,8,0,0" HorizontalAlignment="Stretch"/>
+                </Grid>
+            </Border>
         </Grid>
     </Border>
 </UserControl>

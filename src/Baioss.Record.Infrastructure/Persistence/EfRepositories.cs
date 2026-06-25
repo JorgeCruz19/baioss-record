@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Persistence;
 
@@ -92,6 +93,32 @@ public sealed class RecordingSessionRepository(IDbContextFactory<BaiossDbContext
         return await query
             .OrderByDescending(s => s.StartedAt)
             .Skip(skip).Take(take)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> CloseOrphanedAsync(DateTimeOffset endedAt, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        // Una sesión «abierta» (sin EndedAt) en cualquier estado de actividad quedó colgada por un cierre
+        // abrupto: la sesión de una grabación que terminó bien ya tiene EndedAt e Idle.
+        var orphaned = await db.Sessions
+            .Where(s => s.EndedAt == null && s.State != RecordingState.Idle && s.State != RecordingState.Error)
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var s in orphaned)
+        {
+            s.State = RecordingState.Error;
+            s.EndedAt = endedAt;
+        }
+        if (orphaned.Count > 0) await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return orphaned.Count;
+    }
+
+    public async Task<IReadOnlyList<RecordingSession>> GetEndedBeforeAsync(Guid channelId, DateTimeOffset cutoff, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Sessions.AsNoTracking()
+            .Include(s => s.Segments)
+            .Where(s => s.ChannelId == channelId && s.EndedAt != null && s.EndedAt < cutoff)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 }

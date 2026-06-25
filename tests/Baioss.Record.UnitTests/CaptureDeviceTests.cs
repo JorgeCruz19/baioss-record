@@ -156,6 +156,19 @@ public class CaptureDeviceTests
 
         Assert.Contains("-f dshow", joined);
         Assert.Contains("video=My Cam:audio=My Mic", joined);
+        // Con audio de un dispositivo distinto, sella ambos con el reloj de pared para que el vídeo no se
+        // congele esperando alinear los timestamps dispares del dshow combinado.
+        Assert.Contains("-use_wallclock_as_timestamps 1", joined);
+    }
+
+    [Fact]
+    public void DirectShow_BuildArgs_VideoOnly_OmitsWallclockFlag()
+    {
+        // Sin audio, el vídeo fluye con sus propios timestamps: no se fuerza wallclock (no haría falta).
+        var joined = string.Join(' ', new DirectShowCaptureSource(Def(InputType.DirectShow, "My Cam")).BuildInputArguments());
+
+        Assert.Contains("-i video=My Cam", joined);
+        Assert.DoesNotContain("use_wallclock_as_timestamps", joined);
     }
 
     private static InputSource Def(InputType type, string uri) => new() { Name = uri, Type = type, Uri = uri };

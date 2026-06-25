@@ -151,8 +151,7 @@ public sealed class FfmpegArgumentBuilder
             OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
             // Medición de loudness/true-peak para los medidores VU (se emite por stderr).
             args.Add("-af"); args.Add("ebur128=peak=true");
-            if (profile.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
-            { args.Add("-movflags"); args.Add("+faststart"); }
+            args.AddRange(RobustMovFlags(profile.Container));
             args.Add("-f"); args.Add(recMux);
             args.Add("-y"); args.Add(OutputFilePath);
         }
@@ -283,9 +282,25 @@ public sealed class FfmpegArgumentBuilder
     }
 
     /// <summary>
-    /// Cola de la salida de grabación: un único archivo (con <c>+faststart</c> para MP4/MOV) o, si el
-    /// perfil define segmentación, el muxer <c>segment</c> (cada segmento es un archivo COMPLETO, de modo
-    /// que un fallo/cuelgue solo pierde el segmento en curso, no toda la grabación). Fija
+    /// Flags de contenedor para una grabación MP4/MOV ROBUSTA: fMP4 fragmentado (índice <c>moov</c> al
+    /// INICIO + un fragmento por keyframe O cada ~1 s, lo que ocurra antes, vía <c>-frag_duration</c>).
+    /// Clave para la fiabilidad: a diferencia de <c>+faststart</c> —que reescribe TODO el archivo al cerrar
+    /// para mover el moov al principio y, si el proceso se corta a mitad (timeout/cuelgue/cierre simultáneo
+    /// de varios canales), deja un MP4 SIN índice, ilegible («sin códecs»)— el fragmentado escribe el moov de
+    /// entrada y cierra fragmentos cada segundo, así el archivo queda SIEMPRE reproducible hasta el último
+    /// fragmento aunque la grabación se interrumpa de golpe (un corte pierde como mucho ~1 s). El
+    /// <c>-frag_duration</c> es imprescindible: solo con <c>frag_keyframe</c>, si el GOP es largo el primer
+    /// fragmento tarda y un corte temprano dejaría el archivo a 0 bytes. Vacío si no es MP4/MOV.
+    /// </summary>
+    private static IEnumerable<string> RobustMovFlags(ContainerFormat container)
+        => container is ContainerFormat.Mp4 or ContainerFormat.Mov
+            ? new[] { "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "1000000" }
+            : Array.Empty<string>();
+
+    /// <summary>
+    /// Cola de la salida de grabación: un único archivo (MP4/MOV en fMP4 robusto, ver <see cref="RobustMovFlags"/>)
+    /// o, si el perfil define segmentación, el muxer <c>segment</c> (cada segmento es un archivo COMPLETO, de
+    /// modo que un fallo/cuelgue solo pierde el segmento en curso). Fija
     /// <see cref="OutputFilePath"/> / <see cref="IsSegmentedOutput"/> / <see cref="SegmentFileGlob"/>.
     /// </summary>
     private IEnumerable<string> RecordOutputTail(RecordingProfile p, string recMux, string recExt)
@@ -316,8 +331,7 @@ public sealed class FfmpegArgumentBuilder
 
         OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
         var single = new List<string>();
-        if (p.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
-        { single.Add("-movflags"); single.Add("+faststart"); }
+        single.AddRange(RobustMovFlags(p.Container));
         single.Add("-f"); single.Add(recMux);
         single.Add("-y"); single.Add(OutputFilePath);
         return single;

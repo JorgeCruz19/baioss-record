@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ using Baioss.Record.Infrastructure;
 using Baioss.Record.Infrastructure.Capture;
 using Baioss.Record.Infrastructure.Channels;
 using Baioss.Record.Infrastructure.Preview;
+using Baioss.Record.Infrastructure.Storage;
 
 namespace Baioss.Record.App;
 
@@ -63,9 +65,23 @@ public partial class App : System.Windows.Application
         // un único contenedor DI compartido por la UI, los canales y la API de automatización.
         var builder = WebApplication.CreateBuilder();
         builder.Host.UseSerilog((ctx, cfg) => cfg
+            // El scheduler consulta SQLite cada segundo: silencia el log de cada comando SQL de EF (solo avisos).
+            .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", Serilog.Events.LogEventLevel.Warning)
             .WriteTo.File(Path.Combine(root, "logs", "baioss-.log"), rollingInterval: RollingInterval.Day)
             .Enrich.FromLogContext());
         builder.WebHost.UseUrls(ApiUrl);
+
+        // Nº de canales a crear (1-8). Se lee del appsettings EMBEBIDO en el binario: el release publicado lo
+        // lleva FIJO. Se añade DESPUÉS de cualquier appsettings externo, así que PREVALECE → el operador no
+        // puede cambiar los canales editando archivos junto al .exe.
+        using (var embedded = typeof(App).Assembly.GetManifestResourceStream("appsettings.json"))
+            if (embedded is not null) builder.Configuration.AddJsonStream(embedded);
+#if DEBUG
+        // Solo en DESARROLLO: permite override con un appsettings.json junto al .exe (probar 2/4 sin recompilar).
+        builder.Configuration.AddJsonFile(
+            Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
+#endif
+        int channelCount = Math.Clamp(builder.Configuration.GetValue("Channels:Count", 4), 1, 8);
 
         var s = builder.Services;
         // Bus de eventos y storage (que la API necesita) se registran en ambos modos; en modo real
@@ -75,13 +91,18 @@ public partial class App : System.Windows.Application
         s.AddSingleton(new RecordingCapabilities { GpuEncoders = gpuEncoders });
         s.AddSingleton<PreviewCatalog>();
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente.
-        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec));
+        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount));
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
         // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.
         s.AddSingleton<SchedulerService>();
         s.AddSingleton<ISchedulerService>(sp => sp.GetRequiredService<SchedulerService>());
         s.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
+        // Retención automática de grabaciones viejas (opt-in vía appsettings «Retention»; deshabilitada por
+        // defecto para no borrar nada sin que el operador lo pida). Aplica también políticas por canal.
+        var retention = builder.Configuration.GetSection("Retention").Get<RetentionOptions>() ?? new RetentionOptions();
+        s.AddSingleton(retention);
+        s.AddHostedService<RetentionService>();
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 
@@ -91,7 +112,25 @@ public partial class App : System.Windows.Application
         _host = app;
 
         await app.StartAsync();
+
+        // Recovery tras un cierre ABRUPTO: cierra las sesiones que quedaron «grabando» de una ejecución
+        // anterior (crash/kill) para que la BD no arrastre grabaciones colgadas. La BD ya está compuesta (la
+        // creó el ChannelHost al instanciarse el scheduler en StartAsync). Solo en modo real (en simulado no
+        // se graba ni se persiste). Best-effort: un fallo aquí no impide arrancar.
+        if (real)
+        {
+            try
+            {
+                int closed = await app.Services.GetRequiredService<IRecordingSessionRepository>()
+                    .CloseOrphanedAsync(DateTimeOffset.UtcNow);
+                if (closed > 0)
+                    Serilog.Log.Warning("Recovery: {Count} sesión(es) huérfana(s) de un cierre previo cerradas como error.", closed);
+            }
+            catch (Exception ex) { Serilog.Log.Error(ex, "Recovery de sesiones huérfanas falló."); }
+        }
+
         Serilog.Log.Information("API REST + WebSocket escuchando en {Url} (solo loopback).", ApiUrl);
+        Serilog.Log.Information("Canales configurados (Channels:Count): {Count}.", channelCount);
         // Cascada GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264): por qué se descartó cada
         // GPU (p. ej. driver NVIDIA viejo para este FFmpeg) y cuál quedó como encoder por defecto.
         Serilog.Log.Information("Cascada de encoder: {Count} GPU(s) descartada(s) antes del elegido.", encoderNotes.Count);

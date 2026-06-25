@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
+using System.Text;
+using System.Text.Json;
 using Baioss.Record.Application.Abstractions;
 
 namespace Baioss.Record.Engine.FFmpeg;
@@ -84,6 +87,49 @@ public sealed class FfmpegLocator : IFfmpegLocator
         return (false, reason ?? lines.LastOrDefault() ?? $"exit {exit}");
     }
 
+    /// <summary>
+    /// Sondea un archivo con ffprobe para VERIFICAR su integridad tras cerrarlo: lee las pistas
+    /// (codec_type/codec_name) y la duración del contenedor en JSON. Un archivo corrupto o sin índice
+    /// (p. ej. un MP4 al que le falta el <c>moov</c>) devuelve <see cref="MediaProbe.Unreadable"/> o sin
+    /// pistas/duración, de modo que el llamador puede alarmar en vez de descubrirlo días después.
+    /// </summary>
+    public async Task<MediaProbe> ProbeMediaAsync(string filePath, CancellationToken ct = default)
+    {
+        if (!File.Exists(filePath)) return MediaProbe.Unreadable;
+        var args = new[]
+        {
+            "-v", "error", "-of", "json",
+            "-show_entries", "format=duration:stream=codec_type,codec_name",
+            filePath
+        };
+        var (output, exit) = await RunAsync(FfprobePath, args, ct).ConfigureAwait(false);
+        if (exit != 0 || string.IsNullOrWhiteSpace(output)) return MediaProbe.Unreadable;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(output);
+            var root = doc.RootElement;
+
+            bool hasVideo = false, hasAudio = false;
+            string? videoCodec = null;
+            if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
+                foreach (var s in streams.EnumerateArray())
+                {
+                    var type = s.TryGetProperty("codec_type", out var t) ? t.GetString() : null;
+                    if (type == "video") { hasVideo = true; videoCodec = s.TryGetProperty("codec_name", out var c) ? c.GetString() : videoCodec; }
+                    else if (type == "audio") hasAudio = true;
+                }
+
+            double duration = 0;
+            if (root.TryGetProperty("format", out var fmt) && fmt.TryGetProperty("duration", out var d) &&
+                double.TryParse(d.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+                duration = parsed;
+
+            return new MediaProbe(hasVideo, hasAudio, duration, videoCodec);
+        }
+        catch (JsonException) { return MediaProbe.Unreadable; }
+    }
+
     /// <summary>Quita el prefijo «[componente @ dirección] » que FFmpeg antepone a cada línea de log.</summary>
     private static string CleanLogLine(string line)
     {
@@ -105,6 +151,10 @@ public sealed class FfmpegLocator : IFfmpegLocator
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            // FFmpeg/ffprobe emiten en UTF-8; leerlo así preserva acentos en nombres de dispositivo y rutas
+            // (sin esto, la codepage de consola los corrompería y, p. ej., dshow no hallaría el dispositivo).
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
 

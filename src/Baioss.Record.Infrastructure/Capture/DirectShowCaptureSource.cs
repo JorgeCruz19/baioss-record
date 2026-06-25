@@ -34,9 +34,19 @@ public sealed class DirectShowCaptureSource(InputSource definition) : ICaptureSo
     {
         var video = Definition.Uri ?? throw new InvalidOperationException("Falta el dispositivo de video DirectShow.");
         var spec = $"video={video}";
+        var args = new List<string> { "-f", "dshow" };
         if (Definition.Parameters.TryGetValue("audio", out var audio) && !string.IsNullOrWhiteSpace(audio))
+        {
             spec += $":audio={audio}";
-        return new[] { "-f", "dshow", "-i", spec };
+            // Vídeo y audio de DISPOSITIVOS distintos (p. ej. OBS Virtual Camera + micrófono de la laptop)
+            // reportan timestamps de dispositivo con offsets dispares (el micro arranca con un tiempo enorme);
+            // al combinarlos en un solo grafo dshow, FFmpeg RETIENE los frames de vídeo esperando alinearlos y
+            // el preview se CONGELA varios segundos. Sellar AMBOS con el reloj de pared elimina el desfase y el
+            // vídeo fluye desde el primer frame. Verificado: sin esto, 3 frames en 6 s; con esto, 30 fps.
+            args.Add("-use_wallclock_as_timestamps"); args.Add("1");
+        }
+        args.Add("-i"); args.Add(spec);
+        return args;
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

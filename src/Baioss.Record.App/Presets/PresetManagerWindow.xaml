@@ -1,7 +1,7 @@
 <Window x:Class="Baioss.Record.App.Presets.PresetManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Presets de grabación / encoding" Height="720" Width="1180"
+        Title="Presets de grabación / encoding" Height="720" Width="1280"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <Window.Resources>
         <Style x:Key="DarkList" TargetType="ListBox">

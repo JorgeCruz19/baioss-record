@@ -34,7 +34,9 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, Guid ChannelId)> _active = new();
     private readonly HashSet<Guid> _warnedBusy = new();
 
-    public TimeSpan TickInterval { get; init; } = TimeSpan.FromSeconds(10);
+    // 1 s: una grabación programada arranca con ≤1 s de margen respecto a su hora exacta (hh:mm:ss).
+    // El chequeo es muy barato (una consulta a SQLite local); el log de EF se silencia en el host.
+    public TimeSpan TickInterval { get; init; } = TimeSpan.FromSeconds(1);
     /// <summary>Tolerancia para disparar un start "tarde" (p. ej. la app arrancó justo después de la hora).</summary>
     public TimeSpan StartGrace { get; init; } = TimeSpan.FromMinutes(2);
 
@@ -74,6 +76,13 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         }
     }
 
+    public async Task UpdateAsync(ScheduledJob job, CancellationToken ct = default)
+    {
+        await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
+        _log.LogInformation("Editada «{Title}»: canal {Channel}, {RunAt} ({Recurrence}).",
+            job.Title, job.ChannelId, job.RunAt, job.Recurrence);
+    }
+
     public async Task<IReadOnlyList<ScheduledJob>> GetUpcomingAsync(DateTimeOffset until, CancellationToken ct = default)
     {
         var now = _clock.UtcNow;
@@ -92,6 +101,10 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
 
+        // Avisa de las franjas que ya pasaron sin ejecutarse (p. ej. app apagada en su horario).
+        try { await WarnMissedOccurrencesAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) { _log.LogError(ex, "Scheduler: fallo al revisar ocurrencias perdidas."); }
+
         while (!ct.IsCancellationRequested)
         {
             try { await TickAsync(ct).ConfigureAwait(false); }
@@ -99,6 +112,26 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
             try { await Task.Delay(TickInterval, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>
+    /// Al arrancar, avisa (log) de las grabaciones programadas cuya franja YA pasó por completo y nunca se
+    /// ejecutó —típicamente porque la app estuvo apagada en ese horario—. No las dispara (la hora pasó); solo
+    /// deja constancia para el operador. Una franja aún dentro de su ventana la reanuda el Tick normal.
+    /// </summary>
+    private async Task WarnMissedOccurrencesAsync(CancellationToken ct)
+    {
+        var now = _clock.UtcNow;
+        foreach (var job in await _repo.ListAsync(ct).ConfigureAwait(false))
+        {
+            if (!job.Enabled || job.Action != ScheduledAction.StartRecording) continue;
+            if (ScheduleEvaluator.LatestSlotAtOrBefore(job, now) is not { } occ) continue;
+
+            bool fired = job.LastRunAt is { } lr && lr >= occ;
+            var windowEnd = job.Duration is { } d ? occ + d : occ + StartGrace; // fin de la ventana grabable
+            if (!fired && now > windowEnd)
+                _log.LogWarning("Scheduler: «{Title}» del {Occ:dd-MM-yyyy HH:mm} no se ejecutó (¿app apagada en su horario?).", job.Title, occ);
         }
     }
 

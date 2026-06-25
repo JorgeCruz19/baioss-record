@@ -1,7 +1,7 @@
 <Window x:Class="Baioss.Record.App.Scheduling.ScheduleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Programación de grabaciones" Height="640" Width="920"
+        Title="Programación de grabaciones" Height="720" Width="1280"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <DockPanel>
         <!-- Cabecera -->
@@ -70,15 +70,14 @@
         <Border DockPanel.Dock="Bottom" Background="{StaticResource PanelBrush}"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,0" Padding="16,12">
             <StackPanel>
-                <TextBlock Text="NUEVA PROGRAMACIÓN" FontSize="11" FontWeight="Bold"
+                <TextBlock Text="{Binding FormTitle}" FontSize="11" FontWeight="Bold"
                            Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                <!-- Canal · Repetición · Fecha (la fecha solo aplica a «Una vez»; selector nativo) -->
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Grid.Column="0" Margin="0,0,8,0">
@@ -91,24 +90,37 @@
                         <ComboBox Height="28" ItemsSource="{Binding Recurrences}" SelectedItem="{Binding SelectedRecurrence}"/>
                     </StackPanel>
 
-                    <StackPanel Grid.Column="2" Margin="0,0,8,0" Width="120"
+                    <StackPanel Grid.Column="2" Width="160"
                                 Visibility="{Binding IsOnce, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="FECHA (yyyy-MM-dd)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                        <TextBox Height="28" Text="{Binding Date}" VerticalContentAlignment="Center" Padding="6,0"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="3" Margin="0,0,8,0" Width="70">
-                        <TextBlock Text="HORA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                        <TextBox Height="28" Text="{Binding Time}" VerticalContentAlignment="Center"
-                                 HorizontalContentAlignment="Center" Padding="6,0"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="4">
-                        <TextBlock Text="DURACIÓN (min)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
-                        <TextBox Height="28" Text="{Binding DurationMinutes}" VerticalContentAlignment="Center"
-                                 HorizontalContentAlignment="Center" Padding="6,0"/>
+                        <TextBlock Text="FECHA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <DatePicker Height="28" SelectedDate="{Binding SelectedDate}" VerticalContentAlignment="Center"/>
                     </StackPanel>
                 </Grid>
+
+                <!-- Hora de INICIO y de FIN (hh:mm:ss) con selectores nativos; la duración se deriva sola -->
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <StackPanel Margin="0,0,28,0">
+                        <TextBlock Text="HORA INICIO (hh:mm:ss)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding Hours}" SelectedItem="{Binding StartHour}"/>
+                            <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding MinutesSeconds}" SelectedItem="{Binding StartMinute}"/>
+                            <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding MinutesSeconds}" SelectedItem="{Binding StartSecond}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel>
+                        <TextBlock Text="HORA FIN (hh:mm:ss)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding Hours}" SelectedItem="{Binding EndHour}"/>
+                            <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding MinutesSeconds}" SelectedItem="{Binding EndMinute}"/>
+                            <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <ComboBox Width="54" Height="28" ItemsSource="{Binding MinutesSeconds}" SelectedItem="{Binding EndSecond}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
 
                 <!-- Días de la semana (solo repetición semanal) -->
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0"
@@ -148,9 +160,15 @@
                         <TextBlock Text="TÍTULO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <TextBox Height="28" Text="{Binding Title}" VerticalContentAlignment="Center" Padding="6,0"/>
                     </StackPanel>
-                    <Button Grid.Column="1" Content="＋ Programar" Command="{Binding AddCommand}"
-                            Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
-                            Height="28" MinWidth="120" Padding="18,0"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                        <!-- «Cancelar» solo aparece mientras se edita una tarea existente. -->
+                        <Button Content="Cancelar" Command="{Binding CancelEditCommand}"
+                                Style="{StaticResource TransportButton}" Height="28" MinWidth="92" Padding="14,0" Margin="0,0,8,0"
+                                Visibility="{Binding IsEditing, Converter={StaticResource BoolToVis}}"/>
+                        <!-- «＋ Programar» al crear; «💾 Guardar cambios» al editar. -->
+                        <Button Content="{Binding SaveButtonText}" Command="{Binding SaveCommand}"
+                                Style="{StaticResource StartButton}" Height="28" MinWidth="150" Padding="18,0"/>
+                    </StackPanel>
                 </Grid>
             </StackPanel>
         </Border>
@@ -166,6 +184,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -190,11 +209,15 @@
                                                Foreground="{StaticResource AccentBrush}"/>
                                 </StackPanel>
 
-                                <Button Grid.Column="3" Content="{Binding EnabledText}" Margin="0,0,8,0"
+                                <Button Grid.Column="3" Content="Editar" Margin="0,0,8,0"
+                                        Height="28" MinWidth="80" Padding="14,0" Style="{StaticResource TransportButton}"
+                                        Command="{Binding DataContext.EditCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Grid.Column="4" Content="{Binding EnabledText}" Margin="0,0,8,0"
                                         Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource TransportButton}"
                                         Command="{Binding DataContext.ToggleEnabledCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                         CommandParameter="{Binding}"/>
-                                <Button Grid.Column="4" Content="Eliminar"
+                                <Button Grid.Column="5" Content="Eliminar"
                                         Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource StopButton}"
                                         Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                         CommandParameter="{Binding}"/>

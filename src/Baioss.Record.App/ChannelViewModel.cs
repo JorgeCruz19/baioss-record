@@ -44,6 +44,14 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     public string Key => _engine.Status.Key;
     public Guid ChannelId => _engine.ChannelId;
 
+    /// <summary>Nombre descriptivo para la cabecera del panel, derivado del Key (A/B).</summary>
+    public string DisplayName => Key switch
+    {
+        "A" => "Canal Principal",
+        "B" => "Canal Secundario",
+        _ => $"Canal {Key}",
+    };
+
     private double _peakHoldL = -60, _peakHoldR = -60;
 
     [ObservableProperty] private RecordingState _recordingState;
@@ -55,7 +63,13 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private double _outputFps;
     [ObservableProperty] private long _droppedFrames;
     [ObservableProperty] private string _bitrateText = "—";
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(CanConfigure))] private bool _isRecording;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanConfigure))]
+    [NotifyPropertyChangedFor(nameof(NotRecording))]
+    private bool _isRecording;
+
+    /// <summary>Inverso de <see cref="IsRecording"/> (preview muestra el formato en reposo, «frame N» al grabar).</summary>
+    public bool NotRecording => !IsRecording;
     [ObservableProperty] private bool _isLocked;
     [ObservableProperty] private string _profileText = "—";
 
@@ -66,6 +80,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _leftPeakDb = "-∞";
     [ObservableProperty] private string _rightPeakDb = "-∞";
     [ObservableProperty] private bool _clipping;
+
+    /// <summary>Resumen del audio de entrada para la franja bajo el preview (p. ej. «2 canales · PCM»).</summary>
+    [ObservableProperty] private string _audioFormatText = "—";
 
     // Alarmas operativas (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
     [ObservableProperty] private bool _hasAlarms;
@@ -152,10 +169,19 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     // ---------------------------------------------------------------------
 
     [RelayCommand(CanExecute = nameof(CanStart))]
-    private Task StartAsync()
+    private async Task StartAsync()
+    {
         // Grabación MANUAL: arranca YA con un nombre temporal ({canal}_{fecha_hora}); el nombre real se
         // pide al DETENER y se renombra el archivo entonces.
-        => _engine.StartRecordingAsync(Guid.Empty, Environment.UserName);
+        try { await _engine.StartRecordingAsync(Guid.Empty, Environment.UserName); }
+        catch (Exception ex)
+        {
+            // Pre-vuelo fallido (perfil inválido, carpeta de destino no escribible, …): avisa al operador
+            // sin tumbar la app ni dejar una sesión a medias (la validación corre antes de crear nada).
+            System.Windows.MessageBox.Show(ex.Message, "No se pudo iniciar la grabación",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+    }
     private bool CanStart() => !IsRecording && IsLocked;
 
     [RelayCommand(CanExecute = nameof(CanStop))]
@@ -194,30 +220,49 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     //  Tareas programadas de HOY para este canal (tabla bajo el preview)
     // ---------------------------------------------------------------------
 
-    /// <summary>Grabaciones programadas de hoy en este canal (la en curso va resaltada). La rellena el shell.</summary>
+    /// <summary>Grabaciones programadas de hoy en este canal (lista completa para «Mostrar programación»). La rellena el shell.</summary>
     public ObservableCollection<TodayTaskRow> TodayTasks { get; } = new();
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(NoTodayTasks))]
     private bool _hasTodayTasks;
 
-    /// <summary>Inverso de <see cref="HasTodayTasks"/> (para mostrar el texto «hoy no hay / próxima…»).</summary>
+    /// <summary>Inverso de <see cref="HasTodayTasks"/> (texto «hoy no hay» en la ventana de programación).</summary>
     public bool NoTodayTasks => !HasTodayTasks;
 
-    /// <summary>Texto cuando hoy no hay grabaciones (p. ej. «Hoy no hay. Próxima: lun 22/06 · 20:00 · …»).</summary>
+    /// <summary>Texto cuando hoy no hay grabaciones (p. ej. «Hoy no hay. Próxima: lun 22/06 · 20:00 · …»
+    /// o «Sin grabaciones programadas hoy»). Se muestra en la ventana de programación.</summary>
     [ObservableProperty] private string _todayEmptyText = "";
 
-    /// <summary>Mostrar la sección «HOY» (hay algo hoy o una próxima ocurrencia); se oculta si el canal no tiene tareas.</summary>
-    [ObservableProperty] private bool _showTodaySection;
+    /// <summary>La grabación programada EN CURSO ahora mismo en este canal: es la ÚNICA que se muestra en el
+    /// panel (alto fijo). null si ninguna corre; el resto se consultan en «Mostrar programación».</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasActiveTask))]
+    [NotifyPropertyChangedFor(nameof(NoActiveTask))]
+    private TodayTaskRow? _activeTask;
+
+    public bool HasActiveTask => ActiveTask is not null;
+    public bool NoActiveTask => ActiveTask is null;
 
     /// <summary>El shell sustituye la lista de tareas de hoy (refresco periódico / al cambiar el estado activo).</summary>
-    public void SetTodayTasks(IReadOnlyList<TodayTaskRow> rows, string emptyText, bool showSection)
+    public void SetTodayTasks(IReadOnlyList<TodayTaskRow> rows, string emptyText)
     {
         TodayTasks.Clear();
         foreach (var r in rows) TodayTasks.Add(r);
         HasTodayTasks = TodayTasks.Count > 0;
         TodayEmptyText = emptyText;
-        ShowTodaySection = showSection;
+        ActiveTask = rows.FirstOrDefault(r => r.IsRunning); // en el panel solo se muestra la en curso
+    }
+
+    /// <summary>Abre una ventana con toda la programación de HOY del canal (Entrada · Salida · Título · Segmento).</summary>
+    [RelayCommand]
+    private void ShowSchedule()
+    {
+        var window = new ChannelScheduleWindow(Key, TodayTasks.ToList())
+        {
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.Show();
     }
 
     private void OnStatusChanged(object? sender, ChannelStatus status)
@@ -250,6 +295,11 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Preferimos la etiqueta legible del modo (DeckLink: "1920×1080 · 59.94i"); si no, resolución·fps.
         FormatText = status.Signal.FormatLabel
                      ?? (status.Signal is { Resolution: { } r, FrameRate: { } f } ? $"{r} · {f}" : "—");
+
+        // Resumen de audio bajo el preview: «N canales · PCM» con señal y audio; si no, «Sin audio».
+        AudioFormatText = status.Signal is { HasAudio: true, AudioLayout: { } layout }
+            ? $"{ChannelCountText(layout)} · PCM"
+            : "Sin audio";
 
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;
 
@@ -317,6 +367,16 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
     private static double Norm(double db) => Math.Clamp((db + 60) / 60.0, 0, 1);
     private static string Fmt(double db) => db <= -60 ? "-∞" : $"{db:0.0}";
+
+    /// <summary>Nº de canales de audio legible según el layout (para «N canales · PCM»).</summary>
+    private static string ChannelCountText(AudioLayout layout) => layout switch
+    {
+        AudioLayout.Mono => "1 canal",
+        AudioLayout.Stereo => "2 canales",
+        AudioLayout.Surround51 => "6 canales",
+        AudioLayout.Surround71 => "8 canales",
+        _ => "—",
+    };
 
     /// <summary>"820 GB libres · ~1 h 12 min" — espacio libre y tiempo de grabación restante estimado.</summary>
     private static string FormatDisk(StorageInfo s)

@@ -69,16 +69,29 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _slatePending;
     private CancellationTokenSource? _recoveryCts;
     private Task? _recoveryLoop;
+    private DateTimeOffset _slateSince;       // cuándo entró en slate, para escalar a alarma si se prolonga
+    private volatile bool _slateAlarmRaised;  // ya se elevó SignalLoss por slate prolongado (dedupe)
 
     // Alarmas activas (dedupe: solo se notifican transiciones).
     private readonly HashSet<AlarmType> _activeAlarms = new();
     private volatile bool _disposed;
+
+    // Fallback de codificador: si el codificador de vídeo de grabación no ABRE (NVENC agotado, driver/GPU
+    // ausente), el canal degrada al siguiente de la cadena (QSV→AMF→CPU) y reinicia el proceso, en lugar de
+    // reintentar en vano el mismo. _encoderOpenError: se vio el fallo en el stderr del proceso ACTUAL.
+    // _fallbackPending: hay una degradación en curso (evita disparos repetidos y bloquea el slate, que
+    // reusaría el mismo codificador roto).
+    private volatile bool _encoderOpenError;
+    private volatile bool _fallbackPending;
 
     public FfmpegChannelEngine(IFfmpegLocator locator, ILogger log)
     {
         _locator = locator;
         _log = log;
     }
+
+    /// <summary>Tras este tiempo en carta de ajuste SIN recuperar la señal, se eleva una alarma crítica (SignalLoss) para que el operador actúe; la grabación de barras NO se detiene (por si la señal vuelve).</summary>
+    public TimeSpan SlateAlarmAfter { get; init; } = TimeSpan.FromMinutes(5);
 
     public int FrameWidth { get; init; } = 640;
     public int FrameHeight { get; init; } = 360;
@@ -132,6 +145,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _emitted.Clear();
             _sessionFiles.Clear();
             _slate = false; _slatePending = false;
+            _encoderOpenError = false; _fallbackPending = false;
+            RaiseAlarm(AlarmType.EncoderFallback, false);     // limpia un fallback de una sesión previa
+            RaiseAlarm(AlarmType.RecordingUnverified, false); // y el aviso de archivo dañado de la anterior
             _recordStart = DateTimeOffset.UtcNow;
             // Nombre base elegido (manual) o derivado de la programación; null → {canal}_{fecha_hora}.
             _recordBaseName = SanitizeBaseName(baseName);
@@ -177,6 +193,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
             if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
             RaiseAlarm(AlarmType.Slate, false);
+            RaiseAlarm(AlarmType.SignalLoss, false);
+            RaiseAlarm(AlarmType.EncoderFallback, false);
+            _encoderOpenError = false; _fallbackPending = false; _slateAlarmRaised = false;
             _recordProfile = null;
             _segmented = false;
             Stats = RecorderStats.Empty;
@@ -197,6 +216,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         // El stream cambió: cualquier negro/congelado/silencio detectado pertenecía al proceso anterior.
         ClearDetectAlarms();
+
+        // El proceso entrante puede llevar un códec distinto (degradado): su capacidad de abrir el
+        // codificador se re-evalúa con SU propio stderr, no con el del proceso saliente.
+        _encoderOpenError = false;
 
         // Modo archivo único: el proceso que se acaba de cerrar dejó su archivo finalizado en disco →
         // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
@@ -301,6 +324,21 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnLog(object? sender, string line)
     {
+        // Fallo de APERTURA del codificador por hardware (NVENC agotado, driver/GPU ausente): degrada al
+        // siguiente de la cadena (QSV→AMF→CPU) y reinicia, en lugar de dejar que el supervisor relance el
+        // mismo argv en vano. Solo durante la grabación (el preview no lleva codificador de salida).
+        var rec = _recordProfile;
+        if (!_encoderOpenError && rec is not null &&
+            _state is RecordingState.Recording or RecordingState.Starting &&
+            FfmpegEncoderError.IsOpenFailure(line))
+        {
+            _encoderOpenError = true;
+            _log.LogWarning("Canal {Key}: el codificador de vídeo '{Encoder}' no pudo abrir → {Line}",
+                _channelKey, FfmpegCodecMap.VideoEncoder(rec.VideoCodec), line);
+            _ = Task.Run(TryFallbackEncoderAsync);
+            return;
+        }
+
         // Alarmas de análisis: negro/congelado/silencio. Cada marca de FFmpeg → transición de alarma.
         if (FfmpegDetectParser.Parse(line) is { } d) { RaiseAlarm(d.Type, d.Active); return; }
 
@@ -361,6 +399,32 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             EndedAt = fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero) : DateTimeOffset.UtcNow,
             SizeBytes = fi.Exists ? fi.Length : 0,
         });
+        _ = VerifyRecordingAsync(path); // red de seguridad: confirma que el archivo cerrado es legible
+    }
+
+    /// <summary>
+    /// Verifica con ffprobe que un archivo recién cerrado es REPRODUCIBLE (tiene pistas y duración). Si no
+    /// —p. ej. un MP4 sin <c>moov</c> por un corte abrupto, o 0 bytes—, enciende la alarma
+    /// RecordingUnverified para que el operador lo sepa al momento, en vez de descubrirlo días después.
+    /// Best-effort y en segundo plano: nunca interrumpe la grabación en curso.
+    /// </summary>
+    private async Task VerifyRecordingAsync(string path)
+    {
+        try
+        {
+            await Task.Delay(300).ConfigureAwait(false); // el handle puede tardar un instante en liberarse
+            var probe = await _locator.ProbeMediaAsync(path).ConfigureAwait(false);
+            if (probe.IsPlayable)
+                _log.LogDebug("Canal {Key}: {File} verificado ({Codec}, {Dur:0.0}s).",
+                    _channelKey, Path.GetFileName(path), probe.VideoCodec ?? "audio", probe.DurationSeconds);
+            else
+            {
+                _log.LogError("Canal {Key}: {File} NO pasó la verificación (sin pistas/duración válidas): posible grabación dañada.",
+                    _channelKey, path);
+                RaiseAlarm(AlarmType.RecordingUnverified, true);
+            }
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "Canal {Key}: no se pudo verificar {File}.", _channelKey, path); }
     }
 
     private async Task StopSegmentScanAsync()
@@ -382,6 +446,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private void OnSupervisorRestarted(object? sender, int restartCount)
     {
         if (_disposed || _slate || _slatePending) return;
+        // Un fallo de APERTURA de codificador no es pérdida de señal: lo resuelve el fallback de codificador
+        // (degradar el códec), no la carta de ajuste —que reusaría el mismo codificador roto—. Inhíbela
+        // mientras se degrada para no entrar en un slate espurio.
+        if (_encoderOpenError || _fallbackPending) return;
         if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
         if (_recordProfile?.SlateOnSignalLoss != true) return;
 
@@ -397,6 +465,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             if (_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
             _slate = true;
+            _slateSince = DateTimeOffset.UtcNow;
+            _slateAlarmRaised = false;
             await ReplaceProcessAsync(recording: true, slate: true, CancellationToken.None).ConfigureAwait(false);
             RaiseAlarm(AlarmType.Slate, true);
             StartRecoveryProbe();
@@ -414,10 +484,61 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _slate = false;
             await ReplaceProcessAsync(recording: true, slate: false, CancellationToken.None).ConfigureAwait(false);
             RaiseAlarm(AlarmType.Slate, false);
+            RaiseAlarm(AlarmType.SignalLoss, false); // la señal volvió: retira la alarma de slate prolongado
+            _slateAlarmRaised = false;
             _log.LogInformation("Canal {Key}: señal recuperada; reanudando la fuente.", _channelKey);
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al salir de carta de ajuste.", _channelKey); }
         finally { _gate.Release(); }
+    }
+
+    // --- Fallback de codificador ante fallo de apertura por hardware ---
+
+    /// <summary>
+    /// El codificador de vídeo de grabación no pudo abrir (lo detectó <see cref="FfmpegEncoderError"/> en el
+    /// stderr). Degrada al siguiente de la <see cref="EncoderFallbackChain"/> (QSV→AMF→CPU) sobre una COPIA
+    /// del perfil —no muta el del canal— y reinicia el proceso. Es iterativa: si el alternativo tampoco
+    /// abre, su stderr vuelve a disparar este método y baja otro escalón hasta CPU (libx264), que siempre
+    /// abre. Si ya no hay alternativa, lo registra y deja seguir el flujo normal.
+    /// </summary>
+    private async Task TryFallbackEncoderAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_fallbackPending) return;
+            var current = _recordProfile;
+            if (current is null || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+
+            var next = EncoderFallbackChain.Next(current.VideoCodec);
+            if (next is null)
+            {
+                _log.LogError("Canal {Key}: el codificador '{Encoder}' no abre y no hay alternativa (ya es CPU).",
+                    _channelKey, FfmpegCodecMap.VideoEncoder(current.VideoCodec));
+                return;
+            }
+
+            _fallbackPending = true;
+            var from = current.VideoCodec;
+
+            // Copia del perfil con el códec degradado y decode por software (HwAccel.None): universal, evita
+            // dejar frames en una GPU de distinta familia que el nuevo codificador no podría tomar. NO se
+            // muta el perfil persistido del canal: la próxima grabación vuelve a intentar el códec elegido.
+            var degraded = current.Clone();
+            degraded.VideoCodec = next.Value;
+            degraded.HwAccel = HwAccel.None;
+            _recordProfile = degraded;
+
+            _log.LogWarning("Canal {Key}: codificador '{From}' no disponible → degradando a '{To}' y reiniciando la grabación.",
+                _channelKey, FfmpegCodecMap.VideoEncoder(from), FfmpegCodecMap.VideoEncoder(next.Value));
+
+            // ReplaceProcessAsync resetea _encoderOpenError: el proceso entrante (con el códec degradado) se
+            // re-evalúa por su propio stderr; si tampoco abre, disparará otro escalón.
+            await ReplaceProcessAsync(recording: true, slate: _slate, CancellationToken.None).ConfigureAwait(false);
+            RaiseAlarm(AlarmType.EncoderFallback, true);
+        }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al degradar el codificador.", _channelKey); }
+        finally { _fallbackPending = false; _gate.Release(); }
     }
 
     private void StartRecoveryProbe()
@@ -437,6 +558,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
+
+            // Slate PROLONGADO: si la señal lleva sin volver más de SlateAlarmAfter, escala a alarma crítica
+            // (SignalLoss) para que el operador actúe. La grabación de barras sigue (por si la señal vuelve).
+            if (!_slateAlarmRaised && DateTimeOffset.UtcNow - _slateSince >= SlateAlarmAfter)
+            {
+                _slateAlarmRaised = true;
+                _log.LogError("Canal {Key}: la señal lleva sin recuperarse {Min:0} min; carta de ajuste prolongada.", _channelKey, SlateAlarmAfter.TotalMinutes);
+                RaiseAlarm(AlarmType.SignalLoss, true);
+            }
 
             if (await ProbeDeviceAsync(ct).ConfigureAwait(false) && !ct.IsCancellationRequested)
             {

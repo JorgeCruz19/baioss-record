@@ -21,6 +21,16 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <!-- Configuración de canales: el valor de Channels:Count se EMBEBE en el binario (recurso incrustado),
+       de modo que el RELEASE publicado lo lleva FIJO y el operador no puede cambiarlo. En DEBUG, además se
+       copia junto al .exe para poder editarlo y probar 2/4 sin recompilar (override de desarrollo; ver App). -->
+  <ItemGroup>
+    <None Remove="appsettings.json" />
+    <EmbeddedResource Include="appsettings.json" LogicalName="appsettings.json">
+      <CopyToOutputDirectory Condition="'$(Configuration)' == 'Debug'">PreserveNewest</CopyToOutputDirectory>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Baioss.Record.Application\Baioss.Record.Application.csproj" />
     <ProjectReference Include="..\Baioss.Record.Infrastructure\Baioss.Record.Infrastructure.csproj" />

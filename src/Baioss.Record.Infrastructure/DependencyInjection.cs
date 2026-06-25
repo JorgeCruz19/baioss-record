@@ -34,8 +34,11 @@ public static class DependencyInjection
     {
         // Factory de DbContext: contexto de corta vida por operación, seguro para servicios
         // singleton de larga vida (canales 24/7) y escrituras concurrentes entre canales.
+        // «Default Timeout=30»: ante un lock momentáneo (otro canal/el scheduler escribiendo), el comando
+        // espera hasta 30 s en vez de fallar al instante con «database is locked». El modo WAL se fija en
+        // EnsureBaiossDatabaseCreated (permite lecturas concurrentes mientras se escribe).
         services.AddDbContextFactory<BaiossDbContext>(options =>
-            options.UseSqlite($"Data Source={sqliteDbPath}"));
+            options.UseSqlite($"Data Source={sqliteDbPath};Default Timeout=30"));
 
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IEventBus, InProcessEventBus>();
@@ -105,5 +108,9 @@ public static class DependencyInjection
         var factory = services.GetRequiredService<IDbContextFactory<BaiossDbContext>>();
         using var db = factory.CreateDbContext();
         db.Database.EnsureCreated();
+        // WAL (Write-Ahead Logging): persistente en el archivo. Permite que el scheduler (lee cada 1 s) y la
+        // UI lean mientras un canal escribe segmentos, en vez del bloqueo total del modo rollback por defecto
+        // → evita el «database is locked» con varios canales grabando a la vez.
+        db.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
     }
 }

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Linq;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
@@ -7,6 +8,7 @@ using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
+using Baioss.Record.Application.Recording;
 using Baioss.Record.Infrastructure.Preview;
 using Baioss.Record.Infrastructure.Storage;
 
@@ -44,6 +46,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private double _peakL = -60, _peakR = -60;
     private IReadOnlyList<AudioMeter> _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
 
+    // Saturación: racha de frames perdidos → alarma FramesDropped (ver DropAlarmTracker). Se reinicia en
+    // cada start/stop para no arrastrar el conteo de una grabación a otra.
+    private readonly DropAlarmTracker _drops = new();
+
     // Alarmas activas del canal (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
     private readonly object _alarmLock = new();
     private readonly Dictionary<AlarmType, ChannelAlarm> _alarms = new();
@@ -78,7 +84,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _diskGuard = diskGuard;
 
         _engine.StateChanged += (_, _) => Raise();
-        _engine.StatsUpdated += (_, _) => Raise();
+        _engine.StatsUpdated += OnStats;
         _engine.AudioPeaksUpdated += OnAudioLevels;
         _engine.SegmentClosed += OnSegmentClosed;
         _engine.AlarmChanged += OnEngineAlarm;
@@ -124,6 +130,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     {
         lock (_renameLock) { _sessionSegments.Clear(); _pendingPersists.Clear(); }
         var profile = Profile; // el perfil elegido por el operador en la UI
+
+        // Pre-vuelo: valida perfil y destino ANTES de crear/persistir nada, para no dejar una sesión a
+        // medias. Lo bloqueante lanza (lo muestra la UI); lo no bloqueante (disco/señal) solo se registra.
+        Preflight(profile, recordingName);
+        _drops.Reset();
+
         var signal = _source.CurrentSignal;
         var session = new RecordingSession
         {
@@ -180,6 +192,61 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private static long FallbackBytesPerSecond(RecordingProfile p)
         => ((p.MaxBitrate ?? p.VideoBitrate).BitsPerSecond + p.AudioBitrate.BitsPerSecond) / 8;
 
+    /// <summary>
+    /// Comprobaciones PREVIAS a grabar. Lo que IMPIDE grabar lanza (perfil inválido, destino no escribible)
+    /// para que la UI avise y no se cree una sesión a medias; lo de MARGEN (disco ajustado, señal no
+    /// bloqueada) solo se registra, porque la grabación aún puede ser válida.
+    /// </summary>
+    private void Preflight(RecordingProfile profile, string? recordingName)
+    {
+        // 1) Perfil coherente (bitrate/GOP/resolución/calidad/audio).
+        if (!RecordingProfileValidator.IsValid(profile, out var errors))
+            throw new InvalidOperationException("Perfil de grabación inválido: " + string.Join(" ", errors));
+
+        // 2) Carpeta de destino escribible (existe y admite crear/borrar un archivo).
+        var dir = Path.Combine(_engine.OutputRoot, _key);
+
+        // 2b) Longitud de ruta (Windows ~260): un nombre de grabación larguísimo haría fallar a FFmpeg en
+        // SILENCIO al abrir el archivo. Se reserva margen para la extensión, el dedupe « N» y el contador de
+        // segmento «_NNN». Solo aplica al nombre manual/programado; el nombre por defecto es corto.
+        if (!string.IsNullOrWhiteSpace(recordingName) && Path.Combine(dir, recordingName.Trim()).Length > 240)
+            throw new InvalidOperationException(
+                "El nombre de la grabación es demasiado largo para la ruta de destino (límite ~260 caracteres de Windows). Acorta el nombre o usa una carpeta de destino más corta.");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var probe = Path.Combine(dir, $".write_{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probe, "");
+            File.Delete(probe);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"No se puede escribir en la carpeta de grabación «{dir}»: {ex.Message}", ex);
+        }
+
+        // 3) Margen de disco al arranque (no bloquea: el DiskSpaceGuard vigila el resto y detiene en crítico).
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(dir));
+            long bps = FallbackBytesPerSecond(profile);
+            if (root is not null && bps > 0)
+            {
+                var drive = new DriveInfo(root);
+                if (drive.IsReady)
+                {
+                    double minutes = drive.AvailableFreeSpace / (double)bps / 60.0;
+                    if (minutes < 5)
+                        _log?.LogWarning("Canal {Key}: poco margen de disco al iniciar (~{Min:0.0} min al bitrate del perfil).", _key, minutes);
+                }
+            }
+        }
+        catch { /* el cálculo de margen es best-effort */ }
+
+        // 4) Señal presente (la UI ya exige lock para grabar; cubre la ruta de API/programada).
+        if (_source.CurrentSignal.State != SignalState.Locked)
+            _log?.LogWarning("Canal {Key}: iniciando grabación sin señal bloqueada (estado {State}).", _key, _source.CurrentSignal.State);
+    }
+
     public async Task StopRecordingAsync(CancellationToken ct = default)
     {
         if (_diskGuard is not null)
@@ -189,9 +256,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
         await _engine.StopRecordingAsync(ct);
 
-        // Las alarmas operativas de la grabación dejan de aplicar al detener.
+        // Las alarmas operativas de la grabación dejan de aplicar al detener (RecordingUnverified NO: avisa
+        // de un archivo dañado y debe persistir hasta la próxima grabación).
         SetAlarm(AlarmType.DiskLow, false);
         SetAlarm(AlarmType.DiskCritical, false);
+        SetAlarm(AlarmType.FramesDropped, false);
+        _drops.Reset();
         _storage = StorageInfo.Unknown;
 
         if (_session is not null)
@@ -300,6 +370,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         AlarmType.DiskLow => "Espacio en disco bajo",
         AlarmType.DiskCritical => "Disco casi lleno",
         AlarmType.Slate => "Sin señal — grabando carta de ajuste",
+        AlarmType.EncoderFallback => "Codificador por GPU no disponible — grabando con codificador alternativo",
+        AlarmType.FramesDropped => "Frames perdidos — el equipo no da abasto (CPU/GPU/disco)",
+        AlarmType.RecordingUnverified => "Grabación sin verificar — el archivo podría estar dañado",
         _ => t.ToString(),
     };
 
@@ -326,6 +399,18 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
                 catch (Exception ex) { _log?.LogError(ex, "Auto-stop por disco falló en el canal {Key}.", _key); }
             });
         }
+    }
+
+    /// <summary>
+    /// Telemetría del encoder: vigila los FRAMES PERDIDOS para alarmar ante saturación sostenida (la causa
+    /// típica de degradación al grabar varios canales). Solo durante la grabación; en preview los descartes
+    /// no corrompen nada. Refresca la UI en cualquier caso.
+    /// </summary>
+    private void OnStats(object? sender, RecorderStats stats)
+    {
+        if (_engine.State is RecordingState.Recording)
+            SetAlarm(AlarmType.FramesDropped, _drops.Update(stats.DroppedFrames));
+        Raise();
     }
 
     private void OnAudioLevels(object? sender, (double Left, double Right) lr)

@@ -82,32 +82,73 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private RecurrenceOption? _selectedRecurrence;
 
     [ObservableProperty] private string _title = "Grabación programada";
-    [ObservableProperty] private string _date = "";       // yyyy-MM-dd (solo "Una vez")
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _time = "20:00";  // HH:mm
-    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private int _durationMinutes = 60;
+
+    /// <summary>Fecha de la grabación (solo «Una vez»); se elige con el DatePicker nativo.</summary>
+    [ObservableProperty] private DateTime? _selectedDate;
+
+    // Hora de INICIO y de FIN con segundos (hh:mm:ss), elegidas con selectores nativos (ComboBox).
+    // La duración (auto-stop) se deriva de fin − inicio; si fin ≤ inicio se asume cruce de medianoche.
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _startHour = "20";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _startMinute = "00";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _startSecond = "00";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _endHour = "21";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _endMinute = "00";
+    [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private string _endSecond = "00";
+
     [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private bool _segmentEnabled;
     [ObservableProperty][NotifyPropertyChangedFor(nameof(FormHint))] private int _segmentMinutes = 10;
     [ObservableProperty] private string _statusMessage = "";
 
-    /// <summary>Aviso EN VIVO bajo el formulario: cruce de medianoche y segmentos ≥ duración (informativo).</summary>
+    /// <summary>Id de la tarea en edición (null = creando una nueva). Cambia el botón y el título del formulario.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsEditing))]
+    [NotifyPropertyChangedFor(nameof(SaveButtonText))]
+    [NotifyPropertyChangedFor(nameof(FormTitle))]
+    private Guid? _editingJobId;
+
+    public bool IsEditing => EditingJobId is not null;
+    public string SaveButtonText => IsEditing ? "💾 Guardar cambios" : "＋ Programar";
+    public string FormTitle => IsEditing ? "EDITAR PROGRAMACIÓN" : "NUEVA PROGRAMACIÓN";
+
+    /// <summary>Opciones «00»..«23» (horas) y «00»..«59» (minutos/segundos) para los selectores hh:mm:ss.</summary>
+    public IReadOnlyList<string> Hours { get; } = Enumerable.Range(0, 24).Select(i => i.ToString("00")).ToArray();
+    public IReadOnlyList<string> MinutesSeconds { get; } = Enumerable.Range(0, 60).Select(i => i.ToString("00")).ToArray();
+
+    /// <summary>Aviso EN VIVO bajo el formulario: duración, cruce de medianoche y segmentos ≥ duración.</summary>
     public string FormHint
     {
         get
         {
             var notes = new List<string>();
-            if (TryParseTime(Time, out var tod) && DurationMinutes > 0)
-            {
-                var end = tod + TimeSpan.FromMinutes(DurationMinutes);
-                if (end >= TimeSpan.FromDays(1))
-                {
-                    var over = end - TimeSpan.FromDays(end.Days);
-                    notes.Add($"⏭ Termina al día siguiente (~{over.Hours:00}:{over.Minutes:00}).");
-                }
-            }
-            if (SegmentEnabled && SegmentMinutes > 0 && DurationMinutes > 0 && SegmentMinutes >= DurationMinutes)
+            var start = StartTimeOfDay;
+            var end = EndTimeOfDay;
+            var dur = DurationFromStartEnd(start, end);
+            if (dur > TimeSpan.Zero) notes.Add($"⏱ Duración: {DescribeDuration(dur)}.");
+            if (end < start) notes.Add("⏭ La hora de fin es anterior a la de inicio: termina al día siguiente.");
+            if (SegmentEnabled && SegmentMinutes > 0 && dur > TimeSpan.Zero && TimeSpan.FromMinutes(SegmentMinutes) >= dur)
                 notes.Add("⚠ Los segmentos son ≥ que la grabación: será un solo archivo.");
-            return string.Join("    ", notes);
+            return string.Join("     ", notes);
         }
+    }
+
+    private TimeSpan StartTimeOfDay => Tod(StartHour, StartMinute, StartSecond);
+    private TimeSpan EndTimeOfDay => Tod(EndHour, EndMinute, EndSecond);
+    private static TimeSpan Tod(string h, string m, string s) => new(Parse(h), Parse(m), Parse(s));
+    private static int Parse(string s) => int.TryParse(s, out var v) ? v : 0;
+
+    /// <summary>Duración inicio→fin; si fin ≤ inicio se asume cruce de medianoche (fin del día siguiente).</summary>
+    private static TimeSpan DurationFromStartEnd(TimeSpan start, TimeSpan end)
+        => end > start ? end - start
+         : end < start ? end + TimeSpan.FromDays(1) - start
+         : TimeSpan.Zero;
+
+    private static string DescribeDuration(TimeSpan d)
+    {
+        var parts = new List<string>();
+        if (d.Hours > 0) parts.Add($"{d.Hours} h");
+        if (d.Minutes > 0) parts.Add($"{d.Minutes} min");
+        if (d.Seconds > 0) parts.Add($"{d.Seconds} s");
+        return parts.Count > 0 ? string.Join(" ", parts) : "0 s";
     }
 
     [ObservableProperty] private bool _mon;
@@ -128,7 +169,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         Channels = channels.Select(c => new ScheduleChannelOption { Key = c.Key, ChannelId = c.ChannelId }).ToList();
         SelectedChannel = Channels.FirstOrDefault();
         SelectedRecurrence = Recurrences[0];
-        Date = _clock.UtcNow.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        SelectedDate = _clock.UtcNow.ToLocalTime().Date;
         _ = RefreshAsync();
     }
 
@@ -212,12 +253,17 @@ public sealed partial class ScheduleViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task Add()
+    private async Task Save()
     {
         if (SelectedChannel is null) { StatusMessage = "Elige un canal."; return; }
         if (SelectedRecurrence is null) { StatusMessage = "Elige el tipo de repetición."; return; }
-        if (!TryParseTime(Time, out var tod)) { StatusMessage = "Hora inválida: usa HH:mm (p. ej. 20:00)."; return; }
-        if (DurationMinutes <= 0) { StatusMessage = "La duración debe ser mayor que 0 minutos."; return; }
+
+        // Hora de inicio/fin (hh:mm:ss). La duración (auto-stop) es fin − inicio: fin == inicio no es válido
+        // y fin < inicio se interpreta como cruce de medianoche (la grabación termina al día siguiente).
+        var start = StartTimeOfDay;
+        var end = EndTimeOfDay;
+        if (end == start) { StatusMessage = "La hora de fin debe ser distinta de la de inicio."; return; }
+        var duration = DurationFromStartEnd(start, end);
         if (SegmentEnabled && SegmentMinutes <= 0) { StatusMessage = "Los minutos por segmento deben ser mayores que 0."; return; }
 
         var kind = SelectedRecurrence.Kind;
@@ -240,27 +286,27 @@ public sealed partial class ScheduleViewModel : ObservableObject
         DateTimeOffset runAt;
         if (kind == RecurrenceKind.Once)
         {
-            if (!DateOnly.TryParseExact(Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
-            { StatusMessage = "Fecha inválida: usa yyyy-MM-dd (p. ej. 2026-06-25)."; return; }
-            runAt = new DateTimeOffset(d.Year, d.Month, d.Day, tod.Hours, tod.Minutes, 0, offset);
+            if (SelectedDate is not { } d) { StatusMessage = "Elige una fecha."; return; }
+            runAt = new DateTimeOffset(d.Year, d.Month, d.Day, start.Hours, start.Minutes, start.Seconds, offset);
             if (runAt <= now) { StatusMessage = "Esa fecha/hora ya pasó; elige una futura."; return; }
         }
         else
         {
             // (3) Primera ocurrencia FUTURA: si la hora de hoy ya pasó, empieza el próximo día válido
             // (evita que una tarea recién creada arranque un trozo de inmediato).
-            runAt = ScheduleValidator.NextRecurringAnchor(kind, weekdays, tod, offset, now);
+            runAt = ScheduleValidator.NextRecurringAnchor(kind, weekdays, start, offset, now);
         }
 
         var job = new ScheduledJob
         {
+            Id = EditingJobId ?? Guid.NewGuid(),   // al editar conserva el mismo Id (es la misma tarea)
             ChannelId = SelectedChannel.ChannelId,
             Action = ScheduledAction.StartRecording,
             Title = string.IsNullOrWhiteSpace(Title) ? "Grabación programada" : Title.Trim(),
             RunAt = runAt,
             Recurrence = kind,
             Weekdays = weekdays,
-            Duration = TimeSpan.FromMinutes(DurationMinutes),
+            Duration = duration,
             SegmentMinutes = SegmentEnabled && SegmentMinutes > 0 ? SegmentMinutes : null,
             Enabled = true,
         };
@@ -268,15 +314,18 @@ public sealed partial class ScheduleViewModel : ObservableObject
         // (1) La duración no puede alcanzar la siguiente ocurrencia (si no, esa se perdería en silencio).
         if (!ScheduleValidator.DurationFitsInterval(job))
         {
-            StatusMessage = $"La duración ({DurationMinutes} min) alcanza la siguiente ocurrencia ({DescribeInterval(ScheduleValidator.RecurrenceInterval(job))}). Redúcela o cambia la repetición.";
+            StatusMessage = $"La duración ({DescribeDuration(duration)}) alcanza la siguiente ocurrencia ({DescribeInterval(ScheduleValidator.RecurrenceInterval(job))}). Redúcela o cambia la repetición.";
             return;
         }
 
         var existing = await _scheduler.GetAllAsync();
 
+        // Al editar, conserva el estado de pausa de la tarea original (editar no la reactiva sola).
+        if (EditingJobId is { } eid) job.Enabled = existing.FirstOrDefault(e => e.Id == eid)?.Enabled ?? true;
+
         // Nombre ÚNICO: no se permite guardar una tarea con un título que ya existe (los archivos se
-        // nombran por título; dos iguales se confundirían). Sin distinción de mayúsculas.
-        if (existing.Any(e => string.Equals(e.Title?.Trim(), job.Title, StringComparison.OrdinalIgnoreCase)))
+        // nombran por título; dos iguales se confundirían). Sin mayúsculas; al editar no choca consigo misma.
+        if (existing.Any(e => e.Id != job.Id && string.Equals(e.Title?.Trim(), job.Title, StringComparison.OrdinalIgnoreCase)))
         {
             StatusMessage = $"Ya existe una grabación programada llamada «{job.Title}». Elige otro nombre.";
             return;
@@ -290,15 +339,73 @@ public sealed partial class ScheduleViewModel : ObservableObject
             return;
         }
 
-        await _scheduler.ScheduleAsync(job);
+        bool wasEditing = IsEditing;
+        if (wasEditing) await _scheduler.UpdateAsync(job);
+        else await _scheduler.ScheduleAsync(job);
 
-        // Avisos suaves (no bloquean la creación).
+        // Avisos suaves (no bloquean el guardado).
         var notes = new List<string>();
-        if (SegmentEnabled && SegmentMinutes >= DurationMinutes) notes.Add("los segmentos son ≥ que la grabación (un solo archivo)");
+        if (SegmentEnabled && TimeSpan.FromMinutes(SegmentMinutes) >= duration) notes.Add("los segmentos son ≥ que la grabación (un solo archivo)");
         if (ScheduleValidator.SpansToNextDay(job)) notes.Add($"termina al día siguiente a las {(job.RunAt + job.Duration!.Value).ToLocalTime():HH:mm}");
-        StatusMessage = $"Programada «{job.Title}» en Canal {SelectedChannel.Key}."
+        StatusMessage = $"{(wasEditing ? "Actualizada" : "Programada")} «{job.Title}» en Canal {SelectedChannel.Key}."
                         + (notes.Count > 0 ? "  Aviso: " + string.Join("; ", notes) + "." : "");
+        if (wasEditing) { EditingJobId = null; ResetForm(); }   // sale del modo edición y limpia el formulario
         await RefreshAsync();
+    }
+
+    /// <summary>Carga una tarea existente en el formulario para editarla (botón «Editar» de la lista).</summary>
+    [RelayCommand]
+    private void Edit(ScheduledJobRow? row)
+    {
+        if (row is null) return;
+        var j = row.Job;
+        EditingJobId = j.Id;
+        SelectedChannel = Channels.FirstOrDefault(c => c.ChannelId == j.ChannelId) ?? SelectedChannel;
+        SelectedRecurrence = Recurrences.FirstOrDefault(r => r.Kind == j.Recurrence) ?? Recurrences[0];
+        Title = j.Title;
+
+        var local = j.RunAt.ToLocalTime();
+        SelectedDate = local.Date;
+        var s = local.TimeOfDay;
+        StartHour = s.Hours.ToString("00"); StartMinute = s.Minutes.ToString("00"); StartSecond = s.Seconds.ToString("00");
+        // Fin = inicio + duración, normalizado al día (si cruza medianoche, queda la hora del día siguiente).
+        var e = TimeSpan.FromTicks((s + (j.Duration ?? TimeSpan.Zero)).Ticks % TimeSpan.FromDays(1).Ticks);
+        EndHour = e.Hours.ToString("00"); EndMinute = e.Minutes.ToString("00"); EndSecond = e.Seconds.ToString("00");
+
+        Mon = j.Weekdays.HasFlag(Weekdays.Monday);
+        Tue = j.Weekdays.HasFlag(Weekdays.Tuesday);
+        Wed = j.Weekdays.HasFlag(Weekdays.Wednesday);
+        Thu = j.Weekdays.HasFlag(Weekdays.Thursday);
+        Fri = j.Weekdays.HasFlag(Weekdays.Friday);
+        Sat = j.Weekdays.HasFlag(Weekdays.Saturday);
+        Sun = j.Weekdays.HasFlag(Weekdays.Sunday);
+
+        SegmentEnabled = j.SegmentMinutes is > 0;
+        SegmentMinutes = j.SegmentMinutes is { } m && m > 0 ? m : 10;
+
+        StatusMessage = $"Editando «{j.Title}». Cambia lo necesario y pulsa «Guardar cambios».";
+    }
+
+    /// <summary>Cancela la edición en curso y limpia el formulario.</summary>
+    [RelayCommand]
+    private void CancelEdit()
+    {
+        EditingJobId = null;
+        ResetForm();
+        StatusMessage = "Edición cancelada.";
+    }
+
+    /// <summary>Devuelve el formulario a sus valores por defecto.</summary>
+    private void ResetForm()
+    {
+        Title = "Grabación programada";
+        SelectedChannel = Channels.FirstOrDefault();
+        SelectedRecurrence = Recurrences[0];
+        SelectedDate = _clock.UtcNow.ToLocalTime().Date;
+        StartHour = "20"; StartMinute = "00"; StartSecond = "00";
+        EndHour = "21"; EndMinute = "00"; EndSecond = "00";
+        Mon = Tue = Wed = Thu = Fri = Sat = Sun = false;
+        SegmentEnabled = false; SegmentMinutes = 10;
     }
 
     private static string DescribeInterval(TimeSpan? iv)
@@ -355,10 +462,4 @@ public sealed partial class ScheduleViewModel : ObservableObject
         return parts.Count > 0 ? string.Join(" ", parts) : "—";
     }
 
-    private static bool TryParseTime(string s, out TimeSpan tod)
-    {
-        tod = default;
-        return TimeSpan.TryParseExact(s?.Trim(), @"hh\:mm", CultureInfo.InvariantCulture, out tod)
-            && tod >= TimeSpan.Zero && tod < TimeSpan.FromDays(1);
-    }
 }

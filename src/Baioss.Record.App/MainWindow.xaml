@@ -21,13 +21,14 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="BAIOSS" FontSize="18" FontWeight="Bold" Foreground="#E6E9EF"/>
                     <TextBlock Text="RECORD" FontSize="18" FontWeight="Bold" Foreground="#3B82F6" Margin="6,0,0,0"/>
-                    <TextBlock Text="· grabación broadcast de 2 canales" FontSize="13"
+                    <TextBlock Text="{Binding ChannelsSubtitle}" FontSize="13"
                                Foreground="#8A92A0" Margin="12,3,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <!-- Un panel por canal (escala a N canales) -->
+        <!-- Un panel por canal, SIEMPRE en una sola fila (UniformGrid Rows="1"): N canales → N columnas.
+             Con más canales cada panel se hace más estrecho, pero el preview conserva toda la altura. -->
         <ItemsControl ItemsSource="{Binding Channels}">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>

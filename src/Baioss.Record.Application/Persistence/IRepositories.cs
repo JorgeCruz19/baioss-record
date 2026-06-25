@@ -27,6 +27,19 @@ public interface IRecordingSessionRepository : IRepository<RecordingSession>
 {
     Task<IReadOnlyList<RecordingSession>> GetHistoryAsync(
         Guid? channelId, DateTimeOffset from, DateTimeOffset to, int skip, int take, CancellationToken ct = default);
+
+    /// <summary>
+    /// Cierra las sesiones que quedaron «en grabación» tras un cierre ABRUPTO (crash/kill): las marca como
+    /// finalizadas con error y fija <c>EndedAt</c>, para que la BD no arrastre grabaciones colgadas. No toca
+    /// los archivos (ya quedaron en disco, fragmentados y reproducibles). Devuelve cuántas cerró.
+    /// </summary>
+    Task<int> CloseOrphanedAsync(DateTimeOffset endedAt, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sesiones del canal cuya grabación TERMINÓ antes de <paramref name="cutoff"/> (con sus segmentos), para
+    /// aplicar la retención. Las grabaciones en curso (sin <c>EndedAt</c>) nunca entran.
+    /// </summary>
+    Task<IReadOnlyList<RecordingSession>> GetEndedBeforeAsync(Guid channelId, DateTimeOffset cutoff, CancellationToken ct = default);
 }
 
 /// <summary>Append-only para el registro de eventos/auditoría.</summary>

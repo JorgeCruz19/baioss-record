@@ -1,7 +1,7 @@
 <Window x:Class="Baioss.Record.App.Inputs.InputsManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Entradas de los canales" Height="480" Width="1010"
+        Title="Entradas de los canales" Height="720" Width="1280"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <DockPanel>
         <!-- Cabecera + Detectar -->

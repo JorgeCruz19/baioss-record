@@ -32,6 +32,9 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public ObservableCollection<ChannelViewModel> Channels { get; }
 
+    /// <summary>Subtítulo de la barra superior, según el nº real de canales creados (1 canal / N canales).</summary>
+    public string ChannelsSubtitle => $"· grabación broadcast de {Channels.Count} canal{(Channels.Count == 1 ? "" : "es")}";
+
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock)
     {
@@ -101,12 +104,14 @@ public sealed partial class ShellViewModel : ObservableObject
                     }));
                 }
 
-                // Si hoy no hay nada pero sí hay una próxima, muéstrala como pista (evita que parezca que falla).
-                string emptyText = rows.Count == 0 && nextSlot is { } np
-                    ? $"Hoy no hay. Próxima: {np.ToLocalTime().ToString("ddd dd/MM · HH:mm", es)} · {nextJob!.Title}"
-                    : "";
-                bool showSection = rows.Count > 0 || nextSlot is not null;
-                vm.SetTodayTasks(rows.OrderBy(r => r.Slot).Select(r => r.Row).ToList(), emptyText, showSection);
+                // La tabla SIEMPRE se muestra (alto fijo, uniforme entre canales). Si hoy no hay nada,
+                // se indica la próxima ocurrencia como pista, o «sin grabaciones» si tampoco hay futura.
+                string emptyText = rows.Count > 0
+                    ? ""
+                    : nextSlot is { } np
+                        ? $"Hoy no hay. Próxima: {np.ToLocalTime().ToString("ddd dd/MM · HH:mm", es)} · {nextJob!.Title}"
+                        : "Sin grabaciones programadas hoy";
+                vm.SetTodayTasks(rows.OrderBy(r => r.Slot).Select(r => r.Row).ToList(), emptyText);
             }
         }
         catch { /* refresco best-effort */ }

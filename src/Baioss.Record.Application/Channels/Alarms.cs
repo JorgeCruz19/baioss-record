@@ -17,13 +17,19 @@ public enum AlarmType
     DiskCritical,
     /// <summary>El canal está rellenando con barras/slate porque perdió la señal pero sigue grabando.</summary>
     Slate,
+    /// <summary>El codificador por GPU no pudo abrir (p. ej. sesiones NVENC agotadas) y el canal pasó automáticamente a un codificador alternativo.</summary>
+    EncoderFallback,
+    /// <summary>Frames perdidos sostenidos: el codificador no da abasto (CPU/GPU/disco saturado). La grabación continúa, pero puede perder cuadros/calidad.</summary>
+    FramesDropped,
+    /// <summary>El archivo recién cerrado NO pasó la verificación (ffprobe no halló pistas o duración válida): posible grabación dañada.</summary>
+    RecordingUnverified,
 }
 
 /// <summary>Una alarma activa de un canal, con desde cuándo está activa y un mensaje legible.</summary>
 public sealed record ChannelAlarm(AlarmType Type, string Message, DateTimeOffset Since)
 {
     /// <summary>True para alarmas que exigen acción inmediata del operador (rojas).</summary>
-    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical;
+    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.RecordingUnverified;
 }
 
 /// <summary>
