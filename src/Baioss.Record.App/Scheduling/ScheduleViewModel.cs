@@ -176,6 +176,39 @@ public sealed partial class ScheduleViewModel : ObservableObject
     [RelayCommand]
     private Task Refresh() => RefreshAsync();
 
+    /// <summary>Exporta toda la programación a CSV (revisión en Excel) o JSON (copia de seguridad / reimport),
+    /// elegido por la extensión del archivo en el diálogo de guardado.</summary>
+    [RelayCommand]
+    private async Task ExportAsync()
+    {
+        var jobs = await _scheduler.GetAllAsync();
+        if (jobs.Count == 0) { StatusMessage = "No hay programaciones que exportar."; return; }
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Exportar programación de grabaciones",
+            Filter = "CSV para Excel (*.csv)|*.csv|JSON copia de seguridad (*.json)|*.json",
+            FileName = $"programacion_{_clock.UtcNow.ToLocalTime():yyyy-MM-dd}.csv",
+            DefaultExt = ".csv",
+            AddExtension = true,
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        try
+        {
+            string? KeyOf(Guid id) => Channels.FirstOrDefault(c => c.ChannelId == id)?.Key;
+            var now = _clock.UtcNow;
+            bool json = System.IO.Path.GetExtension(dlg.FileName).Equals(".json", StringComparison.OrdinalIgnoreCase);
+            var content = json ? ScheduleExporter.ToJson(jobs, KeyOf, now) : ScheduleExporter.ToCsv(jobs, KeyOf, now);
+            await System.IO.File.WriteAllTextAsync(dlg.FileName, content); // UTF-8 sin BOM; el CSV ya incluye su BOM
+            StatusMessage = $"Programación exportada ({jobs.Count}) a «{dlg.FileName}».";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"No se pudo exportar la programación: {ex.Message}";
+        }
+    }
+
     private async Task RefreshAsync()
     {
         var now = _clock.UtcNow;

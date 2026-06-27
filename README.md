@@ -30,10 +30,11 @@ Capacidades de fiabilidad y validación integradas en el motor de grabación:
 - **Disco**: estimación de tiempo restante y **auto-stop** antes de llenarlo (sin corromper el archivo).
 - **Pérdida de señal**: carta de ajuste (barras SMPTE + silencio) automática para no romper la base de tiempo; reanuda al volver la señal y **escala a alarma crítica** si se prolonga.
 
-**Captura de dispositivos (DirectShow / DeckLink)**
+**Captura de dispositivos (DirectShow / DeckLink / NDI)**
 - Nombres de dispositivo en **UTF-8** (acentos correctos; antes el mojibake hacía fallar a dshow con error -5).
 - **Sincronización A/V**: vídeo + audio de dispositivos distintos se sellan con reloj de pared (`-use_wallclock_as_timestamps`) para que el preview no se congele.
 - **Exclusividad**: una misma cámara/tarjeta no puede asignarse a dos canales a la vez (aviso claro en vez de fallo silencioso).
+- **NDI** (NewTek): captura nativa de fuentes NDI de la red mediante el **SDK NDI** (paquete `NDILibDotNetCoreBase`). La app recibe el vídeo+audio NDI y los pasa a FFmpeg por sockets locales (vídeo `rawvideo` + audio `f32le`), con descubrimiento automático de fuentes en el gestor de entradas. Requiere el **NDI Runtime** instalado (incluido en NDI Tools); su `.dll` nativo (`Processing.NDI.Lib.x64.dll`) se empaqueta junto al `.exe`. Si el runtime no está, NDI no se ofrece (degrada limpio).
 
 **Persistencia y recuperación**
 - **SQLite en modo WAL** + espera ante locks: lecturas del scheduler (cada 1 s) y escrituras de N canales sin «database is locked».

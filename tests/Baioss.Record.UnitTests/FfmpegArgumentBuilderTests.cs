@@ -73,6 +73,22 @@ public class FfmpegArgumentBuilderTests
     }
 
     [Fact]
+    public void Build_NvencClosedGop_EmitsNoScenecutWithValue()
+    {
+        // Regresión: -no-scenecut (NVENC) es booleano y EXIGE valor. La forma «bare» hace que FFmpeg tome el
+        // -c:a siguiente como su valor y deje «aac» suelto como filename → aborta con EINVAL (-22).
+        var profile = SoftwareMp4();
+        profile.VideoCodec = VideoCodec.H264Nvenc;
+        profile.HwAccel = HwAccel.Nvenc;
+        profile.ClosedGop = true;
+
+        var (joined, _) = Build(profile);
+
+        Assert.Contains("-no-scenecut 1", joined);              // con valor explícito
+        Assert.DoesNotContain("-no-scenecut -c:a", joined);     // NO la forma «bare» que se come el codec de audio
+    }
+
+    [Fact]
     public void Build_Qsv_UsesQuickSyncEncoderBitrateAndNv12()
     {
         var profile = SoftwareMp4();
@@ -278,6 +294,28 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("TST_", joined);                                    // nombre de la grabación
         Assert.Contains("ebur128=peak=true", joined);
     }
+
+    [Fact]
+    public void BuildLive_Recording_Nvenc_ConvertsRecordBranchToEncoderFormat()
+    {
+        // Regresión (NDI): la fuente sirve uyvy422 y h264_nvenc lo RECHAZA con EINVAL (-22) si la rama de
+        // grabación no convierte el formato — desde un filter_complex FFmpeg NO auto-inserta la conversión.
+        // La rama [vrec] debe terminar en format=nv12 (nativo de NVENC) antes de mapearse al encoder.
+        var profile = SoftwareMp4();
+        profile.VideoCodec = VideoCodec.H264Nvenc;
+        profile.HwAccel = HwAccel.Nvenc;
+
+        var joined = BuildLive(profile, recording: true);
+
+        Assert.Contains("format=nv12[vmain]", joined);   // conversión al final de la rama de grabación
+        Assert.Contains("-map [vmain]", joined);          // …y es esa rama la que va al encoder
+        Assert.Contains("-c:v h264_nvenc", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Recording_Software_ConvertsRecordBranchToYuv420p()
+        // El mismo format= explícito también para libx264 (yuv420p): no-op si ya coincide, robusto si no.
+        => Assert.Contains("format=yuv420p[vmain]", BuildLive(SoftwareMp4(), recording: true));
 
     [Fact]
     public void BuildLive_PreviewOnly_NoAudioSource_KeepsPreviewButOmitsMeter()

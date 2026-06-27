@@ -73,8 +73,13 @@ public static class FfmpegCodecMap
     /// <summary>Banderas de entrada para decode acelerado por hardware.</summary>
     public static IEnumerable<string> HwAccelInput(HwAccel accel) => accel switch
     {
-        HwAccel.Nvenc or HwAccel.Nvdec => new[] { "-hwaccel", "cuda", "-hwaccel_output_format", "cuda" },
-        HwAccel.QuickSync              => new[] { "-hwaccel", "qsv", "-hwaccel_output_format", "qsv" },
+        // Solo "-hwaccel <api>", SIN "-hwaccel_output_format <api>": el grafo de filtros del motor (split,
+        // scale, format, blackdetect, drawtext…) es por SOFTWARE y no puede consumir frames en superficie
+        // CUDA/QSV. Forzar el output_format hacía ABORTAR a FFmpeg en cualquier fuente que DECODIFIQUE
+        // (File/DeckLink/dshow) con el perfil Nvenc por defecto. Sin él, FFmpeg descarga los frames a CPU
+        // automáticamente y el decode acelerado se conserva. (Auditoría 24/7, #49.)
+        HwAccel.Nvenc or HwAccel.Nvdec => new[] { "-hwaccel", "cuda" },
+        HwAccel.QuickSync              => new[] { "-hwaccel", "qsv" },
         HwAccel.Amf                    => new[] { "-hwaccel", "d3d11va" },
         _ => Array.Empty<string>()
     };

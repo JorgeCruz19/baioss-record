@@ -130,6 +130,50 @@ public sealed class FfmpegLocator : IFfmpegLocator
         catch (JsonException) { return MediaProbe.Unreadable; }
     }
 
+    /// <summary>
+    /// Remuxea un MP4/MOV a <c>+faststart</c> (índice al inicio) SIN recodificar. Atómico: escribe a un temporal
+    /// en la MISMA carpeta y solo si FFmpeg termina bien y el resultado no está vacío sustituye al original (un
+    /// <c>File.Move</c> de renombrado, instantáneo); ante cualquier fallo borra el temporal y deja el original
+    /// intacto, de modo que nunca se pierde la grabación. Solo actúa sobre .mp4/.mov (otros contenedores → false).
+    /// </summary>
+    public async Task<bool> RemuxFaststartAsync(string filePath, CancellationToken ct = default)
+    {
+        if (!File.Exists(filePath)) return false;
+        var ext = Path.GetExtension(filePath);
+        if (!ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase) &&
+            !ext.Equals(".mov", StringComparison.OrdinalIgnoreCase))
+            return false; // faststart solo aplica a ISO-BMFF (MP4/MOV); TS/MKV no lo necesitan
+
+        var dir = Path.GetDirectoryName(filePath) ?? ".";
+        // Temporal en la misma carpeta (mismo volumen → el Move final es un renombrado atómico) y CON la
+        // extensión real, para que FFmpeg elija el muxer por ella.
+        var tmp = Path.Combine(dir, Path.GetFileNameWithoutExtension(filePath) + ".faststart" + ext);
+        try
+        {
+            // -map 0 copia TODAS las pistas; -c copy no recodifica (rápido, sin pérdida); +faststart mueve el moov
+            // al inicio (de paso des-fragmenta el fMP4). -y sobrescribe un temporal previo.
+            var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", tmp };
+            var (_, exit) = await RunAsync(FfmpegPath, args, ct).ConfigureAwait(false);
+            if (exit != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0)
+            {
+                TryDelete(tmp);
+                return false;
+            }
+            File.Move(tmp, filePath, overwrite: true); // sustitución atómica del original por el optimizado
+            return true;
+        }
+        catch
+        {
+            TryDelete(tmp);
+            return false;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { /* best-effort */ }
+    }
+
     /// <summary>Quita el prefijo «[componente @ dirección] » que FFmpeg antepone a cada línea de log.</summary>
     private static string CleanLogLine(string line)
     {

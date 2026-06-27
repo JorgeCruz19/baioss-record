@@ -26,7 +26,11 @@ public static class ApiEndpoints
 
         // --- Grabación ---
         api.MapPost("/channels/{id:guid}/recording/start", async (Guid id, StartBody body, IDispatcher d, CancellationToken ct) =>
-            Results.Ok(await d.SendAsync(new StartRecordingCommand(id, body.ProfileId, body.Operator), ct)));
+        {
+            try { return Results.Ok(await d.SendAsync(new StartRecordingCommand(id, body.ProfileId, body.Operator), ct)); }
+            // El canal ya está grabando (doble START): conflicto claro en vez de un 500. (Auditoría 24/7, A9.)
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
 
         api.MapPost("/channels/{id:guid}/recording/stop", async (Guid id, IDispatcher d, CancellationToken ct) =>
         {
@@ -51,11 +55,23 @@ public static class ApiEndpoints
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+            // Un WebSocket NO admite envíos solapados: con varios canales publicando a la vez, dos SendAsync
+            // concurrentes lanzan InvalidOperationException y dejan el stream de eventos en estado Aborted. Se
+            // serializan con un semáforo por conexión, y cada envío lleva timeout para que un cliente lento no
+            // bloquee el bus de eventos (que está en la ruta de algunos start/stop). (Auditoría 24/7, A1/#27.)
+            using var sendGate = new SemaphoreSlim(1, 1);
             using var sub = bus.Subscribe<IDomainEvent>(async (e, _) =>
             {
+                if (socket.State != WebSocketState.Open) return;
                 var json = JsonSerializer.SerializeToUtf8Bytes(e, e.GetType());
-                if (socket.State == WebSocketState.Open)
-                    await socket.SendAsync(json, WebSocketMessageType.Text, true, CancellationToken.None);
+                await sendGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await socket.SendAsync(json, WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false);
+                }
+                catch { try { socket.Abort(); } catch { /* cliente caído: WaitUntilClosed cerrará la suscripción */ } }
+                finally { sendGate.Release(); }
             });
             await WaitUntilClosedAsync(socket);
         });

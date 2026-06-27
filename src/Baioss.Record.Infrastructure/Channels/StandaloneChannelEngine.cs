@@ -56,6 +56,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private StorageInfo _storage = StorageInfo.Unknown;
     private volatile bool _autoStopping;
 
+    // Serializa Start/Stop del canal: la UI, el scheduler y el auto-stop por disco pueden invocarlos a la vez.
+    // Sin esto, dos transiciones concurrentes corrompían _session y el wiring del DiskSpaceGuard. (Auditoría A5/A9/#31.)
+    private readonly SemaphoreSlim _transition = new(1, 1);
+
     public StandaloneChannelEngine(
         string key,
         ICaptureSource source,
@@ -127,6 +131,22 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     public Task StartPreviewAsync(CancellationToken ct = default) => Task.CompletedTask;
 
     public async Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
+    {
+        // Serializa con Stop y con el auto-stop por disco; rechaza el doble START. (Auditoría 24/7, A5/A9/#13.)
+        await _transition.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // A9: la UI ya impide el doble START (CanStart), pero la API/scheduler llaman directo. Arrancar una
+            // 2ª grabación huérfanaría la sesión en curso (sin EndedAt) y vaciaría _sessionFiles → archivo previo
+            // sin renombrar. Mejor rechazar con un error claro (que la API traduce a conflicto).
+            if (_engine.State is RecordingState.Recording or RecordingState.Starting)
+                throw new InvalidOperationException($"El canal {_key} ya está grabando.");
+            await StartRecordingCoreAsync(profileId, @operator, recordingName, ct).ConfigureAwait(false);
+        }
+        finally { _transition.Release(); }
+    }
+
+    private async Task StartRecordingCoreAsync(Guid profileId, string? @operator, string? recordingName, CancellationToken ct)
     {
         lock (_renameLock) { _sessionSegments.Clear(); _pendingPersists.Clear(); }
         var profile = Profile; // el perfil elegido por el operador en la UI
@@ -248,6 +268,19 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     }
 
     public async Task StopRecordingAsync(CancellationToken ct = default)
+    {
+        // Serializa con Start y con un Stop concurrente (auto-stop por disco / scheduler / manual); idempotente
+        // si ya está detenido, para no publicar RecordingStopped dos veces ni tocar _session a null repetido.
+        await _transition.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_session is null && _engine.State is RecordingState.Idle) return; // ya detenido: no-op
+            await StopRecordingCoreAsync(ct).ConfigureAwait(false);
+        }
+        finally { _transition.Release(); }
+    }
+
+    private async Task StopRecordingCoreAsync(CancellationToken ct)
     {
         if (_diskGuard is not null)
         {

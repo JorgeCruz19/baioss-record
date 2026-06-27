@@ -24,6 +24,7 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         {
             InputType.DirectShow  => await DiscoverDshowVideoAsync(ct).ConfigureAwait(false),
             InputType.DecklinkSdi => await DiscoverDecklinkAsync(ct).ConfigureAwait(false),
+            InputType.Ndi         => await DiscoverNdiAsync(ct).ConfigureAwait(false),
             _ => Array.Empty<InputSource>(),
         };
 
@@ -45,6 +46,14 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     {
         var output = await RunAsync(new[] { "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy" }, ct);
         return ParseDshowVideo(output);
+    }
+
+    private static async Task<IReadOnlyList<InputSource>> DiscoverNdiAsync(CancellationToken ct)
+    {
+        // Descubrimiento por el SDK NDI (NDILibDotNetCoreBase), NO por FFmpeg: el binario de FFmpeg no trae
+        // libndi_newtek. Devuelve vacío si el runtime NDI no está instalado (NdiRuntime degrada solo).
+        var names = await Task.Run(() => NdiRuntime.DiscoverSources(), ct).ConfigureAwait(false);
+        return Dedupe(names.Select(n => MakeSource(InputType.Ndi, n)));
     }
 
     private async Task<IReadOnlyList<InputSource>> DiscoverDecklinkAsync(CancellationToken ct)

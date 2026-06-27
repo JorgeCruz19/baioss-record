@@ -194,6 +194,9 @@ public sealed class FfmpegArgumentBuilder
         // Una fuente sin pista de audio (cámara/dispositivo solo-vídeo) no admite el medidor ebur128
         // ni un mapeo de audio: un output solo-audio sin streams haría abortar a FFmpeg.
         bool hasAudio = source.CurrentSignal.HasAudio;
+        // De qué entrada FFmpeg sale el audio: 0:a junto al vídeo (dshow/decklink/archivo) o 1:a en una
+        // entrada aparte (NDI sirve vídeo y audio por sockets separados). Lo decide la fuente.
+        string audioMap = $"{source.AudioInputIndex}:a:0?";
 
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
@@ -216,6 +219,11 @@ public sealed class FfmpegArgumentBuilder
             else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
             if (profile.BurnTimecode)
                 recChain.Add("drawtext=timecode='00\\:00\\:00\\:00':rate=25:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20");
+            // SIEMPRE como último paso de la rama de grabación: convertir al formato del encoder. La fuente puede
+            // entregar un pixel format que el encoder por hardware NO acepta (NDI sirve uyvy422 y h264_nvenc lo
+            // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
+            // la hacemos explícita. Si el formato ya coincide, es un no-op barato.
+            recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={RecordingFilterPixelFormat(profile)}"));
 
             filter.Append("[0:v]split=2[vrec][vprev];");
             if (recChain.Count > 0)
@@ -243,7 +251,7 @@ public sealed class FfmpegArgumentBuilder
         // (preview incluido). Un dispositivo solo-vídeo simplemente no alimenta medidores.
         if (hasAudio)
         {
-            args.Add("-map"); args.Add("0:a:0?");
+            args.Add("-map"); args.Add(audioMap);
             args.Add("-af"); args.Add(_analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true");
             args.Add("-f"); args.Add("null"); args.Add("-");
         }
@@ -255,13 +263,13 @@ public sealed class FfmpegArgumentBuilder
 
             if (profile.AudioOnly)
             {
-                args.Add("-map"); args.Add("0:a:0?");
+                args.Add("-map"); args.Add(audioMap);
                 args.AddRange(AudioEncoderArgs(profile));
             }
             else
             {
                 args.Add("-map"); args.Add(recLabel);
-                if (hasAudio) { args.Add("-map"); args.Add("0:a:0?"); }
+                if (hasAudio) { args.Add("-map"); args.Add(audioMap); }
                 args.AddRange(VideoEncoderArgs(profile));
                 if (hasAudio) args.AddRange(AudioEncoderArgs(profile));
                 if (profile.OutputFrameRate is { } fr)
@@ -516,7 +524,10 @@ public sealed class FfmpegArgumentBuilder
                     list.AddRange(new[] { "-rc", "cbr", "-b:v", bitrate }); break;
             }
             list.AddRange(new[] { "-g", gop, "-bf", "0" });
-            if (p.ClosedGop) list.Add("-no-scenecut");
+            // -no-scenecut (NVENC) es booleano y EXIGE valor explícito: la forma «bare» hace que FFmpeg tome el
+            // siguiente token (-c:a) como su valor y deje «aac» suelto como nombre de archivo de salida → aborta
+            // con EINVAL (-22) «Unable to choose an output format for 'aac'». Debe ir como «-no-scenecut 1».
+            if (p.ClosedGop) list.AddRange(new[] { "-no-scenecut", "1" });
         }
         else if (p.VideoCodec is VideoCodec.H264Qsv or VideoCodec.H264Amf)
         {
@@ -622,6 +633,20 @@ public sealed class FfmpegArgumentBuilder
         VideoCodec.H264Qsv or VideoCodec.H264Amf => "nv12", // formato nativo de QSV/AMF
         _ => null // NVENC: el encoder elige (nv12/p010)
     };
+
+    /// <summary>
+    /// Formato de píxel destino para el filtro de la rama de GRABACIÓN (un <c>format=</c> al final de
+    /// <c>[vrec]</c>). Imprescindible cuando la fuente entrega un formato que el encoder por hardware no acepta
+    /// (p. ej. NDI sirve <c>uyvy422</c> y <c>h264_nvenc</c> NO lo admite): al venir de un <c>filter_complex</c>,
+    /// FFmpeg NO auto-inserta la conversión y el encoder aborta con EINVAL (-22). Reusa el mismo formato que el
+    /// <c>-pix_fmt</c> de salida; para NVENC (que devuelve null porque «elige solo») cae a <c>nv12</c>, su
+    /// formato nativo 8-bit. La conversión es necesaria de todos modos y desde uyvy422 es barata (4:2:2→4:2:0).
+    /// </summary>
+    private static string RecordingFilterPixelFormat(RecordingProfile p)
+        => FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
+           ?? ProfilePixelFormat(p.EncoderProfile)
+           ?? DefaultPixelFormat(p.VideoCodec)
+           ?? "nv12";
 
     private IEnumerable<string> AudioEncoderArgs(RecordingProfile p)
     {

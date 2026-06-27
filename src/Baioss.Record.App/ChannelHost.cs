@@ -73,10 +73,23 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     private void Initialize()
     {
         if (!_ctx.Real || _ctx.FfmpegDir is null || _ctx.ClipPath is null) { BuildSimulated(); return; }
-        try
+
+        // La base de datos es un prerequisito GLOBAL: si no se puede preparar, no hay persistencia → todo simulado.
+        try { _sp.EnsureBaiossDatabaseCreated(); }
+        catch (Exception ex)
         {
-            _sp.EnsureBaiossDatabaseCreated();
-            foreach (var key in _channelKeys)
+            Serilog.Log.Error(ex, "No se pudo preparar la base de datos; se usan canales simulados.");
+            BuildSimulated();
+            return;
+        }
+
+        // Cada canal se compone de forma INDEPENDIENTE (principio de diseño: la caída de uno nunca afecta a
+        // los demás). Si uno falla —p. ej. su fuente NDI no tiene señal al arrancar y no puede construir el
+        // pipeline— cae a simulado ÉL SOLO; el resto sigue en modo real. Antes, un único canal problemático
+        // (una fuente sin señal) tumbaba a TODOS a modo simulado.
+        foreach (var key in _channelKeys)
+        {
+            try
             {
                 var (channelId, def, profile) = SeedAndResolve(key);
                 var (engine, preview) = BuildRuntime(key, channelId, def, profile);
@@ -84,14 +97,13 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
                 _keys[channelId] = key;
                 _previews.Add(channelId, preview);
             }
-        }
-        catch (Exception ex)
-        {
-            // Cualquier fallo de composición (esquema, dispositivo) cae a simulado, pero queda registrado.
-            Serilog.Log.Error(ex, "No se pudieron construir los canales reales; se usa modo simulado.");
-            _engines.Clear();
-            _keys.Clear();
-            BuildSimulated();
+            catch (Exception ex)
+            {
+                Serilog.Log.Error(ex, "Canal {Key}: no se pudo construir en modo real (¿fuente sin señal?); queda en simulado.", key);
+                var sim = new SimulatedChannelEngine(key);
+                _engines[sim.ChannelId] = sim;
+                _keys[sim.ChannelId] = key;
+            }
         }
     }
 

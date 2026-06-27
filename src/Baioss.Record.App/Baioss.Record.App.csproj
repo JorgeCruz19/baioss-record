@@ -80,4 +80,33 @@
     <Message Importance="high" Text="Release: FFmpeg + clip demo empaquetados en $(PublishDir)tools\" />
   </Target>
 
+  <!-- ============================================================
+       Runtime nativo NDI: el paquete NDILibDotNetCoreBase es solo el wrapper managed; el .dll NATIVO
+       (Processing.NDI.Lib.x64.dll, ~18 MB) debe ir JUNTO al .exe para que el interop lo cargue. Se copia
+       desde el NDI Runtime/SDK instalado (variables NDI_RUNTIME_DIR_V6/V5). Si NDI no está instalado, no se
+       copia y NDI queda no disponible (la app arranca igual; el resto de entradas funcionan).
+       Nota de licencia: redistribuir el runtime NDI en el release exige aceptar la licencia de NewTek/NDI.
+       ============================================================ -->
+  <PropertyGroup>
+    <_NdiRuntimeDir Condition="'$(NDI_RUNTIME_DIR_V6)' != ''">$(NDI_RUNTIME_DIR_V6)</_NdiRuntimeDir>
+    <_NdiRuntimeDir Condition="'$(_NdiRuntimeDir)' == '' and '$(NDI_RUNTIME_DIR_V5)' != ''">$(NDI_RUNTIME_DIR_V5)</_NdiRuntimeDir>
+    <_NdiDll>$(_NdiRuntimeDir)\Processing.NDI.Lib.x64.dll</_NdiDll>
+  </PropertyGroup>
+
+  <Target Name="CopyNdiRuntimeToBuild" AfterTargets="Build">
+    <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')"
+          SourceFiles="$(_NdiDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Message Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')" Importance="high"
+             Text="NDI: runtime nativo copiado a $(OutDir)" />
+    <Warning Condition="'$(_NdiRuntimeDir)' == ''"
+             Text="NDI Runtime no encontrado (variable NDI_RUNTIME_DIR_V6/V5 vacía): la captura NDI no estará disponible. Instala 'NDI Tools' o el 'NDI Runtime'." />
+  </Target>
+
+  <Target Name="CopyNdiRuntimeToPublish" AfterTargets="Publish">
+    <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')"
+          SourceFiles="$(_NdiDll)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Message Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')" Importance="high"
+             Text="NDI: runtime nativo empaquetado en $(PublishDir)" />
+  </Target>
+
 </Project>

@@ -61,6 +61,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // Archivos REALMENTE escritos en esta sesión (en orden de emisión), para renombrarlos al detener una
     // grabación manual (cuyo nombre se pide al final, no al iniciar).
     private readonly List<string> _sessionFiles = new();
+    // Optimización de seek (remux faststart) del último archivo único, EN VUELO. El renombrado debe esperarla:
+    // el remux reescribe el archivo in-place y no debe solaparse con el File.Move del rename (carrera → duplicado).
+    private volatile Task _pendingOptimize = Task.CompletedTask;
     private CancellationTokenSource? _segScanCts;
     private Task? _segScanLoop;
 
@@ -69,6 +72,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _slatePending;
     private CancellationTokenSource? _recoveryCts;
     private Task? _recoveryLoop;
+    // Espera de señal INICIAL: si la fuente no tiene señal al arrancar (p. ej. NDI cuyo emisor aún no emite), el
+    // pipeline no puede construirse; este bucle reintenta abrir la fuente y levanta el preview en cuanto llega.
+    private CancellationTokenSource? _awaitCts;
+    private Task? _awaitLoop;
     private DateTimeOffset _slateSince;       // cuándo entró en slate, para escalar a alarma si se prolonga
     private volatile bool _slateAlarmRaised;  // ya se elevó SignalLoss por slate prolongado (dedupe)
 
@@ -121,6 +128,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _source = source;
         _baseProfile = baseProfile;
         _channelKey = channelKey;
+        // La fuente puede reportar pérdida/recuperación de señal en caliente (NDI ahora también): reacciona
+        // entrando/saliendo de carta de ajuste sin esperar al watchdog de 15 s. (Auditoría 24/7, C3.)
+        source.SignalChanged += OnSourceSignalChanged;
 
         // Servidor TCP loopback para recibir los frames de preview del proceso FFmpeg.
         _listener = new TcpListener(IPAddress.Loopback, 0);
@@ -129,7 +139,74 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _acceptCts = new CancellationTokenSource();
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_acceptCts.Token), _acceptCts.Token);
 
-        await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false);
+        // Si la fuente todavía NO tiene señal (caso típico de NDI cuyo emisor aún no emite), el pipeline no se
+        // puede construir (BuildInputArguments lanza sin receptor). En vez de fallar el arranque del canal, se
+        // entra en ESPERA y un bucle reintenta abrir la fuente; el preview se levanta solo en cuanto llega señal.
+        if (!await TryStartPreviewPipelineAsync(ct).ConfigureAwait(false))
+        {
+            _log.LogInformation("Canal {Key}: la fuente no tiene señal todavía; esperando para activar el preview.", _channelKey);
+            StartAwaitSignalProbe();
+        }
+    }
+
+    /// <summary>Intenta arrancar el pipeline de preview; devuelve false si la fuente aún no permite construirlo (sin señal).</summary>
+    private async Task<bool> TryStartPreviewPipelineAsync(CancellationToken ct)
+    {
+        try
+        {
+            await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Canal {Key}: aún no se puede construir el pipeline (fuente sin señal).", _channelKey);
+            return false;
+        }
+    }
+
+    private void StartAwaitSignalProbe()
+    {
+        _awaitCts = new CancellationTokenSource();
+        _awaitLoop = Task.Run(() => AwaitSignalLoopAsync(_awaitCts.Token));
+    }
+
+    /// <summary>
+    /// Bucle de espera de la señal INICIAL: reintenta abrir la fuente cada pocos segundos (en NDI, reconecta el
+    /// receptor) y, en cuanto reporta <see cref="SignalState.Locked"/>, levanta el pipeline de preview y termina.
+    /// Así un canal cuya fuente no emitía al arrancar se recupera SOLO, sin reiniciar la app.
+    /// </summary>
+    private async Task AwaitSignalLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+
+            try { await _source!.OpenAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: reintento de apertura de la fuente falló.", _channelKey); continue; }
+
+            if (_source!.CurrentSignal.State != SignalState.Locked || ct.IsCancellationRequested) continue;
+
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (!ct.IsCancellationRequested && _state == RecordingState.Idle &&
+                    await TryStartPreviewPipelineAsync(ct).ConfigureAwait(false))
+                {
+                    _log.LogInformation("Canal {Key}: señal detectada; preview activo.", _channelKey);
+                    return;
+                }
+            }
+            catch (OperationCanceledException) { return; }
+            finally { _gate.Release(); }
+        }
+    }
+
+    private void StopAwaitSignalProbe()
+    {
+        try { _awaitCts?.Cancel(); } catch { /* dispuesto */ }
     }
 
     /// <summary>Arranca la grabación a archivo SIN interrumpir el preview (mismo proceso, salida extra).</summary>
@@ -225,7 +302,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
         if (_recordFile is not null)
         {
-            EmitSegmentFile(_recordFile);
+            EmitSegmentFile(_recordFile, optimizeSeek: true); // archivo único cerrado → optimizar su seek (faststart)
             _recordFile = null;
         }
 
@@ -300,9 +377,19 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     {
         int stride = FrameWidth * 4;
         int frameSize = stride * FrameHeight;
-        var buffer = new byte[frameSize];
+        // Anillo de buffers REUTILIZADOS: se llenan por turnos y se entregan sin copiar, en vez de clonar
+        // ~0,9 MB por frame (que a ~30 fps × N canales presionaba al GC, sobre todo al Large Object Heap).
+        // Es seguro porque el consumidor copia el frame a su textura/bitmap en <1 ms (WritePixels/Update) y
+        // el productor tarda ~1 frame (decenas de ms) en avanzar un hueco: nunca reescribe el buffer que la
+        // UI está leyendo. 3 huecos dan margen de sobra para el patrón «último frame» del consumidor.
+        const int ringSize = 3;
+        var ring = new byte[ringSize][];
+        for (int i = 0; i < ringSize; i++) ring[i] = new byte[frameSize];
+        int slot = 0;
+
         while (!ct.IsCancellationRequested)
         {
+            var buffer = ring[slot];
             int read = 0;
             while (read < frameSize)
             {
@@ -310,7 +397,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 if (n == 0) return; // el proceso cerró la conexión (reinicio) → volver a aceptar
                 read += n;
             }
-            FrameReady?.Invoke(this, new PreviewFrame((byte[])buffer.Clone(), FrameWidth, FrameHeight, stride));
+            FrameReady?.Invoke(this, new PreviewFrame(buffer, FrameWidth, FrameHeight, stride));
+            slot = (slot + 1) % ringSize;
         }
     }
 
@@ -384,7 +472,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         for (int i = 0; i < upTo; i++) EmitSegmentFile(files[i]);
     }
 
-    private void EmitSegmentFile(string path)
+    private void EmitSegmentFile(string path, bool optimizeSeek = false)
     {
         if (!_emitted.Add(path)) return; // ya emitido
         _sessionFiles.Add(path);         // candidato a renombrar al detener una grabación manual
@@ -399,7 +487,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             EndedAt = fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero) : DateTimeOffset.UtcNow,
             SizeBytes = fi.Exists ? fi.Length : 0,
         });
-        _ = VerifyRecordingAsync(path); // red de seguridad: confirma que el archivo cerrado es legible
+        var verify = VerifyRecordingAsync(path, optimizeSeek); // red de seguridad + (archivo único) optimización de seek
+        if (optimizeSeek) _pendingOptimize = verify; // el renombrado esperará a que el remux termine (anti-carrera)
+        else _ = verify;
     }
 
     /// <summary>
@@ -408,15 +498,36 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// RecordingUnverified para que el operador lo sepa al momento, en vez de descubrirlo días después.
     /// Best-effort y en segundo plano: nunca interrumpe la grabación en curso.
     /// </summary>
-    private async Task VerifyRecordingAsync(string path)
+    private async Task VerifyRecordingAsync(string path, bool optimizeSeek = false)
     {
         try
         {
             await Task.Delay(300).ConfigureAwait(false); // el handle puede tardar un instante en liberarse
             var probe = await _locator.ProbeMediaAsync(path).ConfigureAwait(false);
             if (probe.IsPlayable)
+            {
                 _log.LogDebug("Canal {Key}: {File} verificado ({Codec}, {Dur:0.0}s).",
                     _channelKey, Path.GetFileName(path), probe.VideoCodec ?? "audio", probe.DurationSeconds);
+
+                // Optimización de búsqueda (solo archivo único): el fMP4 fragmentado es robusto ante cortes pero
+                // su seek en VLC es por estimación —macrobloques hasta el keyframe, peor en archivos grandes—.
+                // Una vez VERIFICADO que es reproducible, se reescribe a MP4 estándar con el índice al inicio
+                // (faststart), SIN recodificar. Si el remux falla, el original fMP4 (ya válido) se conserva.
+                if (optimizeSeek)
+                {
+                    try
+                    {
+                        if (await _locator.RemuxFaststartAsync(path).ConfigureAwait(false))
+                            _log.LogInformation("Canal {Key}: {File} optimizado para búsqueda (índice al inicio).",
+                                _channelKey, Path.GetFileName(path));
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "Canal {Key}: no se pudo optimizar la búsqueda de {File} (se conserva el original).",
+                            _channelKey, Path.GetFileName(path));
+                    }
+                }
+            }
             else
             {
                 _log.LogError("Canal {Key}: {File} NO pasó la verificación (sin pistas/duración válidas): posible grabación dañada.",
@@ -490,6 +601,31 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al salir de carta de ajuste.", _channelKey); }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// La fuente reporta cambio de señal (en NDI ahora también la PÉRDIDA en caliente, vía el receptor):
+    /// entra en carta de ajuste de inmediato al perderla —sin esperar al watchdog de 15 s— y la abandona al
+    /// recuperarla. Las guardas de EnterSlate/ExitSlate hacen la operación idempotente frente al watchdog y
+    /// al sondeo de recuperación, así que no hay doble slate. (Auditoría 24/7, C3.)
+    /// </summary>
+    private void OnSourceSignalChanged(object? sender, SignalInfo info)
+    {
+        if (_disposed) return;
+        if (info.State == SignalState.Locked)
+        {
+            if (_slate) _ = ExitSlateAsync(); // la señal volvió: reanuda la fuente real
+            return;
+        }
+        // Pérdida/inestabilidad: misma política y guardas que OnSupervisorRestarted, pero proactiva.
+        if (_slate || _slatePending) return;
+        if (_encoderOpenError || _fallbackPending) return;
+        if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
+        if (_recordProfile?.SlateOnSignalLoss != true) return;
+
+        _slatePending = true;
+        _log.LogWarning("Canal {Key}: la fuente reportó pérdida de señal; pasando a carta de ajuste.", _channelKey);
+        _ = Task.Run(EnterSlateAsync);
     }
 
     // --- Fallback de codificador ante fallo de apertura por hardware ---
@@ -704,6 +840,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var pairs = new List<(string Old, string New)>();
         if (safe is null) return pairs;
 
+        // Espera a que termine la optimización de seek (remux faststart) en vuelo ANTES de mover los archivos:
+        // el remux reescribe el archivo in-place (File.Move de un temporal sobre el original) y, si se solapara
+        // con el renombrado, dejaría un archivo duplicado/huérfano o un fallo de uso compartido. Para archivos
+        // grandes el remux tarda; este Wait corre en un hilo de pool (no en la UI). Margen amplio; si excede,
+        // se renombra igual (el archivo es válido aunque no haya quedado optimizado).
+        try { _pendingOptimize.Wait(TimeSpan.FromMinutes(10)); } catch { /* el remux ya capturó sus errores internamente */ }
+
         foreach (var old in _sessionFiles.ToList())
         {
             if (!File.Exists(old)) continue;
@@ -738,8 +881,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
+        if (_source is not null) _source.SignalChanged -= OnSourceSignalChanged;
         StopRecoveryProbe();
         if (_recoveryLoop is not null) { try { await _recoveryLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
+        StopAwaitSignalProbe();
+        if (_awaitLoop is not null) { try { await _awaitLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
         await StopSegmentScanAsync().ConfigureAwait(false);
         if (_supervisor is not null)
         {

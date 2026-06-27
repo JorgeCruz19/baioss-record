@@ -30,6 +30,13 @@ public interface ICaptureSource : IAsyncDisposable
     SignalInfo CurrentSignal { get; }
     event EventHandler<SignalInfo>? SignalChanged;
 
+    /// <summary>
+    /// Índice de la entrada FFmpeg de la que proviene el AUDIO. 0 cuando audio y vídeo comparten la misma
+    /// entrada (dshow/decklink/archivo); 1 cuando la fuente expone el audio en una entrada <c>-i</c> aparte
+    /// (NDI: vídeo en la 0, audio en la 1). El builder mapea el audio desde este índice.
+    /// </summary>
+    int AudioInputIndex => 0;
+
     Task OpenAsync(CancellationToken ct = default);
     Task CloseAsync(CancellationToken ct = default);
 

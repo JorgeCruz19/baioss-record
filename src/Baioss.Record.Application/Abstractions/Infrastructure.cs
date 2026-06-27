@@ -28,6 +28,16 @@ public interface IFfmpegLocator
 
     /// <summary>Sondea un archivo con ffprobe (qué pistas tiene y su duración) para verificar la integridad de una grabación recién cerrada.</summary>
     Task<MediaProbe> ProbeMediaAsync(string filePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Reescribe un MP4/MOV (SIN recodificar, <c>-c copy</c>) a la forma estándar con el índice (<c>moov</c>) al
+    /// INICIO (<c>+faststart</c>): convierte el fMP4 fragmentado —robusto ante cortes pero con seek por estimación
+    /// en algunos reproductores como VLC, sobre todo en archivos grandes— en un MP4 con tabla de muestras y de
+    /// keyframes completa al principio, que permite buscar (scrubbing) de forma instantánea y precisa. Atómico:
+    /// escribe a un temporal y solo entonces sustituye al original; si algo falla, conserva el original intacto.
+    /// Devuelve true si reescribió el archivo. No-op (false) para contenedores que no sean MP4/MOV.
+    /// </summary>
+    Task<bool> RemuxFaststartAsync(string filePath, CancellationToken ct = default);
 }
 
 /// <summary>Resultado de sondear un archivo con ffprobe: qué pistas contiene y su duración.</summary>

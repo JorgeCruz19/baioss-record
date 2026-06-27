@@ -64,6 +64,7 @@ public static class DependencyInjection
         services.AddSingleton<ICaptureSourceFactory, FileCaptureSourceFactory>();
         services.AddSingleton<ICaptureSourceFactory, DecklinkCaptureSourceFactory>();
         services.AddSingleton<ICaptureSourceFactory, DirectShowCaptureSourceFactory>();
+        services.AddSingleton<ICaptureSourceFactory, NdiCaptureSourceFactory>();
         services.AddSingleton<CaptureSourceResolver>();
         services.AddTransient<ISignalMonitor, SignalMonitor>();
         services.AddSingleton<IDeviceEnumerator, NoOpDeviceEnumerator>(); // fallback (simulado / sin FFmpeg)

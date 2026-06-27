@@ -171,5 +171,14 @@ public class CaptureDeviceTests
         Assert.DoesNotContain("use_wallclock_as_timestamps", joined);
     }
 
+    [Fact]
+    public void NdiFactory_HandlesOnlyNdi()
+    {
+        var f = new NdiCaptureSourceFactory(Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance);
+        Assert.True(f.CanHandle(InputType.Ndi));
+        Assert.False(f.CanHandle(InputType.DirectShow));
+        Assert.False(f.CanHandle(InputType.DecklinkSdi));
+    }
+
     private static InputSource Def(InputType type, string uri) => new() { Name = uri, Type = type, Uri = uri };
 }

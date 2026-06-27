@@ -28,6 +28,21 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 6; p.MaxBitrateMbps = 6; p.GopSize = 15; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Mp2; p.AudioBitrateKbps = 256; }),
 
+        Make("MPEG-2 TS · HD 1080i59.94", PresetCategory.Mpeg2, "Transport Stream 1920×1080i59.94 (30000/1001) entrelazado NTSC, 18 Mbps CBR, audio MP2.", p =>
+        { p.Container = ContainerFormat.Ts; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 18; p.MaxBitrateMbps = 18; p.GopSize = 12; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Mp2; p.AudioBitrateKbps = 384; }),
+
+        Make("MPEG-2 TS · SD NTSC 480i59.94", PresetCategory.Mpeg2, "Transport Stream 720×480i59.94 (30000/1001) entrelazado NTSC, 6 Mbps CBR, audio MP2.", p =>
+        { p.Container = ContainerFormat.Ts; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 720; p.Height = 480;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 6; p.MaxBitrateMbps = 6; p.GopSize = 15; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Mp2; p.AudioBitrateKbps = 256; }),
+
+        Make("MPEG-2 PS · SD NTSC 480i59.94", PresetCategory.Mpeg2, "Program Stream 720×480i59.94 (30000/1001) entrelazado NTSC, 6 Mbps CBR, audio MP2.", p =>
+        { p.Container = ContainerFormat.ProgramStream; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 720; p.Height = 480;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 6; p.MaxBitrateMbps = 6; p.GopSize = 15; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Mp2; p.AudioBitrateKbps = 384; }),
+
         // ---------------- H.264 ----------------
         Make("H.264 Broadcast · HD 720p50", PresetCategory.H264, "1280×720p50, 10 Mbps CBR, MP4, AAC.", p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 1280; p.Height = 720;
@@ -49,6 +64,22 @@ public static class PresetCatalog
         Make("H.264 · SD PAL", PresetCategory.H264, "720×576i25, 5 Mbps, MP4, AAC.", p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 720; p.Height = 576;
           p.FrameRateNum = 25; p.VideoBitrateMbps = 5; p.MaxBitrateMbps = 6; p.GopSize = 25; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioBitrateKbps = 192; }),
+
+        // ---- H.264 entrelazado (1080i / SD NTSC), por software (x264; NVENC no codifica entrelazado) ----
+        Make("H.264 Broadcast · 1080i25 MP4", PresetCategory.H264, "1920×1080i25 entrelazado, 16 Mbps, MP4, AAC.", p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; }),
+
+        Make("H.264 Broadcast · 1080i59.94 MP4", PresetCategory.H264, "1920×1080i59.94 (30000/1001) entrelazado NTSC, 18 Mbps, MP4, AAC.", p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 18; p.MaxBitrateMbps = 24; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; }),
+
+        Make("H.264 · SD NTSC 480i59.94", PresetCategory.H264, "720×480i59.94 (30000/1001) entrelazado NTSC, 5 Mbps, MP4, AAC.", p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 720; p.Height = 480;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 5; p.MaxBitrateMbps = 6; p.GopSize = 30; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; p.AudioBitrateKbps = 192; }),
 
         // ---- H.264 · familia 59.94/60/50 (MP4/TS) ----
@@ -137,6 +168,16 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
           p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
 
+        Make("DNxHR HQ · 1080i25 (MOV)", PresetCategory.DnxHd, "High Quality: 1920×1080i25 4:2:2 8-bit entrelazado, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("DNxHR HQ · 1080i59.94 (MOV)", PresetCategory.DnxHd, "High Quality: 1920×1080i59.94 (30000/1001) 4:2:2 8-bit entrelazado NTSC, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
         // ---------------- Apple ProRes (edición) ----------------
         Make("ProRes 422 Proxy · 1080p25", PresetCategory.ProRes, "Proxy (offline): 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
@@ -170,6 +211,16 @@ public static class PresetCatalog
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
 
+        Make("ProRes 422 HQ · 1080i25", PresetCategory.ProRes, "Alta calidad: 1920×1080i25 4:2:2 10-bit entrelazado, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("ProRes 422 HQ · 1080i59.94", PresetCategory.ProRes, "Alta calidad: 1920×1080i59.94 (30000/1001) 4:2:2 10-bit entrelazado NTSC, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
         // ---------------- XDCAM ----------------
         Make("XDCAM HD422 · 1080i25 50 Mbps", PresetCategory.Xdcam, "MPEG-2 4:2:2 50 Mbps CBR, MXF, audio PCM (estándar broadcast).", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 1920; p.Height = 1080;
@@ -179,6 +230,16 @@ public static class PresetCatalog
         Make("XDCAM HD · 1080i25 35 Mbps", PresetCategory.Xdcam, "MPEG-2 4:2:0 35 Mbps CBR, MXF, audio PCM.", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 35; p.GopSize = 12; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("XDCAM HD422 · 1080i59.94 50 Mbps", PresetCategory.Xdcam, "MPEG-2 4:2:2 50 Mbps CBR · 1920×1080i59.94 (30000/1001) entrelazado NTSC · MXF · PCM.", p =>
+        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 50; p.MaxBitrateMbps = 50; p.GopSize = 12; p.PixelFormat = PixelFormat.Yuv422p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
+        Make("XDCAM HD · 1080i59.94 35 Mbps", PresetCategory.Xdcam, "MPEG-2 4:2:0 35 Mbps CBR · 1920×1080i59.94 (30000/1001) entrelazado NTSC · MXF · PCM.", p =>
+        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.Mpeg2Video; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 35; p.GopSize = 12; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
 
         // ---------------- MXF OP1A ----------------
@@ -261,10 +322,20 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 20; p.MaxBitrateMbps = 25; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.AudioCodec = AudioCodec.Pcm; }),
 
+        Make("AVI · H.264 1080i25", PresetCategory.Avi, "AVI con H.264 1920×1080i25 entrelazado, 20 Mbps, audio PCM.", p =>
+        { p.Container = ContainerFormat.Avi; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 20; p.MaxBitrateMbps = 25; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+
         // ---------------- MKV ----------------
         Make("MKV · H.264 1080p25", PresetCategory.Mkv, "Matroska con H.264 1920×1080p25, 16 Mbps, AAC.", p =>
         { p.Container = ContainerFormat.Mkv; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p; }),
+
+        Make("MKV · H.264 1080i25", PresetCategory.Mkv, "Matroska con H.264 1920×1080i25 entrelazado, 16 Mbps, AAC.", p =>
+        { p.Container = ContainerFormat.Mkv; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
+          p.ScanType = ScanType.InterlacedTff; }),
 
         Make("MKV · HEVC 4K 10-bit", PresetCategory.Mkv, "Matroska con HEVC 3840×2160p50 10-bit, 35 Mbps VBR.", p =>
         { p.Container = ContainerFormat.Mkv; p.VideoCodec = VideoCodec.H265x265; p.Width = 3840; p.Height = 2160;

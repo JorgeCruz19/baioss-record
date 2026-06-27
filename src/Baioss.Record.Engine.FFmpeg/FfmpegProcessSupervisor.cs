@@ -101,6 +101,10 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
 
         _lastProgress = DateTimeOffset.UtcNow;
         _process.Start();
+        // Asocia el hijo a un Job Object KILL_ON_JOB_CLOSE: si la app muere de forma anormal (crash, kill,
+        // fin de sesión), Windows mata este FFmpeg en vez de dejarlo grabando huérfano y reteniendo el
+        // dispositivo/puerto de la fuente. (Auditoría 24/7, C2.)
+        ChildProcessTracker.Track(_process);
         _process.BeginOutputReadLine();
         _process.BeginErrorReadLine();
 

@@ -218,6 +218,50 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- Estado del motor flotando arriba-derecha del monitor: rojo «● Grabando» al grabar,
+                         gris «Inactivo» en reposo. (Antes iba en la fila de transporte, donde se solapaba con el
+                         botón ancho «Detener grabación automática» de las grabaciones programadas.) -->
+                    <Border VerticalAlignment="Top" HorizontalAlignment="Right" CornerRadius="5"
+                            Padding="10,5" Margin="0,12,12,0" IsHitTestVisible="False">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#CC1B2029"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{StaticResource SignalGrayBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                                <Setter Property="Fill" Value="White"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="White">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Inactivo"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsRecording}" Value="True">
+                                                <Setter Property="Text" Value="Grabando"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+
                     <Grid Margin="12">
                         <TextBlock Text="PGM" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
                                    HorizontalAlignment="Left" VerticalAlignment="Top"/>
@@ -284,7 +328,8 @@
                 </Grid>
             </Border>
 
-            <!-- Transporte: controles de grabación + badge de estado (Grabando/Inactivo) a la derecha. -->
+            <!-- Transporte: controles de grabación. El badge de estado (Grabando/Inactivo) se muestra
+                 flotando sobre el preview, no aquí, para no solaparse con «Detener grabación automática». -->
             <Grid Grid.Row="4" Margin="0,10,0,0">
                 <StackPanel Orientation="Horizontal">
                     <Button Content="● Grabar"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
@@ -297,48 +342,6 @@
                             Foreground="#10131A" FontWeight="Bold"
                             Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
-
-                <!-- Estado del motor: rojo «● Grabando» al grabar, gris «Inactivo» en reposo. -->
-                <Border HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="5" Padding="11,7">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Setter Property="Background" Value="#1B2029"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                                    <Setter Property="Background" Value="#2A1416"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
-                    <StackPanel Orientation="Horizontal">
-                        <Ellipse Width="8" Height="8" VerticalAlignment="Center">
-                            <Ellipse.Style>
-                                <Style TargetType="Ellipse">
-                                    <Setter Property="Fill" Value="{StaticResource SignalGrayBrush}"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                                            <Setter Property="Fill" Value="{StaticResource RecBrush}"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Ellipse.Style>
-                        </Ellipse>
-                        <TextBlock Margin="7,0,0,0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Text" Value="Inactivo"/>
-                                    <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                                            <Setter Property="Text" Value="Grabando"/>
-                                            <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                    </StackPanel>
-                </Border>
             </Grid>
 
             <!-- Programación: en el panel solo se muestra la grabación EN CURSO (alto fijo, uniforme entre

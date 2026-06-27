@@ -181,6 +181,9 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             }
             foreach (var d in await _devices.DiscoverAsync(InputType.DirectShow))
                 VideoDevices.Add(new InputDeviceOption { Label = $"DirectShow — {d.Name}", Type = InputType.DirectShow, DeviceId = d.Uri, Id = d.Id });
+            // Fuentes NDI de la red (solo si este FFmpeg trae libndi_newtek; si no, la lista viene vacía).
+            foreach (var d in await _devices.DiscoverAsync(InputType.Ndi))
+                VideoDevices.Add(new InputDeviceOption { Label = $"NDI — {d.Name}", Type = InputType.Ndi, DeviceId = d.Uri, Id = d.Id });
             foreach (var a in await _devices.DiscoverAudioDevicesAsync(InputType.DirectShow))
                 AudioDevices.Add(a);
 

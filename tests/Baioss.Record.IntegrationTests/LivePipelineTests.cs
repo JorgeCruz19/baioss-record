@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
+using Baioss.Record.Application.Capture;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Capture;
 using Baioss.Record.Infrastructure.Preview;
@@ -179,6 +180,11 @@ public sealed class LivePipelineTests
             Assert.EndsWith("Mi Toma.mp4", first!);
             Assert.True(File.Exists(first!), $"Falta {first}");
             Assert.False(File.Exists(temp!), "El archivo temporal debió moverse.");
+            // El renombrado ESPERÓ al remux faststart: el archivo final está des-fragmentado (sin moof) y es el
+            // optimizado, no el fMP4 original (la carrera dejaría un huérfano o un archivo sin índice de seek).
+            Assert.False(FileContainsAscii(first!, "moof"), "La grabación renombrada debe quedar des-fragmentada (faststart).");
+            Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(first!)!, Path.GetFileNameWithoutExtension(first!) + ".faststart.mp4")),
+                "No debe quedar el temporal del remux (.faststart.mp4).");
 
             // 2ª grabación con el MISMO nombre → no choca: «Mi Toma 1.mp4».
             await engine.StartRecordingAsync(Guid.NewGuid(), profile);
@@ -189,6 +195,92 @@ public sealed class LivePipelineTests
             Assert.EndsWith("Mi Toma 1.mp4", second!);          // dedupe « 1» al final
             Assert.True(File.Exists(second!), $"Falta {second}");
             Assert.True(File.Exists(first!), "La 1ª grabación debe seguir existiendo.");
+        }
+        finally
+        {
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [SkippableFact]
+    public async Task Preview_ReusesFrameBuffers_NoPerFrameAllocation()
+    {
+        Skip.IfNot(TestAssets.Available, "FFmpeg/clip de prueba no disponibles en tools/.");
+
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-ring-{Guid.NewGuid():N}");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            var source = new FileCaptureSource(new InputSource
+            {
+                Name = "clip", Type = InputType.File, Uri = TestAssets.Clip!,
+                Parameters = { ["loop"] = "1", ["realtime"] = "1" },
+                ExpectedResolution = Resolution.Hd720, ExpectedFrameRate = FrameRate.P25,
+            });
+            await source.OpenAsync();
+
+            var profile = new RecordingProfile
+            {
+                Name = "ring", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
+                VideoBitrate = Bitrate.FromMbps(6), GopSize = 50,
+                AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+            };
+
+            // Referencias DISTINTAS de byte[] entregadas: con el anillo deben repetirse (reutilización).
+            var distinct = new HashSet<byte[]>(ReferenceEqualityComparer.Instance);
+            int frames = 0;
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            engine.FrameReady += (_, f) => { lock (distinct) { distinct.Add(f.Bgra); frames++; } };
+
+            await engine.StartPreviewAsync(source, profile, "RNG");
+            await WaitForAsync(() => { lock (distinct) return frames >= 12; }, TimeSpan.FromSeconds(20));
+
+            int total, unique;
+            lock (distinct) { total = frames; unique = distinct.Count; }
+            Assert.True(total >= 12, $"Se esperaban ≥12 frames de preview; llegaron {total}.");
+            // Muchos frames pero, como mucho, ringSize (3) buffers distintos → no se asigna uno por frame.
+            Assert.True(unique <= 3, $"Se esperaban ≤3 buffers reutilizados; hubo {unique} distintos en {total} frames (¿asignación por frame?).");
+        }
+        finally
+        {
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [SkippableFact]
+    public async Task Preview_RecoversAutomatically_WhenSignalArrivesLate()
+    {
+        Skip.IfNot(TestAssets.Available, "FFmpeg/clip de prueba no disponibles en tools/.");
+
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-await-{Guid.NewGuid():N}");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            // Fuente que NO tiene señal en la 1ª apertura y SÍ a partir de la 2ª (simula una NDI cuyo emisor
+            // tarda en aparecer): BuildInputArguments LANZA mientras no hay señal, igual que NdiCaptureSource.
+            var source = new DelayedSignalSource(TestAssets.Clip!, openTilSignal: 2);
+            await source.OpenAsync(); // 1ª apertura (como en ChannelHost.BuildRuntime): aún sin señal
+            Assert.NotEqual(SignalState.Locked, source.CurrentSignal.State);
+
+            var profile = new RecordingProfile
+            {
+                Name = "await", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
+                VideoBitrate = Bitrate.FromMbps(6), GopSize = 50,
+                AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+            };
+
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            int frames = 0;
+            engine.FrameReady += (_, _) => Interlocked.Increment(ref frames);
+
+            // Arranca el preview con la fuente SIN señal: NO debe lanzar (antes tumbaba el canal a simulado).
+            await engine.StartPreviewAsync(source, profile, "AWT");
+            Assert.Equal(0, Volatile.Read(ref frames)); // sin señal todavía → sin preview
+
+            // El bucle de espera reintenta abrir la fuente; al llegar la señal, el preview se activa SOLO.
+            await WaitForAsync(() => Volatile.Read(ref frames) >= 1, TimeSpan.FromSeconds(25));
+            Assert.True(Volatile.Read(ref frames) >= 1, "El preview debe activarse solo al llegar la señal.");
+            Assert.True(source.Opens >= 2, "Debe haber reintentado abrir la fuente hasta tener señal.");
         }
         finally
         {
@@ -221,4 +313,61 @@ public sealed class LivePipelineTests
             await Task.Delay(400);
         }
     }
+
+    /// <summary>True si el archivo contiene el fourcc ASCII dado (p. ej. el box «moof» de un MP4 fragmentado).</summary>
+    private static bool FileContainsAscii(string path, string token)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var pat = System.Text.Encoding.ASCII.GetBytes(token);
+        for (int i = 0; i <= bytes.Length - pat.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pat.Length; j++) if (bytes[i + j] != pat[j]) { match = false; break; }
+            if (match) return true;
+        }
+        return false;
+    }
+}
+
+/// <summary>
+/// Fuente de prueba que reporta «sin señal» hasta la N-ésima apertura y, a partir de ahí, señal del clip
+/// (BuildInputArguments LANZA mientras no hay señal, como <c>NdiCaptureSource</c> sin receptor). Simula una
+/// fuente NDI cuyo emisor tarda en aparecer, para verificar la auto-recuperación del preview.
+/// </summary>
+internal sealed class DelayedSignalSource : ICaptureSource
+{
+    private readonly string _clipPath;
+    private readonly int _openTilSignal;
+    private int _opens;
+
+    public DelayedSignalSource(string clipPath, int openTilSignal)
+    {
+        _clipPath = clipPath;
+        _openTilSignal = openTilSignal;
+    }
+
+    public InputSource Definition { get; } = new() { Name = "delayed", Type = InputType.File };
+    public SignalInfo CurrentSignal { get; private set; } = SignalInfo.None;
+    public event EventHandler<SignalInfo>? SignalChanged;
+    public int Opens => Volatile.Read(ref _opens);
+
+    public Task OpenAsync(CancellationToken ct = default)
+    {
+        CurrentSignal = Interlocked.Increment(ref _opens) >= _openTilSignal
+            ? new SignalInfo(SignalState.Locked, Resolution.Hd720, FrameRate.P25, AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null)
+            : SignalInfo.None;
+        SignalChanged?.Invoke(this, CurrentSignal);
+        return Task.CompletedTask;
+    }
+
+    public Task CloseAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+    public IReadOnlyList<string> BuildInputArguments()
+    {
+        if (CurrentSignal.State != SignalState.Locked)
+            throw new InvalidOperationException("Fuente sin señal (simulado).");
+        return new[] { "-stream_loop", "-1", "-re", "-i", _clipPath };
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

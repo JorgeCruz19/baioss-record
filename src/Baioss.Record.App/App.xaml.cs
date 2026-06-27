@@ -46,6 +46,7 @@ public partial class App : System.Windows.Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        WireGlobalExceptionHandlers();
 
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
         // ejecutable; ancla datos/grabaciones/logs con independencia del working directory.
@@ -107,7 +108,9 @@ public partial class App : System.Windows.Application
         s.AddSingleton<MainWindow>();
 
         var app = builder.Build();
-        app.UseWebSockets();   // necesario para el endpoint /ws/events
+        // KeepAlive de servidor: detecta clientes WS caídos en half-open (cable cortado sin frame Close) y
+        // libera su suscripción al bus, evitando suscripciones zombi en operación 24/7. (Auditoría 24/7, #28.)
+        app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });   // necesario para el endpoint /ws/events
         app.MapBaiossApi();    // REST de automatización + WebSocket de eventos
         _host = app;
 
@@ -137,6 +140,27 @@ public partial class App : System.Windows.Application
         foreach (var note in encoderNotes) Serilog.Log.Information(" - {Note}", note);
         Serilog.Log.Information("Encoder de video por defecto: {Codec} ({Mode}).", codec, real ? "real" : "simulado");
         app.Services.GetRequiredService<MainWindow>().Show();
+    }
+
+    /// <summary>
+    /// Red de seguridad 24/7: una excepción no observada en el hilo de UI o en una tarea de fondo NO debe
+    /// tumbar el proceso (cerraría la grabación de TODOS los canales a la vez). Se registran los tres handlers
+    /// globales y se loguea la causa; los fallos del hilo de UI se marcan como gestionados para no cerrar la app.
+    /// </summary>
+    private void WireGlobalExceptionHandlers()
+    {
+        DispatcherUnhandledException += (_, ev) =>
+        {
+            Serilog.Log.Error(ev.Exception, "Excepción no controlada en el hilo de UI (Dispatcher); la app sigue activa.");
+            ev.Handled = true; // un binding o un handler de canal no debe tumbar la UI ni cortar las grabaciones
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
+            Serilog.Log.Fatal(ev.ExceptionObject as Exception, "Excepción no controlada de dominio (IsTerminating={Terminating}).", ev.IsTerminating);
+        TaskScheduler.UnobservedTaskException += (_, ev) =>
+        {
+            Serilog.Log.Error(ev.Exception, "Excepción no observada en una tarea de fondo; observada para no escalar.");
+            ev.SetObserved();
+        };
     }
 
     /// <summary>
