@@ -44,6 +44,10 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     // exclusivo (cámara DirectShow / tarjeta DeckLink), que haría fallar al segundo al abrir.
     private readonly Dictionary<Guid, InputSource> _sources = new();
 
+    // Registro compartido del ritmo de escritura por volumen: la guarda de disco de cada canal vigila el
+    // caudal AGREGADO de todos los canales que escriben en el mismo disco. (Auditoría 24/7, A7/#10.)
+    private readonly Baioss.Record.Infrastructure.Storage.DiskUsageRegistry _diskUsage = new();
+
     /// <summary>Se eleva (channelId) tras reconstruir un canal; la UI reemplaza su ViewModel.</summary>
     public event Action<Guid>? ChannelRebound;
 
@@ -84,27 +88,70 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         }
 
         // Cada canal se compone de forma INDEPENDIENTE (principio de diseño: la caída de uno nunca afecta a
-        // los demás). Si uno falla —p. ej. su fuente NDI no tiene señal al arrancar y no puede construir el
-        // pipeline— cae a simulado ÉL SOLO; el resto sigue en modo real. Antes, un único canal problemático
-        // (una fuente sin señal) tumbaba a TODOS a modo simulado.
-        foreach (var key in _channelKeys)
+        // los demás) y EN PARALELO. Antes se construían EN SERIE con I/O bloqueante (.GetAwaiter().GetResult()):
+        // con N fuentes NDI sin señal, sus timeouts de apertura de 8 s se ENCADENABAN (~32 s con 4 canales)
+        // congelando el arranque. Ahora se construyen a la vez, cada uno con un TIMEOUT propio, y los resultados
+        // se MEZCLAN en este hilo (sin escrituras concurrentes en los diccionarios). La construcción corre fuera
+        // del hilo de UI porque App la pre-resuelve en un hilo de fondo antes de StartAsync. Si un canal falla o
+        // se cuelga —p. ej. su fuente sin señal o un tipo sin fábrica— cae a simulado ÉL SOLO. (Auditoría 24/7, #17.)
+        var built = Task.WhenAll(_channelKeys.Select(BuildChannelGuardedAsync)).GetAwaiter().GetResult();
+        foreach (var b in built)
         {
-            try
-            {
-                var (channelId, def, profile) = SeedAndResolve(key);
-                var (engine, preview) = BuildRuntime(key, channelId, def, profile);
-                _engines[channelId] = engine;
-                _keys[channelId] = key;
-                _previews.Add(channelId, preview);
-            }
-            catch (Exception ex)
-            {
-                Serilog.Log.Error(ex, "Canal {Key}: no se pudo construir en modo real (¿fuente sin señal?); queda en simulado.", key);
-                var sim = new SimulatedChannelEngine(key);
-                _engines[sim.ChannelId] = sim;
-                _keys[sim.ChannelId] = key;
-            }
+            _engines[b.ChannelId] = b.Engine;
+            _keys[b.ChannelId] = b.Key;
+            if (b.Preview is not null) _previews.Add(b.ChannelId, b.Preview);
+            if (b.Def is not null) _sources[b.ChannelId] = b.Def; // entrada vigente (para el chequeo de exclusividad al reasignar)
         }
+    }
+
+    /// <summary>Resultado de construir un canal (real o, si falló/expiró, su sustituto simulado).</summary>
+    private readonly record struct ChannelBuild(
+        string Key, Guid ChannelId, IChannelEngine Engine, IChannelPreviewSource? Preview, InputSource? Def);
+
+    /// <summary>Margen máximo para construir UN canal (abrir la fuente + arrancar el preview). Holgado: una NDI
+    /// sin señal tarda ~8 s en su propio timeout; este solo ataja una fuente realmente colgada. Al expirar, el
+    /// canal cae a simulado en vez de bloquear el arranque indefinidamente. (Auditoría #17.)</summary>
+    private static readonly TimeSpan ChannelBuildTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>Construye un canal con timeout y captura de fallos: NUNCA lanza (la caída de uno no afecta al resto).</summary>
+    private async Task<ChannelBuild> BuildChannelGuardedAsync(string key)
+    {
+        using var cts = new CancellationTokenSource(ChannelBuildTimeout);
+        try
+        {
+            return await BuildChannelAsync(key, cts.Token).WaitAsync(cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Serilog.Log.Error("Canal {Key}: la construcción superó {T:0}s (fuente colgada o sin respuesta al abrir); queda en simulado.", key, ChannelBuildTimeout.TotalSeconds);
+            return SimulatedBuild(key);
+        }
+        catch (NotSupportedException ex)
+        {
+            // Tipo de entrada declarado en el dominio pero SIN fábrica de captura (SRT/RTMP/UDP/RTP/MpegTs/
+            // MediaFoundation): NO es «sin señal». Se avisa con la causa real para que el operador sepa que ese
+            // canal NUNCA grabará su fuente (queda en simulado para que la app siga abriendo). (Auditoría A11/#15.)
+            Serilog.Log.Error(ex, "Canal {Key}: tipo de entrada NO SOPORTADO; el canal queda en simulado y NO grabará la fuente real. Causa: {Causa}", key, ex.Message);
+            return SimulatedBuild(key);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Canal {Key}: no se pudo construir en modo real (¿fuente sin señal?); queda en simulado.", key);
+            return SimulatedBuild(key);
+        }
+    }
+
+    private async Task<ChannelBuild> BuildChannelAsync(string key, CancellationToken ct)
+    {
+        var (channelId, def, profile) = await SeedAndResolveAsync(key, ct).ConfigureAwait(false);
+        var (engine, preview) = await BuildRuntimeAsync(key, channelId, def, profile, ct).ConfigureAwait(false);
+        return new ChannelBuild(key, channelId, engine, preview, def);
+    }
+
+    private static ChannelBuild SimulatedBuild(string key)
+    {
+        var sim = new SimulatedChannelEngine(key);
+        return new ChannelBuild(key, sim.ChannelId, sim, Preview: null, Def: null);
     }
 
     private void BuildSimulated()
@@ -163,16 +210,20 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // 3) Construye el runtime nuevo con la entrada asignada y el perfil vigente del canal.
         var profile = (channel?.ProfileId is { } pid ? await profiles.GetAsync(pid, ct).ConfigureAwait(false) : null)
                       ?? DemoProfile(key);
-        var (engine, preview) = BuildRuntime(key, channelId, newDef, profile);
+        var (engine, preview) = await BuildRuntimeAsync(key, channelId, newDef, profile, ct).ConfigureAwait(false);
         _engines[channelId] = engine;
         _previews.Add(channelId, preview);
+        _sources[channelId] = newDef; // entrada vigente del canal (para el chequeo de exclusividad al reasignar)
 
         // 4) La UI reconstruye el ViewModel del canal (re-enlaza el preview).
         ChannelRebound?.Invoke(channelId);
     }
 
-    private (Guid ChannelId, InputSource Def, RecordingProfile Profile) SeedAndResolve(string key)
+    private async Task<(Guid ChannelId, InputSource Def, RecordingProfile Profile)> SeedAndResolveAsync(string key, CancellationToken ct)
     {
+        // Repos singleton STATELESS sobre el factory de DbContext (contexto de corta vida por operación):
+        // seguros de usar EN PARALELO desde la construcción de varios canales. Además cada key siembra SU
+        // propio clip/perfil/canal (Guid estable por key), así que no hay carrera de seed entre canales.
         var channels = _sp.GetRequiredService<IChannelRepository>();
         var sources = _sp.GetRequiredService<IInputSourceRepository>();
         var profiles = _sp.GetRequiredService<IRecordingProfileRepository>();
@@ -182,19 +233,19 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var channelId = StableGuid($"channel:{key}");
         var channel = new Channel { Id = channelId, Key = key, Name = $"Canal {key}", InputSourceId = clip.Id, ProfileId = profile.Id };
 
-        SeedIfAbsent(sources, clip.Id, clip);
-        SeedIfAbsent(profiles, profile.Id, profile);
-        SeedIfAbsent(channels, channelId, channel);
+        await SeedIfAbsentAsync(sources, clip.Id, clip, ct).ConfigureAwait(false);
+        await SeedIfAbsentAsync(profiles, profile.Id, profile, ct).ConfigureAwait(false);
+        await SeedIfAbsentAsync(channels, channelId, channel, ct).ConfigureAwait(false);
 
         // Estado vigente persistido: la entrada y el perfil pudieron cambiarse en sesiones previas.
-        var persisted = channels.GetAsync(channelId).GetAwaiter().GetResult() ?? channel;
-        var def = (persisted.InputSourceId is { } sid ? sources.GetAsync(sid).GetAwaiter().GetResult() : null) ?? clip;
-        var activeProfile = (persisted.ProfileId is { } pid ? profiles.GetAsync(pid).GetAwaiter().GetResult() : null) ?? profile;
+        var persisted = await channels.GetAsync(channelId, ct).ConfigureAwait(false) ?? channel;
+        var def = (persisted.InputSourceId is { } sid ? await sources.GetAsync(sid, ct).ConfigureAwait(false) : null) ?? clip;
+        var activeProfile = (persisted.ProfileId is { } pid ? await profiles.GetAsync(pid, ct).ConfigureAwait(false) : null) ?? profile;
         return (channelId, def, activeProfile);
     }
 
-    private (IChannelEngine Engine, IChannelPreviewSource Preview) BuildRuntime(
-        string key, Guid channelId, InputSource def, RecordingProfile profile)
+    private async Task<(IChannelEngine Engine, IChannelPreviewSource Preview)> BuildRuntimeAsync(
+        string key, Guid channelId, InputSource def, RecordingProfile profile, CancellationToken ct = default)
     {
         var locator = _sp.GetRequiredService<IFfmpegLocator>();
         var bus = _sp.GetRequiredService<IEventBus>();
@@ -205,22 +256,23 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var resolver = _sp.GetRequiredService<CaptureSourceResolver>();
 
         var source = resolver.Create(def);
-        source.OpenAsync().GetAwaiter().GetResult();
+        await source.OpenAsync(ct).ConfigureAwait(false);
 
         // Motor de captura UNIFICADO: un solo proceso abre la fuente y da preview + grabación a la vez.
         var capture = new FfmpegChannelEngine(locator, loggers.CreateLogger<FfmpegChannelEngine>())
         {
             OutputRoot = Path.Combine(_ctx.Root, "recordings"),
         };
-        capture.StartPreviewAsync(source, profile, key).GetAwaiter().GetResult(); // preview siempre activo
+        await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 
         var monitor = new SignalMonitor(bus, loggers.CreateLogger<SignalMonitor>()) { ChannelId = channelId };
         var diskGuard = new Baioss.Record.Infrastructure.Storage.DiskSpaceGuard(loggers.CreateLogger<ChannelHost>());
 
         var engine = new StandaloneChannelEngine(
             key, source, profile, capture, channelId,
-            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard);
-        _sources[channelId] = def; // entrada vigente del canal (para el chequeo de exclusividad al reasignar)
+            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard, _diskUsage);
+        // NOTA: la entrada vigente (_sources[channelId]) la fija el LLAMADOR (Initialize al mezclar, o RebindAsync),
+        // no aquí, porque la construcción inicial corre en paralelo y _sources no es un diccionario concurrente.
         return (engine, capture);
     }
 
@@ -240,10 +292,10 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
     };
 
-    private static void SeedIfAbsent<T>(IRepository<T> repo, Guid id, T entity) where T : class
+    private static async Task SeedIfAbsentAsync<T>(IRepository<T> repo, Guid id, T entity, CancellationToken ct) where T : class
     {
-        if (repo.GetAsync(id).GetAwaiter().GetResult() is null)
-            repo.AddAsync(entity).GetAwaiter().GetResult();
+        if (await repo.GetAsync(id, ct).ConfigureAwait(false) is null)
+            await repo.AddAsync(entity, ct).ConfigureAwait(false);
     }
 
     private static Guid StableGuid(string seed) => new(MD5.HashData(Encoding.UTF8.GetBytes(seed)));

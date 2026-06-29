@@ -150,6 +150,17 @@ public sealed class FfmpegLocator : IFfmpegLocator
         var tmp = Path.Combine(dir, Path.GetFileNameWithoutExtension(filePath) + ".faststart" + ext);
         try
         {
+            // El remux escribe una COPIA completa antes de sustituir el original: si el volumen no tiene espacio
+            // (p. ej. tras un auto-stop por disco crítico), NO intentarlo. El fMP4 original ya es válido y
+            // reproducible (solo quedaría sin optimizar el seek); evita un fallo predecible e I/O en vano. (#44.)
+            try
+            {
+                long need = new FileInfo(filePath).Length + 256L * 1024 * 1024; // tamaño del archivo + 256 MB de margen
+                var volRoot = Path.GetPathRoot(Path.GetFullPath(dir));
+                if (volRoot is not null && new DriveInfo(volRoot).AvailableFreeSpace < need) return false;
+            }
+            catch { /* si no se puede medir el espacio, se intenta el remux igual */ }
+
             // -map 0 copia TODAS las pistas; -c copy no recodifica (rápido, sin pérdida); +faststart mueve el moov
             // al inicio (de paso des-fragmenta el fMP4). -y sobrescribe un temporal previo.
             var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", tmp };

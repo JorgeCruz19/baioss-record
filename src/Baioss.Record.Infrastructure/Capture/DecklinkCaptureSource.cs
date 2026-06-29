@@ -21,9 +21,15 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         // canal habilite el botón Grabar. El SDI lleva audio embebido y el demuxer decklink siempre
         // expone una pista de audio (silencio si la fuente no la trae), así que se declara audio para
         // habilitar medidores y grabar la pista.
-        // NOTA: es un lock optimista al asignar; la detección real de presencia/ausencia de señal y de
-        // resolución/fps vía DeckLink SDK / ffprobe queda pendiente (no puede sondear un dispositivo en
-        // vivo exclusivo sin chocar con el proceso de captura).
+        //
+        // LIMITACIÓN CONOCIDA (lock optimista FIJO): DeckLink es un dispositivo EXCLUSIVO; FFmpeg abre el
+        // driver/tarjeta UNA sola vez. A diferencia de NDI —que tiene un receptor propio capaz de medir la
+        // ausencia de frames y reportar presencia (patrón C3)—, aquí no hay forma de sondear la señal sin un
+        // segundo proceso que compita por el dispositivo. En consecuencia: (1) SignalChanged NO se vuelve a
+        // emitir tras OpenAsync; (2) la pérdida de señal SDI en caliente NO se detecta de forma proactiva: solo
+        // la capta el watchdog del motor (negros/congelados → carta de ajuste a los ~15 s). Sin hardware DeckLink
+        // no es validable un sondeo en vivo, así que se DOCUMENTA la limitación en lugar de añadir código no
+        // comprobable. (Auditoría 24/7, #33.)
         // Etiqueta legible del modo elegido (p. ej. "1920×1080 · 59.94i") para mostrarla en el preview.
         Definition.Parameters.TryGetValue("format_label", out var label);
         CurrentSignal = new SignalInfo(SignalState.Locked,
@@ -46,6 +52,11 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         return args;
     }
 
+    /// <summary>
+    /// Propaga un cambio de señal (presencia/ausencia/formato). SIN CONSUMIDOR ACTIVO hoy: existe para el día
+    /// que se implemente un sondeo fiable de presencia DeckLink. Por ahora <see cref="OpenAsync"/> marca un
+    /// lock optimista y esto NO se llama (el dispositivo es exclusivo y no admite sondeo concurrente). (#33.)
+    /// </summary>
     internal void RaiseSignal(SignalInfo info)
     {
         CurrentSignal = info;

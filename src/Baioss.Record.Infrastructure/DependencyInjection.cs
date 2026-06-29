@@ -113,5 +113,11 @@ public static class DependencyInjection
         // UI lean mientras un canal escribe segmentos, en vez del bloqueo total del modo rollback por defecto
         // → evita el «database is locked» con varios canales grabando a la vez.
         db.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
+        // EnsureCreated NO altera una BD ya existente: crea los índices de historial/retención de forma
+        // idempotente para que apliquen también a bases creadas antes de añadirlos al modelo. Los nombres
+        // coinciden con la convención de EF, así que en una BD NUEVA «IF NOT EXISTS» los salta. (Auditoría #22.)
+        db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_StartedAt\" ON \"Sessions\" (\"ChannelId\", \"StartedAt\");");
+        db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_EndedAt\" ON \"Sessions\" (\"ChannelId\", \"EndedAt\");");
+        db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_StartedAt\" ON \"Sessions\" (\"StartedAt\");");
     }
 }

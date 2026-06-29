@@ -49,6 +49,7 @@ public sealed class NdiReceiver : IAsyncDisposable
     private int _bytesPerPixel = 4; // se fija con el primer frame según el FourCC real (UYVY=2, BGRA=4)
     private volatile bool _present;           // ¿llega vídeo NDI ahora mismo? (para detectar pérdida en caliente)
     private DateTimeOffset _lastVideoUtc;     // marca del último frame de vídeo recibido
+    private DateTimeOffset _lastPresenceLoss; // cuándo se perdió la presencia (para re-detectar formato si la caída fue larga)
 
     /// <summary>Se dispara al PERDER (false) o RECUPERAR (true) la presencia de vídeo NDI, para que la fuente
     /// actualice su <c>CurrentSignal</c> y el canal entre/salga de carta de ajuste sin esperar al watchdog. (C3.)</summary>
@@ -56,6 +57,11 @@ public sealed class NdiReceiver : IAsyncDisposable
 
     /// <summary>Sin frames de vídeo durante este tiempo ⇒ se considera pérdida de señal NDI.</summary>
     public TimeSpan PresenceTimeout { get; init; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>Si la pérdida de presencia supera este umbral, al recuperar el vídeo se RE-DETECTA el formato
+    /// (resolución/tasa/pixel) por si la fuente cambió mientras no emitía. Evita servir frames del nuevo formato
+    /// con los parámetros viejos cacheados del primer frame histórico. (Auditoría 24/7, #32.)</summary>
+    public TimeSpan FormatResetThreshold { get; init; } = TimeSpan.FromSeconds(5);
 
     public NdiReceiver(string sourceName, ILogger log)
     {
@@ -120,18 +126,28 @@ public sealed class NdiReceiver : IAsyncDisposable
     // se vuelve a aceptar el nuevo cliente.
     private async Task AcceptAsync(TcpListener listener, Action<NetworkStream?> assign, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        // Mantiene el TcpClient ACTIVO para disponerlo en la próxima reconexión (y al cancelar). Antes, cada
+        // reconexión de FFmpeg (toggle de grabación / slate / respawn) dejaba el socket+stream anterior sin
+        // cerrar: en 24/7 acumulaba handles y podía agotar puertos/handles del SO. (Auditoría 24/7, A8/#29/#37.)
+        TcpClient? current = null;
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                var client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
-                client.NoDelay = true;
-                assign(client.GetStream());
-                _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
+                try
+                {
+                    var next = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                    next.NoDelay = true;
+                    assign(next.GetStream());              // los writes nuevos van YA al socket nuevo
+                    var old = current; current = next;
+                    try { old?.Dispose(); } catch { /* ya cerrado */ } // cierra el cliente anterior (no fugar el socket)
+                    _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex) { _log.LogDebug(ex, "NDI: re-aceptando conexión de FFmpeg."); }
             }
-            catch (OperationCanceledException) { return; }
-            catch (Exception ex) { _log.LogDebug(ex, "NDI: re-aceptando conexión de FFmpeg."); }
         }
+        finally { try { current?.Dispose(); } catch { /* noop */ } } // al cancelar, cierra el cliente vivo
     }
 
     // Saca buffers de la cola y los escribe al socket de FFmpeg. Un loop por flujo (vídeo / audio): así el
@@ -183,6 +199,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             if (_present && DateTimeOffset.UtcNow - _lastVideoUtc > PresenceTimeout)
             {
                 _present = false;
+                _lastPresenceLoss = DateTimeOffset.UtcNow; // sella la caída para decidir si re-detectar formato al volver (#32)
                 try { PresenceChanged?.Invoke(false); } catch { /* no romper el bucle de recepción */ }
             }
         }
@@ -192,12 +209,18 @@ public sealed class NdiReceiver : IAsyncDisposable
     {
         if (v.xres <= 0 || v.yres <= 0 || v.p_data == IntPtr.Zero) return;
         _lastVideoUtc = DateTimeOffset.UtcNow;
+        bool recovered = false;
         if (!_present) // recuperación (o primer frame): vuelve a haber vídeo NDI
         {
             _present = true;
-            try { PresenceChanged?.Invoke(true); } catch { /* no romper la recepción */ }
+            recovered = true;
+            // Si la caída fue PROLONGADA, la fuente pudo cambiar de resolución/formato mientras no emitía:
+            // se fuerza la re-detección (Width=0) para que ESTE frame re-fije el formato. La presencia se
+            // notifica DESPUÉS de re-fijarlo (más abajo), no aquí, para que NdiCaptureSource lea ya los
+            // valores NUEVOS al construir CurrentSignal (si no, publicaría 0×0 de forma transitoria). (#32.)
+            if (DateTimeOffset.UtcNow - _lastPresenceLoss >= FormatResetThreshold) Width = 0;
         }
-        if (Width == 0) // primer frame: fija el formato (resolución/tasa/pixel) y desbloquea StartAsync
+        if (Width == 0) // primer frame o re-detección tras pérdida prolongada: fija el formato y desbloquea StartAsync
         {
             Width = v.xres; Height = v.yres;
             if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
@@ -217,6 +240,10 @@ public sealed class NdiReceiver : IAsyncDisposable
             }
             _firstVideo.TrySetResult(true);
         }
+
+        // Notifica la recuperación AHORA, con el formato ya re-fijado (ver nota arriba): así CurrentSignal
+        // refleja la resolución/tasa reales del nuevo frame y no un 0×0 transitorio. (C3 + #32.)
+        if (recovered) { try { PresenceChanged?.Invoke(true); } catch { /* no romper la recepción */ } }
 
         int rowBytes = v.xres * _bytesPerPixel;
         int size = v.yres * rowBytes;

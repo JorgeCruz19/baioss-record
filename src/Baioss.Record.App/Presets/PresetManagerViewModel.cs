@@ -17,9 +17,10 @@ public sealed record CategoryFilter(string Label, PresetCategory? Category, bool
 /// Centro: presets filtrados por categoría + búsqueda. Derecho: detalle + línea de comandos
 /// FFmpeg + acciones (favorito, nuevo, editar, duplicar, eliminar, importar, exportar, aplicar).
 /// </summary>
-public sealed partial class PresetManagerViewModel : ObservableObject
+public sealed partial class PresetManagerViewModel : ObservableObject, IDisposable
 {
     private readonly IPresetStore _store;
+    private readonly EventHandler _onStoreChanged;
 
     public IReadOnlyList<ChannelViewModel> Channels { get; }
     public ObservableCollection<CategoryFilter> Categories { get; }
@@ -66,9 +67,16 @@ public sealed partial class PresetManagerViewModel : ObservableObject
         });
         SelectedCategory = Categories[0];
 
-        _store.Changed += (_, _) => System.Windows.Application.Current?.Dispatcher.Invoke(Refresh);
+        // Handler guardado en un campo para poder DESuscribirse en Dispose: el store es singleton de larga
+        // vida; antes la lambda anónima dejaba el VM (y su snapshot de canales) vivo para siempre, y todos los
+        // VMs colgados seguían haciendo Refresh en el Dispatcher por cada cambio del store. (Auditoría #24.)
+        _onStoreChanged = (_, _) => System.Windows.Application.Current?.Dispatcher.Invoke(Refresh);
+        _store.Changed += _onStoreChanged;
         Refresh();
     }
+
+    /// <summary>Desuscribe del store singleton para no retener el VM. La ventana lo llama al cerrarse. (#24)</summary>
+    public void Dispose() => _store.Changed -= _onStoreChanged;
 
     partial void OnSelectedCategoryChanged(CategoryFilter? value) => Refresh();
     partial void OnSearchTextChanged(string value) => Refresh();

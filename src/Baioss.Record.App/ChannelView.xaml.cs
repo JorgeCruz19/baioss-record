@@ -10,8 +10,11 @@ public partial class ChannelView : UserControl
 {
     private IChannelPreviewSource? _preview;
     private PreviewSurface? _surface;
-    private PreviewFrame? _pending;
-    private bool _renderQueued;
+    // volatile: OnFrameReady corre en un hilo de FONDO y el callback del Dispatcher en el de UI. Sin barrera,
+    // el hilo de fondo podía cachear _renderQueued=true para siempre y dejar de re-encolar render → preview
+    // CONGELADO de forma permanente. (Auditoría #52.)
+    private volatile PreviewFrame? _pending;
+    private volatile bool _renderQueued;
 
     public ChannelView()
     {

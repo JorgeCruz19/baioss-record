@@ -444,4 +444,30 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("_%03d.mp4", joined);                     // legado: {canal}_{fecha}_%03d
         Assert.DoesNotContain("-segment_start_number", joined);   // sin numeración forzada
     }
+
+    // --- Seguridad: validación de URLs de streaming en el muxer tee (#56) ---
+
+    private static RecordingProfile Mp4WithStream(string url)
+    {
+        var p = SoftwareMp4();
+        p.StreamTargets.Add(new StreamTarget { Protocol = StreamProtocol.Rtmp, Url = url, Enabled = true });
+        return p;
+    }
+
+    [Theory]
+    [InlineData("rtmp://srv/app|[f=mpegts]udp://ajeno:1234")] // inyección de una rama tee adicional
+    [InlineData("rtmp://srv[f=flv]/app")]                     // inyección de opciones por rama
+    [InlineData("ftp://srv/app")]                             // esquema no permitido
+    [InlineData("")]                                          // vacía
+    public void Build_StreamTargetWithMaliciousUrl_Throws(string url)
+        => Assert.Throws<ArgumentException>(() => Build(Mp4WithStream(url)));
+
+    [Fact]
+    public void Build_StreamTargetWithValidUrl_BuildsTeeBranch()
+    {
+        var (joined, _) = Build(Mp4WithStream("rtmp://live.example.com/app/key"));
+
+        Assert.Contains("-f tee", joined);                                  // salida por muxer tee
+        Assert.Contains("rtmp://live.example.com/app/key", joined);         // la URL legítima pasa intacta
+    }
 }

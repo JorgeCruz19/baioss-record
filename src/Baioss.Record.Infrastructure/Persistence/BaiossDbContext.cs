@@ -63,6 +63,12 @@ public sealed class BaiossDbContext(DbContextOptions<BaiossDbContext> options)
         b.Entity<RecordingSession>(e =>
         {
             e.HasMany(s => s.Segments).WithOne().HasForeignKey(s => s.SessionId);
+            // Índices para historial (por canal, ordenado por fecha) y retención (por canal + fin). La tabla
+            // Sessions crece sin parar en 24/7; sin índice eran table scans + sort en memoria crecientes que
+            // competían con las escrituras de segmentos por el único escritor de SQLite. (Auditoría #22.)
+            e.HasIndex(s => new { s.ChannelId, s.StartedAt });
+            e.HasIndex(s => new { s.ChannelId, s.EndedAt });
+            e.HasIndex(s => s.StartedAt);
             e.Property(s => s.Metadata).HasConversion(
                 v => System.Text.Json.JsonSerializer.Serialize(v, (System.Text.Json.JsonSerializerOptions?)null),
                 v => System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(v, (System.Text.Json.JsonSerializerOptions?)null) ?? new());

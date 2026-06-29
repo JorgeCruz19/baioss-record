@@ -218,7 +218,14 @@ public sealed class FfmpegArgumentBuilder
             if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
             else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
             if (profile.BurnTimecode)
-                recChain.Add("drawtext=timecode='00\\:00\\:00\\:00':rate=25:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20");
+            {
+                // El timecode quemado avanza al ritmo REAL de la fuente/salida (no «25» fijo): con 25 fijo
+                // derivaba en fuentes 29.97/30/50/60 y el campo FF nunca alcanzaba sus valores. (Auditoría #18.)
+                int tcRate = Math.Max(1, (int)Math.Round(
+                    (profile.OutputFrameRate ?? source.CurrentSignal.FrameRate ?? FrameRate.P25).Value, MidpointRounding.AwayFromZero));
+                recChain.Add(string.Create(CultureInfo.InvariantCulture,
+                    $"drawtext=timecode='00\\:00\\:00\\:00':rate={tcRate}:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20"));
+            }
             // SIEMPRE como último paso de la rama de grabación: convertir al formato del encoder. La fuente puede
             // entregar un pixel format que el encoder por hardware NO acepta (NDI sirve uyvy422 y h264_nvenc lo
             // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
@@ -331,6 +338,14 @@ public sealed class FfmpegArgumentBuilder
                 "-segment_format", recMux,
                 "-reset_timestamps", "1",
             };
+            // Robustez ante corte eléctrico: cada segmento MP4/MOV se escribe como fMP4 (fragmentos + moov al
+            // inicio), igual que el archivo único. Sin esto, un corte a mitad de un segmento dejaba ese segmento
+            // (hasta N minutos) SIN moov e ilegible; el fMP4 robusto solo cubría el archivo único. (Auditoría A6/#9.)
+            if (p.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
+            {
+                a.Add("-segment_format_options");
+                a.Add("movflags=+frag_keyframe+empty_moov+default_base_moof:frag_duration=1000000");
+            }
             if (_baseName is not null) { a.Add("-segment_start_number"); a.Add(_segmentStartNumber.ToString(CultureInfo.InvariantCulture)); }
             if (seg.Trigger is SegmentTrigger.WallClock) { a.Add("-segment_atclocktime"); a.Add("1"); }
             a.Add("-y"); a.Add(pattern);
@@ -688,6 +703,27 @@ public sealed class FfmpegArgumentBuilder
         return a;
     }
 
+    // Esquemas de URL admitidos para un destino de streaming (whitelist). Cualquier otro se rechaza.
+    private static readonly string[] AllowedStreamSchemes =
+        { "rtmp://", "rtmps://", "srt://", "udp://", "rtp://", "tcp://", "http://", "https://" };
+
+    /// <summary>
+    /// Valida la URL de un destino de streaming antes de incrustarla en el target del muxer <c>tee</c>. La
+    /// sintaxis del tee es <c>[opciones]url|[opciones]url…</c>: el separador <c>|</c> y los corchetes <c>[ ]</c>
+    /// son metacaracteres, así que una URL que los contenga podría inyectar ramas o alterar opciones del muxer
+    /// (p. ej. desviar el stream a un destino ajeno). Se exige además un esquema conocido. Fail-closed: una URL
+    /// inválida aborta la construcción del comando en vez de emitir argumentos potencialmente inyectados. (Auditoría 24/7, #56.)
+    /// </summary>
+    private static void ValidateStreamUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            throw new ArgumentException("La URL de streaming no puede estar vacía.");
+        if (url.Contains('|') || url.Contains('[') || url.Contains(']'))
+            throw new ArgumentException($"La URL de streaming contiene caracteres no permitidos (| [ ]): «{url}».");
+        if (!AllowedStreamSchemes.Any(s => url.StartsWith(s, StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException($"La URL de streaming usa un esquema no permitido (rtmp/rtmps/srt/udp/rtp/tcp/http/https): «{url}».");
+    }
+
     /// <summary>Rama de grabación (archivo o segmentos) + ramas de streaming para el muxer tee.</summary>
     private string BuildTeeTarget(RecordingProfile p, string recMux, string recExt, bool segmented)
     {
@@ -711,6 +747,7 @@ public sealed class FfmpegArgumentBuilder
 
         foreach (var t in p.StreamTargets.Where(t => t.Enabled))
         {
+            ValidateStreamUrl(t.Url); // rechaza inyección de ramas/opciones del tee y esquemas no permitidos (#56)
             string mux = t.Protocol switch
             {
                 StreamProtocol.Srt or StreamProtocol.Udp => "mpegts",

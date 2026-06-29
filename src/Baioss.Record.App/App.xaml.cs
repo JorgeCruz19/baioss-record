@@ -43,11 +43,39 @@ public partial class App : System.Windows.Application
 
     private IHost? _host;
 
+    private Mutex? _instanceMutex;
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         WireGlobalExceptionHandlers();
 
+        // Instancia única: una 2ª instancia chocaría al enlazar el puerto 5005 (Kestrel) y al abrir la BD.
+        // Mejor avisar y salir limpio que cerrar el proceso con un error opaco. (Auditoría A2/#5.)
+        _instanceMutex = new Mutex(initiallyOwned: true, @"Local\Baioss.Record.App.SingleInstance", out bool isFirst);
+        if (!isFirst)
+        {
+            MessageBox.Show("Baioss Record ya está en ejecución.", "Baioss Record",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            Shutdown(0);
+            return;
+        }
+
+        // El cuerpo del arranque va en su propio método para envolverlo en try/catch: un fallo (puerto 5005
+        // ocupado, DI mal cableado, appsettings corrupto) deja un diagnóstico y un cierre limpio en vez de
+        // cerrar el proceso sin rastro (OnStartup es async void). (Auditoría A2/#5.)
+        try { await StartHostAsync(); }
+        catch (Exception ex)
+        {
+            Serilog.Log.Fatal(ex, "Fallo de arranque de Baioss Record.");
+            MessageBox.Show($"No se pudo iniciar Baioss Record:\n{ex.Message}", "Baioss Record",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+        }
+    }
+
+    private async Task StartHostAsync()
+    {
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
         // ejecutable; ancla datos/grabaciones/logs con independencia del working directory.
         var root = FindUpwards("tools") is { } toolsDir ? Path.GetDirectoryName(toolsDir)! : Directory.GetCurrentDirectory();
@@ -85,6 +113,11 @@ public partial class App : System.Windows.Application
         int channelCount = Math.Clamp(builder.Configuration.GetValue("Channels:Count", 4), 1, 8);
 
         var s = builder.Services;
+        // Resiliencia de los servicios de fondo: en .NET 8 una excepción que ESCAPE de un BackgroundService
+        // detiene TODO el host por defecto (BackgroundServiceExceptionBehavior.StopHost) → tumbaría las
+        // grabaciones de todos los canales. Con Ignore, un fallo del scheduler/retención/auditoría queda en el
+        // log pero NO mata el host (las grabaciones siguen). Complementa los handlers globales de C1. (Auditoría #34.)
+        s.Configure<HostOptions>(o => o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
         // Bus de eventos y storage (que la API necesita) se registran en ambos modos; en modo real
         // se añaden además repos/captura/locator. En simulado, la BD queda registrada pero sin usar.
         s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null);
@@ -104,6 +137,9 @@ public partial class App : System.Windows.Application
         var retention = builder.Configuration.GetSection("Retention").Get<RetentionOptions>() ?? new RetentionOptions();
         s.AddSingleton(retention);
         s.AddHostedService<RetentionService>();
+        // Auditoría 24/7: persiste los eventos de dominio (señal, grabación, disco, encoder) en la tabla
+        // EventLog para trazabilidad post-incidente. (Auditoría #42.)
+        s.AddHostedService<Baioss.Record.Infrastructure.Messaging.EventLogWriter>();
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 
@@ -114,11 +150,17 @@ public partial class App : System.Windows.Application
         app.MapBaiossApi();    // REST de automatización + WebSocket de eventos
         _host = app;
 
+        // Construye los canales (I/O de FFmpeg/NDI por canal) FUERA del hilo de UI y EN PARALELO, pre-resolviendo
+        // el singleton en un hilo de fondo ANTES de StartAsync. Si no, el ChannelHost se construiría dentro de
+        // app.StartAsync (al crear el scheduler) sobre el hilo de UI, congelándolo mientras las fuentes abren —una
+        // NDI sin señal tarda ~8 s en su timeout y, en serie, 4 canales sumaban ~32 s—. (Auditoría 24/7, #17.)
+        await Task.Run(() => app.Services.GetRequiredService<ChannelHost>());
+
         await app.StartAsync();
 
         // Recovery tras un cierre ABRUPTO: cierra las sesiones que quedaron «grabando» de una ejecución
         // anterior (crash/kill) para que la BD no arrastre grabaciones colgadas. La BD ya está compuesta (la
-        // creó el ChannelHost al instanciarse el scheduler en StartAsync). Solo en modo real (en simulado no
+        // creó el ChannelHost al pre-resolverlo, justo arriba). Solo en modo real (en simulado no
         // se graba ni se persiste). Best-effort: un fallo aquí no impide arrancar.
         if (real)
         {
@@ -130,6 +172,31 @@ public partial class App : System.Windows.Application
                     Serilog.Log.Warning("Recovery: {Count} sesión(es) huérfana(s) de un cierre previo cerradas como error.", closed);
             }
             catch (Exception ex) { Serilog.Log.Error(ex, "Recovery de sesiones huérfanas falló."); }
+
+            // Reconcilia los segmentos que quedaron en disco SIN registro en la BD por un corte eléctrico /
+            // cierre abrupto durante una grabación segmentada (el último segmento no llegó a emitirse). Se da
+            // de alta el material para que aparezca en el historial. Antes del barrido .faststart, que solo
+            // borra temporales de remux. Best-effort. (Auditoría 24/7, #23.)
+            try
+            {
+                var dbFactory = app.Services.GetRequiredService<
+                    Microsoft.EntityFrameworkCore.IDbContextFactory<Baioss.Record.Infrastructure.Persistence.BaiossDbContext>>();
+                var recLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Recovery.Segments");
+                await OrphanSegmentReconciler.ReconcileAsync(dbFactory, Path.Combine(root, "recordings"), recLog);
+            }
+            catch (Exception ex) { Serilog.Log.Error(ex, "Reconciliación de segmentos huérfanos falló."); }
+
+            // Barre temporales de remux (.faststart) huérfanos de una caída durante el remux: nunca deben
+            // sobrevivir a un reinicio (pueden ocupar varios GB de un archivo grande). (Auditoría #43.)
+            try
+            {
+                var recDir = Path.Combine(root, "recordings");
+                if (Directory.Exists(recDir))
+                    foreach (var pat in new[] { "*.faststart.mp4", "*.faststart.mov" })
+                        foreach (var f in Directory.EnumerateFiles(recDir, pat, SearchOption.AllDirectories))
+                            try { File.Delete(f); } catch { /* best-effort */ }
+            }
+            catch (Exception ex) { Serilog.Log.Debug(ex, "Barrido de temporales .faststart falló."); }
         }
 
         Serilog.Log.Information("API REST + WebSocket escuchando en {Url} (solo loopback).", ApiUrl);

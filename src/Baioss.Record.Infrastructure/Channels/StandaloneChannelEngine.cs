@@ -34,8 +34,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly ISignalMonitor? _signalMonitor;
     private readonly ILogger<StandaloneChannelEngine>? _log;
     private readonly DiskSpaceGuard? _diskGuard;
+    private readonly DiskUsageRegistry? _diskUsage; // ritmo agregado del volumen entre canales (A7/#10)
 
-    private RecordingSession? _session;
+    // volatile: lo escriben Start/StopRecordingCoreAsync (bajo _transition) y lo LEEN sin lock el getter Status
+    // (hilo de UI/API) y OnEngineAlarm (hilo de stderr de FFmpeg). volatile garantiza que esos lectores vean el
+    // valor más reciente (no una referencia obsoleta) en cada lectura única. (Auditoría 24/7, #36.)
+    private volatile RecordingSession? _session;
 
     // Segmentos persistidos de la sesión en curso + sus tareas de persistencia: para renombrar de forma
     // CONSISTENTE (que la BD no quede con el nombre temporal) cuando el operador nombra al detener.
@@ -72,7 +76,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         ISignalMonitor? signalMonitor = null,
         ILogger<StandaloneChannelEngine>? log = null,
         IRecordingProfileRepository? profiles = null,
-        DiskSpaceGuard? diskGuard = null)
+        DiskSpaceGuard? diskGuard = null,
+        DiskUsageRegistry? diskUsage = null)
     {
         ChannelId = channelId ?? Guid.NewGuid();
         _key = key;
@@ -86,6 +91,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _signalMonitor = signalMonitor;
         _log = log;
         _diskGuard = diskGuard;
+        _diskUsage = diskUsage;
 
         _engine.StateChanged += (_, _) => Raise();
         _engine.StatsUpdated += OnStats;
@@ -194,12 +200,27 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _autoStopping = false;
         if (_diskGuard is not null)
         {
-            _diskGuard.Updated += OnDiskUpdated;
-            _diskGuard.Start(() => _engine.OutputRoot, () =>
+            long OwnRate()
             {
                 long real = _engine.Stats.Bitrate.BitsPerSecond / 8;
                 return real > 0 ? real : FallbackBytesPerSecond(profile);
-            });
+            }
+            _diskGuard.Updated += OnDiskUpdated;
+            if (_diskUsage is not null)
+            {
+                // Registra el ritmo de ESTE canal y vigila el caudal AGREGADO del volumen: con N canales el disco
+                // se llena ~N× más rápido, y el piso de espacio escala ×N para que el cierre ordenado de los N
+                // procesos quepa antes de que el disco se llene. (Auditoría 24/7, A7/#10.)
+                _diskUsage.Register(ChannelId, _engine.OutputRoot, OwnRate);
+                _diskGuard.Start(
+                    () => _engine.OutputRoot,
+                    () => _diskUsage.TotalBytesPerSecond(_engine.OutputRoot),
+                    () => _diskGuard.MinFreeBytes * Math.Max(1, _diskUsage.ActiveCount(_engine.OutputRoot)));
+            }
+            else
+            {
+                _diskGuard.Start(() => _engine.OutputRoot, OwnRate); // sin registro: comportamiento de un solo canal
+            }
         }
 
         if (_bus is not null)
@@ -287,6 +308,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             _diskGuard.Updated -= OnDiskUpdated;
             await _diskGuard.StopAsync();
         }
+        _diskUsage?.Unregister(ChannelId); // deja de contar en el caudal agregado del volumen
         await _engine.StopRecordingAsync(ct);
 
         // Las alarmas operativas de la grabación dejan de aplicar al detener (RecordingUnverified NO: avisa
@@ -455,7 +477,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             new AudioMeter(_peakL, lr.Left, _peakL > -1),
             new AudioMeter(_peakR, lr.Right, _peakR > -1),
         };
-        Raise();
+        // NO se llama a Raise() aquí: la UI ya pinta los medidores VU directamente desde
+        // Preview.AudioPeaksUpdated (ChannelViewModel.OnPreviewAudio). Reconstruir TODO el ChannelStatus y
+        // marshalarlo al Dispatcher en CADA línea FTPK (decenas/s × N canales) saturaba el hilo de UI sin
+        // aportar nada nuevo. _audio queda actualizado para el siguiente snapshot natural. (Auditoría #21/#25/#26.)
     }
 
     private void Raise() => StatusChanged?.Invoke(this, Status);

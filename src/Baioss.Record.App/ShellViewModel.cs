@@ -62,6 +62,8 @@ public sealed partial class ShellViewModel : ObservableObject
     }
 
     private readonly DispatcherTimer _todayTimer;
+    /// <summary>Guardia de reentrancia de <see cref="RefreshTodayTasks"/>: coalesce solapamientos sin bloquear. (#50.)</summary>
+    private readonly SemaphoreSlim _refreshing = new(1, 1);
 
     private Task SkipScheduledAsync(Guid channelId) => _scheduler.SkipCurrentAsync(channelId);
 
@@ -71,6 +73,10 @@ public sealed partial class ShellViewModel : ObservableObject
     /// <summary>Reparte entre los canales sus grabaciones programadas de HOY (resaltando la en curso).</summary>
     private async void RefreshTodayTasks()
     {
+        // El DispatcherTimer (cada 30 s) y los eventos del scheduler pueden disparar este refresco solapado.
+        // Si ya hay uno en curso, se descarta este (el siguiente intervalo refrescará): evita que dos pasadas
+        // pisen la lista TodayTasks de cada canal (Clear + Add) a la vez. WaitAsync(0) no bloquea. (Auditoría #50.)
+        if (!await _refreshing.WaitAsync(0)) return;
         try
         {
             var now = _clock.UtcNow;
@@ -115,6 +121,7 @@ public sealed partial class ShellViewModel : ObservableObject
             }
         }
         catch { /* refresco best-effort */ }
+        finally { _refreshing.Release(); }
     }
 
     /// <summary>Marca en cada canal si tiene una grabación PROGRAMADA en curso (muestra el botón de saltar).</summary>
@@ -133,6 +140,7 @@ public sealed partial class ShellViewModel : ObservableObject
             DataContext = viewModel,
             Owner = System.Windows.Application.Current?.MainWindow,
         };
+        window.Closed += (_, _) => viewModel.Dispose(); // desuscribe del store al cerrar (no fugar el VM). (#24)
         window.Show();
     }
 

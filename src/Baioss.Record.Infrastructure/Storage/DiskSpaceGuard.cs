@@ -21,6 +21,7 @@ public sealed class DiskSpaceGuard : IAsyncDisposable
     private Task? _loop;
     private Func<string?> _outputDir = () => null;
     private Func<long> _bytesPerSecond = () => 0;
+    private Func<long> _minFreeBytes = () => 0;
 
     public DiskSpaceGuard(ILogger log) => _log = log;
 
@@ -35,10 +36,17 @@ public sealed class DiskSpaceGuard : IAsyncDisposable
     /// <summary>Estado actual del disco (nivel + libres + restante estimado). Útil para la UI continua.</summary>
     public event EventHandler<(DiskLevel Level, StorageInfo Info)>? Updated;
 
-    public void Start(Func<string?> outputDir, Func<long> bytesPerSecond)
+    /// <summary>
+    /// Arranca la vigilancia. <paramref name="bytesPerSecond"/> debe ser el ritmo AGREGADO del volumen
+    /// (todos los canales que escriben en él), y <paramref name="minFreeBytes"/> el piso de espacio
+    /// (escalado por nº de canales). Si se omiten, se vigila como un solo canal con el piso fijo
+    /// <see cref="MinFreeBytes"/>. (Auditoría 24/7, A7/#10.)
+    /// </summary>
+    public void Start(Func<string?> outputDir, Func<long> bytesPerSecond, Func<long>? minFreeBytes = null)
     {
         _outputDir = outputDir;
         _bytesPerSecond = bytesPerSecond;
+        _minFreeBytes = minFreeBytes ?? (() => MinFreeBytes);
         _cts = new CancellationTokenSource();
         _loop = Task.Run(() => LoopAsync(_cts.Token));
     }
@@ -59,7 +67,7 @@ public sealed class DiskSpaceGuard : IAsyncDisposable
             try
             {
                 var (free, total) = ReadDrive(_outputDir());
-                var (level, info) = Evaluate(free, total, _bytesPerSecond(), WarnRemaining, CriticalRemaining, MinFreeBytes);
+                var (level, info) = Evaluate(free, total, _bytesPerSecond(), WarnRemaining, CriticalRemaining, _minFreeBytes());
                 Updated?.Invoke(this, (level, info));
             }
             catch (Exception ex) { _log.LogDebug(ex, "Guarda de disco: fallo al medir el espacio."); }

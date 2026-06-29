@@ -45,8 +45,23 @@ public static class ApiEndpoints
         api.MapGet("/channels", (IChannelManager m) =>
             Results.Ok(m.Channels.Select(c => c.Status)));
 
-        api.MapGet("/storage", async (string volume, IStorageManager s, CancellationToken ct) =>
-            Results.Ok(await s.GetStatusAsync(volume, ct)));
+        api.MapGet("/storage", async (string? volume, IStorageManager s, CancellationToken ct) =>
+        {
+            // Seguridad: solo se permite consultar el VOLUMEN donde corre la app (donde se graba), no una ruta
+            // arbitraria del sistema que un proceso local cualquiera pase por el parámetro. La consulta es por
+            // volumen (DriveInfo), así que basta comparar la raíz; si se omite, se usa la del propio proceso.
+            // (Auditoría 24/7, #57.)
+            var appVolume = Path.GetPathRoot(AppContext.BaseDirectory);
+            string? requested;
+            try { requested = string.IsNullOrWhiteSpace(volume) ? appVolume : Path.GetPathRoot(Path.GetFullPath(volume)); }
+            catch (Exception ex) { return Results.BadRequest(new { error = "Volumen inválido: " + ex.Message }); }
+
+            if (appVolume is null || !string.Equals(requested, appVolume, StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "Solo se permite consultar el volumen de grabación." });
+
+            try { return Results.Ok(await s.GetStatusAsync(requested!, ct)); } // no-nulo tras la guarda (== appVolume)
+            catch (Exception ex) { return Results.Problem("No se pudo consultar el volumen: " + ex.Message, statusCode: 404); }
+        });
 
         // GET /inputs y /recordings se mapean igual (omitido por brevedad en el scaffold).
 

@@ -164,6 +164,34 @@ public class SchedulerServiceTests
     }
 
     [Fact]
+    public async Task Tick_DoesNotStopManualRecording_StartedAfterScheduledWasStopped()
+    {
+        // Escenario #20: el scheduler arranca la programada → el operador la detiene y arranca una grabación
+        // MANUAL en el mismo canal → al vencer la duración de la programada, el auto-stop NO debe cortar la manual.
+        var channelId = Guid.NewGuid();
+        var engine = new FakeChannelEngine(channelId, "A");
+        var clock = new MutableClock { UtcNow = At(20, 0) };
+        var repo = new InMemoryScheduledJobRepository();
+        await repo.AddAsync(OnceJob(channelId, durationMin: 30));
+        var svc = new SchedulerService(repo, new FakeChannelManager(engine), clock, NullLogger<SchedulerService>.Instance);
+
+        await svc.TickAsync(default);                       // 20:00 → arranca la programada (sesión #1)
+        Assert.Equal(1, engine.StartCount);
+
+        await engine.StopRecordingAsync();                 // el operador la detiene
+        await engine.StartRecordingAsync(Guid.Empty, "manual", "Mi Grabación"); // y arranca una manual (sesión #2)
+        Assert.Equal(2, engine.StartCount);
+        Assert.Equal(1, engine.StopCount);
+
+        clock.UtcNow = At(20, 31);                          // pasada la duración de la programada
+        await svc.TickAsync(default);
+
+        // La manual sigue grabando: el auto-stop vio otra sesión y no la tocó.
+        Assert.Equal(1, engine.StopCount);
+        Assert.Equal(RecordingState.Recording, engine.Status.RecordingState);
+    }
+
+    [Fact]
     public async Task Tick_DoesNothing_WhenNothingDue()
     {
         var channelId = Guid.NewGuid();

@@ -167,6 +167,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void StartAwaitSignalProbe()
     {
+        _awaitCts?.Dispose(); // dispone el de la espera anterior antes de reabrir: sin fuga de CTS. (#53)
         _awaitCts = new CancellationTokenSource();
         _awaitLoop = Task.Run(() => AwaitSignalLoopAsync(_awaitCts.Token));
     }
@@ -679,6 +680,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void StartRecoveryProbe()
     {
+        _recoveryCts?.Dispose(); // dispone el del ciclo de slate anterior (ya finalizado): sin fuga de CTS. (#53)
         _recoveryCts = new CancellationTokenSource();
         _recoveryLoop = Task.Run(() => RecoveryLoopAsync(_recoveryCts.Token));
     }
@@ -884,8 +886,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_source is not null) _source.SignalChanged -= OnSourceSignalChanged;
         StopRecoveryProbe();
         if (_recoveryLoop is not null) { try { await _recoveryLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
+        _recoveryCts?.Dispose(); // ya finalizado el loop: dispone el último CTS. (#53)
         StopAwaitSignalProbe();
         if (_awaitLoop is not null) { try { await _awaitLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
+        _awaitCts?.Dispose(); // ídem. (#53)
         await StopSegmentScanAsync().ConfigureAwait(false);
         if (_supervisor is not null)
         {

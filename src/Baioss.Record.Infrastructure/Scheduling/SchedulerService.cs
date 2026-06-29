@@ -29,10 +29,19 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     private readonly IClock _clock;
     private readonly ILogger<SchedulerService> _log;
 
-    // Grabaciones programadas que ESTA instancia inició: jobId → (cuándo parar, canal). Concurrente: lo
-    // escribe el bucle del BackgroundService y lo lee/modifica la UI (saltar / indicador de activo).
-    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, Guid ChannelId)> _active = new();
+    // Grabaciones programadas que ESTA instancia inició: jobId → (cuándo parar, canal, sesión). Concurrente:
+    // lo escribe el bucle del BackgroundService y lo lee/modifica la UI (saltar / indicador de activo). El
+    // SessionId permite que el auto-stop detenga SOLO la sesión que el scheduler inició: si el operador paró
+    // la programada y arrancó una manual en ese mismo canal, no se la corta al vencer la duración. (Auditoría #20.)
+    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, Guid ChannelId, Guid SessionId)> _active = new();
     private readonly HashSet<Guid> _warnedBusy = new();
+
+    // Caché de la lista de trabajos para el tick de 1 s: evita releer TODA la tabla (abriendo una conexión
+    // SQLite nueva) 86 400 veces/día. Se invalida en CADA escritura —todas pasan por este servicio, único
+    // consumidor del repo—, así que el tick nunca opera sobre datos obsoletos. (Auditoría #41.)
+    private volatile IReadOnlyList<ScheduledJob>? _cache;
+    private async Task<IReadOnlyList<ScheduledJob>> GetJobsCachedAsync(CancellationToken ct)
+        => _cache ??= await _repo.ListAsync(ct).ConfigureAwait(false);
 
     // 1 s: una grabación programada arranca con ≤1 s de margen respecto a su hora exacta (hh:mm:ss).
     // El chequeo es muy barato (una consulta a SQLite local); el log de EF se silencia en el host.
@@ -58,12 +67,17 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     public async Task<ScheduledJob> ScheduleAsync(ScheduledJob job, CancellationToken ct = default)
     {
         await _repo.AddAsync(job, ct).ConfigureAwait(false);
+        _cache = null;
         _log.LogInformation("Programado «{Title}»: canal {Channel}, {RunAt} ({Recurrence}).",
             job.Title, job.ChannelId, job.RunAt, job.Recurrence);
         return job;
     }
 
-    public Task CancelAsync(Guid jobId, CancellationToken ct = default) => _repo.RemoveAsync(jobId, ct);
+    public async Task CancelAsync(Guid jobId, CancellationToken ct = default)
+    {
+        await _repo.RemoveAsync(jobId, ct).ConfigureAwait(false);
+        _cache = null;
+    }
 
     public Task<IReadOnlyList<ScheduledJob>> GetAllAsync(CancellationToken ct = default) => _repo.ListAsync(ct);
 
@@ -73,12 +87,14 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         {
             job.Enabled = enabled;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
+            _cache = null;
         }
     }
 
     public async Task UpdateAsync(ScheduledJob job, CancellationToken ct = default)
     {
         await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
+        _cache = null;
         _log.LogInformation("Editada «{Title}»: canal {Channel}, {RunAt} ({Recurrence}).",
             job.Title, job.ChannelId, job.RunAt, job.Recurrence);
     }
@@ -145,21 +161,33 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             if (now < info.StopAt) continue;
             if (_channels.TryGet(info.ChannelId, out var ch) && ch is not null)
             {
-                try
+                // Detener SOLO si el canal sigue grabando la MISMA sesión que el scheduler inició. Si el
+                // operador detuvo la programada (Stop+renombrar) y arrancó una grabación manual, el canal
+                // grabaría otra sesión: no debemos cortársela al vencer la duración de la programada. (Auditoría #20.)
+                if (ch.Status.SessionId != info.SessionId)
                 {
-                    await ch.StopRecordingAsync(ct).ConfigureAwait(false);
-                    // La segmentación es propia de la grabación programada: se retira al terminar para no
-                    // arrastrarla a una grabación manual posterior.
-                    if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
-                    _log.LogInformation("Scheduler: fin de grabación programada en canal {Channel}.", info.ChannelId);
+                    _log.LogWarning("Scheduler: la grabación programada del canal {Channel} ya no está en curso " +
+                        "(sesión actual {Actual} ≠ {Esperada}); no se auto-detiene (es otra grabación).",
+                        info.ChannelId, ch.Status.SessionId, info.SessionId);
                 }
-                catch (Exception ex) { _log.LogError(ex, "Scheduler: error al detener canal {Channel}.", info.ChannelId); }
+                else
+                {
+                    try
+                    {
+                        await ch.StopRecordingAsync(ct).ConfigureAwait(false);
+                        // La segmentación es propia de la grabación programada: se retira al terminar para no
+                        // arrastrarla a una grabación manual posterior.
+                        if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
+                        _log.LogInformation("Scheduler: fin de grabación programada en canal {Channel}.", info.ChannelId);
+                    }
+                    catch (Exception ex) { _log.LogError(ex, "Scheduler: error al detener canal {Channel}.", info.ChannelId); }
+                }
             }
             if (_active.TryRemove(jobId, out _)) RaiseActiveChanged();
         }
 
         // 2) Disparo de starts/stops según la franja vigente de cada trabajo.
-        var jobs = await _repo.ListAsync(ct).ConfigureAwait(false);
+        var jobs = await GetJobsCachedAsync(ct).ConfigureAwait(false);
         foreach (var job in jobs)
         {
             if (!job.Enabled) continue;
@@ -211,7 +239,14 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             await ch.StartRecordingAsync(job.ProfileId ?? Guid.Empty, "Programación", ScheduledName(job, occ), ct).ConfigureAwait(false);
             job.LastRunAt = occ;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
-            if (stopAt is { } st) { _active[job.Id] = (st, job.ChannelId); RaiseActiveChanged(); }
+            _cache = null;
+            if (stopAt is { } st)
+            {
+                // Captura la sesión recién creada para validar luego que el auto-stop no pise otra grabación. (#20.)
+                var sessionId = ch.Status.SessionId ?? Guid.Empty;
+                _active[job.Id] = (st, job.ChannelId, sessionId);
+                RaiseActiveChanged();
+            }
             _log.LogInformation("Scheduler: inicio de «{Title}» en canal {Channel}{Until}.",
                 job.Title, job.ChannelId, stopAt is { } e ? $" (hasta {e:HH:mm})" : "");
         }
@@ -231,6 +266,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         }
         job.LastRunAt = occ;
         await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
+        _cache = null;
         bool removed = false;
         foreach (var kv in _active.Where(k => k.Value.ChannelId == job.ChannelId).ToList()) removed |= _active.TryRemove(kv.Key, out _);
         if (removed) RaiseActiveChanged();
@@ -255,6 +291,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         {
             job.SkippedOccurrence = occ;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
+            _cache = null;
             _log.LogInformation("Scheduler: «{Title}» SALTADA por el operador en canal {Channel} (solo esta ocurrencia).", job.Title, channelId);
         }
 
