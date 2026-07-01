@@ -49,6 +49,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private string? _recordFile;
     private DateTimeOffset _recordStart;
 
+    // Bitrate REAL de grabación, medido por el CRECIMIENTO del archivo en disco. El bitrate del parser es el
+    // agregado de FFmpeg, dominado por el preview CRUDO (rawvideo a un socket loopback, ~180 Mbps a 360p) que
+    // NO es el archivo; durante la grabación se sustituye por este para que la UI muestre el bitrate real. Se
+    // siembra con el objetivo del perfil y converge (EMA) al medido.
+    private string? _recordDir;
+    private long _lastRecBytes;
+    private DateTimeOffset _lastRecSampleUtc;
+    private long _realBitrateBps;
+
     // Nombre base del archivo (sin extensión) elegido por el operador (manual) o derivado de la
     // programación (dd-MM-yyyy_Título). null → nombre por defecto {canal}_{fecha_hora}.
     private string? _recordBaseName;
@@ -105,6 +114,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     /// <summary>Raíz de grabación; se crea una subcarpeta por canal.</summary>
     public string OutputRoot { get; set; } = "recordings";
+
+    /// <summary>Modo de contenedor MP4/MOV: <c>true</c> (por defecto) fMP4 fragmentado robusto ante corte
+    /// (+ remux a faststart del archivo único al detener); <c>false</c> MP4 estándar con moov al final (seekable
+    /// en local, sin remux ni saturación de disco; requiere cierre limpio → para máquinas con SAI/UPS).
+    /// Configurable en «Recording:FragmentedMp4».</summary>
+    public bool FragmentedMp4 { get; init; } = true;
 
     public RecordingState State => _state;
     public RecorderStats Stats { get; private set; } = RecorderStats.Empty;
@@ -227,6 +242,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             RaiseAlarm(AlarmType.EncoderFallback, false);     // limpia un fallback de una sesión previa
             RaiseAlarm(AlarmType.RecordingUnverified, false); // y el aviso de archivo dañado de la anterior
             _recordStart = DateTimeOffset.UtcNow;
+            // Medición del bitrate REAL por crecimiento del archivo, sembrada con el objetivo del perfil (así la
+            // UI nunca muestra el bitrate inflado del preview crudo del pipeline unificado).
+            _recordDir = Path.Combine(OutputRoot, _channelKey);
+            _lastRecBytes = 0;
+            _lastRecSampleUtc = _recordStart;
+            _realBitrateBps = profile.VideoBitrate.BitsPerSecond + profile.AudioBitrate.BitsPerSecond;
             // Nombre base elegido (manual) o derivado de la programación; null → {canal}_{fecha_hora}.
             _recordBaseName = SanitizeBaseName(baseName);
 
@@ -303,7 +324,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
         if (_recordFile is not null)
         {
-            EmitSegmentFile(_recordFile, optimizeSeek: true); // archivo único cerrado → optimizar su seek (faststart)
+            // Solo en fMP4: se remuxea a faststart para arreglar el seek. En MP4 estándar (moov al final) el
+            // archivo YA es seekable → sin remux (ni saturación de disco). (Config Recording:FragmentedMp4.)
+            EmitSegmentFile(_recordFile, optimizeSeek: FragmentedMp4);
             _recordFile = null;
         }
 
@@ -318,7 +341,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         var builder = new FfmpegArgumentBuilder()
             .From(_source!).Using(profile).ForChannel(_channelKey)
-            .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{_port}");
+            .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{_port}")
+            .WithFragmentedMp4(FragmentedMp4);
 
         // Nombre del archivo. Si hay un nombre base (manual/programada), lo aplica; si no, el builder usa
         // el de por defecto {canal}_{fecha_hora}. Se resuelve POR proceso para que cada pieza nueva (corte
@@ -350,7 +374,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _log.LogInformation("Pipeline canal {Key} ({Mode}): {Args}",
             _channelKey, recording ? (slate ? "carta de ajuste" : "grabación+preview") : "preview", string.Join(' ', args));
 
-        _supervisor = new FfmpegProcessSupervisor(_locator.FfmpegPath, _log) { StallTimeout = TimeSpan.FromSeconds(15) };
+        // StallTimeout 30 s (no 15): el watchdog solo debe matar un FFmpeg realmente COLGADO, no uno que se
+        // atascó unos segundos por un pico de E/S de disco compartido entre los N canales (o CPU/GPU saturada).
+        // Con 15 s, bajo carga de 4 canales un atasco transitorio del disco (FFmpeg bloquea al escribir → deja de
+        // reportar progreso) provocaba un reinicio innecesario = un CORTE visible en esa grabación. Un cuelgue de
+        // verdad es permanente, así que esperar 30 s para confirmarlo no cuesta nada y evita esos falsos cortes.
+        _supervisor = new FfmpegProcessSupervisor(_locator.FfmpegPath, _log) { StallTimeout = TimeSpan.FromSeconds(30) };
         _supervisor.ProgressLine += OnProgress;
         _supervisor.LogLine += OnLog;
         _supervisor.Restarted += OnSupervisorRestarted;
@@ -407,8 +436,48 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     {
         var stats = _parser.Feed(line);
         if (stats is null) return;
+        // El bitrate del parser es el agregado de FFmpeg, dominado por el preview CRUDO (rawvideo a un socket,
+        // ~180 Mbps), no el del archivo. Al grabar se sustituye por el bitrate REAL medido por crecimiento del
+        // archivo en disco, para que la UI muestre el bitrate real de la grabación. (Fix del bitrate del preview.)
+        if (_recordDir is not null && _state is RecordingState.Recording or RecordingState.Starting or RecordingState.Paused)
+        {
+            SampleRealBitrate();
+            stats = stats with { Bitrate = new Bitrate(_realBitrateBps) };
+        }
         Stats = stats;
         StatsUpdated?.Invoke(this, stats);
+    }
+
+    /// <summary>Estima el bitrate REAL de la grabación por el crecimiento de los archivos del canal en disco
+    /// (no el del parser, contaminado por el preview crudo). Re-mide como mucho cada ~2 s y suaviza con EMA para
+    /// que el display no salte con los flush de fragmentos del fMP4.</summary>
+    private void SampleRealBitrate()
+    {
+        var now = DateTimeOffset.UtcNow;
+        double secs = (now - _lastRecSampleUtc).TotalSeconds;
+        if (secs < 1.5) return; // no re-medir en cada línea de progreso (~1/s); ~cada 2 s basta
+        long bytes = DirBytes(_recordDir!);
+        if (_lastRecBytes > 0 && bytes >= _lastRecBytes) // 1ª muestra: solo fija la base (absorbe archivos previos)
+        {
+            long bps = (long)((bytes - _lastRecBytes) * 8 / secs);
+            _realBitrateBps = _realBitrateBps > 0 ? (long)(0.6 * _realBitrateBps + 0.4 * bps) : bps;
+        }
+        _lastRecBytes = bytes;
+        _lastRecSampleUtc = now;
+    }
+
+    /// <summary>Suma el tamaño de los archivos de una carpeta (best-effort; ignora los que estén en uso/borrado).</summary>
+    private static long DirBytes(string dir)
+    {
+        if (!Directory.Exists(dir)) return 0;
+        long sum = 0;
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly))
+                try { sum += new FileInfo(f).Length; } catch { /* archivo en escritura/borrado */ }
+        }
+        catch { /* carpeta inaccesible momentáneamente */ }
+        return sum;
     }
 
     private void OnLog(object? sender, string line)
@@ -516,16 +585,33 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 // (faststart), SIN recodificar. Si el remux falla, el original fMP4 (ya válido) se conserva.
                 if (optimizeSeek)
                 {
-                    try
+                    long bytes = 0;
+                    try { bytes = new FileInfo(path).Length; } catch { /* si no se puede medir, se intenta igual */ }
+                    long cap = _locator.FaststartMaxBytes;
+                    if (cap > 0 && bytes > cap)
                     {
-                        if (await _locator.RemuxFaststartAsync(path).ConfigureAwait(false))
-                            _log.LogInformation("Canal {Key}: {File} optimizado para búsqueda (índice al inicio).",
-                                _channelKey, Path.GetFileName(path));
+                        // Archivo GRANDE: el remux faststart reescribiría el archivo entero (lectura + escritura
+                        // completas), saturando el disco y compitiendo con las grabaciones activas (que podrían
+                        // perder frames). Se conserva el fMP4 (válido y reproducible, solo con seek por estimación).
+                        // Para archivos largos con búsqueda óptima SIN reescribir: contenedor MKV o segmentación.
+                        _log.LogInformation("Canal {Key}: {File} ({GB:0.0} GB) supera el límite de optimización " +
+                            "faststart ({Cap:0.0} GB); se conserva el fMP4 sin reescribir (evita saturar el disco). " +
+                            "Para búsqueda óptima en archivos grandes, usa un preset MKV o segmentación.",
+                            _channelKey, Path.GetFileName(path), bytes / 1_000_000_000.0, cap / 1_000_000_000.0);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        _log.LogWarning(ex, "Canal {Key}: no se pudo optimizar la búsqueda de {File} (se conserva el original).",
-                            _channelKey, Path.GetFileName(path));
+                        try
+                        {
+                            if (await _locator.RemuxFaststartAsync(path).ConfigureAwait(false))
+                                _log.LogInformation("Canal {Key}: {File} optimizado para búsqueda (índice al inicio).",
+                                    _channelKey, Path.GetFileName(path));
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning(ex, "Canal {Key}: no se pudo optimizar la búsqueda de {File} (se conserva el original).",
+                                _channelKey, Path.GetFileName(path));
+                        }
                     }
                 }
             }

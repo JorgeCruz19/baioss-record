@@ -470,4 +470,27 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("-f tee", joined);                                  // salida por muxer tee
         Assert.Contains("rtmp://live.example.com/app/key", joined);         // la URL legítima pasa intacta
     }
+
+    // --- Modo de contenedor MP4: fMP4 fragmentado (default) vs MP4 estándar (moov al final) ---
+
+    [Fact]
+    public void BuildLive_StandardMp4_OmitsFragmentation()
+    {
+        // WithFragmentedMp4(false): MP4 estándar → SIN movflags de fragmentación (moov al final, seekable, sin remux).
+        var b = NewLiveBuilder(SoftwareMp4()).WithFragmentedMp4(false);
+        var joined = string.Join(' ', b.BuildLive(recording: true, 640, 360));
+
+        Assert.DoesNotContain("frag_keyframe", joined);
+        Assert.DoesNotContain("empty_moov", joined);
+        Assert.Contains("-c:v libx264", joined);   // sigue grabando con normalidad
+        Assert.Contains("-y", joined);
+    }
+
+    [Fact]
+    public void BuildLive_FragmentedMp4_IsDefault()
+    {
+        // Por defecto (sin WithFragmentedMp4) se mantiene el fMP4 robusto ante corte.
+        var joined = BuildLive(SoftwareMp4(), recording: true);
+        Assert.Contains("+frag_keyframe+empty_moov+default_base_moof", joined);
+    }
 }

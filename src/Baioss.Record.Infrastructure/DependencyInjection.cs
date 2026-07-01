@@ -30,7 +30,8 @@ public static class DependencyInjection
     /// de FFmpeg (carpeta o ruta al ejecutable). Si es <c>null</c>, no se registra el localizador.
     /// </summary>
     public static IServiceCollection AddBaiossInfrastructure(
-        this IServiceCollection services, string sqliteDbPath, string? ffmpegDirectoryOrExe = null)
+        this IServiceCollection services, string sqliteDbPath, string? ffmpegDirectoryOrExe = null,
+        long faststartMaxBytes = 4L * 1024 * 1024 * 1024)
     {
         // Factory de DbContext: contexto de corta vida por operación, seguro para servicios
         // singleton de larga vida (canales 24/7) y escrituras concurrentes entre canales.
@@ -71,7 +72,7 @@ public static class DependencyInjection
 
         if (ffmpegDirectoryOrExe is not null)
         {
-            services.AddSingleton<IFfmpegLocator>(_ => new FfmpegLocator(ffmpegDirectoryOrExe));
+            services.AddSingleton<IFfmpegLocator>(_ => new FfmpegLocator(ffmpegDirectoryOrExe) { FaststartMaxBytes = faststartMaxBytes });
             // Enumeración real de dispositivos (DeckLink/DirectShow) vía FFmpeg: sustituye al fallback.
             services.AddSingleton<IDeviceEnumerator, FfmpegDeviceEnumerator>();
         }

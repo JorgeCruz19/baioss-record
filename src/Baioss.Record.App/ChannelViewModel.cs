@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain;
@@ -35,9 +36,27 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
         InitFromProfile();
 
+        // Cronómetro de grabación a 1 Hz por reloj de pared (contador hh:mm:ss suave, sin saltos).
+        _recTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _recTimer.Tick += (_, _) => UpdateRecTimer();
+        _recTimer.Start();
+
         _engine.StatusChanged += OnStatusChanged;
         if (Preview is not null) Preview.AudioPeaksUpdated += OnPreviewAudio;
         Sync(engine.Status);
+    }
+
+    /// <summary>Refresca el contador de grabación (hh:mm:ss) por reloj de pared. Lo llama el timer de 1 Hz y
+    /// también <see cref="Sync"/> al cambiar de estado, para que el valor sea inmediato.</summary>
+    private void UpdateRecTimer()
+    {
+        if (_recStartUtc is { } start)
+        {
+            var e = DateTimeOffset.UtcNow - start;
+            if (e < TimeSpan.Zero) e = TimeSpan.Zero;
+            Timecode = $"{(int)e.TotalHours:00}:{e.Minutes:00}:{e.Seconds:00}";
+        }
+        else Timecode = "00:00:00";
     }
 
     public IChannelPreviewSource? Preview { get; }
@@ -54,11 +73,16 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
     private double _peakHoldL = -60, _peakHoldR = -60;
 
+    // Cronómetro de grabación: cuenta hh:mm:ss por RELOJ DE PARED a 1 Hz, independiente del out_time de FFmpeg
+    // (que llega irregular por -progress y hacía saltar el contador 2 s). Se ancla al entrar en REC.
+    private readonly DispatcherTimer _recTimer;
+    private DateTimeOffset? _recStartUtc;
+
     [ObservableProperty] private RecordingState _recordingState;
     [ObservableProperty] private SignalState _signalState;
     [ObservableProperty] private string _signalText = "SIN SEÑAL";
     [ObservableProperty] private string _formatText = "—";
-    [ObservableProperty] private string _timecode = "00:00:00:00";
+    [ObservableProperty] private string _timecode = "00:00:00";
     [ObservableProperty] private long _frameCount;
     [ObservableProperty] private double _outputFps;
     [ObservableProperty] private long _droppedFrames;
@@ -312,18 +336,19 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // solo durante REC/Pausa y en reposo se dejan en valores idle (el timer arranca de 0 al grabar).
         if (IsRecording)
         {
-            Timecode = status.Stats.Timecode.ToString();
+            _recStartUtc ??= DateTimeOffset.UtcNow; // ancla el cronómetro al primer instante en REC
             FrameCount = status.Stats.FrameCount;
             DroppedFrames = status.Stats.DroppedFrames;
             BitrateText = status.Stats.Bitrate.BitsPerSecond > 0 ? status.Stats.Bitrate.ToString() : "—";
         }
         else
         {
-            Timecode = "00:00:00:00";
+            _recStartUtc = null;
             FrameCount = 0;
             DroppedFrames = 0;
             BitrateText = "—";
         }
+        UpdateRecTimer(); // refleja de inmediato el arranque/parada del contador (sin esperar al próximo tick)
 
         // Alarmas operativas: negro/congelado/silencio/slate/disco. Se muestran como una franja sobre el
         // preview; el slate (sin señal pero grabando barras) se resalta aparte.
@@ -392,6 +417,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _recTimer.Stop();
         _engine.StatusChanged -= OnStatusChanged;
         if (Preview is not null) Preview.AudioPeaksUpdated -= OnPreviewAudio;
     }

@@ -122,6 +122,30 @@ public sealed class RecordingVerificationTests
     }
 
     [SkippableFact]
+    public async Task RemuxFaststart_SkipsFilesOverSizeCap()
+    {
+        // Rendimiento (grabaciones de larga duración): por encima del límite NO se reescribe el archivo, porque el
+        // remux copiaría el archivo entero (lectura+escritura), saturando el disco. Se conserva el fMP4 intacto.
+        Skip.IfNot(TestAssets.Available, "FFmpeg/clip de prueba no disponibles en tools/.");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!) { FaststartMaxBytes = 1 }; // 1 byte: cualquier archivo lo supera
+        var frag = Path.Combine(Path.GetTempPath(), $"baioss-cap-{Guid.NewGuid():N}.mp4");
+        try
+        {
+            await RunFfmpegAsync(locator.FfmpegPath, new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "500000", "-y", frag
+            });
+            Assert.True(ContainsBox(frag, "moof"), "El fMP4 de partida debe estar fragmentado (moof).");
+
+            Assert.False(await locator.RemuxFaststartAsync(frag), "Debe OMITIR el remux por superar el límite de tamaño.");
+            Assert.True(ContainsBox(frag, "moof"), "Al omitir, el fMP4 original se conserva sin cambios (no se reescribió).");
+        }
+        finally { try { File.Delete(frag); } catch { /* best effort */ } }
+    }
+
+    [SkippableFact]
     public async Task RemuxFaststart_NoOpForNonMp4()
     {
         Skip.IfNot(TestAssets.Available, "FFmpeg no disponible en tools/.");

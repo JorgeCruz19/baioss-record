@@ -209,6 +209,54 @@ public sealed partial class ScheduleViewModel : ObservableObject
         }
     }
 
+    /// <summary>Importa una programación desde un JSON exportado y AÑADE las tareas (Id nuevos). Omite las de un
+    /// canal que no existe en este equipo o cuyo título ya está en uso (los títulos son únicos).</summary>
+    [RelayCommand]
+    private async Task ImportAsync()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Importar programación de grabaciones",
+            Filter = "JSON de programación (*.json)|*.json|Todos los archivos (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        string json;
+        try { json = await System.IO.File.ReadAllTextAsync(dlg.FileName); }
+        catch (Exception ex) { StatusMessage = $"No se pudo leer el archivo: {ex.Message}"; return; }
+
+        var result = ScheduleImporter.FromJson(json);
+        if (result.Jobs.Count == 0)
+        {
+            StatusMessage = result.Errors.Count > 0
+                ? "No se importó nada: " + result.Errors[0]
+                : "El archivo no contiene programaciones.";
+            return;
+        }
+
+        var existing = await _scheduler.GetAllAsync();
+        var titles = new HashSet<string>(existing.Select(e => e.Title?.Trim() ?? ""), StringComparer.OrdinalIgnoreCase);
+        var validChannels = new HashSet<Guid>(Channels.Select(c => c.ChannelId));
+
+        int added = 0, skippedChannel = 0, skippedDup = 0;
+        foreach (var job in result.Jobs)
+        {
+            if (!validChannels.Contains(job.ChannelId)) { skippedChannel++; continue; } // canal no existe en este equipo
+            var title = job.Title?.Trim() ?? "";
+            if (title.Length > 0 && !titles.Add(title)) { skippedDup++; continue; }      // título ya en uso (únicos)
+            await _scheduler.ScheduleAsync(job);
+            added++;
+        }
+
+        var notes = new List<string>();
+        if (skippedChannel > 0) notes.Add($"{skippedChannel} de un canal inexistente");
+        if (skippedDup > 0) notes.Add($"{skippedDup} con título ya existente");
+        if (result.Errors.Count > 0) notes.Add($"{result.Errors.Count} entrada(s) con errores");
+        StatusMessage = $"Importadas {added} programación(es)" + (notes.Count > 0 ? " · omitidas: " + string.Join(", ", notes) : "") + ".";
+        await RefreshAsync();
+    }
+
     private async Task RefreshAsync()
     {
         var now = _clock.UtcNow;

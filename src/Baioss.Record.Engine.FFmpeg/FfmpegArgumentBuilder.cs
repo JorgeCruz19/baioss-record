@@ -31,6 +31,7 @@ public sealed class FfmpegArgumentBuilder
     private bool _analyze = true;
     private string? _baseName;
     private int _segmentStartNumber = 1;
+    private bool _fragmentedMp4 = true; // true = fMP4 robusto ante corte; false = MP4 estándar (moov, seekable, sin remux)
 
     // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
     // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
@@ -58,6 +59,12 @@ public sealed class FfmpegArgumentBuilder
 
     /// <summary>Inserta (o no) los filtros de análisis de señal (negro/congelado/silencio) en <see cref="BuildLive"/>.</summary>
     public FfmpegArgumentBuilder WithSignalAnalysis(bool on) { _analyze = on; return this; }
+
+    /// <summary>Modo de contenedor MP4/MOV: <c>true</c> (por defecto) fMP4 fragmentado (robusto ante corte
+    /// eléctrico/kill, seek por estimación → se remuxea a faststart al detener); <c>false</c> MP4 ESTÁNDAR con
+    /// el <c>moov</c> al final (100% seekable en reproducción local, cierre rápido y SIN remux, pero un corte
+    /// abrupto ANTES del cierre limpio deja el archivo sin índice → apto para máquinas con SAI/UPS).</summary>
+    public FfmpegArgumentBuilder WithFragmentedMp4(bool on) { _fragmentedMp4 = on; return this; }
 
     /// <summary>
     /// Nombre base del archivo (sin extensión) elegido por el operador (manual) o derivado de la
@@ -307,10 +314,16 @@ public sealed class FfmpegArgumentBuilder
     /// <c>-frag_duration</c> es imprescindible: solo con <c>frag_keyframe</c>, si el GOP es largo el primer
     /// fragmento tarda y un corte temprano dejaría el archivo a 0 bytes. Vacío si no es MP4/MOV.
     /// </summary>
-    private static IEnumerable<string> RobustMovFlags(ContainerFormat container)
-        => container is ContainerFormat.Mp4 or ContainerFormat.Mov
+    private IEnumerable<string> RobustMovFlags(ContainerFormat container)
+    {
+        if (container is not (ContainerFormat.Mp4 or ContainerFormat.Mov)) return Array.Empty<string>();
+        // fMP4 fragmentado (robusto ante corte). En modo MP4 ESTÁNDAR (_fragmentedMp4=false) NO se emiten
+        // movflags: FFmpeg escribe el moov al FINAL al cerrar → archivo 100% seekable en local, cierre rápido y
+        // SIN remux; el precio es que un corte ANTES del cierre limpio lo deja sin índice (apto con SAI/UPS).
+        return _fragmentedMp4
             ? new[] { "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "1000000" }
             : Array.Empty<string>();
+    }
 
     /// <summary>
     /// Cola de la salida de grabación: un único archivo (MP4/MOV en fMP4 robusto, ver <see cref="RobustMovFlags"/>)
@@ -341,7 +354,7 @@ public sealed class FfmpegArgumentBuilder
             // Robustez ante corte eléctrico: cada segmento MP4/MOV se escribe como fMP4 (fragmentos + moov al
             // inicio), igual que el archivo único. Sin esto, un corte a mitad de un segmento dejaba ese segmento
             // (hasta N minutos) SIN moov e ilegible; el fMP4 robusto solo cubría el archivo único. (Auditoría A6/#9.)
-            if (p.Container is ContainerFormat.Mp4 or ContainerFormat.Mov)
+            if (p.Container is ContainerFormat.Mp4 or ContainerFormat.Mov && _fragmentedMp4)
             {
                 a.Add("-segment_format_options");
                 a.Add("movflags=+frag_keyframe+empty_moov+default_base_moof:frag_duration=1000000");

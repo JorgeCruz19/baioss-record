@@ -200,11 +200,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _autoStopping = false;
         if (_diskGuard is not null)
         {
-            long OwnRate()
-            {
-                long real = _engine.Stats.Bitrate.BitsPerSecond / 8;
-                return real > 0 ? real : FallbackBytesPerSecond(profile);
-            }
+            // Ritmo de escritura al disco ≈ bitrate CODIFICADO del perfil (vídeo+audio). NO se usa
+            // _engine.Stats.Bitrate: en el pipeline unificado ese valor incluye el stream de PREVIEW crudo
+            // (rawvideo a un socket loopback, ~180 Mbps a 360p) que NO se escribe al disco → inflaba el ritmo
+            // ~20× y hacía que la guarda estimara un «tiempo restante» 20× más corto → auto-stop PREMATURO
+            // (un corte). El piso MinFreeBytes sigue siendo la red dura si el bitrate real supera al del perfil.
+            long OwnRate() => FallbackBytesPerSecond(profile);
             _diskGuard.Updated += OnDiskUpdated;
             if (_diskUsage is not null)
             {

@@ -34,6 +34,10 @@ public sealed class FfmpegLocator : IFfmpegLocator
     public string FfmpegPath { get; }
     public string FfprobePath { get; }
 
+    /// <summary>Límite de tamaño para optimizar con faststart (ver <see cref="IFfmpegLocator.FaststartMaxBytes"/>).
+    /// Por defecto 4 GiB; se ajusta en el cableado de DI desde la configuración. 0 = sin límite.</summary>
+    public long FaststartMaxBytes { get; init; } = 4L * 1024 * 1024 * 1024;
+
     public async Task<IReadOnlyCollection<string>> GetAvailableEncodersAsync(CancellationToken ct = default)
     {
         var (output, _) = await RunAsync(FfmpegPath, new[] { "-hide_banner", "-encoders" }, ct).ConfigureAwait(false);
@@ -144,6 +148,11 @@ public sealed class FfmpegLocator : IFfmpegLocator
             !ext.Equals(".mov", StringComparison.OrdinalIgnoreCase))
             return false; // faststart solo aplica a ISO-BMFF (MP4/MOV); TS/MKV no lo necesitan
 
+        // Límite de tamaño: por encima NO se reescribe (defensa; el llamador lo registra con detalle). El remux
+        // copia el archivo ENTERO (lectura + escritura completas) y, con grabaciones de varios GB, satura el disco
+        // y compite con las grabaciones activas. El fMP4 original ya es válido y reproducible. 0 = sin límite.
+        if (FaststartMaxBytes > 0 && new FileInfo(filePath).Length > FaststartMaxBytes) return false;
+
         var dir = Path.GetDirectoryName(filePath) ?? ".";
         // Temporal en la misma carpeta (mismo volumen → el Move final es un renombrado atómico) y CON la
         // extensión real, para que FFmpeg elija el muxer por ella.
@@ -164,7 +173,9 @@ public sealed class FfmpegLocator : IFfmpegLocator
             // -map 0 copia TODAS las pistas; -c copy no recodifica (rápido, sin pérdida); +faststart mueve el moov
             // al inicio (de paso des-fragmenta el fMP4). -y sobrescribe un temporal previo.
             var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", tmp };
-            var (_, exit) = await RunAsync(FfmpegPath, args, ct).ConfigureAwait(false);
+            // Prioridad POR DEBAJO de lo normal: aunque el remux es -c copy (poca CPU), es intensivo en E/S; bajar
+            // la prioridad reduce que compita con la escritura de las grabaciones activas en el mismo disco.
+            var (_, exit) = await RunAsync(FfmpegPath, args, ct, ProcessPriorityClass.BelowNormal).ConfigureAwait(false);
             if (exit != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0)
             {
                 TryDelete(tmp);
@@ -197,7 +208,8 @@ public sealed class FfmpegLocator : IFfmpegLocator
         return l;
     }
 
-    private static async Task<(string Output, int ExitCode)> RunAsync(string exe, string[] args, CancellationToken ct)
+    private static async Task<(string Output, int ExitCode)> RunAsync(
+        string exe, string[] args, CancellationToken ct, ProcessPriorityClass? priority = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -214,6 +226,9 @@ public sealed class FfmpegLocator : IFfmpegLocator
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar FFmpeg.");
+        // Ajusta la prioridad del proceso (p. ej. BelowNormal para el remux, intensivo en disco). Best-effort:
+        // el proceso pudo terminar antes de poder fijarla.
+        if (priority is { } pc) { try { p.PriorityClass = pc; } catch { /* ya terminó o sin permisos */ } }
         // Lee AMBOS flujos en paralelo: si se leyeran en serie y uno llenara su buffer de tubería mientras
         // se espera el otro, FFmpeg se bloquearía al escribir → deadlock (visible con salida grande, p. ej.
         // `-loglevel verbose`). Leer concurrentemente lo evita siempre.

@@ -166,6 +166,10 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     private static IReadOnlyList<InputSource> Dedupe(IEnumerable<InputSource> items)
         => items.GroupBy(i => i.Id).Select(g => g.First()).ToList();
 
+    /// <summary>Tope por consulta: si FFmpeg se cuelga (p. ej. <c>-list_formats</c> abriendo una DeckLink sin
+    /// señal o en uso), se mata y se devuelve lo capturado, en vez de colgar la búsqueda para siempre.</summary>
+    private static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(12);
+
     private async Task<string> RunAsync(string[] args, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
@@ -183,11 +187,38 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar FFmpeg.");
-        var so = await p.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
-        var se = await p.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
-        await p.WaitForExitAsync(ct).ConfigureAwait(false);
-        return so + se; // los listados de dispositivos salen por stderr
+
+        // Lee AMBOS flujos EN PARALELO. Antes se leía stdout hasta EOF y LUEGO stderr (en serie): FFmpeg emite
+        // los listados por stderr y, con `-list_formats` de una DeckLink (decenas de modos SDI), la salida de
+        // stderr llenaba el buffer de la tubería → FFmpeg se bloqueaba al escribir, stdout nunca cerraba y la
+        // lectura nunca retornaba → DEADLOCK que colgaba la búsqueda sin ningún error. Leer concurrentemente lo
+        // evita (igual que FfmpegLocator.RunAsync). Sin token en las lecturas: al matar el proceso las tuberías
+        // cierran y las lecturas terminan con lo capturado.
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
+
+        // Timeout duro: si FFmpeg se cuelga abriendo el dispositivo, se mata para no dejarlo reteniendo la
+        // tarjeta ni colgar la detección. La cancelación real del usuario (ct) se propaga.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(QueryTimeout);
+        try
+        {
+            await p.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(entireProcessTree: true); } catch { /* ya terminó */ }
+            if (ct.IsCancellationRequested) throw; // cancelación del usuario, no timeout
+        }
+
+        // Tras la salida normal (o el Kill, que cierra las tuberías) las lecturas terminan; un pequeño margen
+        // evita un cuelgue residual si el SO tarda en cerrar los handles.
+        try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+        catch { /* lo capturado basta (en el peor caso, lista vacía → solo «Automático») */ }
+        return SafeResult(stdoutTask) + SafeResult(stderrTask); // los listados de dispositivos salen por stderr
     }
+
+    private static string SafeResult(Task<string> t) => t.IsCompletedSuccessfully ? t.Result : "";
 
     private static Guid StableGuid(string key) => new(MD5.HashData(Encoding.UTF8.GetBytes(key)));
 

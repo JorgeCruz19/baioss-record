@@ -16,7 +16,7 @@
             <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
         </Style>
         <Style x:Key="StatValue" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="Margin" Value="0,2,0,0"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
@@ -138,7 +138,7 @@
                     <Grid>
                         <StackPanel Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="DISCO" Style="{StaticResource StatLabel}"/>
-                            <TextBlock Text="{Binding DiskText}" FontSize="15" FontWeight="Bold" Margin="0,2,0,0">
+                            <TextBlock Text="{Binding DiskText}" FontSize="13" FontWeight="Bold" Margin="0,2,0,0">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>

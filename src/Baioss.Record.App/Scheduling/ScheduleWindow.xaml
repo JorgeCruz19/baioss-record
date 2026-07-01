@@ -12,6 +12,9 @@
                 <Button DockPanel.Dock="Right" Content="⬇ Exportar" VerticalAlignment="Center" Margin="0,0,8,0"
                         Command="{Binding ExportCommand}" Style="{StaticResource TransportButton}"
                         ToolTip="Exporta toda la programación a CSV (Excel) o JSON (copia de seguridad)."/>
+                <Button DockPanel.Dock="Right" Content="⬆ Importar" VerticalAlignment="Center" Margin="0,0,8,0"
+                        Command="{Binding ImportCommand}" Style="{StaticResource TransportButton}"
+                        ToolTip="Importa una programación desde un archivo JSON exportado (añade las tareas)."/>
                 <StackPanel>
                     <TextBlock Text="PROGRAMACIÓN DE GRABACIONES" FontSize="14" FontWeight="Bold"
                                Foreground="{StaticResource TextPrimaryBrush}"/>

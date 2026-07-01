@@ -118,14 +118,26 @@ public partial class App : System.Windows.Application
         // grabaciones de todos los canales. Con Ignore, un fallo del scheduler/retención/auditoría queda en el
         // log pero NO mata el host (las grabaciones siguen). Complementa los handlers globales de C1. (Auditoría #34.)
         s.Configure<HostOptions>(o => o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+        // Límite de optimización faststart (GB): al detener una grabación de archivo único por encima de este
+        // tamaño, NO se reescribe para optimizar la búsqueda (el remux copia el archivo entero y saturaría el
+        // disco, compitiendo con las grabaciones activas). 0 = sin límite. Para archivos largos con búsqueda
+        // óptima sin reescribir: preset MKV o segmentación. (Rendimiento del faststart en grabaciones >4 GB.)
+        double faststartGb = builder.Configuration.GetValue("Recording:FaststartMaxGB", 4.0);
+        long faststartCap = faststartGb > 0 ? (long)(faststartGb * 1024 * 1024 * 1024) : 0;
+
         // Bus de eventos y storage (que la API necesita) se registran en ambos modos; en modo real
         // se añaden además repos/captura/locator. En simulado, la BD queda registrada pero sin usar.
-        s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null);
+        s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null, faststartCap);
         s.AddBaiossCqrs(); // IDispatcher + handlers de comandos/queries que despacha la API
         s.AddSingleton(new RecordingCapabilities { GpuEncoders = gpuEncoders });
         s.AddSingleton<PreviewCatalog>();
+        // Contenedor MP4/MOV: true (por defecto) fMP4 fragmentado ROBUSTO ante corte eléctrico/kill (+ remux a
+        // faststart al detener); false = MP4 ESTÁNDAR con el moov al final (100% seekable en local, cierre rápido
+        // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner
+        // false SOLO en máquinas con SAI/UPS, como pidió el operador). (Recording:FragmentedMp4.)
+        bool fragmentedMp4 = builder.Configuration.GetValue("Recording:FragmentedMp4", true);
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente.
-        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount));
+        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount, fragmentedMp4));
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
         // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.
@@ -140,6 +152,12 @@ public partial class App : System.Windows.Application
         // Auditoría 24/7: persiste los eventos de dominio (señal, grabación, disco, encoder) en la tabla
         // EventLog para trazabilidad post-incidente. (Auditoría #42.)
         s.AddHostedService<Baioss.Record.Infrastructure.Messaging.EventLogWriter>();
+        // Telemetría de salud por canal (fps real vs objetivo, frames perdidos y escritura REAL al disco):
+        // diagnostica «cortes» en grabación multicanal mostrando qué canal se queda atrás. (Fiabilidad 4 canales.)
+        s.AddHostedService(sp => new Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor(
+            sp.GetRequiredService<IChannelManager>(),
+            sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor>>())
+        { RecordingsRoot = Path.Combine(root, "recordings") });
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 

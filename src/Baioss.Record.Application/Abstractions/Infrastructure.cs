@@ -38,6 +38,15 @@ public interface IFfmpegLocator
     /// Devuelve true si reescribió el archivo. No-op (false) para contenedores que no sean MP4/MOV.
     /// </summary>
     Task<bool> RemuxFaststartAsync(string filePath, CancellationToken ct = default);
+
+    /// <summary>
+    /// Tamaño máximo (bytes) para optimizar la búsqueda con faststart al detener una grabación de archivo único.
+    /// Por ENCIMA no se reescribe el archivo: el remux copia el archivo entero (lectura + escritura completas) y,
+    /// con archivos grandes (varios GB), satura el disco y compite con las grabaciones activas (que podrían perder
+    /// frames). El fMP4 omitido sigue siendo válido y reproducible (solo con seek por estimación). 0 = sin límite.
+    /// Configurable («Recording:FaststartMaxGB»). Para archivos largos con búsqueda óptima: contenedor MKV o segmentación.
+    /// </summary>
+    long FaststartMaxBytes { get; }
 }
 
 /// <summary>Resultado de sondear un archivo con ffprobe: qué pistas contiene y su duración.</summary>

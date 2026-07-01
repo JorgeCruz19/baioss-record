@@ -22,7 +22,7 @@ namespace Baioss.Record.App;
 
 /// <summary>Entorno de composición (modo real, rutas, códec demo y nº de canales), calculado al arrancar.</summary>
 public sealed record ChannelCompositionContext(
-    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount);
+    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true);
 
 /// <summary>
 /// Compone y MANTIENE el runtime de cada canal (fuente + grabador + monitor + preview + motor), y
@@ -262,6 +262,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var capture = new FfmpegChannelEngine(locator, loggers.CreateLogger<FfmpegChannelEngine>())
         {
             OutputRoot = Path.Combine(_ctx.Root, "recordings"),
+            FragmentedMp4 = _ctx.FragmentedMp4, // fMP4 robusto vs MP4 estándar (moov, sin remux) según config
         };
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 
