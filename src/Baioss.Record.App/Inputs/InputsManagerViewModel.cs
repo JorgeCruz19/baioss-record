@@ -77,10 +77,15 @@ public sealed partial class ChannelInputRow : ObservableObject
     [ObservableProperty] private string _selectedAudio = InputDeviceOption.NoAudio;
     [ObservableProperty] private DeviceFormat? _selectedFormat;
 
-    public ChannelInputRow(string key, Guid channelId, InputsManagerViewModel owner)
+    /// <summary>Entrada ACTUALMENTE asignada al canal (para que el operador sepa qué está activo). Se
+    /// actualiza al aplicar una nueva.</summary>
+    [ObservableProperty] private string _currentInput = "—";
+
+    public ChannelInputRow(string key, Guid channelId, string currentInput, InputsManagerViewModel owner)
     {
         Key = key;
         ChannelId = channelId;
+        CurrentInput = currentInput;
         _owner = owner;
     }
 
@@ -132,7 +137,7 @@ public sealed partial class InputsManagerViewModel : ObservableObject
 
         AudioDevices.Add(InputDeviceOption.NoAudio);
         SeedFileOption();
-        foreach (var c in channels) Channels.Add(new ChannelInputRow(c.Key, c.ChannelId, this));
+        foreach (var c in channels) Channels.Add(new ChannelInputRow(c.Key, c.ChannelId, c.InputText, this));
 
         StatusMessage = canRebind
             ? "Pulsa «Detectar» para buscar tarjetas DeckLink y cámaras/capturadoras DirectShow."
@@ -215,6 +220,7 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         {
             var def = row.SelectedDevice.ToInputSource(row.SelectedAudio, row.SelectedFormat);
             await _apply(row.ChannelId, def);
+            row.CurrentInput = row.SelectedDevice.Label; // refleja de inmediato la entrada ahora activa
             var mode = row.FormatEnabled && row.SelectedFormat is { Code.Length: > 0 } ? $" · {row.SelectedFormat.Description}" : "";
             StatusMessage = $"Canal {row.Key} → {row.SelectedDevice.Label}{mode}.";
         }

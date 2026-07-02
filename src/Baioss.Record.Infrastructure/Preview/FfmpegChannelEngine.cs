@@ -379,7 +379,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // Con 15 s, bajo carga de 4 canales un atasco transitorio del disco (FFmpeg bloquea al escribir → deja de
         // reportar progreso) provocaba un reinicio innecesario = un CORTE visible en esa grabación. Un cuelgue de
         // verdad es permanente, así que esperar 30 s para confirmarlo no cuesta nada y evita esos falsos cortes.
-        _supervisor = new FfmpegProcessSupervisor(_locator.FfmpegPath, _log) { StallTimeout = TimeSpan.FromSeconds(30) };
+        // FinalizeOnStop solo en GRABACIÓN: el proceso de solo-preview no escribe archivo, así que al detenerlo
+        // (p. ej. al reasignar la entrada) se mata de inmediato en vez de esperar la «q» —que se colgaría si la
+        // fuente perdió señal y FFmpeg quedó atascado en la lectura del driver—. La grabación sí finaliza el MP4.
+        _supervisor = new FfmpegProcessSupervisor(_locator.FfmpegPath, _log)
+        {
+            StallTimeout = TimeSpan.FromSeconds(30),
+            FinalizeOnStop = recording,
+        };
         _supervisor.ProgressLine += OnProgress;
         _supervisor.LogLine += OnLog;
         _supervisor.Restarted += OnSupervisorRestarted;

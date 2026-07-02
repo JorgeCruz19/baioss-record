@@ -82,6 +82,8 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private SignalState _signalState;
     [ObservableProperty] private string _signalText = "SIN SEÑAL";
     [ObservableProperty] private string _formatText = "—";
+    /// <summary>Nombre de la ENTRADA (fuente) asignada al canal, para mostrarla en el preview.</summary>
+    [ObservableProperty] private string _inputText = "—";
     [ObservableProperty] private string _timecode = "00:00:00";
     [ObservableProperty] private long _frameCount;
     [ObservableProperty] private double _outputFps;
@@ -319,6 +321,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Preferimos la etiqueta legible del modo (DeckLink: "1920×1080 · 59.94i"); si no, resolución·fps.
         FormatText = status.Signal.FormatLabel
                      ?? (status.Signal is { Resolution: { } r, FrameRate: { } f } ? $"{r} · {f}" : "—");
+
+        // Nombre de la ENTRADA activa (fuente asignada): se muestra en el preview.
+        InputText = string.IsNullOrWhiteSpace(status.InputName) ? "—" : status.InputName;
 
         // Resumen de audio bajo el preview: «N canales · PCM» con señal y audio; si no, «Sin audio».
         AudioFormatText = status.Signal is { HasAudio: true, AudioLayout: { } layout }

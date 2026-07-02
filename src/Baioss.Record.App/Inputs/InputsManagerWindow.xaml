@@ -51,6 +51,9 @@
                                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                                         <ComboBox Height="28" ItemsSource="{Binding Devices}"
                                                   SelectedItem="{Binding SelectedDevice}"/>
+                                        <!-- Entrada ACTUAL del canal (para saber qué está activo antes de cambiarla). -->
+                                        <TextBlock Text="{Binding CurrentInput, StringFormat=Activa: {0}}" FontSize="10" Margin="0,4,0,0"
+                                                   Foreground="{StaticResource AccentBrush}" TextTrimming="CharacterEllipsis"/>
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Center">

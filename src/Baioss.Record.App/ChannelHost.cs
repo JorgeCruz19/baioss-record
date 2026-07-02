@@ -164,9 +164,20 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         }
     }
 
+    /// <summary>Margen máximo para reasignar una entrada en caliente (derribar el runtime viejo + abrir el
+    /// nuevo). Si se supera —una fuente/dispositivo que no responde al abrir, o una BD bloqueada bajo carga—,
+    /// la operación se ABORTA y el canal se RESTAURA a su entrada anterior, en vez de dejar el «Aplicando…»
+    /// colgado para siempre. Holgado para cubrir una NDI (≈8 s de apertura) y discos cargados con varios
+    /// canales grabando.</summary>
+    private static readonly TimeSpan RebindTimeout = TimeSpan.FromSeconds(20);
+
     /// <summary>
-    /// Reasigna la entrada de un canal EN CALIENTE: persiste la fuente y el vínculo, derriba el runtime
-    /// viejo (libera el dispositivo, que en vivo es exclusivo) y construye el nuevo con la entrada elegida.
+    /// Reasigna la entrada de un canal EN CALIENTE: derriba el runtime viejo (libera el dispositivo, que en
+    /// vivo es exclusivo), construye el nuevo con la entrada elegida y —SOLO si tuvo éxito— persiste la
+    /// fuente y el vínculo. ROBUSTO: toda la operación está ACOTADA por <see cref="RebindTimeout"/>; si falla
+    /// o expira (fuente sin respuesta, dispositivo colgado, BD bloqueada), el canal se RESTAURA a un motor
+    /// funcional (su entrada anterior o, en última instancia, simulado) para que la UI nunca quede con
+    /// «Aplicando…» colgado ni con un preview muerto, y se lanza una excepción clara para el operador.
     /// </summary>
     public async Task RebindAsync(Guid channelId, InputSource newDef, CancellationToken ct = default)
     {
@@ -184,39 +195,106 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
                     $"«{newDef.Name}» ya está asignada al Canal {_keys.GetValueOrDefault(otherId, "?")}. " +
                     "Un dispositivo de captura no admite dos canales a la vez.");
 
-        var sources = _sp.GetRequiredService<IInputSourceRepository>();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(RebindTimeout);
+        try
+        {
+            await RebindCoreAsync(channelId, key, newDef, cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Expiró NUESTRO timeout (no una cancelación del llamador): la fuente/dispositivo/BD no respondió.
+            Serilog.Log.Error("Canal {Key}: la entrada «{Input}» no respondió en {T:0}s; restaurando la entrada anterior.",
+                key, newDef.Name, RebindTimeout.TotalSeconds);
+            await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
+            throw new TimeoutException(
+                $"La entrada «{newDef.Name}» no respondió en {RebindTimeout.TotalSeconds:0} s; se restauró la entrada anterior del Canal {key}.");
+        }
+        catch (Exception ex)
+        {
+            // Fallo real (p. ej. el dispositivo no abre): restaura y propaga la causa (ya revertido).
+            Serilog.Log.Error(ex, "Canal {Key}: fallo al aplicar la entrada «{Input}»; restaurando la entrada anterior.", key, newDef.Name);
+            await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>Cuerpo de la reasignación (acotado por <paramref name="ct"/>). Derriba el runtime viejo,
+    /// construye el nuevo, lo intercambia y —al final, solo en éxito— persiste. Cualquier fallo lo maneja
+    /// <see cref="RebindAsync"/> restaurando el canal.</summary>
+    private async Task RebindCoreAsync(Guid channelId, string key, InputSource newDef, CancellationToken ct)
+    {
         var channels = _sp.GetRequiredService<IChannelRepository>();
         var profiles = _sp.GetRequiredService<IRecordingProfileRepository>();
 
-        // 1) Persiste la fuente y el vínculo Channel→InputSource (sobrevive a reinicios).
-        if (await sources.GetAsync(newDef.Id, ct).ConfigureAwait(false) is null)
-            await sources.AddAsync(newDef, ct).ConfigureAwait(false);
-        else
-            await sources.UpdateAsync(newDef, ct).ConfigureAwait(false);
-
-        var channel = await channels.GetAsync(channelId, ct).ConfigureAwait(false);
-        if (channel is not null)
-        {
-            channel.InputSourceId = newDef.Id;
-            await channels.UpdateAsync(channel, ct).ConfigureAwait(false);
-        }
-
-        // 2) Derriba el runtime viejo ANTES de abrir el nuevo (un dispositivo en vivo no admite dos dueños).
-        //    Disponer el motor del canal ya detiene su captura unificada (preview+grabación); el catálogo
-        //    solo mantiene una referencia no-propietaria, así que basta quitarla.
-        if (_engines.Remove(channelId, out var old)) await old.DisposeAsync().ConfigureAwait(false);
+        // 1) Derriba el runtime viejo ANTES de abrir el nuevo (un dispositivo en vivo no admite dos dueños).
+        //    Acotado por ct: un FFmpeg de solo-preview sale casi al instante con «q»; si aun así no cerrara,
+        //    no bloqueamos indefinidamente (el cierre sigue en segundo plano y acaba liberando el dispositivo).
+        if (_engines.Remove(channelId, out var old))
+            await old.DisposeAsync().AsTask().WaitAsync(ct).ConfigureAwait(false);
         _previews.Remove(channelId);
 
-        // 3) Construye el runtime nuevo con la entrada asignada y el perfil vigente del canal.
+        // 2) Construye el runtime nuevo con la entrada asignada y el perfil vigente del canal.
+        var channel = await channels.GetAsync(channelId, ct).ConfigureAwait(false);
         var profile = (channel?.ProfileId is { } pid ? await profiles.GetAsync(pid, ct).ConfigureAwait(false) : null)
                       ?? DemoProfile(key);
         var (engine, preview) = await BuildRuntimeAsync(key, channelId, newDef, profile, ct).ConfigureAwait(false);
+
+        // 3) Compromiso: intercambia el runtime y notifica a la UI (re-enlaza el preview). A partir de aquí el
+        //    canal ya opera con la entrada nueva.
         _engines[channelId] = engine;
         _previews.Add(channelId, preview);
         _sources[channelId] = newDef; // entrada vigente del canal (para el chequeo de exclusividad al reasignar)
-
-        // 4) La UI reconstruye el ViewModel del canal (re-enlaza el preview).
         ChannelRebound?.Invoke(channelId);
+
+        // 4) Persiste la fuente y el vínculo Channel→InputSource (sobrevive a reinicios) SOLO ahora: si el
+        //    cambio hubiera fallado antes, el estado persistido sigue apuntando a la entrada ANTERIOR y la
+        //    restauración la reconstruye (rollback limpio). Best-effort: un fallo aquí no tumba el canal ya
+        //    conmutado (solo se perdería la persistencia → revertiría al reiniciar).
+        try
+        {
+            var sources = _sp.GetRequiredService<IInputSourceRepository>();
+            if (await sources.GetAsync(newDef.Id, ct).ConfigureAwait(false) is null)
+                await sources.AddAsync(newDef, ct).ConfigureAwait(false);
+            else
+                await sources.UpdateAsync(newDef, ct).ConfigureAwait(false);
+            if (channel is not null)
+            {
+                channel.InputSourceId = newDef.Id;
+                await channels.UpdateAsync(channel, ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Canal {Key}: la entrada «{Input}» se aplicó pero NO se pudo persistir (revertirá al reiniciar).", key, newDef.Name);
+        }
+    }
+
+    /// <summary>
+    /// Restaura un canal a un motor FUNCIONAL tras un fallo/timeout de reasignación: lo reconstruye desde el
+    /// estado PERSISTIDO (que, al persistir la nueva entrada solo en éxito, apunta a la entrada ANTERIOR) con
+    /// la misma construcción guardada del arranque —acotada y con caída a simulado—, así que NUNCA lanza y
+    /// SIEMPRE deja el canal registrado + notifica a la UI para que reemplace el preview muerto.
+    /// </summary>
+    private async Task RestoreChannelAsync(Guid channelId, string key)
+    {
+        try
+        {
+            var b = await BuildChannelGuardedAsync(key).ConfigureAwait(false);
+            // Si un intento previo dejó otro motor a medio registrar, dispón el saliente antes de sustituir.
+            if (_engines.Remove(channelId, out var stale) && !ReferenceEquals(stale, b.Engine))
+                try { await stale.DisposeAsync().ConfigureAwait(false); } catch { /* best-effort */ }
+            _engines[channelId] = b.Engine;
+            _keys[b.ChannelId] = b.Key;
+            _previews.Remove(channelId);
+            if (b.Preview is not null) _previews.Add(channelId, b.Preview);
+            if (b.Def is not null) _sources[channelId] = b.Def;
+            ChannelRebound?.Invoke(channelId); // la UI re-enlaza al motor restaurado (nunca a un preview muerto)
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Canal {Key}: no se pudo restaurar tras un fallo de reasignación.", key);
+        }
     }
 
     private async Task<(Guid ChannelId, InputSource Def, RecordingProfile Profile)> SeedAndResolveAsync(string key, CancellationToken ct)

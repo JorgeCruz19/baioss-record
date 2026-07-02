@@ -30,6 +30,14 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(10);
     /// <summary>Espera máxima al cierre ordenado (flush/cierre del contenedor) antes de forzar el cierre.</summary>
     public TimeSpan GracefulTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// <c>true</c> (por defecto): al detener envía «q» y espera a que FFmpeg finalice el contenedor del archivo
+    /// (imprescindible en GRABACIÓN para no corromper el MP4). <c>false</c>: proceso de solo-PREVIEW (sin archivo
+    /// que finalizar) → se mata de inmediato al detener, SIN esperar la «q». Así, cambiar de entrada no se cuelga
+    /// hasta <see cref="GracefulTimeout"/> cuando FFmpeg está atascado en la lectura del driver (p. ej. una DeckLink
+    /// sin señal, que ignora la «q»). Seguro: no hay contenedor que cerrar en el preview.
+    /// </summary>
+    public bool FinalizeOnStop { get; init; } = true;
     public int MaxRestarts { get; init; } = int.MaxValue; // 24/7: reintentar indefinidamente
 
     public event EventHandler<string>? ProgressLine;   // stdout (key=value)
@@ -142,6 +150,16 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     {
         if (_process is null || _process.HasExited) return;
         _closing = true; // el watchdog NO debe matar mientras FFmpeg finaliza/cierra el contenedor.
+
+        // Solo-preview (sin archivo que finalizar): matar de inmediato en vez de esperar la «q». Evita que
+        // cambiar de entrada se cuelgue hasta GracefulTimeout cuando FFmpeg está bloqueado en la lectura del
+        // driver de una fuente sin señal (que no procesa la «q»). No hay contenedor que cerrar → es seguro.
+        if (!FinalizeOnStop)
+        {
+            try { _process.Kill(entireProcessTree: true); } catch { /* ya terminó */ }
+            return;
+        }
+
         try
         {
             await _process.StandardInput.WriteAsync('q').ConfigureAwait(false);

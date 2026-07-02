@@ -122,7 +122,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         {
             ChannelAlarm[] alarms;
             lock (_alarmLock) alarms = _alarms.Values.ToArray();
-            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage);
+            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage, _source.Definition.Name);
         }
     }
 

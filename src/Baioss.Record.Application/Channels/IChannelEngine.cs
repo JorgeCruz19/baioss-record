@@ -21,7 +21,10 @@ public sealed record ChannelStatus(
     Guid? SessionId,
     IReadOnlyList<AudioMeter>? Audio = null,
     IReadOnlyList<ChannelAlarm>? Alarms = null,
-    StorageInfo? Storage = null);
+    StorageInfo? Storage = null,
+    // InputName: nombre de la ENTRADA (fuente) asignada al canal, p. ej. «Clip A», «DeckLink — Mini Recorder»,
+    // «NDI — OBS». Para mostrar qué entrada está activa en la UI (panel y gestor de entradas).
+    string? InputName = null);
 
 /// <summary>
 /// Orquestador de un canal. Compone captura + monitor de señal + grabación +
