@@ -193,7 +193,26 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
 
         // Arma la grabación en el proceso de captura (el preview sigue sin interrumpirse).
-        await _engine.StartRecordingAsync(session.Id, profile, recordingName, ct);
+        try
+        {
+            await _engine.StartRecordingAsync(session.Id, profile, recordingName, ct);
+        }
+        catch (Exception ex)
+        {
+            // La grabación no arrancó (el motor ya revirtió su estado a Idle): cierra la sesión recién insertada
+            // —si no, quedaría «grabando» en la BD para siempre y el recovery del próximo arranque la marcaría
+            // error— y limpia el estado del canal. Se relanza para avisar al llamador (UI/API/scheduler). (Auditoría N3.)
+            _log?.LogError(ex, "Canal {Key}: no se pudo iniciar la grabación; revirtiendo la sesión.", _key);
+            session.EndedAt = DateTimeOffset.UtcNow;
+            session.State = RecordingState.Error;
+            if (_sessions is not null)
+            {
+                try { await _sessions.UpdateAsync(session, ct); }
+                catch (Exception ex2) { _log?.LogError(ex2, "No se pudo revertir la sesión {SessionId} tras el fallo.", session.Id); }
+            }
+            _session = null;
+            throw;
+        }
 
         // Vigilancia de disco: estima el tiempo restante con el ritmo de datos REAL (telemetría) y, si
         // no hay aún, con el bitrate del perfil. El crítico detiene la grabación antes de llenar el disco.
@@ -311,6 +330,16 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
         _diskUsage?.Unregister(ChannelId); // deja de contar en el caudal agregado del volumen
         await _engine.StopRecordingAsync(ct);
+
+        // Vacía la persistencia de los segmentos emitidos al detener ANTES de dar por cerrada la grabación: la
+        // detención emite el segmento (SegmentClosed → PersistSegmentAsync) como tarea de fondo; si la app se
+        // está CERRANDO y dispone el contenedor DI justo después, esa tarea moriría con el DbContext y el
+        // segmento quedaría sin registrar (lo tendría que rescatar el reconciliador en el próximo arranque).
+        // Esperarlas aquí lo evita y, de paso, garantiza que al volver de un Stop el segmento ya está en la BD. (N2.)
+        Task[] persists;
+        lock (_renameLock) persists = _pendingPersists.ToArray();
+        if (persists.Length > 0)
+            try { await Task.WhenAll(persists).ConfigureAwait(false); } catch { /* cada persist ya registró su propio error */ }
 
         // Las alarmas operativas de la grabación dejan de aplicar al detener (RecordingUnverified NO: avisa
         // de un archivo dañado y debe persistir hasta la próxima grabación).

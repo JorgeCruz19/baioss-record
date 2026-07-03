@@ -39,9 +39,12 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
     private double _peakL = -60, _peakR = -60;
     private IReadOnlyList<AudioMeter> _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
 
-    public SimulatedChannelEngine(string key)
+    public SimulatedChannelEngine(string key, Guid? channelId = null)
     {
-        ChannelId = Guid.NewGuid();
+        // channelId: al restaurar un canal (que ya tenía un id estable) tras un fallo de reasignación, el
+        // sustituto simulado debe CONSERVAR ese id para que la UI/scheduler sigan correlacionando el canal.
+        // Sin id → uno nuevo (arranque en modo simulado, donde el id lo fija el propio motor). (Auditoría N21.)
+        ChannelId = channelId ?? Guid.NewGuid();
         Key = key;
         _timer.Elapsed += Tick;
         _timer.Start();

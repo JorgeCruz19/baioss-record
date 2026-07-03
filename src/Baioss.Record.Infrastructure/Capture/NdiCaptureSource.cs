@@ -41,6 +41,16 @@ public sealed class NdiCaptureSource : ICaptureSource
         var name = Definition.Uri ?? Definition.Name
             ?? throw new InvalidOperationException("Falta el nombre de la fuente NDI.");
 
+        // Reintento de apertura / reconexión: dispón el receptor ANTERIOR antes de crear otro. Sin esto, cada
+        // reintento (p. ej. el bucle de espera de señal que reabre la fuente cada 5 s) fugaría 2 listeners TCP
+        // + la instancia NDI del receptor previo → en 24/7 agotaría handles/puertos del SO. (Auditoría N3.)
+        if (_receiver is not null)
+        {
+            _receiver.PresenceChanged -= OnReceiverPresence;
+            await _receiver.DisposeAsync().ConfigureAwait(false);
+            _receiver = null;
+        }
+
         _receiver = new NdiReceiver(name, _log);
         bool ok = await _receiver.StartAsync(TimeSpan.FromSeconds(8), ct).ConfigureAwait(false);
         if (!ok)

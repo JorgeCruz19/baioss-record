@@ -266,7 +266,23 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             }
 
             SetState(RecordingState.Starting);
-            await ReplaceProcessAsync(recording: true, slate: false, ct).ConfigureAwait(false);
+            try
+            {
+                await ReplaceProcessAsync(recording: true, slate: false, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // La grabación NO arrancó: revierte a un estado coherente en vez de dejar el canal atascado en
+                // «Starting» —donde el guard anti-doble-START lo bloquearía para siempre y el scheduler lo
+                // reintentaría cada segundo—. Restaura el preview y relanza para avisar al llamador. (Auditoría N3.)
+                _recordProfile = null;
+                _segmented = false;
+                _recordFile = null;
+                _recordDir = null;
+                await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
+                SetState(RecordingState.Idle);
+                throw;
+            }
 
             if (_segmented)
             {
@@ -289,8 +305,20 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             SetState(RecordingState.Stopping);
             _slate = false; _slatePending = false;
-            await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
-            if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
+            try
+            {
+                await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
+                if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
+            }
+            catch (Exception ex)
+            {
+                // La grabación YA quedó finalizada (ReplaceProcessAsync dispone el proceso de grabación PRIMERO →
+                // flush/moov del archivo); lo que falló es rearmar el preview. Completa el stop igualmente y
+                // restaura el preview best-effort, en vez de dejar el canal atascado en «Stopping». (Auditoría N3.)
+                _log.LogError(ex, "Canal {Key}: la grabación se detuvo pero no se pudo rearmar el preview; se restaura.", _channelKey);
+                if (_segmented) { try { ScanSegments(includeNewest: true); } catch { /* best-effort */ } }
+                await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
+            }
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false);
             RaiseAlarm(AlarmType.EncoderFallback, false);
@@ -301,6 +329,25 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             SetState(RecordingState.Idle);
         }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Restaura el pipeline de solo-preview tras un fallo de Start/Stop (donde <see cref="ReplaceProcessAsync"/>
+    /// dejó el canal sin proceso). Si la fuente aún no tiene señal para construirlo, entra en ESPERA y el preview
+    /// se levanta solo cuando la señal vuelve. NUNCA lanza: es la red de recuperación, no debe volver a romper. (N3.)
+    /// </summary>
+    private async Task RestorePreviewAfterFailureAsync()
+    {
+        try
+        {
+            if (!await TryStartPreviewPipelineAsync(CancellationToken.None).ConfigureAwait(false))
+                StartAwaitSignalProbe();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Canal {Key}: no se pudo restaurar el preview tras un fallo; se esperará a la señal.", _channelKey);
+            StartAwaitSignalProbe();
+        }
     }
 
     private async Task ReplaceProcessAsync(bool recording, bool slate, CancellationToken ct)
@@ -676,24 +723,38 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             RaiseAlarm(AlarmType.Slate, true);
             StartRecoveryProbe();
         }
-        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al entrar en carta de ajuste.", _channelKey); }
+        catch (Exception ex)
+        {
+            // El pipeline de barras no arrancó, pero mantén viva la sonda de recuperación: reconstruirá la
+            // grabación cuando la señal vuelva. Sin esto el canal quedaría «grabando» sin proceso NI recuperación. (N3.)
+            _log.LogError(ex, "Canal {Key}: error al entrar en carta de ajuste; se reintentará la recuperación.", _channelKey);
+            StartRecoveryProbe();
+        }
         finally { _slatePending = false; _gate.Release(); }
     }
 
-    private async Task ExitSlateAsync()
+    /// <summary>Sale de la carta de ajuste reconstruyendo la fuente en vivo. Devuelve <c>true</c> si lo logró;
+    /// <c>false</c> si el rebuild falló (la señal volvió a caer) → sigue en slate y el bucle de recuperación
+    /// reintentará. <c>_slate</c> solo se baja TRAS un rebuild exitoso, para no quedar «grabando» sin proceso. (N3.)</summary>
+    private async Task<bool> ExitSlateAsync()
     {
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (!_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
-            _slate = false;
+            if (!_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return true; // ya no aplica
             await ReplaceProcessAsync(recording: true, slate: false, CancellationToken.None).ConfigureAwait(false);
+            _slate = false; // solo tras reconstruir con ÉXITO: si ReplaceProcessAsync lanzó, seguimos en slate
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false); // la señal volvió: retira la alarma de slate prolongado
             _slateAlarmRaised = false;
             _log.LogInformation("Canal {Key}: señal recuperada; reanudando la fuente.", _channelKey);
+            return true;
         }
-        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al salir de carta de ajuste.", _channelKey); }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Canal {Key}: error al salir de carta de ajuste; se mantiene el slate y se reintentará.", _channelKey);
+            return false;
+        }
         finally { _gate.Release(); }
     }
 
@@ -801,8 +862,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
             if (await ProbeDeviceAsync(ct).ConfigureAwait(false) && !ct.IsCancellationRequested)
             {
-                _ = ExitSlateAsync();
-                return;
+                // Solo termina el bucle si la SALIDA del slate tuvo éxito; si el rebuild falló (la señal volvió a
+                // caer entre el sondeo y la reconstrucción), sigue sondeando en vez de abandonar. (Auditoría N3.)
+                if (await ExitSlateAsync().ConfigureAwait(false)) return;
             }
         }
     }

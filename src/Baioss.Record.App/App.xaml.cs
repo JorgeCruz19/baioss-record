@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
@@ -44,6 +45,13 @@ public partial class App : System.Windows.Application
     private IHost? _host;
 
     private Mutex? _instanceMutex;
+
+    // Cierre ordenado (N2): _shuttingDown = finalización en curso (bloquea nuevos intentos de cerrar mientras
+    // se cierran los archivos); _shutdownComplete = host parado y canales finalizados (idempotencia + salta el
+    // backstop de OnExit). Un cierre con grabaciones en curso NO debe dejar morir el proceso de golpe: el Job
+    // Object mataría los FFmpeg sin flush → MP4 sin moov (sobre todo con el contenedor MP4 estándar).
+    private bool _shuttingDown;
+    private bool _shutdownComplete;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -224,7 +232,89 @@ public partial class App : System.Windows.Application
         Serilog.Log.Information("Cascada de encoder: {Count} GPU(s) descartada(s) antes del elegido.", encoderNotes.Count);
         foreach (var note in encoderNotes) Serilog.Log.Information(" - {Note}", note);
         Serilog.Log.Information("Encoder de video por defecto: {Codec} ({Mode}).", codec, real ? "real" : "simulado");
-        app.Services.GetRequiredService<MainWindow>().Show();
+        var mainWindow = app.Services.GetRequiredService<MainWindow>();
+        mainWindow.Closing += OnMainWindowClosing; // finaliza las grabaciones ANTES de cerrar la app (N2)
+        mainWindow.Show();
+    }
+
+    /// <summary>Canales que están grabando ahora mismo (estado autoritativo del motor, no de la UI), para
+    /// avisar al cerrar y finalizar sus archivos antes de que el proceso muera. (Auditoría grabación N2.)</summary>
+    private IReadOnlyList<string> ChannelsRecording()
+    {
+        try
+        {
+            return _host!.Services.GetRequiredService<IChannelManager>().Channels
+                .Select(c => c.Status)
+                .Where(st => st.RecordingState is RecordingState.Recording or RecordingState.Paused
+                          or RecordingState.Starting or RecordingState.Stopping)
+                .Select(st => st.Key).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        }
+        catch { return Array.Empty<string>(); }
+    }
+
+    /// <summary>
+    /// Cierre ORDENADO del host: para los servicios de fondo (para que el scheduler no toque los canales
+    /// mientras finalizan), dispone los canales EN PARALELO (cada FFmpeg cierra su contenedor y finaliza el
+    /// archivo) y libera el host. Idempotente. Lo usan el handler de Closing y el backstop de OnExit. (N2.)
+    /// </summary>
+    private async Task ShutdownHostAsync()
+    {
+        var host = _host;
+        if (host is null || _shutdownComplete) return;
+        // ConfigureAwait(false) OBLIGATORIO en toda la cadena: OnExit invoca esto con GetResult() bloqueando el
+        // hilo de UI; sin esto, las continuaciones intentarían volver a ese hilo bloqueado → deadlock al cerrar.
+
+        // 1) Para los servicios de fondo (el scheduler no debe disparar start/stop mientras cerramos).
+        try { await host.StopAsync().ConfigureAwait(false); }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al parar los servicios de fondo."); }
+
+        // 2) Detén ORDENADAMENTE las grabaciones en curso: finaliza el archivo Y cierra la sesión en BD
+        //    (EndedAt/estado) + publica RecordingStopped. Disponer el canal por sí solo finaliza el archivo pero
+        //    dejaría la sesión abierta → el recovery del próximo arranque la marcaría «error». (Auditoría N2.)
+        try
+        {
+            var mgr = host.Services.GetRequiredService<IChannelManager>();
+            await Task.WhenAll(mgr.Channels
+                .Where(c => c.Status.RecordingState is RecordingState.Recording or RecordingState.Paused or RecordingState.Starting)
+                .Select(async c =>
+                {
+                    try { await c.StopRecordingAsync().ConfigureAwait(false); }
+                    catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al detener el canal {Ch}.", c.ChannelId); }
+                })).ConfigureAwait(false);
+        }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al detener las grabaciones en curso."); }
+
+        // 3) Dispone los canales (ya inactivos): libera el FFmpeg de preview, los sockets y las fuentes.
+        try { await host.Services.GetRequiredService<ChannelHost>().DisposeAsync().ConfigureAwait(false); }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al finalizar los canales."); }
+        try { host.Dispose(); } catch { /* noop */ }
+        _shutdownComplete = true;
+    }
+
+    /// <summary>
+    /// Al cerrar la ventana con grabaciones en curso, NO dejar morir el proceso de golpe: el Job Object mataría
+    /// los FFmpeg sin cerrar el contenedor (MP4 sin moov = ilegible). Se cancela el cierre, se confirma con el
+    /// operador, se finalizan los archivos ordenadamente y solo entonces se cierra de verdad. (Auditoría N2.)
+    /// </summary>
+    private async void OnMainWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_shutdownComplete) return;                  // ya finalizado: deja cerrar
+        if (_shuttingDown) { e.Cancel = true; return; } // finalización en curso: no cerrar aún
+
+        var recording = ChannelsRecording();
+        if (recording.Count == 0) return;               // nada grabando: cierre normal (OnExit hace el backstop)
+
+        e.Cancel = true; // no cerrar todavía: hay que finalizar los archivos
+        var confirm = MessageBox.Show(
+            $"Hay {recording.Count} grabación(es) en curso (canal {string.Join(", ", recording)}).\n\n" +
+            "¿Detenerlas y salir? Se finalizarán los archivos correctamente antes de cerrar.",
+            "Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;    // sigue grabando
+
+        _shuttingDown = true;
+        if (sender is Window w) w.Title = "Baioss Record — finalizando grabaciones…";
+        await ShutdownHostAsync();                       // pone _shutdownComplete = true
+        (sender as Window)?.Close();                     // ahora el handler deja cerrar
     }
 
     /// <summary>
@@ -297,15 +387,15 @@ public partial class App : System.Windows.Application
         return null;
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        if (_host is not null)
-        {
-            // Dispone los canales (cierre ordenado de FFmpeg → finaliza archivos) antes de parar el host.
-            try { await _host.Services.GetRequiredService<ChannelHost>().DisposeAsync(); } catch { /* noop */ }
-            await _host.StopAsync();
-            _host.Dispose();
-        }
+        // Backstop SÍNCRONO: si el cierre NO pasó por el handler de Closing (Shutdown() directo, o sin
+        // grabaciones en curso), finaliza el host aquí ANTES de que muera el proceso, para que los FFmpeg
+        // cierren sus contenedores. Bloquear es intencional (no debe salir el proceso hasta finalizar); es
+        // seguro contra deadlock porque la cadena interna usa ConfigureAwait(false). OnExit ya no es async
+        // void: WPF no esperaba sus continuaciones y el archivo quedaba sin cerrar. (Auditoría grabación N2.)
+        if (!_shutdownComplete)
+            try { ShutdownHostAsync().GetAwaiter().GetResult(); } catch { /* ya registrado dentro */ }
         base.OnExit(e);
     }
 }

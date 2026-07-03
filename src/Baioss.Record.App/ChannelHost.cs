@@ -94,7 +94,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // se MEZCLAN en este hilo (sin escrituras concurrentes en los diccionarios). La construcción corre fuera
         // del hilo de UI porque App la pre-resuelve en un hilo de fondo antes de StartAsync. Si un canal falla o
         // se cuelga —p. ej. su fuente sin señal o un tipo sin fábrica— cae a simulado ÉL SOLO. (Auditoría 24/7, #17.)
-        var built = Task.WhenAll(_channelKeys.Select(BuildChannelGuardedAsync)).GetAwaiter().GetResult();
+        var built = Task.WhenAll(_channelKeys.Select(k => BuildChannelGuardedAsync(k))).GetAwaiter().GetResult();
         foreach (var b in built)
         {
             _engines[b.ChannelId] = b.Engine;
@@ -113,8 +113,9 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     /// canal cae a simulado en vez de bloquear el arranque indefinidamente. (Auditoría #17.)</summary>
     private static readonly TimeSpan ChannelBuildTimeout = TimeSpan.FromSeconds(20);
 
-    /// <summary>Construye un canal con timeout y captura de fallos: NUNCA lanza (la caída de uno no afecta al resto).</summary>
-    private async Task<ChannelBuild> BuildChannelGuardedAsync(string key)
+    /// <summary>Construye un canal con timeout y captura de fallos: NUNCA lanza (la caída de uno no afecta al resto).
+    /// <paramref name="channelId"/> no-nulo (ruta de restauración) fija el id del sustituto simulado. (N21.)</summary>
+    private async Task<ChannelBuild> BuildChannelGuardedAsync(string key, Guid? channelId = null)
     {
         using var cts = new CancellationTokenSource(ChannelBuildTimeout);
         try
@@ -124,7 +125,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         catch (OperationCanceledException)
         {
             Serilog.Log.Error("Canal {Key}: la construcción superó {T:0}s (fuente colgada o sin respuesta al abrir); queda en simulado.", key, ChannelBuildTimeout.TotalSeconds);
-            return SimulatedBuild(key);
+            return SimulatedBuild(key, channelId);
         }
         catch (NotSupportedException ex)
         {
@@ -132,12 +133,12 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             // MediaFoundation): NO es «sin señal». Se avisa con la causa real para que el operador sepa que ese
             // canal NUNCA grabará su fuente (queda en simulado para que la app siga abriendo). (Auditoría A11/#15.)
             Serilog.Log.Error(ex, "Canal {Key}: tipo de entrada NO SOPORTADO; el canal queda en simulado y NO grabará la fuente real. Causa: {Causa}", key, ex.Message);
-            return SimulatedBuild(key);
+            return SimulatedBuild(key, channelId);
         }
         catch (Exception ex)
         {
             Serilog.Log.Error(ex, "Canal {Key}: no se pudo construir en modo real (¿fuente sin señal?); queda en simulado.", key);
-            return SimulatedBuild(key);
+            return SimulatedBuild(key, channelId);
         }
     }
 
@@ -148,9 +149,10 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         return new ChannelBuild(key, channelId, engine, preview, def);
     }
 
-    private static ChannelBuild SimulatedBuild(string key)
+    private static ChannelBuild SimulatedBuild(string key, Guid? channelId = null)
     {
-        var sim = new SimulatedChannelEngine(key);
+        // channelId no-nulo (ruta de restauración): el simulado conserva el id del canal original. (N21.)
+        var sim = new SimulatedChannelEngine(key, channelId);
         return new ChannelBuild(key, sim.ChannelId, sim, Preview: null, Def: null);
     }
 
@@ -280,12 +282,14 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     {
         try
         {
-            var b = await BuildChannelGuardedAsync(key).ConfigureAwait(false);
+            // Pasa channelId para que, si el rebuild cae a simulado, el sustituto CONSERVE el id del canal (si
+            // no, tendría un Guid nuevo y la UI/scheduler dejarían de correlacionar este canal). (Auditoría N21.)
+            var b = await BuildChannelGuardedAsync(key, channelId).ConfigureAwait(false);
             // Si un intento previo dejó otro motor a medio registrar, dispón el saliente antes de sustituir.
             if (_engines.Remove(channelId, out var stale) && !ReferenceEquals(stale, b.Engine))
                 try { await stale.DisposeAsync().ConfigureAwait(false); } catch { /* best-effort */ }
             _engines[channelId] = b.Engine;
-            _keys[b.ChannelId] = b.Key;
+            _keys[channelId] = key; // registra bajo el id/clave ORIGINALES, no los del build (que pueden diferir en simulado)
             _previews.Remove(channelId);
             if (b.Preview is not null) _previews.Add(channelId, b.Preview);
             if (b.Def is not null) _sources[channelId] = b.Def;
@@ -381,8 +385,17 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var e in _engines.Values) await e.DisposeAsync().ConfigureAwait(false);
+        // Dispone los canales EN PARALELO: cada uno cierra su FFmpeg ORDENADAMENTE (envía «q» y espera el flush
+        // del contenedor, hasta ~30 s en grabación). En serie, cerrar N canales grabando sumaría N×30 s y el
+        // usuario vería la app «colgada» al salir. Cada motor es independiente (su propio proceso y fuente), así
+        // que disponerlos a la vez es seguro; un fallo en uno no impide finalizar los demás. (Auditoría N2.)
+        var engines = _engines.Values.ToArray();
         _engines.Clear();
+        await Task.WhenAll(engines.Select(async e =>
+        {
+            try { await e.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Serilog.Log.Error(ex, "Error al finalizar un canal al cerrar."); }
+        })).ConfigureAwait(false);
     }
 
     /// <summary>El contenedor DI dispone los singletons de forma síncrona al cerrar; delega en el async.</summary>
