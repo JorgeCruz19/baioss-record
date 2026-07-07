@@ -118,7 +118,31 @@ public sealed class RecordingSessionRepository(IDbContextFactory<BaiossDbContext
         await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.Sessions.AsNoTracking()
             .Include(s => s.Segments)
-            .Where(s => s.ChannelId == channelId && s.EndedAt != null && s.EndedAt < cutoff)
+            // Protección enforced en la propia consulta (defensa en profundidad): una sesión protegida NUNCA
+            // entra en la retención, aunque el llamador olvide comprobarlo. (Gestión de almacenamiento — Fase 1.)
+            .Where(s => s.ChannelId == channelId && s.EndedAt != null && s.EndedAt < cutoff
+                        && s.Protection == RecordingProtection.None)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> SetProtectionAsync(Guid id, RecordingProtection protection, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var s = await db.Sessions.FirstOrDefaultAsync(x => x.Id == id, ct).ConfigureAwait(false); // tracked → se guarda
+        if (s is null) return false;
+        s.Protection = protection;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
+    public async Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Sessions.AsNoTracking()
+            .Include(s => s.Segments)
+            .Where(s => s.EndedAt != null && s.Protection == RecordingProtection.None) // finalizadas y NO protegidas
+            .OrderBy(s => s.EndedAt)                                                   // más antiguas primero
+            .Take(take)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 }

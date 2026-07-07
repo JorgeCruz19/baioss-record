@@ -120,5 +120,29 @@ public static class DependencyInjection
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_StartedAt\" ON \"Sessions\" (\"ChannelId\", \"StartedAt\");");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_EndedAt\" ON \"Sessions\" (\"ChannelId\", \"EndedAt\");");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_StartedAt\" ON \"Sessions\" (\"StartedAt\");");
+        // Columna de PROTECCIÓN de grabaciones frente a la limpieza automática (gestión de almacenamiento, Fase 1):
+        // EnsureCreated no la añade a una BD ya existente y SQLite no tiene «ADD COLUMN IF NOT EXISTS», así que se
+        // comprueba antes con PRAGMA. Idempotente: en una BD NUEVA la columna ya existe (el modelo la incluye) → se
+        // salta. En PostgreSQL lo resolvería una migración; aquí solo SQLite (MVP single-box).
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "Protection"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"Protection\" INTEGER NOT NULL DEFAULT 0;");
+    }
+
+    /// <summary>¿Existe la columna en la tabla SQLite? (<c>PRAGMA table_info</c>). Para upgrades idempotentes de esquema.</summary>
+    private static bool SqliteColumnExists(BaiossDbContext db, string table, string column)
+    {
+        var conn = db.Database.GetDbConnection();
+        bool close = conn.State != System.Data.ConnectionState.Open;
+        if (close) conn.Open();
+        try
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"PRAGMA table_info(\"{table}\");";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                if (string.Equals(r.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return true; // col 1 = nombre
+            return false;
+        }
+        finally { if (close) conn.Close(); }
     }
 }

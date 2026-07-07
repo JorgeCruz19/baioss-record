@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Baioss.Record.Infrastructure.Preview;
 
 namespace Baioss.Record.App.Preview;
@@ -10,12 +11,13 @@ namespace Baioss.Record.App.Preview;
 /// </summary>
 public sealed class PreviewCatalog
 {
-    private readonly Dictionary<Guid, IChannelPreviewSource> _previews = new();
+    // Concurrente: la reasignación en caliente lo muta en hilos de pool mientras la UI (y el rebind) lo leen. (N8.)
+    private readonly ConcurrentDictionary<Guid, IChannelPreviewSource> _previews = new();
 
     public void Add(Guid channelId, IChannelPreviewSource source) => _previews[channelId] = source;
 
     public IChannelPreviewSource? For(Guid channelId) => _previews.GetValueOrDefault(channelId);
 
     /// <summary>Quita la referencia de un canal (al reasignarle la entrada). No dispone: lo hace el canal.</summary>
-    public void Remove(Guid channelId) => _previews.Remove(channelId);
+    public void Remove(Guid channelId) => _previews.TryRemove(channelId, out _);
 }

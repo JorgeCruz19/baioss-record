@@ -109,14 +109,17 @@ public sealed class NdiCaptureSource : ICaptureSource
         // mínimo) para que no intente «detectar» leyendo segundos de datos —con un rawvideo de cientos de MB/s eso
         // colgaba la apertura—. nobuffer reduce además la latencia de arranque.
         //
-        // SINCRONÍA A/V: NO se usa -use_wallclock_as_timestamps en estas entradas. Se probó (anclar el PTS al
-        // reloj de llegada) y ROMPE el audio: con f32le crudo servido por socket, FFmpeg agrupa los bloques de
-        // muestras y deja de leerlos tras ~1 s → la pista de audio queda truncada/malformada (verificado con un
-        // banco de pruebas determinista: con wallclock el audio caía a ~0,02 s; sin él, vídeo 5,97 s / audio
-        // 6,03 s, perfectamente cuadrados). Sin timestamps, FFmpeg deriva el PTS por contador (vídeo nframe/fps,
-        // audio nmuestra/sr), lo que mantiene la sincronía MIENTRAS no se descarten frames de vídeo. La causa del
-        // desfase es, por tanto, el descarte de vídeo bajo CPU saturada (cola DropOldest del receptor); se ataca
-        // bajando la CPU (formato nativo UYVY + ArrayPool en el receptor), no con wallclock.
+        // SINCRONÍA A/V: NO se usa -use_wallclock_as_timestamps en estas entradas. En el AUDIO rompe (con f32le
+        // crudo por socket FFmpeg agrupa los bloques y deja de leerlos tras ~1 s → pista truncada; con wallclock
+        // el audio caía a ~0,02 s). Y en el VÍDEO también se PROBÓ (2026-07-05, para atacar la deriva bajo
+        // contención) y CONGELA: el rawvideo llega por socket EN RÁFAGAS, el wallclock les da PTS casi iguales +
+        // huecos, y el vsync CFR RELLENA los huecos DUPLICANDO frames → congelados intermitentes en preview y
+        // grabación (freezedetect: ~6 s de 20 s; peor bajo carga). La duración cuadra —por eso una medición SOLO
+        // por duración lo daba por «sincronizado»—, pero la imagen se PARA. REVERTIDO. Sin timestamps, FFmpeg
+        // deriva el PTS por contador (vídeo nframe/fps, audio nmuestra/sr), que mantiene la sincronía MIENTRAS no
+        // se descarten frames de vídeo. La deriva real (drop de vídeo bajo CPU saturada, cola DropOldest) se ataca
+        // bajando la CPU (UYVY nativo + ArrayPool); un arreglo robusto exigiría DUPLICAR el último frame EN EL
+        // RECEPTOR (mantener el conteo sin romper el ritmo de llegada) o propagar el timecode NDI — trabajo mayor.
         return new[]
         {
             "-f", "rawvideo", "-pixel_format", _receiver.VideoPixelFormat,

@@ -192,6 +192,47 @@ public class SchedulerServiceTests
     }
 
     [Fact]
+    public async Task Tick_DoesNotRefireCompletedOccurrence_WhenClockStepsBack()
+    {
+        // N13: una grabación con duración arranca y auto-para; si el reloj RETROCEDE a su ventana ya completada
+        // (corrección NTP), NO debe re-arrancar una segunda sesión.
+        var channelId = Guid.NewGuid();
+        var engine = new FakeChannelEngine(channelId, "A");
+        var clock = new MutableClock { UtcNow = At(20, 0) };
+        var repo = new InMemoryScheduledJobRepository();
+        await repo.AddAsync(OnceJob(channelId, durationMin: 30));
+        var svc = new SchedulerService(repo, new FakeChannelManager(engine), clock, NullLogger<SchedulerService>.Instance);
+
+        await svc.TickAsync(default);              // 20:00 arranca
+        clock.UtcNow = At(20, 31);
+        await svc.TickAsync(default);              // 20:31 auto-stop (ocurrencia completada)
+        Assert.Equal(1, engine.StartCount);
+        Assert.Equal(1, engine.StopCount);
+
+        clock.UtcNow = At(20, 15);                 // el reloj retrocede DENTRO de la ventana ya cerrada
+        await svc.TickAsync(default);
+        Assert.Equal(1, engine.StartCount);        // NO re-dispara (sin el fix, StartCount sería 2)
+    }
+
+    [Fact]
+    public async Task Tick_StopsRetrying_AfterConsecutiveStartFailures()
+    {
+        // N22: si el arranque falla siempre (perfil/carpeta/señal), el scheduler NO debe reintentar cada 1 s toda
+        // la ventana; tras unos pocos intentos abandona la ocurrencia.
+        var channelId = Guid.NewGuid();
+        var engine = new FakeChannelEngine(channelId, "A") { FailStarts = true };
+        var clock = new MutableClock { UtcNow = At(20, 0) };
+        var repo = new InMemoryScheduledJobRepository();
+        await repo.AddAsync(OnceJob(channelId, durationMin: 30));
+        var svc = new SchedulerService(repo, new FakeChannelManager(engine), clock, NullLogger<SchedulerService>.Instance);
+
+        for (int i = 0; i < 10; i++) { clock.UtcNow = At(20, i); await svc.TickAsync(default); }
+
+        Assert.Equal(3, engine.StartAttempts); // se detiene tras MaxStartAttempts, no 10 intentos
+        Assert.Equal(0, engine.StartCount);    // ninguno tuvo éxito
+    }
+
+    [Fact]
     public async Task Tick_DoesNothing_WhenNothingDue()
     {
         var channelId = Guid.NewGuid();

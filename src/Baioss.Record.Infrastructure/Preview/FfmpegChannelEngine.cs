@@ -55,6 +55,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // siembra con el objetivo del perfil y converge (EMA) al medido.
     private string? _recordDir;
     private long _lastRecBytes;
+    private long _recordedBytes; // bytes de la sesión en curso (última medida); se expone en RecorderStats. (N16.)
     private DateTimeOffset _lastRecSampleUtc;
     private long _realBitrateBps;
 
@@ -70,9 +71,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // Archivos REALMENTE escritos en esta sesión (en orden de emisión), para renombrarlos al detener una
     // grabación manual (cuyo nombre se pide al final, no al iniciar).
     private readonly List<string> _sessionFiles = new();
-    // Optimización de seek (remux faststart) del último archivo único, EN VUELO. El renombrado debe esperarla:
-    // el remux reescribe el archivo in-place y no debe solaparse con el File.Move del rename (carrera → duplicado).
-    private volatile Task _pendingOptimize = Task.CompletedTask;
+    // Snapshot de los archivos de la ÚLTIMA sesión terminada, tomado AL DETENER: el renombrado manual (que se
+    // pide en un diálogo que puede tardar) opera sobre ESTE, no sobre `_sessionFiles`, que una grabación nueva
+    // (p. ej. una programada que arranca mientras el diálogo está abierto) habría vaciado → si no, se renombrarían
+    // los archivos de la sesión NUEVA. Además desacopla del hilo del escaneo de segmentos. (Auditoría N9.)
+    private readonly List<string> _completedSessionFiles = new();
+    // Optimizaciones de seek (remux faststart) EN VUELO. El renombrado debe esperar a TODAS: el remux reescribe
+    // el archivo in-place y no debe solaparse con el File.Move del rename (carrera → duplicado/huérfano). Una
+    // sesión con recuperación de caídas (N1) produce VARIAS piezas, cada una con su remux; guardar solo la última
+    // dejaba escapar las anteriores. Lista bajo lock (se emite desde el hilo del escaneo y el del progreso). (N29.)
+    private readonly List<Task> _pendingOptimizes = new();
+    private readonly object _optimizeLock = new();
     private CancellationTokenSource? _segScanCts;
     private Task? _segScanLoop;
 
@@ -99,6 +108,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // reusaría el mismo codificador roto).
     private volatile bool _encoderOpenError;
     private volatile bool _fallbackPending;
+
+    // Recuperación tras la CAÍDA del proceso de grabación (N1): el supervisor ya NO relanza el mismo argv —que
+    // reabriría el archivo con -y y lo truncaría—; el motor reconstruye en una PIEZA NUEVA vía ReplaceProcessAsync,
+    // con backoff exponencial acotado que se resetea tras un periodo sano. _recovering evita recuperaciones solapadas.
+    private volatile bool _recovering;
+    private int _recordRestartCount;
+    private DateTimeOffset _lastRecordDeathUtc;
 
     public FfmpegChannelEngine(IFfmpegLocator locator, ILogger log)
     {
@@ -237,15 +253,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _recordFile = null;
             _emitted.Clear();
             _sessionFiles.Clear();
+            lock (_optimizeLock) _pendingOptimizes.Clear(); // remux de la sesión anterior ya esperados en su rename (N29)
             _slate = false; _slatePending = false;
             _encoderOpenError = false; _fallbackPending = false;
+            _recovering = false; _recordRestartCount = 0; // backoff de recuperación limpio para esta grabación (N1)
             RaiseAlarm(AlarmType.EncoderFallback, false);     // limpia un fallback de una sesión previa
             RaiseAlarm(AlarmType.RecordingUnverified, false); // y el aviso de archivo dañado de la anterior
             _recordStart = DateTimeOffset.UtcNow;
             // Medición del bitrate REAL por crecimiento del archivo, sembrada con el objetivo del perfil (así la
             // UI nunca muestra el bitrate inflado del preview crudo del pipeline unificado).
-            _recordDir = Path.Combine(OutputRoot, _channelKey);
+            _recordDir = OutputRoot; // sin subcarpeta por canal: se graba directo en la carpeta destino configurada
             _lastRecBytes = 0;
+            _recordedBytes = 0;
             _lastRecSampleUtc = _recordStart;
             _realBitrateBps = profile.VideoBitrate.BitsPerSecond + profile.AudioBitrate.BitsPerSecond;
             // Nombre base elegido (manual) o derivado de la programación; null → {canal}_{fecha_hora}.
@@ -259,7 +278,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             if (_segmented)
             {
                 var (_, ext) = FfmpegCodecMap.Container(profile.Container);
-                _segDir = Path.Combine(OutputRoot, _channelKey);
+                _segDir = OutputRoot; // sin subcarpeta por canal
                 _segGlob = $"{_recordBaseName ?? _channelKey}_*.{ext}";
                 Directory.CreateDirectory(_segDir);
                 foreach (var f in Directory.GetFiles(_segDir, _segGlob)) _emitted.Add(f);
@@ -319,6 +338,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 if (_segmented) { try { ScanSegments(includeNewest: true); } catch { /* best-effort */ } }
                 await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
             }
+            // Snapshot de los archivos de ESTA sesión para el renombrado posterior (inmune a que una grabación
+            // nueva vacíe _sessionFiles mientras el operador nombra en el diálogo). (Auditoría N9.)
+            _completedSessionFiles.Clear();
+            _completedSessionFiles.AddRange(_sessionFiles);
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false);
             RaiseAlarm(AlarmType.EncoderFallback, false);
@@ -355,7 +378,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // Dispone el proceso anterior (su cierre ordenado envía 'q' y finaliza el archivo si grababa).
         if (_supervisor is not null)
         {
-            _supervisor.Restarted -= OnSupervisorRestarted;
+            _supervisor.Crashed -= OnRecordingProcessDied;
+            _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
             await _supervisor.DisposeAsync().ConfigureAwait(false);
             _supervisor = null;
         }
@@ -383,7 +407,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // (FF) y para no asumir 25 fps fijos. Prioridad: tasa de salida del perfil → señal de la fuente.
         _parser.NominalRate = ResolveNominalRate(profile);
 
-        var dir = Path.Combine(OutputRoot, _channelKey);
+        // Carpeta destino TAL CUAL (sin subcarpeta A/B/C/D por canal): el operador configura la carpeta de cada
+        // canal, así que anidar la clave del canal era redundante. Se crea si no existe al empezar a grabar.
+        var dir = OutputRoot;
         if (recording) Directory.CreateDirectory(dir);
 
         var builder = new FfmpegArgumentBuilder()
@@ -433,10 +459,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             StallTimeout = TimeSpan.FromSeconds(30),
             FinalizeOnStop = recording,
+            // La GRABACIÓN de la fuente en vivo NO se auto-relanza en el supervisor (reabriría el archivo con -y y
+            // lo truncaría): su caída la gestiona el motor en una PIEZA NUEVA (OnRecordingProcessDied). El PREVIEW
+            // (sin archivo) y la carta de ajuste (bars generadas; truncarlas es cosmético) sí se auto-relanzan. (N1.)
+            RestartInternally = !recording || slate,
+            // #55: sonda para que el watchdog detecte un archivo que NO crece aunque FFmpeg reporte progreso
+            // (encoder colgado / escritura muerta). Solo en grabación; negativo si está pausado (no evaluable).
+            RecordedBytesProbe = recording ? () => _state == RecordingState.Paused ? -1L : CurrentSessionBytes() : (Func<long>?)null,
         };
         _supervisor.ProgressLine += OnProgress;
         _supervisor.LogLine += OnLog;
-        _supervisor.Restarted += OnSupervisorRestarted;
+        _supervisor.Crashed += OnRecordingProcessDied;
+        _supervisor.Completed += OnRecordingProcessCompleted; // salida LIMPIA inesperada durante grabación (N6)
         await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
     }
 
@@ -496,22 +530,26 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_recordDir is not null && _state is RecordingState.Recording or RecordingState.Starting or RecordingState.Paused)
         {
             SampleRealBitrate();
-            stats = stats with { Bitrate = new Bitrate(_realBitrateBps) };
+            // RecordedBytes: bytes de la sesión, para que el monitor de salud calcule el ritmo de escritura sin
+            // recorrer la carpeta del canal (que crece sin límite en 24/7). (Auditoría N16.)
+            stats = stats with { Bitrate = new Bitrate(_realBitrateBps), RecordedBytes = _recordedBytes };
         }
         Stats = stats;
         StatsUpdated?.Invoke(this, stats);
     }
 
-    /// <summary>Estima el bitrate REAL de la grabación por el crecimiento de los archivos del canal en disco
-    /// (no el del parser, contaminado por el preview crudo). Re-mide como mucho cada ~2 s y suaviza con EMA para
-    /// que el display no salte con los flush de fragmentos del fMP4.</summary>
+    /// <summary>Estima el bitrate REAL de la grabación por el crecimiento de los archivos de ESTA sesión en
+    /// disco (no el del parser, contaminado por el preview crudo). Re-mide como mucho cada ~2 s y suaviza con
+    /// EMA para que el display no salte con los flush de fragmentos del fMP4. Guarda además los bytes de la
+    /// sesión en <see cref="_recordedBytes"/> para exponerlos en RecorderStats. (Auditoría N16.)</summary>
     private void SampleRealBitrate()
     {
         var now = DateTimeOffset.UtcNow;
         double secs = (now - _lastRecSampleUtc).TotalSeconds;
         if (secs < 1.5) return; // no re-medir en cada línea de progreso (~1/s); ~cada 2 s basta
-        long bytes = DirBytes(_recordDir!);
-        if (_lastRecBytes > 0 && bytes >= _lastRecBytes) // 1ª muestra: solo fija la base (absorbe archivos previos)
+        long bytes = CurrentSessionBytes();
+        _recordedBytes = bytes;
+        if (_lastRecBytes > 0 && bytes >= _lastRecBytes) // 1ª muestra: solo fija la base (sesión aún vacía)
         {
             long bps = (long)((bytes - _lastRecBytes) * 8 / secs);
             _realBitrateBps = _realBitrateBps > 0 ? (long)(0.6 * _realBitrateBps + 0.4 * bps) : bps;
@@ -520,18 +558,28 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _lastRecSampleUtc = now;
     }
 
-    /// <summary>Suma el tamaño de los archivos de una carpeta (best-effort; ignora los que estén en uso/borrado).</summary>
-    private static long DirBytes(string dir)
+    /// <summary>
+    /// Bytes en disco de la sesión de grabación EN CURSO, medidos SIN recorrer toda la carpeta del canal (que
+    /// acumula meses de grabaciones en 24/7 → un escaneo O(nº archivos) en el hot-path del progreso). En archivo
+    /// único basta una <c>stat</c> del propio archivo; segmentada, la suma de los segmentos de ESTA sesión
+    /// (glob por nombre base), no de todos los archivos de la carpeta. Best-effort. (Auditoría N16.)
+    /// </summary>
+    private long CurrentSessionBytes()
     {
-        if (!Directory.Exists(dir)) return 0;
-        long sum = 0;
         try
         {
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly))
-                try { sum += new FileInfo(f).Length; } catch { /* archivo en escritura/borrado */ }
+            if (_recordFile is not null) // archivo único
+                return new FileInfo(_recordFile) is { Exists: true } fi ? fi.Length : 0;
+            if (!string.IsNullOrEmpty(_segDir) && !string.IsNullOrEmpty(_segGlob) && Directory.Exists(_segDir))
+            {
+                long sum = 0;
+                foreach (var f in Directory.EnumerateFiles(_segDir, _segGlob)) // glob = solo los segmentos de esta sesión
+                    try { sum += new FileInfo(f).Length; } catch { /* archivo en escritura/borrado */ }
+                return sum;
+            }
         }
         catch { /* carpeta inaccesible momentáneamente */ }
-        return sum;
+        return 0;
     }
 
     private void OnLog(object? sender, string line)
@@ -612,7 +660,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             SizeBytes = fi.Exists ? fi.Length : 0,
         });
         var verify = VerifyRecordingAsync(path, optimizeSeek); // red de seguridad + (archivo único) optimización de seek
-        if (optimizeSeek) _pendingOptimize = verify; // el renombrado esperará a que el remux termine (anti-carrera)
+        // Registra el remux para que el renombrado espere a que TERMINE (anti-carrera). Poda los ya completados
+        // para no crecer sin límite en una grabación larga con muchas piezas. (Auditoría N29.)
+        if (optimizeSeek)
+            lock (_optimizeLock) { _pendingOptimizes.RemoveAll(t => t.IsCompleted); _pendingOptimizes.Add(verify); }
         else _ = verify;
     }
 
@@ -691,23 +742,86 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // --- Carta de ajuste (slate) ante pérdida de señal en vivo ---
 
     /// <summary>
-    /// El supervisor reinició el proceso por un fallo de la entrada (señal perdida / dispositivo colgado).
-    /// Si el perfil lo pide y estamos grabando sin slate, pasa a barras para no romper la grabación. Se
-    /// despacha a otra tarea: NO se puede disponer el supervisor desde su propio hilo de evento.
+    /// El proceso de GRABACIÓN murió inesperadamente (crash / kill del watchdog / la entrada falló) y el
+    /// supervisor NO lo relanzó —hacerlo reabriría el archivo con <c>-y</c> y lo truncaría—. El motor lo
+    /// reconstruye en una PIEZA NUEVA: si el perfil pide carta de ajuste, entra en barras; si no, reintenta la
+    /// fuente. La pieza anterior se conserva (ReplaceProcessAsync la emite como segmento). Con backoff acotado
+    /// para no crear piezas en bucle si la fuente falla en serie. Se despacha a otra tarea: no se puede disponer
+    /// el supervisor desde su propio hilo de evento. (Auditoría N1.)
     /// </summary>
-    private void OnSupervisorRestarted(object? sender, int restartCount)
+    /// <summary>
+    /// FFmpeg salió LIMPIO (código 0) mientras seguíamos queriendo grabar: el emisor NDI cerró su TCP, una
+    /// fuente finita llegó a EOF, o el watchdog lo finalizó con «q». NO fue un stop nuestro (ese desuscribe este
+    /// handler antes de disponer) → recupera en una pieza nueva, igual que una caída, en vez de quedar «grabando»
+    /// sin proceso y sin alarma. La guarda de estado de OnRecordingProcessDied es el respaldo. (Auditoría N6.)
+    /// </summary>
+    private void OnRecordingProcessCompleted(object? sender, int exitCode)
     {
-        if (_disposed || _slate || _slatePending) return;
-        // Un fallo de APERTURA de codificador no es pérdida de señal: lo resuelve el fallback de codificador
-        // (degradar el códec), no la carta de ajuste —que reusaría el mismo codificador roto—. Inhíbela
-        // mientras se degrada para no entrar en un slate espurio.
+        _log.LogWarning("Canal {Key}: el proceso de grabación finalizó por su cuenta (EOF/cierre de la fuente); recuperando.", _channelKey);
+        OnRecordingProcessDied(sender, exitCode);
+    }
+
+    private void OnRecordingProcessDied(object? sender, int exitCode)
+    {
+        if (_disposed || _slate || _slatePending || _recovering) return;
+        // Un fallo de APERTURA de codificador lo resuelve el fallback de codificador (degradar el códec), que ya
+        // reinicia el proceso; no lo tratamos aquí como caída de la fuente.
         if (_encoderOpenError || _fallbackPending) return;
         if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
-        if (_recordProfile?.SlateOnSignalLoss != true) return;
 
-        _slatePending = true;
-        _log.LogWarning("Canal {Key}: la entrada falló durante la grabación (reinicio #{N}); pasando a carta de ajuste.", _channelKey, restartCount);
-        _ = Task.Run(EnterSlateAsync);
+        _recovering = true;
+        _log.LogWarning("Canal {Key}: el proceso de grabación murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).", _channelKey, exitCode);
+        _ = Task.Run(() => RecoverRecordingAsync(exitCode));
+    }
+
+    /// <summary>
+    /// Reconstruye la grabación tras la caída del proceso: espera un backoff, y bajo el semáforo reconstruye vía
+    /// <see cref="ReplaceProcessAsync"/> —que emite la pieza anterior y arranca una nueva con nombre único / nº de
+    /// segmento recalculado, sin reabrir el mismo archivo—. Si la reconstrucción falla (la fuente sigue caída),
+    /// reintenta con más backoff hasta que la señal vuelva. <see cref="_recovering"/> se mantiene mientras dure
+    /// la cadena de reintentos y se limpia al lograrlo o al dejar de grabar. (Auditoría N1.)
+    /// </summary>
+    private async Task RecoverRecordingAsync(int exitCode)
+    {
+        bool retry = false;
+        try
+        {
+            try { await Task.Delay(NextRecordRestartDelay()).ConfigureAwait(false); } catch { /* noop */ }
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+                bool slate = _recordProfile?.SlateOnSignalLoss == true;
+                if (slate) { _slate = true; _slateSince = DateTimeOffset.UtcNow; _slateAlarmRaised = false; }
+                await ReplaceProcessAsync(recording: true, slate: slate, CancellationToken.None).ConfigureAwait(false);
+                if (slate) { RaiseAlarm(AlarmType.Slate, true); StartRecoveryProbe(); }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Canal {Key}: fallo al recuperar la grabación tras la caída; se reintentará con backoff.", _channelKey);
+                retry = !_disposed && _state is (RecordingState.Recording or RecordingState.Starting);
+            }
+            finally { _gate.Release(); }
+        }
+        finally
+        {
+            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode)); // mantiene _recovering=true durante la cadena
+            else _recovering = false;
+        }
+    }
+
+    /// <summary>Backoff exponencial acotado (1→2→4→8→16→30 s) entre reintentos de recuperación de la grabación.
+    /// Se resetea si el proceso anterior vivió sano &gt;60 s (una caída aislada no arrastra el retardo de una racha
+    /// vieja; aborda también N24). El mínimo de 1 s garantiza además que el nombre por defecto de la pieza nueva
+    /// (precisión de SEGUNDO) difiera del de la anterior, evitando cualquier colisión con <c>-y</c>.</summary>
+    private TimeSpan NextRecordRestartDelay()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastRecordDeathUtc > TimeSpan.FromSeconds(60)) _recordRestartCount = 0;
+        _lastRecordDeathUtc = now;
+        int n = ++_recordRestartCount;
+        double ms = Math.Min(30_000, 1000 * Math.Pow(2, Math.Min(n - 1, 5)));
+        return TimeSpan.FromMilliseconds(ms);
     }
 
     private async Task EnterSlateAsync()
@@ -851,6 +965,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
 
+            // N30: si la grabación ya se detuvo (Stop mientras entrábamos en slate, antes de que StopRecoveryProbe
+            // cancelara este bucle recién arrancado), NO sigas sondeando el dispositivo cada 5 s en Idle (cada
+            // sondeo spawnea un ffmpeg) ni escales a una alarma de señal espuria: sal del bucle.
+            if (!_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+
             // Slate PROLONGADO: si la señal lleva sin volver más de SlateAlarmAfter, escala a alarma crítica
             // (SignalLoss) para que el operador actúe. La grabación de barras sigue (por si la señal vuelve).
             if (!_slateAlarmRaised && DateTimeOffset.UtcNow - _slateSince >= SlateAlarmAfter)
@@ -976,15 +1095,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         return (name, -1);
     }
 
-    /// <summary>Quita caracteres no válidos para nombre de archivo; vacío → null (usa el nombre por defecto).</summary>
-    private static string? SanitizeBaseName(string? raw)
+    /// <summary>Quita caracteres no válidos para nombre de archivo (y el «%»); vacío → null (usa el por defecto).</summary>
+    internal static string? SanitizeBaseName(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var cleaned = new string(raw.Trim().Where(c => !InvalidNameChars.Contains(c)).ToArray()).Trim();
         return string.IsNullOrWhiteSpace(cleaned) ? null : cleaned;
     }
 
-    private static readonly HashSet<char> InvalidNameChars = new(Path.GetInvalidFileNameChars());
+    // Incluye «%»: aunque es válido en un nombre de archivo, el muxer `segment` lo trata como conversión (como
+    // %d) y un título tipo «Descuentos 50%» generaría un patrón inválido → FFmpeg sale con error EN BUCLE y la
+    // grabación segmentada no produce nada. Quitarlo en el origen mantiene coherentes el patrón y el glob. (N12.)
+    private static readonly HashSet<char> InvalidNameChars = new(Path.GetInvalidFileNameChars()) { '%' };
 
     /// <summary>
     /// Renombra los archivos escritos en la última grabación usando <paramref name="baseName"/> como base
@@ -1002,9 +1124,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // con el renombrado, dejaría un archivo duplicado/huérfano o un fallo de uso compartido. Para archivos
         // grandes el remux tarda; este Wait corre en un hilo de pool (no en la UI). Margen amplio; si excede,
         // se renombra igual (el archivo es válido aunque no haya quedado optimizado).
-        try { _pendingOptimize.Wait(TimeSpan.FromMinutes(10)); } catch { /* el remux ya capturó sus errores internamente */ }
+        Task[] pendingRemux;
+        lock (_optimizeLock) pendingRemux = _pendingOptimizes.ToArray();
+        try { if (pendingRemux.Length > 0) Task.WaitAll(pendingRemux, TimeSpan.FromMinutes(10)); }
+        catch { /* cada remux ya capturó sus errores internamente */ }
 
-        foreach (var old in _sessionFiles.ToList())
+        foreach (var old in _completedSessionFiles.ToList()) // el snapshot de la sesión terminada (N9), no el vivo
         {
             if (!File.Exists(old)) continue;
             var dir = Path.GetDirectoryName(old)!;
@@ -1018,8 +1143,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (pairs.Count > 0)
         {
             LastOutputFile = pairs[^1].New;
-            _sessionFiles.Clear();
-            _sessionFiles.AddRange(pairs.Select(p => p.New));
+            _completedSessionFiles.Clear();
+            _completedSessionFiles.AddRange(pairs.Select(p => p.New));
         }
         return pairs;
     }
@@ -1035,6 +1160,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
     }
 
+    /// <summary>SOLO PARA TESTS: mata el proceso FFmpeg actual para simular una caída durante la grabación y
+    /// verificar que la recuperación crea una PIEZA NUEVA sin truncar la anterior. No es API de producción.</summary>
+    internal bool KillRecorderProcessForTest() => _supervisor?.KillCurrentProcessForTest() ?? false;
+
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
@@ -1048,7 +1177,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await StopSegmentScanAsync().ConfigureAwait(false);
         if (_supervisor is not null)
         {
-            _supervisor.Restarted -= OnSupervisorRestarted;
+            _supervisor.Crashed -= OnRecordingProcessDied;
+            _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
             await _supervisor.DisposeAsync().ConfigureAwait(false);
         }
         if (_acceptCts is not null) await _acceptCts.CancelAsync().ConfigureAwait(false);

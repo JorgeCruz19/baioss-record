@@ -21,6 +21,10 @@ public sealed class RecordingSession
     /// <summary>Operador que inició la sesión (auditoría).</summary>
     public string? Operator { get; set; }
 
+    /// <summary>Protección frente a la limpieza automática: cualquier valor ≠ None EXCLUYE la sesión de la
+    /// retención (nunca se borra ni archiva automáticamente). Lo marca el operador. (Gestión de almacenamiento.)</summary>
+    public RecordingProtection Protection { get; set; } = RecordingProtection.None;
+
     // --- Características reales capturadas al hacer lock ---
     public Resolution? Resolution { get; set; }
     public FrameRate? FrameRate { get; set; }

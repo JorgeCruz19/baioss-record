@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
@@ -38,11 +40,18 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     private readonly IServiceProvider _sp;
     private readonly PreviewCatalog _previews;
     private readonly ChannelCompositionContext _ctx;
-    private readonly Dictionary<Guid, IChannelEngine> _engines = new();
-    private readonly Dictionary<Guid, string> _keys = new();
+    // Concurrentes: la reasignación en caliente MUTA estos mapas en hilos de pool mientras el scheduler (1 Hz),
+    // la API (Kestrel) y el monitor de salud (15 s) los LEEN. Con Dictionary plano, una lectura durante una
+    // escritura es comportamiento indefinido (puede lanzar o corromper el bucket). (Auditoría N8.)
+    private readonly ConcurrentDictionary<Guid, IChannelEngine> _engines = new();
+    private readonly ConcurrentDictionary<Guid, string> _keys = new();
     // Entrada vigente de cada canal: para impedir que dos canales reciban el MISMO dispositivo de captura
     // exclusivo (cámara DirectShow / tarjeta DeckLink), que haría fallar al segundo al abrir.
-    private readonly Dictionary<Guid, InputSource> _sources = new();
+    private readonly ConcurrentDictionary<Guid, InputSource> _sources = new();
+    // Serializa RebindAsync: sin esto, dos reasignaciones a la vez (botones de filas distintas o varias ventanas
+    // de Entradas) harían TOCTOU en la comprobación de exclusividad (dos canales al mismo dispositivo) y podrían
+    // dejar un motor huérfano reteniendo el dispositivo. (Auditoría N8.)
+    private readonly SemaphoreSlim _rebindGate = new(1, 1);
 
     // Registro compartido del ritmo de escritura por volumen: la guarda de disco de cada canal vigila el
     // caudal AGREGADO de todos los canales que escriben en el mismo disco. (Auditoría 24/7, A7/#10.)
@@ -61,13 +70,18 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         Initialize();
     }
 
-    /// <summary>True si los canales corren en modo real (hay FFmpeg): la reasignación de entradas aplica.</summary>
-    public bool CanRebind => _ctx.Real && _engines.Values.All(e => e is StandaloneChannelEngine);
+    /// <summary>True si hay FFmpeg (modo real): el gestor de entradas está disponible. NO exige que TODOS los
+    /// canales sean reales — antes, un solo canal caído a simulado bloqueaba el gestor ENTERO, justo cuando se
+    /// necesita para recuperarlo. Reasignar una entrada a un canal simulado lo reconstruye como motor real
+    /// (RebindCoreAsync); si fallara, RestoreChannelAsync lo deja funcional. Los canales grabando se bloquean
+    /// aparte en RebindAsync. (Auditoría N19.)</summary>
+    public bool CanRebind => _ctx.Real;
 
     /// <summary>Ruta del clip de prueba, para ofrecer "volver al archivo demo" como entrada.</summary>
     public string? DemoClipPath => _ctx.ClipPath;
 
-    public IReadOnlyCollection<IChannelEngine> Channels => _engines.Values;
+    // ToArray: snapshot estable para enumerar sin riesgo mientras un rebind muta el mapa. (N8.)
+    public IReadOnlyCollection<IChannelEngine> Channels => _engines.Values.ToArray();
 
     public IChannelEngine Get(Guid channelId) =>
         _engines.TryGetValue(channelId, out var e) ? e : throw new KeyNotFoundException($"Canal {channelId} no registrado.");
@@ -189,36 +203,43 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             current.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
             throw new InvalidOperationException("Detén la grabación antes de cambiar la entrada del canal.");
 
-        // Exclusividad: una cámara DirectShow o una tarjeta DeckLink no admiten dos canales a la vez. Si otro
-        // canal ya usa ese dispositivo, no reasignar (el segundo fallaría a abrir y se quedaría sin grabar).
-        foreach (var (otherId, otherDef) in _sources)
-            if (otherId != channelId && DeviceExclusivity.Conflicts(newDef, otherDef))
-                throw new InvalidOperationException(
-                    $"«{newDef.Name}» ya está asignada al Canal {_keys.GetValueOrDefault(otherId, "?")}. " +
-                    "Un dispositivo de captura no admite dos canales a la vez.");
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(RebindTimeout);
+        // Serializa las reasignaciones (una a la vez): la comprobación de exclusividad y el intercambio de motor
+        // deben ser ATÓMICOS frente a otro rebind concurrente. (Auditoría N8.)
+        await _rebindGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await RebindCoreAsync(channelId, key, newDef, cts.Token).ConfigureAwait(false);
+            // Exclusividad: una cámara DirectShow o una tarjeta DeckLink no admiten dos canales a la vez. Si otro
+            // canal ya usa ese dispositivo, no reasignar (el segundo fallaría a abrir y se quedaría sin grabar).
+            foreach (var (otherId, otherDef) in _sources)
+                if (otherId != channelId && DeviceExclusivity.Conflicts(newDef, otherDef))
+                    throw new InvalidOperationException(
+                        $"«{newDef.Name}» ya está asignada al Canal {_keys.GetValueOrDefault(otherId, "?")}. " +
+                        "Un dispositivo de captura no admite dos canales a la vez.");
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(RebindTimeout);
+            try
+            {
+                await RebindCoreAsync(channelId, key, newDef, cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Expiró NUESTRO timeout (no una cancelación del llamador): la fuente/dispositivo/BD no respondió.
+                Serilog.Log.Error("Canal {Key}: la entrada «{Input}» no respondió en {T:0}s; restaurando la entrada anterior.",
+                    key, newDef.Name, RebindTimeout.TotalSeconds);
+                await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
+                throw new TimeoutException(
+                    $"La entrada «{newDef.Name}» no respondió en {RebindTimeout.TotalSeconds:0} s; se restauró la entrada anterior del Canal {key}.");
+            }
+            catch (Exception ex)
+            {
+                // Fallo real (p. ej. el dispositivo no abre): restaura y propaga la causa (ya revertido).
+                Serilog.Log.Error(ex, "Canal {Key}: fallo al aplicar la entrada «{Input}»; restaurando la entrada anterior.", key, newDef.Name);
+                await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
+                throw;
+            }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            // Expiró NUESTRO timeout (no una cancelación del llamador): la fuente/dispositivo/BD no respondió.
-            Serilog.Log.Error("Canal {Key}: la entrada «{Input}» no respondió en {T:0}s; restaurando la entrada anterior.",
-                key, newDef.Name, RebindTimeout.TotalSeconds);
-            await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
-            throw new TimeoutException(
-                $"La entrada «{newDef.Name}» no respondió en {RebindTimeout.TotalSeconds:0} s; se restauró la entrada anterior del Canal {key}.");
-        }
-        catch (Exception ex)
-        {
-            // Fallo real (p. ej. el dispositivo no abre): restaura y propaga la causa (ya revertido).
-            Serilog.Log.Error(ex, "Canal {Key}: fallo al aplicar la entrada «{Input}»; restaurando la entrada anterior.", key, newDef.Name);
-            await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
-            throw;
-        }
+        finally { _rebindGate.Release(); }
     }
 
     /// <summary>Cuerpo de la reasignación (acotado por <paramref name="ct"/>). Derriba el runtime viejo,
@@ -232,7 +253,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // 1) Derriba el runtime viejo ANTES de abrir el nuevo (un dispositivo en vivo no admite dos dueños).
         //    Acotado por ct: un FFmpeg de solo-preview sale casi al instante con «q»; si aun así no cerrara,
         //    no bloqueamos indefinidamente (el cierre sigue en segundo plano y acaba liberando el dispositivo).
-        if (_engines.Remove(channelId, out var old))
+        if (_engines.TryRemove(channelId, out var old))
             await old.DisposeAsync().AsTask().WaitAsync(ct).ConfigureAwait(false);
         _previews.Remove(channelId);
 
@@ -286,7 +307,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             // no, tendría un Guid nuevo y la UI/scheduler dejarían de correlacionar este canal). (Auditoría N21.)
             var b = await BuildChannelGuardedAsync(key, channelId).ConfigureAwait(false);
             // Si un intento previo dejó otro motor a medio registrar, dispón el saliente antes de sustituir.
-            if (_engines.Remove(channelId, out var stale) && !ReferenceEquals(stale, b.Engine))
+            if (_engines.TryRemove(channelId, out var stale) && !ReferenceEquals(stale, b.Engine))
                 try { await stale.DisposeAsync().ConfigureAwait(false); } catch { /* best-effort */ }
             _engines[channelId] = b.Engine;
             _keys[channelId] = key; // registra bajo el id/clave ORIGINALES, no los del build (que pueden diferir en simulado)
@@ -349,11 +370,24 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 
         var monitor = new SignalMonitor(bus, loggers.CreateLogger<SignalMonitor>()) { ChannelId = channelId };
-        var diskGuard = new Baioss.Record.Infrastructure.Storage.DiskSpaceGuard(loggers.CreateLogger<ChannelHost>());
+        // Umbrales de alerta por % ocupado (Fase 3), leídos EN VIVO del almacén de ajustes editable (Fase 4c) por
+        // DELEGADO, así que un cambio desde la UI/API afecta también a las alarmas por-canal. Por defecto 80/90/95.
+        // El auto-stop sigue atado al piso de bytes/tiempo (independiente de estos %).
+        var settings = _sp.GetService<Baioss.Record.Application.Storage.IStorageSettingsStore>();
+        var diskGuard = new Baioss.Record.Infrastructure.Storage.DiskSpaceGuard(loggers.CreateLogger<ChannelHost>())
+        {
+            WarnPercent = () => settings?.Current.WarnPercent ?? 80,
+            CriticalPercent = () => settings?.Current.CriticalPercent ?? 90,
+            EmergencyPercent = () => settings?.Current.EmergencyPercent ?? 95,
+        };
+
+        // Compuerta global de emergencia de almacenamiento (Fase 3b): el pre-vuelo del canal la consulta para
+        // bloquear el arranque de nuevas grabaciones si el disco está en emergencia (singleton; opcional).
+        var storageGate = _sp.GetService<Baioss.Record.Application.Storage.IStorageGate>();
 
         var engine = new StandaloneChannelEngine(
             key, source, profile, capture, channelId,
-            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard, _diskUsage);
+            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard, _diskUsage, storageGate);
         // NOTA: la entrada vigente (_sources[channelId]) la fija el LLAMADOR (Initialize al mezclar, o RebindAsync),
         // no aquí, porque la construcción inicial corre en paralelo y _sources no es un diccionario concurrente.
         return (engine, capture);

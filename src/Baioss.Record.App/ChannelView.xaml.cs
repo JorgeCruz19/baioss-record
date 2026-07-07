@@ -71,6 +71,10 @@ public partial class ChannelView : UserControl
     // anterior, lo sustituimos y descartamos el obsoleto, evitando acumular trabajo en el Dispatcher.
     private void OnFrameReady(object? sender, PreviewFrame frame)
     {
+        // Un FrameReady YA en curso (invocación capturada antes del `-=` de BindPreview) puede llegar tras un
+        // rebind: descártalo si NO viene de la fuente vigente, para no empujar un frame de la fuente VIEJA (quizá
+        // de otra resolución) a la superficie NUEVA —lo que dispararía un falso «GPU perdido» o una excepción. (N25.)
+        if (!ReferenceEquals(sender, _preview)) return;
         _pending = frame;
         if (_renderQueued) return;
         _renderQueued = true;

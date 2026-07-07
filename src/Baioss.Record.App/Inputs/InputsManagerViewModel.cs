@@ -124,7 +124,13 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     public ObservableCollection<ChannelInputRow> Channels { get; } = new();
 
     [ObservableProperty] private string _statusMessage = "";
-    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanApply))]
+    private bool _isBusy;
+
+    /// <summary>Habilita «Aplicar» solo si se puede reasignar y NO hay otra reasignación en curso: evita encolar
+    /// dos rebinds a la vez desde la UI (el host los serializa igualmente, pero así el botón lo refleja). (N8.)</summary>
+    public bool CanApply => CanRebind && !IsBusy;
 
     public InputsManagerViewModel(
         IDeviceEnumerator devices, IReadOnlyList<ChannelViewModel> channels,

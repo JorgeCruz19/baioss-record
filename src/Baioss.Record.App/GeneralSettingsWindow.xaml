@@ -15,7 +15,7 @@
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,10">
-            <Button Content="Cerrar" IsCancel="True" HorizontalAlignment="Right"
+            <Button Content="Cerrar" Click="Close_Click" HorizontalAlignment="Right"
                     Height="32" MinWidth="100" Padding="20,0" Style="{StaticResource TransportButton}"/>
         </Border>
 

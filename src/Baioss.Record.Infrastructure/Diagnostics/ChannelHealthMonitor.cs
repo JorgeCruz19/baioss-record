@@ -17,13 +17,8 @@ public sealed class ChannelHealthMonitor : BackgroundService
     private readonly IChannelManager _channels;
     private readonly ILogger<ChannelHealthMonitor> _log;
     private readonly Dictionary<Guid, long> _lastDrops = new(); // frames perdidos acumulados por canal (para el delta)
-    private readonly Dictionary<string, long> _lastBytes = new(StringComparer.Ordinal); // bytes en disco por carpeta de canal
+    private readonly Dictionary<string, long> _lastBytes = new(StringComparer.Ordinal); // bytes de sesión reportados por el motor, por canal
     private int _healthyTicks;
-
-    /// <summary>Carpeta raíz de grabaciones (…/recordings). Cada canal escribe en la subcarpeta con su Key. Se
-    /// usa para medir la escritura REAL al disco (crecimiento de los archivos), NO el bitrate de FFmpeg: en el
-    /// pipeline unificado ese bitrate incluye el preview crudo (~180 Mbps a un socket) que no toca el disco.</summary>
-    public string RecordingsRoot { get; init; } = "";
 
     /// <summary>Cadencia de muestreo. Cada muestra produce como mucho una línea de log.</summary>
     public TimeSpan Interval { get; init; } = TimeSpan.FromSeconds(15);
@@ -80,10 +75,10 @@ public sealed class ChannelHealthMonitor : BackgroundService
             long dropDelta = Math.Max(0, st.DroppedFrames - prevDrop);
             _lastDrops[s.ChannelId] = st.DroppedFrames;
 
-            // Escritura REAL al disco = crecimiento de los archivos de la carpeta del canal en el intervalo (NO
-            // el bitrate de FFmpeg, que en el pipeline unificado incluye el preview crudo ~180 Mbps a un socket).
-            // La 1ª muestra solo fija la línea base (delta 0).
-            long nowBytes = FolderBytes(Path.Combine(RecordingsRoot, s.Key));
+            // Escritura REAL al disco = crecimiento de los bytes de la sesión en el intervalo, medido por el
+            // MOTOR (RecordedBytes) acotado a la sesión — no un escaneo O(nº archivos) de la carpeta del canal,
+            // que en 24/7 acumula meses de grabaciones. La 1ª muestra solo fija la línea base (delta 0). (N16.)
+            long nowBytes = st.RecordedBytes;
             long prevBytes = _lastBytes.TryGetValue(s.Key, out var pb) ? pb : nowBytes;
             double diskMBs = Math.Max(0, nowBytes - prevBytes) / seconds / 1_000_000.0;
             _lastBytes[s.Key] = nowBytes;
@@ -111,22 +106,5 @@ public sealed class ChannelHealthMonitor : BackgroundService
         {
             _log.LogInformation("{Line}", line);
         }
-    }
-
-    /// <summary>Suma el tamaño de los archivos de la carpeta de un canal (para medir su crecimiento en disco).
-    /// Best-effort: un archivo en escritura o borrado (retención) se ignora sin romper la muestra.</summary>
-    private static long FolderBytes(string dir)
-    {
-        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return 0;
-        long sum = 0;
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly))
-            {
-                try { sum += new FileInfo(f).Length; } catch { /* archivo en uso/borrado: se ignora */ }
-            }
-        }
-        catch { /* carpeta inaccesible momentáneamente */ }
-        return sum;
     }
 }

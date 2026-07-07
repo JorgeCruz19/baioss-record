@@ -4,16 +4,42 @@ Segunda auditoría profunda, enfocada en **estabilidad al grabar 24/7** (la prim
 
 Estado: **en corrección por lotes**. Los IDs son N1…N30 para no chocar con los #NN de la auditoría anterior.
 
+> **LOTE 5 — housekeeping 24/7 — CORREGIDO y desplegado (2026-07-04):** N11, N16, N17, N27, N23, N24, N19, N29, N30. Verificado en vivo: monitor de salud con `disco MB/s` desde `RecordedBytes` (sin escanear carpeta), bitrate medido por sesión, probe post-cierre por el `RunAsync` con timeout (sin falso «no verificado»), grabar→detener con MP4 válido y arranque sin Recovery. **Omitidos a propósito:** N14 y N28 (solo aplican con la retención de MEDIOS activada, opt-in que hoy está OFF) y N20 (cambio de formato NDI: delicado y no verificable sin hardware NDI real).
+>
+> **LOTE 4 — concurrencia de UI — CORREGIDO y desplegado (2026-07-03):** N8, N9, N10, N25, N26.
+> - **N8**: `ChannelHost._engines/_keys/_sources` y `PreviewCatalog._previews` pasan a `ConcurrentDictionary` (lectura segura desde scheduler/API/monitor mientras un rebind los muta) + `RebindAsync` se serializa con un `SemaphoreSlim(1,1)` (exclusividad + intercambio de motor atómicos → sin TOCTOU ni motor huérfano) + el botón «Aplicar» se deshabilita con `!IsBusy`. `Channels` devuelve `.ToArray()` (snapshot; el shell y el monitor ya ordenan por Key).
+> - **N9**: el renombrado al detener opera sobre un SNAPSHOT de los archivos/segmentos de la sesión terminada (`_completedSessionFiles`/`_completedSessionSegments`, tomado al detener) en vez de las listas vivas —que una grabación nueva (programada) vaciaría mientras el operador nombra en el diálogo—; también desacopla del hilo del escaneo de segmentos.
+> - **N10**: la ventana de Presets resuelve el ViewModel VIGENTE del canal por Id al aplicar (`ResolveChannel`) y re-valida su estado, y la de Configuración general recibe la colección VIVA (re-enlaza al VM nuevo tras un rebind) — ya no escriben al motor DISPUESTO.
+> - **N25**: `ChannelView.OnFrameReady` descarta un frame de la fuente vieja (`!ReferenceEquals(sender, _preview)`) que llegue tras un rebind → sin falso «GPU perdido» ni excepción de resolución.
+> - **N26**: `ChannelViewModel.StopAsync` con try/catch + MessageBox (simétrico con StartAsync): un fallo al detener/renombrar ya no es invisible.
+> - Verificación: 218 unit + 35 integ verde; 2 DLLs desplegados; arranque sano (ConcurrentDictionary del host OK), regresión grabar/detener OK. La UI conserva el orden A,B,C,D (el shell ordena por Key).
+
+> **LOTE 3 — robustez del proceso — CORREGIDO y desplegado (2026-07-03):** N5, N6, N18, N15.
+> - **N5**: en `FfmpegProcessSupervisor.RunOnceAsync`, `Process.Start()` va en try/catch y `_process` se asigna SOLO tras un arranque correcto; un fallo de LANZAMIENTO (antivirus/ruta mala) devuelve un código ≠ 0 (reintento en preview / `Crashed` en grabación) en vez de faultar EN SILENCIO el bucle y el watchdog. El cuerpo del watchdog va protegido. Test unitario `FfmpegProcessSupervisorTests`.
+> - **N6**: el motor suscribe `Completed`; una salida LIMPIA (código 0) inesperada durante la grabación (emisor NDI que cierra su TCP, fuente finita en EOF, o el watchdog que finaliza con «q») recupera en una pieza nueva (`OnRecordingProcessCompleted`→`OnRecordingProcessDied`) en vez de quedar «grabando» sin proceso. Se desuscribe antes de disponer para no «recuperar» en un stop propio.
+> - **N18**: el watchdog, ante un atasco EN GRABACIÓN, intenta primero un cierre ordenado (`q`, 5 s) para que FFmpeg finalice el contenedor (moov) —clave con MP4 estándar— y solo si no responde fuerza el cierre; en preview mata directo (reconecta). Reduce (no elimina) las piezas sin moov: un FFmpeg realmente COLGADO sigue perdiendo el moov.
+> - **N15**: `DiskSpaceGuard.ReadDrive` usa `GetDiskFreeSpaceEx` (soporta LOCAL y UNC `\\NAS\share`), con respaldo a `DriveInfo`. Antes `DriveInfo` LANZABA con UNC → la guarda quedaba MUDA grabando a un NAS (sin niveles ni auto-stop). Verificado en vivo: `storage.freeBytes` real durante grabación.
+> - Verificación: 218 unit + 35 integ verde; 2 DLLs desplegados; regresión de recuperación en vivo (kill del ffmpeg → sigue en pieza nueva) OK.
+
+> **LOTE 2 — programación fiable — CORREGIDO y desplegado (2026-07-03):** N7, N4, N13, N22, N12.
+> - **N7**: `SchedulerService.TickAsync` despacha auto-stops y starts **en paralelo** (`Task.WhenAll` sobre `AutoStopExpiredAsync`/`HandleJobTickAsync`); `_warnedBusy` pasa a `ConcurrentDictionary`. Un stop lento (hasta 30 s) ya no retrasa las franjas de los demás canales.
+> - **N4**: `ScheduleEvaluator` y `ScheduleValidator.NextRecurringAnchor` calculan el offset **por-ocurrencia con `TimeZoneInfo`** (parámetro, por defecto `Local`), no con el offset fijo capturado al crear. `ScheduleViewModel` compone `RunAt` con el offset del DST vigente. Test unitario con zona **Eastern real**: una diaria 20:00 sigue disparando a las 20:00 locales tras el spring-forward (antes se corría 1 h).
+> - **N13**: `_lastCompletedOcc` (en memoria) + `Occ` en `_active`: una ocurrencia con duración ya completada NO se re-dispara si el reloj RETROCEDE a su ventana (corrección NTP). (Caso raro reinicio+reloj-atrás: pendiente, requeriría persistir.)
+> - **N22**: contador de fallos por ocurrencia (`_startFailures`); tras `MaxStartAttempts` (3) se ABANDONA la ocurrencia (marca disparada + log de error) en vez de reintentar cada 1 s toda la ventana.
+> - **N12**: `SanitizeBaseName` quita el «%» (el muxer `segment` lo tomaba como conversión → patrón inválido → FFmpeg en bucle sin grabar). Test unitario.
+> - Verificación: 217 unit + 35 integ verde (incluye tests nuevos N4-DST, N13, N22, N12); 3 DLLs desplegados; scheduler tickea limpio en vivo; regresión grabar/detener OK.
+
 > **CORREGIDOS y desplegados (2026-07-02):**
 > - **N2** (cerrar la app grabando corrompía el MP4): `MainWindow.Closing` intercepta el cierre con grabaciones en curso → confirma → **detiene ordenadamente** las grabaciones (cierra la sesión en BD + finaliza el archivo) → dispone los canales **en paralelo** → cierra. `OnExit` deja de ser `async void` y actúa como **backstop síncrono** (`ShutdownHostAsync().GetAwaiter().GetResult()`, con `ConfigureAwait(false)` en toda la cadena para no hacer deadlock). Además, `StopRecordingCoreAsync` ahora **espera la persistencia de segmentos** antes de retornar (si no, el segmento moría con el contenedor DI al cerrar y lo tenía que rescatar el reconciliador). Verificado en vivo de extremo a extremo: WM_CLOSE con grabación → proceso vivo + diálogo de confirmación + grabación NO cortada; «Sí» → cierre limpio y **MP4 reproducible** (ffprobe: duración/pistas correctas, moov presente); arranque siguiente **sin sesión ni segmento huérfano**.
 > - **N21** (bug propio del rebind-robusto): `RestoreChannelAsync` registraba `_keys[b.ChannelId]` (Guid nuevo del simulado) en vez de `channelId`. Ahora `SimulatedChannelEngine`/`SimulatedBuild`/`BuildChannelGuardedAsync` propagan el `channelId` original y se registra bajo el id/clave correctos. Build 0/0, 209 unit + 32 integ verde.
+> - **N1** (el respawn del supervisor relanzaba el mismo argv → `-y` truncaba el archivo en curso): el supervisor gana `RestartInternally` — la GRABACIÓN de la fuente en vivo ya NO se auto-relanza (eso truncaría), sino que emite `Crashed` y el motor **reconstruye en una PIEZA NUEVA** (`OnRecordingProcessDied`→`RecoverRecordingAsync`→`ReplaceProcessAsync`, que resuelve nombre único / nº de segmento y emite la pieza anterior), con **backoff** exponencial acotado (1→30 s, reset tras 60 s sano — aborda N24). El preview y la carta de ajuste sí se auto-relanzan (sin archivo / bars cosméticas). **Test-first**: `LivePipelineTests.RecordingProcessCrash_PreservesPriorFootage_AndContinuesInNewPiece` mata el FFmpeg a mitad y exige ≥2 piezas + la anterior reproducible; **verificado que FALLA sin el fix** («esperado ≥2 piezas, hubo 1») y pasa con él. Verificado además EN VIVO en la app desplegada: maté el FFmpeg del canal A grabando → siguió grabando en pieza nueva. **Matiz honesto**: con `FragmentedMp4=false` (config actual), la pieza interrumpida por la caída queda **sin moov** (no reproducible tal cual, aunque sus datos H.264 se CONSERVAN —no se trunca a 0— y son recuperables); con fMP4 la pieza interrumpida sí es directamente reproducible. La UPS cubre cortes de luz, no un crash de FFmpeg.
 > - **N3** (fallo a mitad de Start/Stop/slate deja el canal muerto y bloqueado): `FfmpegChannelEngine.StartRecordingAsync` y `StopRecordingAsync` ahora tienen **rollback** — si `ReplaceProcessAsync` lanza, restauran el preview (`RestorePreviewAfterFailureAsync`) y vuelven a `Idle` (Start relanza para avisar; Stop completa porque el archivo YA se finalizó al disponer el proceso viejo). `EnterSlateAsync` mantiene viva la sonda de recuperación ante fallo; `ExitSlateAsync` devuelve `bool` y solo baja `_slate` **tras** reconstruir con éxito; `RecoveryLoopAsync` solo termina si la salida del slate tuvo éxito (si no, sigue sondeando). `NdiCaptureSource.OpenAsync` **dispone el receptor anterior** antes de crear otro (fuga de 2 sockets/5 s en el bucle de espera). `StandaloneChannelEngine`: si el motor falla al arrancar, **cierra la sesión** recién insertada (State=Error) y limpia `_session`, en vez de dejarla huérfana. Camino feliz verificado en vivo (grabar→detener→Idle, preview vivo, archivo reproducible); los caminos de FALLO no son reproducibles con el clip demo (solo se disparan si `ReplaceProcessAsync` lanza a mitad, p. ej. un receptor NDI que muere) → cubiertos por revisión + suite verde.
 
 ---
 
 ## 🔴 CRÍTICOS — pérdida de material grabado
 
-### N1. El reinicio interno del supervisor relanza FFmpeg con el MISMO argv: `-y` + ruta fija ⇒ TRUNCA el archivo en curso
+### N1. ✅ CORREGIDO — El reinicio interno del supervisor relanza FFmpeg con el MISMO argv: `-y` + ruta fija ⇒ TRUNCA el archivo en curso
 - `FfmpegProcessSupervisor.cs:50-74` — `RunWithRestartAsync` relanza con los `arguments` capturados al arrancar.
 - `FfmpegArgumentBuilder.cs:364,372` — el argv fija `-y` + `OutputFilePath` (único) o `-segment_start_number` viejo (segmentado); `ResolvedBase()` sella `DateTime.Now` una sola vez.
 - El motor solo intercepta reinicios si `SlateOnSignalLoss == true` (`FfmpegChannelEngine.cs:659`); **con slate OFF el respawn del supervisor es la ruta «normal» de recuperación** y reabre el mismo archivo.
@@ -37,16 +63,16 @@ Estado: **en corrección por lotes**. Los IDs son N1…N30 para no chocar con lo
 
 ## 🟠 ALTOS
 
-### N4. Programación con offset UTC FIJO: tras un cambio de horario (DST) todas las diarias/semanales disparan 1 hora corridas
+### N4. ✅ CORREGIDO — Programación con offset UTC FIJO: tras un cambio de horario (DST) todas las diarias/semanales disparan 1 hora corridas
 - `ScheduleEvaluator.cs:126-131` — `SlotOnDate` construye la franja con `job.RunAt.Offset` (el offset capturado al CREAR el trabajo); `ScheduleViewModel.cs:351/371/378` y `ScheduleValidator` capturan `DateTimeOffset.Now.Offset` de hoy incluso para fechas futuras. Un offset NO es una zona horaria.
 - **Escenario**: máquina en zona con DST (Canadá sí; CDMX ya no): una diaria de las 20:00 creada en invierno (−05:00) sigue disparando a las 20:00 **−05:00** = 21:00 hora local en verano — graba la hora equivocada todos los días, sin ningún error, hasta que alguien re-guarda el trabajo.
 - **Fix**: guardar hora-del-día local + `TimeZoneInfo` (o asumir `TimeZoneInfo.Local`) y construir cada franja con `tz.GetUtcOffset(fechaLocal)`.
 
-### N5. Si FFmpeg no puede ARRANCAR, el supervisor muere en silencio (sin reintento, sin alarma)
+### N5. ✅ CORREGIDO — Si FFmpeg no puede ARRANCAR, el supervisor muere en silencio (sin reintento, sin alarma)
 - `FfmpegProcessSupervisor.cs:103` — `_process.Start()` está FUERA del try; una excepción (antivirus/cuarentena, binario bloqueado, agotamiento de handles) mata el `_runLoop` (la faulted task se traga en Dispose) **y también el watchdog** (`HasExited` sobre un proceso no arrancado lanza `InvalidOperationException` dentro de su bucle sin try). El canal cree que graba; nadie reintenta ni alarma.
 - **Fix**: envolver `RunOnceAsync` en try/catch dentro de `RunWithRestartAsync` (convertir el fallo de lanzamiento en reintento-con-backoff) y proteger el cuerpo del watchdog.
 
-### N6. Salida limpia (exit 0) de FFmpeg durante la grabación no se maneja: fin silencioso con estado «Grabando»
+### N6. ✅ CORREGIDO — Salida limpia (exit 0) de FFmpeg durante la grabación no se maneja: fin silencioso con estado «Grabando»
 - `FfmpegProcessSupervisor.cs:57-63` — exit 0 → `Completed` y NO reinicia (correcto para stop); pero `FfmpegChannelEngine` **no suscribe `Completed`/`Exited`** → si el emisor NDI cierra limpio su TCP (EOF) u otra fuente finita termina, ffmpeg finaliza y sale 0: sin reinicio, sin slate, sin alarma; `State` queda `Recording` con stats congeladas. Aire muerto hasta que un operador lo note.
 - **Fix**: suscribir `Completed` y, si `_state is Recording/Starting` y no es un stop, tratarlo como `OnSupervisorRestarted` (slate o reconstrucción). Relacionado con el pendiente #55 (watchdog no vigila que el ARCHIVO crezca — cubrirlo mataría ambos pájaros).
 
@@ -54,46 +80,46 @@ Estado: **en corrección por lotes**. Los IDs son N1…N30 para no chocar con lo
 
 ## 🟡 MEDIOS
 
-### N7. Tick del scheduler 100 % secuencial: cadenas de stop/start a la misma hora se retrasan entre sí y pueden SALTARSE franjas
+### N7. ✅ CORREGIDO — Tick del scheduler 100 % secuencial: cadenas de stop/start a la misma hora se retrasan entre sí y pueden SALTARSE franjas
 `SchedulerService.TickAsync:159-199` — los auto-stops y starts se `await`ean uno a uno; cada stop puede tardar hasta 30 s (flush). Con N canales terminando a la misma hora, el inicio del último llega tarde (pérdida de cabecera de programa) y, si el retraso acumulado supera la gracia de 2 min, los starts sin duración y los stops programados **se saltan en silencio**. Fix: despachar por canal en paralelo (el `_transition` por canal ya serializa correctamente) o capturar `now` por trabajo.
 
-### N8. Reasignación de entradas: diccionarios no concurrentes + rebinds concurrentes posibles desde la UI
+### N8. ✅ CORREGIDO — Reasignación de entradas: diccionarios no concurrentes + rebinds concurrentes posibles desde la UI
 `ChannelHost._engines/_keys/_sources` y `PreviewCatalog._previews` son `Dictionary` planos, mutados en hilos de pool durante el rebind y leídos por el scheduler (1 Hz), la API (Kestrel) y el health monitor (15 s) → lectura-durante-escritura indefinida (un tick puede abortar o, corrompido el bucket, fallar para siempre). Además cada fila tiene SU `ApplyCommand` (AsyncRelayCommand solo bloquea reentrada de su propia instancia), nada liga `IsEnabled` a `IsBusy` y pueden abrirse varias ventanas de Entradas → **dos rebinds a la vez**: TOCTOU en la exclusividad (dos canales al mismo DeckLink) y, en el mismo canal, el motor perdedor queda huérfano reteniendo el dispositivo. Fix: `SemaphoreSlim(1,1)` global en `RebindAsync`, `ConcurrentDictionary`, `IsEnabled="{Binding !IsBusy}"`.
 
-### N9. El diálogo «nombrar al detener» corre en carrera con el scheduler
+### N9. ✅ CORREGIDO — El diálogo «nombrar al detener» corre en carrera con el scheduler
 `ChannelViewModel.StopAsync:213-230` — el diálogo modal no bloquea al scheduler; si una programada arranca en ese canal con el diálogo abierto: caso único → el nombre elegido se descarta en silencio; caso segmentado → **renombra los segmentos de la NUEVA sesión** en caliente (y corrige sus rutas en BD), y `_sessionFiles` (List sin lock) se muta desde dos hilos. Fix: snapshot de archivos+SessionId ANTES de mostrar el diálogo; `RenameLastRecordingAsync(name, sessionId)`.
 
-### N10. Ventanas de Presets/Configuración general con VMs viejos tras un rebind
+### N10. ✅ CORREGIDO — Ventanas de Presets/Configuración general con VMs viejos tras un rebind
 `ShellViewModel.OpenPresets/OpenGeneralSettings` pasan `Channels.ToList()` (snapshot); `OnChannelRebound` solo reemplaza en la colección del shell. Con la ventana abierta y un rebind de por medio, «Aplicar preset»/cambiar carpeta escriben en el **motor dispuesto**: la UI dice «aplicado», el motor vivo sigue con el perfil viejo → grabaciones siguientes con códec/bitrate/carpeta equivocados. Fix: resolver por `ChannelId` contra el host en el momento de aplicar, o refrescar esas ventanas en `ChannelRebound`.
 
-### N11. Tabla EventLog sin poda + `StorageLow` publicado cada 5 s (no por transición)
-`StandaloneChannelEngine.OnDiskUpdated:444` publica en CADA poll de la guarda mientras el nivel no sea Ok → ~17 280 filas/día/canal en estado Low sostenido (que con el piso ×N canales puede ser «32 GiB libres» en un volumen compartido por 8) + un broadcast WS por evento; nadie poda EventLog jamás. Fix: publicar solo transiciones + poda por edad en `RetentionService`.
+### N11. ✅ CORREGIDO — Tabla EventLog sin poda + `StorageLow` publicado cada 5 s (no por transición)
+`StandaloneChannelEngine.OnDiskUpdated:444` publica en CADA poll de la guarda mientras el nivel no sea Ok → ~17 280 filas/día/canal en estado Low sostenido (que con el piso ×N canales puede ser «32 GiB libres» en un volumen compartido por 8) + un broadcast WS por evento; nadie poda EventLog jamás. **Fix aplicado:** `OnDiskUpdated` publica `StorageLow` solo al CAMBIAR de nivel (campo `_lastDiskLevel`); `EventLogWriter` corre un bucle que poda en bloque (`ExecuteDeleteAsync`) las entradas > `EventLog:RetentionDays` (30 d por defecto; ≤0 = conservar) cada 6 h — higiene de la BD de auditoría, INDEPENDIENTE de la retención de medios opt-in.
 
-### N12. Un `%` en el título de una programada segmentada = bucle de reinicio infinito y CERO grabación
+### N12. ✅ CORREGIDO — Un `%` en el título de una programada segmentada = bucle de reinicio infinito y CERO grabación
 `SanitizeBaseName` solo quita `Path.GetInvalidFileNameChars()` (el `%` es válido en nombres); el patrón del muxer `{base}_%d.mp4` con un `%` extra es una conversión inválida → ffmpeg sale nonzero → el supervisor relanza para siempre; la ocurrencia no graba nada (cada día) y solo hay rastro en el log. Fix: filtrar `%` (o escapar `%%` solo al componer el patrón de segmentos).
 
-### N13. Salto de reloj hacia atrás (corrección NTP) re-dispara una ocurrencia con duración ya completada
+### N13. ✅ CORREGIDO — Salto de reloj hacia atrás (corrección NTP) re-dispara una ocurrencia con duración ya completada
 `SchedulerService.TryStartAsync:209-216` — el dedupe por `LastRunAt` solo aplica a trabajos SIN duración; los con duración dependen del `_active` en memoria, que se limpia en el auto-stop. Reloj atrasado 3 min tras el auto-stop (o reinicio de la app dentro de la ventana con reloj corregido) → segunda sesión duplicada. Fix: persistir la finalización (p. ej. `LastRunAt = occ` también al auto-stop).
 
-### N14. Archivado de retención puede DESTRUIR grabaciones por colisión de nombres entre canales
+### N14. ⏸️ APLAZADO (retención de medios, opt-in OFF) — Archivado de retención puede DESTRUIR grabaciones por colisión de nombres entre canales
 `StorageManager.cs:78` — `File.Move(…, Path.Combine(ArchivePath, Path.GetFileName(...)), overwrite: true)`: los nombres programados son `dd-MM-yyyy_Título` (sin canal); dos canales con la misma programada el mismo día → al archivar, el segundo **pisa** el archivo ya archivado del primero, y la fila de sesión se borra → pérdida permanente e invisible. (Solo con Retention+Archive activados — hoy opt-in.) Fix: subcarpeta por canal + nunca `overwrite: true`.
 
-### N15. Guarda de disco MUDA con carpetas de grabación UNC/NAS
+### N15. ✅ CORREGIDO — Guarda de disco MUDA con carpetas de grabación UNC/NAS
 `DiskSpaceGuard.ReadDrive:80-87` — `DriveInfo` lanza con rutas UNC → el catch la degrada a log Debug → sin `Updated`, sin niveles, sin auto-stop: grabar a un NAS queda SIN protección de disco y sin aviso. Fix: `GetDiskFreeSpaceEx` (soporta UNC) o alarma explícita «no puedo vigilar este volumen».
 
-### N16. Escaneos O(nº de archivos) en el hot path, con retención OFF por defecto
-`SampleRealBitrate`→`DirBytes` (cada ~2 s, EN el hilo del lector de progreso de ffmpeg), `ScanSegments` (cada 2 s, glob amplio `{canal}_*` con nombres por defecto) y `ChannelHealthMonitor.FolderBytes` (15 s) recorren TODA la carpeta del canal. Con meses de 24/7 son decenas de miles de archivos → coste creciente; extremo plausible (no verificado): un walk frío multi-segundo en HDD retrasa el procesado de progreso. Fix: medir solo los archivos de la sesión en curso (contador alimentado por `EmitSegmentFile` + archivo activo).
+### N16. ✅ CORREGIDO — Escaneos O(nº de archivos) en el hot path, con retención OFF por defecto
+`SampleRealBitrate`→`DirBytes` (cada ~2 s, EN el hilo del lector de progreso de ffmpeg), `ScanSegments` (cada 2 s, glob amplio `{canal}_*` con nombres por defecto) y `ChannelHealthMonitor.FolderBytes` (15 s) recorren TODA la carpeta del canal. Con meses de 24/7 son decenas de miles de archivos → coste creciente; extremo plausible (no verificado): un walk frío multi-segundo en HDD retrasa el procesado de progreso. **Fix aplicado:** `SampleRealBitrate` mide solo la sesión en curso (una `stat` del archivo único; glob por nombre base en segmentada) y expone esos bytes en `RecorderStats.RecordedBytes`; el `ChannelHealthMonitor` calcula el ritmo de escritura por el delta de `RecordedBytes` en lugar de recorrer la carpeta del canal. Sin escaneos O(nº archivos) en el hot-path. Verificado en vivo (`disco 1.0 MB/s`).
 
-### N17. El reconciliador de huérfanos corre tras `StartAsync` y puede registrar como huérfano el segmento que la reanudación está ESCRIBIENDO
-Orden real: `app.StartAsync()` (scheduler a los +5 s) → `CloseOrphanedAsync` → `ReconcileAsync` (walk recursivo que en bibliotecas grandes tarda > 5 s). La reanudación-en-ventana crea `base_N+1.mp4`; el reconciliador (snapshot viejo) lo da de alta como Completed de la sesión ESTRELLADA; al cerrarse de verdad se emite otra vez → fila duplicada con metadatos inconsistentes. Fix: ignorar archivos con `LastWriteTimeUtc` reciente (~60 s) o reconciliar antes de `StartAsync`.
+### N17. ✅ CORREGIDO — El reconciliador de huérfanos corre tras `StartAsync` y puede registrar como huérfano el segmento que la reanudación está ESCRIBIENDO
+Orden real: `app.StartAsync()` (scheduler a los +5 s) → `CloseOrphanedAsync` → `ReconcileAsync` (walk recursivo que en bibliotecas grandes tarda > 5 s). La reanudación-en-ventana crea `base_N+1.mp4`; el reconciliador (snapshot viejo) lo da de alta como Completed de la sesión ESTRELLADA; al cerrarse de verdad se emite otra vez → fila duplicada con metadatos inconsistentes. **Fix aplicado:** `Plan` ignora archivos con `LastWriteTimeUtc` dentro de un margen (~60 s, `WriteGrace`) — están siendo escritos por una reanudación, no son huérfanos. Cubierto por tests (recién-escrito se salta; huérfano antiguo sí se reconcilia).
 
-### N18. Riesgo residual del MP4 estándar elegido: toda muerte abrupta de ffmpeg deja la pieza actual sin `moov`
+### N18. ✅ CORREGIDO (parcial) — Riesgo residual del MP4 estándar elegido: toda muerte abrupta de ffmpeg deja la pieza actual sin `moov`
 Con `FragmentedMp4=false`, el stall-kill del watchdog (30 s), un crash del encoder o N1/N2 dejan el trozo en curso ilegible (con fMP4 no pasaba; la UPS solo cubre cortes eléctricos). `VerifyRecordingAsync` lo detecta y alarma post-stop (bien), pero el material se pierde. Mitigación: watchdog que intente `q` 3-5 s antes de `Kill`; para 24/7 largos, preset MKV o segmentación.
 
-### N19. `CanRebind` exige que TODOS los canales sean reales: un canal caído a simulado bloquea el gestor de entradas ENTERO
-`ChannelHost.cs:65` — y justo la vía de recuperación de ese canal es reasignarle la entrada… que está deshabilitada. Única salida: reiniciar la app. Fix: permitir rebind por canal (o siempre que el host sea real).
+### N19. ✅ CORREGIDO — `CanRebind` exige que TODOS los canales sean reales: un canal caído a simulado bloquea el gestor de entradas ENTERO
+`ChannelHost.cs:65` — y justo la vía de recuperación de ese canal es reasignarle la entrada… que está deshabilitada. Única salida: reiniciar la app. **Fix aplicado:** `CanRebind => _ctx.Real` (basta que haya FFmpeg). Reasignar a un canal caído a simulado lo reconstruye como motor real (`RebindCoreAsync`); si fallara, `RestoreChannelAsync` lo deja funcional. Los canales grabando siguen bloqueados aparte.
 
-### N20. NDI: cambio de formato sin hueco de presencia (o con slate OFF / solo-preview) = imagen corrupta persistente
+### N20. ⏸️ APLAZADO (NDI, sin hardware para verificar) — NDI: cambio de formato sin hueco de presencia (o con slate OFF / solo-preview) = imagen corrupta persistente
 El #32 solo re-detecta si hubo pérdida ≥ 5 s Y hay un ReplaceProcess posterior (salida de slate). Si la fuente cambia de resolución al vuelo (vMix 720→1080) o no hay slate, el ffmpeg en marcha —y sus reinicios del supervisor, que reutilizan el MISMO argv— sigue leyendo con el `-video_size` viejo → basura hasta rebind manual.
 
 ---
@@ -101,24 +127,24 @@ El #32 solo re-detecta si hubo pérdida ≥ 5 s Y hay un ReplaceProcess posterio
 ## 🟢 BAJOS
 
 - **N21. ✅ CORREGIDO.** `ChannelHost.RestoreChannelAsync` (código de hoy): al caer a simulado registraba `_keys[b.ChannelId]` (Guid nuevo del sim) en vez de `channelId` → VM con id equivocado → tabla de programación vacía y skip a canal inexistente. Fix aplicado: el sustituto simulado conserva el `channelId` original y se registra bajo el id/clave correctos.
-- **N22.** Scheduler reintenta cada 1 s toda la ventana ante un start que falla persistentemente (perfil inválido, ruta > 240) → miles de errores en log, sin alarma de UI. Fix: N fallos → marcar ocurrencia fallida + alarma.
-- **N23.** `FfmpegLocator.RunAsync` (probe/remux) sin timeout ni `Kill` al cancelar → un ffprobe colgado bloquea `_pendingOptimize` hasta el tope de 10 min del rename. (El barrido de `.faststart.*` al arrancar SÍ existe — #43 —, así que los temporales huérfanos se limpian al siguiente inicio.)
-- **N24.** El backoff del supervisor nunca se resetea tras un período sano: acumulados 6+ incidentes en semanas, cada reinicio de preview espera 30 s fijos. Fix: resetear `_restartCount` tras X min de progreso continuo.
-- **N25.** Tras un rebind, un frame en vuelo de la fuente VIEJA puede empujarse a la superficie nueva (resoluciones distintas) → churn innecesario del dispositivo D3D / excepción tragada; un glitch por rebind. Fix: `if (!ReferenceEquals(sender, _preview)) return;`.
-- **N26.** `ChannelViewModel.StopAsync` sin try/catch (asimétrico con `StartAsync`): un fallo al detener/renombrar es invisible para el operador (el handler global C1 lo traga y solo loguea).
-- **N27.** El reconciliador solo escanea `*.mp4/*.mov`: huérfanos MKV/TS/MXF (¡y MKV es el contenedor recomendado para largos!) nunca se reconcilian. Fix: derivar patrones de `FfmpegCodecMap`.
-- **N28.** La retención borra la fila de sesión de grabaciones single-file estrelladas (0 segmentos en BD) y el ARCHIVO queda en disco para siempre: invisible al historial y a la propia retención. Fix: conservar la sesión-lápida o barrido por edad de no-asociados.
-- **N29.** `_pendingOptimize` solo recuerda el ÚLTIMO remux: en multi-pieza fMP4 el rename puede correr en carrera con el remux de una pieza anterior (latente: hoy `FragmentedMp4=false`). Fix: lista de tareas pendientes.
-- **N30.** Carrera Stop-durante-EnterSlate: puede quedar un recovery-loop sondeando cada 5 s en Idle (spawn de ffmpeg de sonda) y levantar una alarma SignalLoss espuria; acotado (muere al primer probe OK o al dispose).
+- **N22. ✅ CORREGIDO.** Scheduler reintenta cada 1 s toda la ventana ante un start que falla persistentemente (perfil inválido, ruta > 240) → miles de errores en log, sin alarma de UI. Fix: N fallos → marcar ocurrencia fallida + alarma.
+- **N23. ✅ CORREGIDO.** (Fix: `RunAsync` con timeout por operación —probe 20 s, remux 30 min— + `Kill(entireProcessTree)` al vencer; código de salida sintético que el llamador trata como fallo.) `FfmpegLocator.RunAsync` (probe/remux) sin timeout ni `Kill` al cancelar → un ffprobe colgado bloquea `_pendingOptimize` hasta el tope de 10 min del rename. (El barrido de `.faststart.*` al arrancar SÍ existe — #43 —, así que los temporales huérfanos se limpian al siguiente inicio.)
+- **N24. ✅ CORREGIDO.** (Fix: si el proceso estuvo sano ≥ `HealthyResetAfter` —60 s— antes de morir, se resetea `_restartCount` → el backoff vuelve a empezar corto en vez de quedarse clavado en 30 s por hiccups aislados.) El backoff del supervisor nunca se resetea tras un período sano: acumulados 6+ incidentes en semanas, cada reinicio de preview espera 30 s fijos. Fix: resetear `_restartCount` tras X min de progreso continuo.
+- **N25. ✅ CORREGIDO.** Tras un rebind, un frame en vuelo de la fuente VIEJA puede empujarse a la superficie nueva (resoluciones distintas) → churn innecesario del dispositivo D3D / excepción tragada; un glitch por rebind. Fix: `if (!ReferenceEquals(sender, _preview)) return;`.
+- **N26. ✅ CORREGIDO.** `ChannelViewModel.StopAsync` sin try/catch (asimétrico con `StartAsync`): un fallo al detener/renombrar es invisible para el operador (el handler global C1 lo traga y solo loguea).
+- **N27. ✅ CORREGIDO.** (Fix: `MediaPatterns` se deriva de `FfmpegCodecMap.Container` → cubre mp4/mov/mxf/mkv/ts/avi/mpg/wav/mp3; test lo verifica.) El reconciliador solo escanea `*.mp4/*.mov`: huérfanos MKV/TS/MXF (¡y MKV es el contenedor recomendado para largos!) nunca se reconcilian. Fix: derivar patrones de `FfmpegCodecMap`.
+- **N28. ⏸️ APLAZADO (retención de medios, opt-in OFF).** La retención borra la fila de sesión de grabaciones single-file estrelladas (0 segmentos en BD) y el ARCHIVO queda en disco para siempre: invisible al historial y a la propia retención. Fix: conservar la sesión-lápida o barrido por edad de no-asociados.
+- **N29. ✅ CORREGIDO.** (Fix: lista `_pendingOptimizes` bajo lock —poda completados— en vez de un único `Task`; el rename espera a TODOS con `Task.WaitAll`.) `_pendingOptimize` solo recuerda el ÚLTIMO remux: en multi-pieza fMP4 el rename puede correr en carrera con el remux de una pieza anterior (latente: hoy `FragmentedMp4=false`). Fix: lista de tareas pendientes.
+- **N30. ✅ CORREGIDO.** (Fix: el bucle de recuperación sale si `!_slate` o el estado ya no es Recording/Starting → no sondea en Idle ni levanta alarma espuria.) Carrera Stop-durante-EnterSlate: puede quedar un recovery-loop sondeando cada 5 s en Idle (spawn de ffmpeg de sonda) y levantar una alarma SignalLoss espuria; acotado (muere al primer probe OK o al dispose).
 
 ---
 
 ## Pendientes ya conocidos (auditoría anterior, sin cambios)
-A3/A4 (drift A/V NDI bajo CPU), A10 (API sin auth), #19 (offset A/V inicial NDI), #35 (`-r` sobre rawvideo), #39/#59 (la sonda de recuperación NDI compite con el receptor), #47/#48 (optimizaciones ffmpeg), #55 (el watchdog no vigila que el ARCHIVO crezca — implementarlo complementa N1/N6).
+A3/A4 (drift A/V NDI bajo CPU), A10 (API sin auth), #19 (offset A/V inicial NDI), #35 (`-r` sobre rawvideo), #39/#59 (la sonda de recuperación NDI compite con el receptor), #47/#48 (optimizaciones ffmpeg). **#55 ✅ HECHO (2026-07-05):** el watchdog vigila ahora el crecimiento del ARCHIVO (sonda + `FileGrowthTracker`, +3 tests), no solo el progreso de stdout — red de seguridad que complementa N1/N6. Verificado en vivo (sin falso positivo en 42 s).
 
 ## Orden de ataque recomendado
 1. **Lote 1 — pérdida de material (urgente)**: N1 (+ persistir/re-sembrar slate), N2, N3 (+ N21 trivial de paso).
 2. **Lote 2 — programación fiable**: N7, N4, N13, N22, N12.
 3. **Lote 3 — robustez del proceso**: N5, N6 (+ #55), N18 (watchdog con `q` previo), N15.
 4. **Lote 4 — concurrencia UI/host**: N8, N9, N10, N26, N25.
-5. **Lote 5 — housekeeping de largo plazo**: N11, N16, N17, N14, N19, N20, N23, N24, N27, N28, N29, N30.
+5. **Lote 5 — housekeeping de largo plazo** ✅ (2026-07-04): N11, N16, N17, N27, N23, N24, N19, N29, N30. Pendientes por diseño: N14/N28 (retención de medios, opt-in OFF) y N20 (formato NDI, sin hardware para verificar).

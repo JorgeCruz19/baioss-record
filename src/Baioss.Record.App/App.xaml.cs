@@ -52,6 +52,9 @@ public partial class App : System.Windows.Application
     // Object mataría los FFmpeg sin flush → MP4 sin moov (sobre todo con el contenedor MP4 estándar).
     private bool _shuttingDown;
     private bool _shutdownComplete;
+    /// <summary>Tope del apagado ordenado: si se excede (un FFmpeg/servicio atascado) se fuerza la salida, para
+    /// que el proceso NUNCA quede vivo bloqueando el mutex de instancia única («ya está en ejecución» al reabrir).</summary>
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(20);
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -152,20 +155,70 @@ public partial class App : System.Windows.Application
         s.AddSingleton<SchedulerService>();
         s.AddSingleton<ISchedulerService>(sp => sp.GetRequiredService<SchedulerService>());
         s.AddHostedService(sp => sp.GetRequiredService<SchedulerService>());
-        // Retención automática de grabaciones viejas (opt-in vía appsettings «Retention»; deshabilitada por
-        // defecto para no borrar nada sin que el operador lo pida). Aplica también políticas por canal.
+        // Almacén de ajustes de almacenamiento EDITABLE (Fase 4c): fuente de verdad ÚNICA de retención + alertas +
+        // emergencia, persistido en data/storage-settings.json. La PRIMERA vez se SIEMBRA desde la config heredada
+        // (sección «Retention» + claves «Disk:*»); a partir de ahí manda el JSON (la UI/API lo editan y los
+        // servicios lo leen en vivo). Las variables de entorno solo influyen en el sembrado inicial.
         var retention = builder.Configuration.GetSection("Retention").Get<RetentionOptions>() ?? new RetentionOptions();
-        s.AddSingleton(retention);
-        s.AddHostedService<RetentionService>();
+        var settingsSeed = new Baioss.Record.Application.Storage.StorageSettings
+        {
+            RetentionEnabled = retention.Enabled,
+            RetentionDays = retention.Days,
+            MinFreeGB = retention.MinFreeGB,
+            MinFreePercent = retention.MinFreePercent,
+            IntervalMinutes = retention.IntervalMinutes > 0 ? retention.IntervalMinutes : retention.IntervalHours * 60,
+            Action = retention.Action,
+            ArchivePath = retention.ArchivePath,
+            WarnPercent = builder.Configuration.GetValue("Disk:WarnPercent", 80),
+            CriticalPercent = builder.Configuration.GetValue("Disk:CriticalPercent", 90),
+            EmergencyPercent = builder.Configuration.GetValue("Disk:EmergencyPercent", 95),
+            AutoCleanupOnEmergency = builder.Configuration.GetValue("Disk:AutoCleanupOnEmergency", false),
+            StopNewRecordingsOnEmergency = builder.Configuration.GetValue("Disk:StopNewRecordingsOnEmergency", false),
+        };
+        var settingsPath = Path.Combine(root, "data", "storage-settings.json");
+        s.AddSingleton<Baioss.Record.Application.Storage.IStorageSettingsStore>(sp =>
+            new Baioss.Record.Infrastructure.Storage.JsonStorageSettingsStore(settingsPath, settingsSeed,
+                sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Storage.JsonStorageSettingsStore>>()));
+
+        // Retención automática de grabaciones viejas (opt-in; lee el almacén de ajustes EN VIVO). Aplica también
+        // políticas por canal. RecordingsRoot = volumen sobre el que la retención por ESPACIO libera hueco.
+        s.AddHostedService(sp => new RetentionService(
+            sp.GetRequiredService<Baioss.Record.Application.Storage.IStorageManager>(),
+            sp.GetRequiredService<Baioss.Record.Application.Persistence.IChannelRepository>(),
+            sp.GetRequiredService<Baioss.Record.Application.Persistence.IRetentionPolicyRepository>(),
+            sp.GetRequiredService<Baioss.Record.Application.Storage.IStorageSettingsStore>(),
+            sp.GetRequiredService<ILogger<RetentionService>>())
+        { RecordingsRoot = Path.Combine(root, "recordings") });
+        // Coordinador GLOBAL de emergencia de almacenamiento (Fase 3b): vigila el volumen de grabación de forma
+        // continua —también en IDLE, que la guarda por-canal (solo activa grabando) NO cubre— y, al entrar en
+        // emergencia, AUDITA el evento y —opt-in— auto-limpia y/o BLOQUEA nuevas grabaciones (vía IStorageGate en
+        // el pre-vuelo). Umbrales + opt-in se leen del almacén de ajustes EN VIVO (Fase 4c). Seguro por defecto.
+        s.AddSingleton(sp => new StorageEmergencyCoordinator(
+            sp.GetRequiredService<Baioss.Record.Application.Storage.IStorageManager>(),
+            sp.GetRequiredService<Baioss.Record.Application.Abstractions.IEventBus>(),
+            sp.GetRequiredService<Baioss.Record.Application.Storage.IStorageSettingsStore>(),
+            sp.GetRequiredService<ILogger<StorageEmergencyCoordinator>>())
+        {
+            RecordingsRoot = Path.Combine(root, "recordings"),
+        });
+        s.AddSingleton<Baioss.Record.Application.Storage.IStorageGate>(sp => sp.GetRequiredService<StorageEmergencyCoordinator>());
+        s.AddSingleton<Baioss.Record.Application.Storage.IStorageStatusProvider>(sp => sp.GetRequiredService<StorageEmergencyCoordinator>());
+        s.AddHostedService(sp => sp.GetRequiredService<StorageEmergencyCoordinator>());
         // Auditoría 24/7: persiste los eventos de dominio (señal, grabación, disco, encoder) en la tabla
-        // EventLog para trazabilidad post-incidente. (Auditoría #42.)
-        s.AddHostedService<Baioss.Record.Infrastructure.Messaging.EventLogWriter>();
+        // EventLog para trazabilidad post-incidente. (Auditoría #42.) Poda las entradas más antiguas que
+        // «EventLog:RetentionDays» días (30 por defecto; ≤0 = conservar siempre) para que la tabla no crezca
+        // sin límite en 24/7. Es higiene de la BD, distinta de la retención de grabaciones. (Auditoría N11.)
+        int eventLogDays = builder.Configuration.GetValue<int?>("EventLog:RetentionDays") ?? 30;
+        s.AddHostedService(sp => new Baioss.Record.Infrastructure.Messaging.EventLogWriter(
+            sp.GetRequiredService<Baioss.Record.Application.Abstractions.IEventBus>(),
+            sp.GetRequiredService<Microsoft.EntityFrameworkCore.IDbContextFactory<Baioss.Record.Infrastructure.Persistence.BaiossDbContext>>(),
+            sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Messaging.EventLogWriter>>())
+        { RetentionDays = eventLogDays });
         // Telemetría de salud por canal (fps real vs objetivo, frames perdidos y escritura REAL al disco):
         // diagnostica «cortes» en grabación multicanal mostrando qué canal se queda atrás. (Fiabilidad 4 canales.)
         s.AddHostedService(sp => new Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor(
             sp.GetRequiredService<IChannelManager>(),
-            sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor>>())
-        { RecordingsRoot = Path.Combine(root, "recordings") });
+            sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor>>()));
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 
@@ -298,23 +351,48 @@ public partial class App : System.Windows.Application
     /// </summary>
     private async void OnMainWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        if (_shutdownComplete) return;                  // ya finalizado: deja cerrar
-        if (_shuttingDown) { e.Cancel = true; return; } // finalización en curso: no cerrar aún
+        if (_shutdownComplete) return;                  // ya finalizado: deja cerrar de verdad
+        if (_shuttingDown) { e.Cancel = true; return; } // finalización en curso: no re-entrar
 
+        // SIEMPRE tomamos el control del cierre para hacerlo aquí ORDENADO Y ASÍNCRONO, en vez de dejar que OnExit
+        // lo haga BLOQUEANDO el hilo de UI con un GetResult(): si algún FFmpeg/servicio se atascaba, ese bloqueo
+        // dejaba el PROCESO vivo sin salir → el mutex de instancia única quedaba tomado → «ya está en ejecución»
+        // al reabrir. Con grabaciones en curso se confirma antes (se finalizarán los archivos). (Cierre robusto.)
+        // Confirmación SIEMPRE al cerrar (con o sin grabación): evita cierres accidentales de una app de
+        // grabación 24/7. Si hay grabaciones en curso, el mensaje avisa de que se finalizarán los archivos.
         var recording = ChannelsRecording();
-        if (recording.Count == 0) return;               // nada grabando: cierre normal (OnExit hace el backstop)
-
-        e.Cancel = true; // no cerrar todavía: hay que finalizar los archivos
-        var confirm = MessageBox.Show(
-            $"Hay {recording.Count} grabación(es) en curso (canal {string.Join(", ", recording)}).\n\n" +
-            "¿Detenerlas y salir? Se finalizarán los archivos correctamente antes de cerrar.",
-            "Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes) return;    // sigue grabando
+        e.Cancel = true; // tomamos el control; solo se cierra si el operador CONFIRMA
+        var confirm = recording.Count > 0
+            ? MessageBox.Show(
+                $"Hay {recording.Count} grabación(es) en curso (canal {string.Join(", ", recording)}).\n\n" +
+                "¿Detenerlas y salir? Se finalizarán los archivos correctamente antes de cerrar.",
+                "Cerrar Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Warning)
+            : MessageBox.Show(
+                "¿Seguro que quieres cerrar Baioss Record?",
+                "Cerrar Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return; // no cerrar (e.Cancel sigue en true)
 
         _shuttingDown = true;
-        if (sender is Window w) w.Title = "Baioss Record — finalizando grabaciones…";
-        await ShutdownHostAsync();                       // pone _shutdownComplete = true
-        (sender as Window)?.Close();                     // ahora el handler deja cerrar
+        if (sender is Window w) w.Title = "Baioss Record — cerrando…";
+        // Apagado ACOTADO: si se atasca (FFmpeg colgado, servicio que no cancela) NO colgamos el cierre —
+        // ForceExit fuerza la salida igualmente para que el proceso nunca quede vivo.
+        try { await ShutdownHostAsync().WaitAsync(ShutdownTimeout); }
+        catch (TimeoutException) { Serilog.Log.Warning("Cierre: el apagado ordenado excedió {T:0} s; se fuerza la salida.", ShutdownTimeout.TotalSeconds); }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: error en el apagado ordenado; se fuerza la salida."); }
+        ForceExit();
+    }
+
+    /// <summary>
+    /// Libera el mutex de instancia única y TERMINA el proceso de forma garantizada, aunque el apagado dejara
+    /// algún <c>await</c>/hilo colgado (que, si no, mantendría el proceso vivo bloqueando el mutex → «ya está en
+    /// ejecución» al reabrir). El Job Object mata los FFmpeg hijos al morir el proceso. (Cierre robusto.)
+    /// </summary>
+    private void ForceExit()
+    {
+        try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
+        try { _instanceMutex?.Dispose(); } catch { /* noop */ }
+        _instanceMutex = null;
+        Environment.Exit(0);
     }
 
     /// <summary>
@@ -389,13 +467,14 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        // Backstop SÍNCRONO: si el cierre NO pasó por el handler de Closing (Shutdown() directo, o sin
-        // grabaciones en curso), finaliza el host aquí ANTES de que muera el proceso, para que los FFmpeg
-        // cierren sus contenedores. Bloquear es intencional (no debe salir el proceso hasta finalizar); es
-        // seguro contra deadlock porque la cadena interna usa ConfigureAwait(false). OnExit ya no es async
-        // void: WPF no esperaba sus continuaciones y el archivo quedaba sin cerrar. (Auditoría grabación N2.)
-        if (!_shutdownComplete)
-            try { ShutdownHostAsync().GetAwaiter().GetResult(); } catch { /* ya registrado dentro */ }
+        // Backstop para cierres que NO pasaron por el handler de Closing (p. ej. Shutdown() directo de una 2ª
+        // instancia o de un fallo de arranque). Con host, apagado ordenado ACOTADO (Wait con tope): NUNCA bloquea
+        // indefinidamente el hilo de UI —ese GetResult() sin tope era la causa del proceso «colgado» tras cerrar—;
+        // sin host (arranque fallido) retorna al instante. Además libera el mutex de instancia única.
+        if (!_shutdownComplete && _host is not null)
+            try { ShutdownHostAsync().Wait(ShutdownTimeout); } catch { /* ya registrado dentro / timeout */ }
+        try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño */ }
+        try { _instanceMutex?.Dispose(); } catch { /* noop */ }
         base.OnExit(e);
     }
 }

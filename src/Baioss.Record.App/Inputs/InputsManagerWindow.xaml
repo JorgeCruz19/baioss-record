@@ -75,6 +75,7 @@
 
                                     <!-- Padding propio (no el 14,9 heredado): con Height=28 ese padding recortaba el texto. -->
                                     <Button Grid.Column="4" Content="Aplicar" Command="{Binding ApplyCommand}"
+                                            IsEnabled="{Binding DataContext.CanApply, RelativeSource={RelativeSource AncestorType=Window}}"
                                             Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
                                             Height="28" MinWidth="92" Padding="18,0"/>
                                 </Grid>

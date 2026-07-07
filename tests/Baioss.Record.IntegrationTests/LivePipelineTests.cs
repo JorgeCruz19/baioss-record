@@ -288,6 +288,86 @@ public sealed class LivePipelineTests
         }
     }
 
+    /// <summary>
+    /// N1: si el proceso FFmpeg MUERE a mitad de la grabación (crash / kill del watchdog / la entrada que falla),
+    /// el motor debe RECUPERAR en una PIEZA NUEVA sin reabrir el mismo archivo —el supervisor ya no relanza el
+    /// mismo argv con <c>-y</c>, que truncaría la pieza anterior—. Verifica: (1) se emiten ≥2 piezas (la anterior
+    /// + la de recuperación), y (2) la pieza ANTERIOR se conserva reproducible (no truncada). Con el bug, solo
+    /// habría 1 pieza truncada. Usa fMP4 (por defecto) para que la pieza pre-caída sea legible pese al kill.
+    /// </summary>
+    [SkippableFact]
+    public async Task RecordingProcessCrash_PreservesPriorFootage_AndContinuesInNewPiece()
+    {
+        Skip.IfNot(TestAssets.Available, "FFmpeg/clip de prueba no disponibles en tools/.");
+
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-crash-{Guid.NewGuid():N}");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            var source = new FileCaptureSource(new InputSource
+            {
+                Name = "clip", Type = InputType.File, Uri = TestAssets.Clip!,
+                Parameters = { ["loop"] = "1", ["realtime"] = "1" },
+                ExpectedResolution = Resolution.Hd720, ExpectedFrameRate = FrameRate.P25,
+            });
+            await source.OpenAsync();
+
+            var profile = new RecordingProfile
+            {
+                Name = "crash", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
+                VideoBitrate = Bitrate.FromMbps(6), GopSize = 25,
+                AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+            };
+
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            var segments = new List<Segment>();
+            engine.SegmentClosed += (_, s) => { lock (segments) segments.Add(s); };
+            int recFrames = 0;
+            engine.FrameReady += (_, _) => Interlocked.Increment(ref recFrames);
+
+            await engine.StartPreviewAsync(source, profile, "CRS");
+            await engine.StartRecordingAsync(Guid.NewGuid(), profile);
+
+            // Graba ~3 s de contenido real → la pieza pre-caída tiene duración medible.
+            await WaitForAsync(() => Volatile.Read(ref recFrames) >= 25, TimeSpan.FromSeconds(20));
+            await Task.Delay(TimeSpan.FromSeconds(3));
+
+            var priorFile = engine.LastOutputFile;
+            Assert.True(priorFile is not null && File.Exists(priorFile), "Debe existir la pieza en curso antes de la caída.");
+            Assert.True(new FileInfo(priorFile!).Length > 0, "La pieza pre-caída debe tener contenido.");
+
+            // SIMULA LA CAÍDA: mata el proceso FFmpeg unificado (preview+grabación).
+            Assert.True(engine.KillRecorderProcessForTest(), "Debe haber un proceso de grabación que matar.");
+
+            // El motor recupera en una PIEZA NUEVA (backoff ~1 s) y emite la anterior como segmento.
+            await WaitForAsync(() => { lock (segments) return segments.Count >= 1; }, TimeSpan.FromSeconds(15));
+            await Task.Delay(TimeSpan.FromSeconds(2)); // graba ~2 s en la pieza nueva
+            await engine.StopRecordingAsync();
+
+            List<Segment> emitted;
+            lock (segments) emitted = segments.ToList();
+
+            // 1) ≥2 piezas: la anterior a la caída + la nueva de la recuperación. (Con el bug, el supervisor
+            //    truncaba en el mismo archivo y el motor ni se enteraba → 1 sola pieza.)
+            Assert.True(emitted.Count >= 2, $"Debe recuperar en una pieza NUEVA (esperado ≥2 piezas, hubo {emitted.Count}).");
+
+            // 2) La pieza ANTERIOR se conserva REPRODUCIBLE (no truncada): existe, con contenido y H.264 válido.
+            var prior = emitted[0];
+            Assert.True(File.Exists(prior.FilePath), "La pieza pre-caída debe conservarse en disco.");
+            Assert.True(new FileInfo(prior.FilePath).Length > 0, "La pieza pre-caída no debe quedar truncada a 0.");
+            Assert.Equal("h264", await ProbeCodecAsync(locator.FfprobePath, prior.FilePath));
+
+            // 3) La pieza NUEVA (recuperación) también es un H.264 válido con contenido.
+            var recovered = emitted[^1];
+            Assert.True(File.Exists(recovered.FilePath) && new FileInfo(recovered.FilePath).Length > 0, "La pieza recuperada debe tener contenido.");
+            Assert.Equal("h264", await ProbeCodecAsync(locator.FfprobePath, recovered.FilePath));
+        }
+        finally
+        {
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     private static async Task WaitForAsync(Func<bool> condition, TimeSpan timeout)
     {
         var sw = Stopwatch.StartNew();

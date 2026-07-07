@@ -40,7 +40,7 @@ public sealed class FfmpegLocator : IFfmpegLocator
 
     public async Task<IReadOnlyCollection<string>> GetAvailableEncodersAsync(CancellationToken ct = default)
     {
-        var (output, _) = await RunAsync(FfmpegPath, new[] { "-hide_banner", "-encoders" }, ct).ConfigureAwait(false);
+        var (output, _) = await RunAsync(FfmpegPath, new[] { "-hide_banner", "-encoders" }, ct, timeout: TimeSpan.FromSeconds(15)).ConfigureAwait(false);
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var raw in output.Split('\n'))
         {
@@ -76,7 +76,7 @@ public sealed class FfmpegLocator : IFfmpegLocator
             // libx264, así que la prueba es representativa para todos.
             "-frames:v", "1", "-c:v", encoder, "-pix_fmt", "nv12", "-f", "null", "-"
         };
-        var (output, exit) = await RunAsync(FfmpegPath, args, ct).ConfigureAwait(false);
+        var (output, exit) = await RunAsync(FfmpegPath, args, ct, timeout: TimeSpan.FromSeconds(15)).ConfigureAwait(false);
         if (exit == 0) return (true, "");
 
         // Razón legible: la línea de log más informativa (driver/versión/soporte), sin el prefijo «[enc @ …]».
@@ -106,7 +106,7 @@ public sealed class FfmpegLocator : IFfmpegLocator
             "-show_entries", "format=duration:stream=codec_type,codec_name",
             filePath
         };
-        var (output, exit) = await RunAsync(FfprobePath, args, ct).ConfigureAwait(false);
+        var (output, exit) = await RunAsync(FfprobePath, args, ct, timeout: TimeSpan.FromSeconds(20)).ConfigureAwait(false);
         if (exit != 0 || string.IsNullOrWhiteSpace(output)) return MediaProbe.Unreadable;
 
         try
@@ -175,7 +175,9 @@ public sealed class FfmpegLocator : IFfmpegLocator
             var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", tmp };
             // Prioridad POR DEBAJO de lo normal: aunque el remux es -c copy (poca CPU), es intensivo en E/S; bajar
             // la prioridad reduce que compita con la escritura de las grabaciones activas en el mismo disco.
-            var (_, exit) = await RunAsync(FfmpegPath, args, ct, ProcessPriorityClass.BelowNormal).ConfigureAwait(false);
+            // Timeout generoso: el remux reescribe el archivo entero (puede tardar minutos en piezas de varios
+            // GB), pero uno colgado no debe bloquear el renombrado para siempre. (Auditoría N23.)
+            var (_, exit) = await RunAsync(FfmpegPath, args, ct, ProcessPriorityClass.BelowNormal, TimeSpan.FromMinutes(30)).ConfigureAwait(false);
             if (exit != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0)
             {
                 TryDelete(tmp);
@@ -208,8 +210,12 @@ public sealed class FfmpegLocator : IFfmpegLocator
         return l;
     }
 
+    /// <summary>Código de salida sintético cuando <see cref="RunAsync"/> mata el proceso por vencer el timeout
+    /// (distinto de una salida real de ffmpeg): el llamador lo trata como fallo, no como colgado. (Auditoría N23.)</summary>
+    private const int TimeoutExitCode = -110;
+
     private static async Task<(string Output, int ExitCode)> RunAsync(
-        string exe, string[] args, CancellationToken ct, ProcessPriorityClass? priority = null)
+        string exe, string[] args, CancellationToken ct, ProcessPriorityClass? priority = null, TimeSpan? timeout = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -229,13 +235,37 @@ public sealed class FfmpegLocator : IFfmpegLocator
         // Ajusta la prioridad del proceso (p. ej. BelowNormal para el remux, intensivo en disco). Best-effort:
         // el proceso pudo terminar antes de poder fijarla.
         if (priority is { } pc) { try { p.PriorityClass = pc; } catch { /* ya terminó o sin permisos */ } }
+
+        // Timeout acotado: un ffprobe/remux colgado (archivo dañado, disco que no responde, driver bloqueado) no
+        // debe bloquear indefinidamente la verificación ni el renombrado (antes podía esperar hasta el tope de
+        // 10 min). Al vencer se mata el ÁRBOL de procesos y se devuelve un código de fallo. (Auditoría N23.)
+        using var timeoutCts = timeout is { } to ? new CancellationTokenSource(to) : null;
+        using var linked = timeoutCts is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        var lct = linked.Token;
+
         // Lee AMBOS flujos en paralelo: si se leyeran en serie y uno llenara su buffer de tubería mientras
         // se espera el otro, FFmpeg se bloquearía al escribir → deadlock (visible con salida grande, p. ej.
         // `-loglevel verbose`). Leer concurrentemente lo evita siempre.
-        var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = p.StandardError.ReadToEndAsync(ct);
-        await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-        await p.WaitForExitAsync(ct).ConfigureAwait(false);
-        return (await stdoutTask + await stderrTask, p.ExitCode);
+        var stdoutTask = p.StandardOutput.ReadToEndAsync(lct);
+        var stderrTask = p.StandardError.ReadToEndAsync(lct);
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            await p.WaitForExitAsync(lct).ConfigureAwait(false);
+            return (await stdoutTask + await stderrTask, p.ExitCode);
+        }
+        catch (OperationCanceledException)
+        {
+            // Timeout o parada del llamador: mata el proceso y su árbol (no dejar ffmpeg/ffprobe colgado).
+            try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* ya salió */ }
+            // Observa las lecturas canceladas para no dejar tareas sin observar.
+            try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); } catch { /* canceladas */ }
+            // Vencido por timeout (no por parada del llamador) → fallo sintético; si canceló el llamador, propaga.
+            if (timeoutCts is { IsCancellationRequested: true } && !ct.IsCancellationRequested)
+                return ("", TimeoutExitCode);
+            throw;
+        }
     }
 }

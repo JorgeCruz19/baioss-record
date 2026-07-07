@@ -3,12 +3,15 @@ using System.Text;
 using System.Text.Json;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Storage;
 using Baioss.Record.Application.UseCases.Queries;
 using Baioss.Record.Application.UseCases.Recording;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.Events;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -63,7 +66,44 @@ public static class ApiEndpoints
             catch (Exception ex) { return Results.Problem("No se pudo consultar el volumen: " + ex.Message, statusCode: 404); }
         });
 
-        // GET /inputs y /recordings se mapean igual (omitido por brevedad en el scaffold).
+        // --- Grabaciones / retención (gestión de almacenamiento — Fase 1) ---
+        // Lista el historial reciente con su estado de PROTECCIÓN, para que el operador (o una UI/automatización)
+        // sepa qué hay y pueda marcarlo. `channel` filtra por canal; `days` acota la ventana (30 por defecto).
+        api.MapGet("/recordings", async (Guid? channel, int? days, [FromServices] IRecordingSessionRepository sessions, CancellationToken ct) =>
+        {
+            var to = DateTimeOffset.UtcNow;
+            var from = to - TimeSpan.FromDays(days is > 0 ? days.Value : 30);
+            var list = await sessions.GetHistoryAsync(channel, from, to, skip: 0, take: 500, ct);
+            return Results.Ok(list.Select(s => new
+            {
+                s.Id, s.ChannelId, s.StartedAt, s.EndedAt,
+                DurationSeconds = (int)s.Duration.TotalSeconds,
+                s.TotalBytes, Files = s.Segments.Count,
+                Protection = s.Protection.ToString(), s.Operator,
+            }));
+        });
+
+        // Marca (o quita) la protección de una grabación frente a la limpieza automática. Body: {"level":"Protected"}
+        // (None | Important | Protected). Una grabación protegida NUNCA se borra ni archiva automáticamente.
+        api.MapPost("/recordings/{id:guid}/protection", async (Guid id, ProtectionBody body, [FromServices] IRecordingSessionRepository sessions, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<RecordingProtection>(body.Level, ignoreCase: true, out var level))
+                return Results.BadRequest(new { error = "Nivel inválido. Usa None, Important o Protected." });
+            var ok = await sessions.SetProtectionAsync(id, level, ct);
+            return ok ? Results.Ok(new { id, protection = level.ToString() }) : Results.NotFound();
+        });
+
+        // --- Ajustes de almacenamiento (Fase 4c): retención + alertas por % + modo emergencia, editables en
+        //     caliente. GET devuelve los vigentes; PUT los guarda (se SANEAN) y los servicios de fondo los aplican
+        //     en su próximo ciclo SIN reiniciar. El body de PUT es un objeto StorageSettings completo. ---
+        api.MapGet("/storage/settings", ([FromServices] IStorageSettingsStore store) => Results.Ok(store.Current));
+        // [FromServices] EXPLÍCITO en `store`: sin él, ASP.NET lo infiere como un 2º body (junto a `body`) y falla
+        // al construir el endpoint —rompiendo TODA la API— si el test/DI no lo tiene registrado. (Como en /recordings.)
+        api.MapPut("/storage/settings", (StorageSettings body, [FromServices] IStorageSettingsStore store) =>
+        {
+            store.Save(body);
+            return Results.Ok(store.Current); // la versión SANEADA realmente aplicada
+        });
 
         // --- WebSocket de eventos ---
         app.Map("/ws/events", async (HttpContext ctx, IEventBus bus) =>
@@ -106,4 +146,5 @@ public static class ApiEndpoints
     }
 
     public sealed record StartBody(Guid ProfileId, string? Operator);
+    public sealed record ProtectionBody(string Level);
 }

@@ -16,6 +16,11 @@ public sealed record RecorderStats(
     Timecode Timecode,
     long FrameCount)
 {
+    /// <summary>Bytes escritos al disco por la sesión de grabación EN CURSO (segmentos + archivo activo). El
+    /// motor lo mide ACOTADO a la sesión (no recorre la carpeta del canal); el monitor de salud lo usa para el
+    /// ritmo de escritura sin escanear O(nº archivos) toda la carpeta. 0 fuera de grabación. (Auditoría N16.)</summary>
+    public long RecordedBytes { get; init; }
+
     public static readonly RecorderStats Empty =
         new(0, 0, 0, 0, new Bitrate(0), 1, Timecode.Zero, 0);
 }

@@ -135,4 +135,54 @@ public sealed class OrphanSegmentReconcilerTests
         Assert.Empty(plan.ToCreate);
         Assert.Equal(@"C:\rec\A\Viejo_2.mp4", Assert.Single(plan.Unassociated));
     }
+
+    [Fact]
+    public void RecentlyWrittenFile_IsSkipped_NotReconciled()
+    {
+        // Hay un hermano válido, pero el candidato se modificó hace 5 s: en el arranque puede ser el segmento
+        // que una grabación REANUDADA está escribiendo justo ahora. Con «now» dentro del margen, se ignora
+        // (ni se registra ni se reporta): el motor lo emitirá al cerrarlo. (Auditoría N17.)
+        var known = new[] { Seg(S1, 0, @"C:\rec\A\Vivo_1.mp4") };
+        var started = new Dictionary<Guid, DateTimeOffset> { [S1] = T0 };
+        var now = T0.AddHours(2);
+        var recent = new OrphanSegmentReconciler.ScannedFile(
+            @"C:\rec\A\Vivo_2.mp4", now.AddSeconds(-30), now.AddSeconds(-5), SizeBytes: 500_000);
+        var media = new[] { File(@"C:\rec\A\Vivo_1.mp4"), recent };
+
+        var plan = OrphanSegmentReconciler.Plan(known, started, media, now, TimeSpan.FromSeconds(60));
+
+        Assert.Empty(plan.ToCreate);
+        Assert.Empty(plan.Unassociated);
+    }
+
+    [Fact]
+    public void OldOrphan_IsStillReconciled_EvenWithRecencyFilterOn()
+    {
+        // El margen de escritura NO debe frenar a un huérfano ANTIGUO (modificado hace horas): ese sí es de una
+        // grabación muerta y debe reconciliarse. (N17: el margen solo protege lo recién escrito.)
+        var known = new[] { Seg(S1, 0, @"C:\rec\A\Muerto_1.mp4") };
+        var started = new Dictionary<Guid, DateTimeOffset> { [S1] = T0 };
+        var now = T0.AddHours(5);
+        var old = new OrphanSegmentReconciler.ScannedFile(
+            @"C:\rec\A\Muerto_2.mp4", T0, T0.AddMinutes(10), SizeBytes: 500_000); // modificado hace ~5 h
+        var media = new[] { File(@"C:\rec\A\Muerto_1.mp4"), old };
+
+        var plan = OrphanSegmentReconciler.Plan(known, started, media, now, TimeSpan.FromSeconds(60));
+
+        var created = Assert.Single(plan.ToCreate);
+        Assert.Equal(@"C:\rec\A\Muerto_2.mp4", created.FilePath);
+        Assert.Equal(1, created.Index);
+    }
+
+    [Fact]
+    public void MediaScanPatterns_CoverAllEngineContainers_NotOnlyMp4Mov()
+    {
+        // N27: antes solo se escaneaban *.mp4/*.mov; un huérfano en MKV/TS/MXF quedaba invisible. Los patrones
+        // se derivan del catálogo de contenedores del motor, así que cubren los recomendados para largos.
+        Assert.Contains("*.mkv", OrphanSegmentReconciler.MediaPatterns);
+        Assert.Contains("*.ts", OrphanSegmentReconciler.MediaPatterns);
+        Assert.Contains("*.mxf", OrphanSegmentReconciler.MediaPatterns);
+        Assert.Contains("*.mp4", OrphanSegmentReconciler.MediaPatterns); // y siguen los originales
+        Assert.Contains("*.mov", OrphanSegmentReconciler.MediaPatterns);
+    }
 }

@@ -8,6 +8,8 @@ namespace Baioss.Record.UnitTests;
 public class ScheduleValidatorTests
 {
     private static readonly TimeSpan Off = TimeSpan.FromHours(-6);
+    // Zona de prueba con offset fijo -6 (sin DST): NextRecurringAnchor toma ahora una TimeZoneInfo. (N4.)
+    private static readonly TimeZoneInfo Tz = TimeZoneInfo.CreateCustomTimeZone("fixed-minus6", Off, "fixed-6", "fixed-6");
     private static DateTimeOffset At(int y, int mo, int d, int h, int mi) => new(y, mo, d, h, mi, 0, Off);
 
     private static ScheduledJob Job(Guid ch, RecurrenceKind kind, DateTimeOffset runAt, int durMin, Weekdays days = Weekdays.None) => new()
@@ -99,7 +101,7 @@ public class ScheduleValidatorTests
     public void NextRecurringAnchor_Daily_RollsToTomorrow_WhenTimePassed()
     {
         var now = At(2026, 6, 20, 21, 0);  // las 20:00 de hoy ya pasaron
-        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Daily, Weekdays.None, TimeSpan.FromHours(20), Off, now);
+        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Daily, Weekdays.None, TimeSpan.FromHours(20), Tz, now);
         Assert.Equal(At(2026, 6, 21, 20, 0), anchor);
     }
 
@@ -107,7 +109,7 @@ public class ScheduleValidatorTests
     public void NextRecurringAnchor_Daily_StaysToday_WhenTimeAhead()
     {
         var now = At(2026, 6, 20, 19, 0);
-        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Daily, Weekdays.None, TimeSpan.FromHours(20), Off, now);
+        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Daily, Weekdays.None, TimeSpan.FromHours(20), Tz, now);
         Assert.Equal(At(2026, 6, 20, 20, 0), anchor);
     }
 
@@ -116,7 +118,7 @@ public class ScheduleValidatorTests
     {
         var now = At(2026, 6, 22, 10, 0);
         var targetDay = now.AddDays(1).DayOfWeek;  // mañana
-        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Weekly, ScheduleEvaluator.ToFlag(targetDay), TimeSpan.FromHours(20), Off, now);
+        var anchor = ScheduleValidator.NextRecurringAnchor(RecurrenceKind.Weekly, ScheduleEvaluator.ToFlag(targetDay), TimeSpan.FromHours(20), Tz, now);
         Assert.Equal(At(2026, 6, 23, 20, 0), anchor);
         Assert.Equal(targetDay, anchor.DayOfWeek);
     }

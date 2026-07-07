@@ -11,6 +11,10 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="🛠 Configuración"
                             Command="{Binding OpenGeneralSettingsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="🗄 Almacenamiento" Margin="8,0,0,0"
+                            Command="{Binding OpenStorageSettingsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="🗂 Grabaciones" Margin="8,0,0,0"
+                            Command="{Binding OpenRecordingsCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="🎛 Entradas" Margin="8,0,0,0"
                             Command="{Binding OpenInputsCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="🕒 Programación" Margin="8,0,0,0"
@@ -23,8 +27,40 @@
                     <TextBlock Text="RECORD" FontSize="18" FontWeight="Bold" Foreground="#3B82F6" Margin="6,0,0,0"/>
                     <TextBlock Text="{Binding ChannelsSubtitle}" FontSize="13"
                                Foreground="#8A92A0" Margin="12,3,0,0" VerticalAlignment="Center"/>
+                    <!-- Indicador GLOBAL de almacenamiento (Fase 4b): visible también en reposo; color por salud -->
+                    <Border VerticalAlignment="Center" Margin="16,0,0,0" CornerRadius="6" Padding="10,4"
+                            ToolTip="{Binding StorageTooltip}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StorageHealth}" Value="Warning">
+                                        <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StorageHealth}" Value="Critical">
+                                        <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding StorageHealth}" Value="Emergency">
+                                        <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="💾" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="{Binding StorageText}" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </DockPanel>
+        </Border>
+
+        <!-- Franja de alerta de almacenamiento (Fase 4b): visible solo en crítico/emergencia, MUY visible para 24/7. -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource RecBrush}" Padding="16,8"
+                Visibility="{Binding ShowStorageBanner, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="{Binding StorageBannerText}" Foreground="White" FontWeight="Bold" FontSize="13"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"/>
         </Border>
 
         <!-- Un panel por canal, SIEMPRE en una sola fila (UniformGrid Rows="1"): N canales → N columnas.

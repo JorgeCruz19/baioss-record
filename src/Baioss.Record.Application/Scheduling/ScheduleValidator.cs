@@ -66,18 +66,18 @@ public static class ScheduleValidator
     /// (3) Primera ocurrencia FUTURA de una repetición: si la hora de hoy ya pasó, empieza el próximo día
     /// válido (evita que una tarea recién creada arranque un trozo de inmediato).
     /// </summary>
-    public static DateTimeOffset NextRecurringAnchor(RecurrenceKind kind, Weekdays days, TimeSpan timeOfDay, TimeSpan offset, DateTimeOffset now)
+    public static DateTimeOffset NextRecurringAnchor(RecurrenceKind kind, Weekdays days, TimeSpan timeOfDay, TimeZoneInfo tz, DateTimeOffset now)
     {
-        var startDate = DateOnly.FromDateTime(now.ToOffset(offset).DateTime);
+        var startDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, tz).DateTime);
         for (int i = 0; i < 8; i++)
         {
             var date = startDate.AddDays(i);
-            var slot = Slot(date, timeOfDay, offset);
+            var slot = Slot(date, timeOfDay, tz);
             if (slot <= now) continue;
             if (kind == RecurrenceKind.Daily) return slot;
             if (kind == RecurrenceKind.Weekly && ScheduleEvaluator.Includes(days, date.DayOfWeek)) return slot;
         }
-        return Slot(startDate, timeOfDay, offset); // fallback teórico
+        return Slot(startDate, timeOfDay, tz); // fallback teórico
     }
 
     private static IReadOnlyList<(DateTimeOffset Start, DateTimeOffset End)> Occurrences(ScheduledJob job, DateTimeOffset from, int count)
@@ -101,8 +101,13 @@ public static class ScheduleValidator
         return list;
     }
 
-    private static DateTimeOffset Slot(DateOnly date, TimeSpan tod, TimeSpan offset)
-        => new(date.Year, date.Month, date.Day, tod.Hours, tod.Minutes, tod.Seconds, offset);
+    // Offset segun el DST vigente en ESA fecha (no un offset fijo): así el ancla cae a la hora local correcta
+    // aunque la primera ocurrencia caiga tras un cambio de horario de verano. (Auditoría N4.)
+    private static DateTimeOffset Slot(DateOnly date, TimeSpan tod, TimeZoneInfo tz)
+    {
+        var localWall = new DateTime(date.Year, date.Month, date.Day, tod.Hours, tod.Minutes, tod.Seconds, DateTimeKind.Unspecified);
+        return new DateTimeOffset(localWall, tz.GetUtcOffset(localWall));
+    }
 
     private static List<DayOfWeek> SelectedDays(Weekdays w)
     {

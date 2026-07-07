@@ -10,6 +10,9 @@ publish/
 ## Logs y artefactos de runtime
 logs/
 recordings/
+## …pero NO el código fuente de la UI de grabaciones (colisionaba con la carpeta de MEDIOS «recordings/»).
+!/src/Baioss.Record.App/Recordings/
+!/src/Baioss.Record.App/Recordings/**
 proxies/
 data/
 *.db

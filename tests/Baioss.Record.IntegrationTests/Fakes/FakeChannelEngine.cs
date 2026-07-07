@@ -24,6 +24,11 @@ internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
     public int StartCount { get; private set; }
     public int StopCount { get; private set; }
 
+    /// <summary>Si es true, cada StartRecordingAsync LANZA (simula un fallo de arranque persistente). Cuenta el
+    /// intento en <see cref="StartAttempts"/> aunque falle, para verificar que el scheduler deja de reintentar.</summary>
+    public bool FailStarts { get; set; }
+    public int StartAttempts { get; private set; }
+
     // IConfigurableRecording: el scheduler ajusta la segmentación del perfil antes de grabar.
     public RecordingProfile Profile { get; set; } = new() { Name = "fake" };
     public string OutputDirectory { get; set; } = "";
@@ -42,6 +47,8 @@ internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
 
     public Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
     {
+        StartAttempts++;
+        if (FailStarts) throw new InvalidOperationException("fallo simulado de arranque");
         Started = true;
         StartCount++;
         LastRecordingName = recordingName;

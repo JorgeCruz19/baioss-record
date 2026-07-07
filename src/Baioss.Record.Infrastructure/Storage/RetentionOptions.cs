@@ -21,6 +21,17 @@ public sealed class RetentionOptions
     /// <summary>Carpeta destino cuando <see cref="Action"/> = Archive.</summary>
     public string? ArchivePath { get; set; }
 
-    /// <summary>Cada cuántas horas revisar (mínimo 1).</summary>
+    /// <summary>Cada cuántas horas revisar (mínimo 1). Ignorado si <see cref="IntervalMinutes"/> &gt; 0.</summary>
     public int IntervalHours { get; set; } = 6;
+
+    /// <summary>Frecuencia FINA en minutos (15/30…); si &gt; 0 TIENE PRIORIDAD sobre <see cref="IntervalHours"/>
+    /// (se acota a un mínimo de 5 min para no martillear el disco). 0 = usar horas. (Fase 2.)</summary>
+    public int IntervalMinutes { get; set; }
+
+    /// <summary>Retención por ESPACIO: mantener al menos estos GB libres en el volumen de grabación (0 = desactivado). (Fase 2.)</summary>
+    public double MinFreeGB { get; set; }
+
+    /// <summary>Retención por ESPACIO: mantener al menos este % libre del volumen (0 = desactivado). Se COMBINA con
+    /// <see cref="MinFreeGB"/> (gana el objetivo mayor). (Fase 2.)</summary>
+    public int MinFreePercent { get; set; }
 }

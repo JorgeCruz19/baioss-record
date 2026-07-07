@@ -1,3 +1,4 @@
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 
 namespace Baioss.Record.Application.Persistence;
@@ -37,9 +38,16 @@ public interface IRecordingSessionRepository : IRepository<RecordingSession>
 
     /// <summary>
     /// Sesiones del canal cuya grabación TERMINÓ antes de <paramref name="cutoff"/> (con sus segmentos), para
-    /// aplicar la retención. Las grabaciones en curso (sin <c>EndedAt</c>) nunca entran.
+    /// aplicar la retención. Las grabaciones en curso (sin <c>EndedAt</c>) y las PROTEGIDAS nunca entran.
     /// </summary>
     Task<IReadOnlyList<RecordingSession>> GetEndedBeforeAsync(Guid channelId, DateTimeOffset cutoff, CancellationToken ct = default);
+
+    /// <summary>Marca (o quita) la protección de una sesión frente a la retención automática. Devuelve false si no existe.</summary>
+    Task<bool> SetProtectionAsync(Guid id, RecordingProtection protection, CancellationToken ct = default);
+
+    /// <summary>Sesiones FINALIZADAS y NO protegidas, más ANTIGUAS primero (por fin), en CUALQUIER canal, para
+    /// liberar espacio (retención por espacio). <paramref name="take"/> limita el lote. (Fase 2.)</summary>
+    Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, CancellationToken ct = default);
 }
 
 /// <summary>Append-only para el registro de eventos/auditoría.</summary>

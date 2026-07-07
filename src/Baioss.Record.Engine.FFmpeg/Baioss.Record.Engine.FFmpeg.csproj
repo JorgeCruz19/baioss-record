@@ -15,4 +15,11 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- El motor de captura (Infrastructure) mata el proceso del supervisor en un test determinista de caída. -->
+    <InternalsVisibleTo Include="Baioss.Record.Infrastructure" />
+    <!-- Tests del detector de crecimiento de archivo (#55) y del supervisor. -->
+    <InternalsVisibleTo Include="Baioss.Record.UnitTests" />
+  </ItemGroup>
+
 </Project>

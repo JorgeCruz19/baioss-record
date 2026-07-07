@@ -1,7 +1,9 @@
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Persistence;
 
 namespace Baioss.Record.Infrastructure.Storage;
@@ -29,8 +31,19 @@ public static class OrphanSegmentReconciler
     /// <summary>Resultado del plan: segmentos a crear y archivos que no se pudieron asociar (para avisar).</summary>
     public sealed record ReconcilePlan(IReadOnlyList<Segment> ToCreate, IReadOnlyList<string> Unassociated);
 
-    // Extensiones de contenedor que produce el motor. (.faststart.* se excluyen: son temporales de remux.)
-    private static readonly string[] MediaPatterns = { "*.mp4", "*.mov" };
+    // Extensiones de contenedor que produce el motor, DERIVADAS del catálogo de códecs (mp4/mov/mxf/mkv/ts/avi/
+    // mpg/wav/mp3): antes solo mp4/mov, así que un huérfano en MKV/TS/MXF —contenedores recomendados para
+    // grabaciones largas— NO se reconciliaba y quedaba invisible en el historial. (.faststart.* se excluyen
+    // abajo: son temporales de remux.) (Auditoría N27.)
+    internal static readonly string[] MediaPatterns =
+        Enum.GetValues<ContainerFormat>()
+            .Select(f => "*." + FfmpegCodecMap.Container(f).Extension)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Margen de escritura: un archivo modificado hace menos de esto puede estar siendo escrito por una
+    /// grabación reanudada; el reconciliador no lo toca (evita registrar como huérfano un segmento vivo). (N17.)</summary>
+    private static readonly TimeSpan WriteGrace = TimeSpan.FromSeconds(60);
 
     // Nombre (sin extensión) terminado en «_<dígitos>» ⇒ segmento N de una grabación; el prefijo es el nombre base.
     private static readonly Regex SegmentSuffix = new(@"^(?<base>.*)_(?<n>\d+)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -62,7 +75,7 @@ public static class OrphanSegmentReconciler
                     new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero), fi.Length));
             }
 
-        var plan = Plan(known, sessionStarted, media);
+        var plan = Plan(known, sessionStarted, media, DateTimeOffset.UtcNow, WriteGrace);
 
         if (plan.ToCreate.Count > 0)
         {
@@ -85,11 +98,16 @@ public static class OrphanSegmentReconciler
     /// <param name="known">Segmentos ya registrados en la BD.</param>
     /// <param name="sessionStarted">Sesiones existentes → su inicio (para elegir la más reciente y evitar FK rotas).</param>
     /// <param name="media">Archivos de grabación hallados en disco.</param>
+    /// <param name="now">Instante de referencia para el margen de escritura (null = sin filtro de recencia, para tests).</param>
+    /// <param name="writeGrace">Archivos modificados hace menos que esto se consideran EN ESCRITURA y se ignoran. (N17.)</param>
     public static ReconcilePlan Plan(
         IReadOnlyList<Segment> known,
         IReadOnlyDictionary<Guid, DateTimeOffset> sessionStarted,
-        IReadOnlyList<ScannedFile> media)
+        IReadOnlyList<ScannedFile> media,
+        DateTimeOffset? now = null,
+        TimeSpan? writeGrace = null)
     {
+        var grace = writeGrace ?? WriteGrace;
         var knownPaths = new HashSet<string>(known.Select(s => Normalize(s.FilePath)), StringComparer.OrdinalIgnoreCase);
 
         // key (carpeta + nombre base) → sesiones candidatas (solo las que EXISTEN, para no romper la FK) con su inicio.
@@ -111,6 +129,10 @@ public static class OrphanSegmentReconciler
         foreach (var file in media)
         {
             if (knownPaths.Contains(Normalize(file.Path))) continue; // ya registrado
+            // N17: modificado hace muy poco → puede ser el segmento que una grabación REANUDADA está escribiendo
+            // ahora mismo (en el arranque el scheduler reanuda casi a la vez que corre el reconciliador). No lo
+            // trates como huérfano: el motor lo emitirá cuando lo cierre. Ni se registra ni se reporta.
+            if (now is { } n && n - file.ModifiedUtc < grace) continue;
             var key = KeyOf(file.Path);
             if (!keyToSessions.TryGetValue(key, out var candidates) || candidates.Count == 0)
             {

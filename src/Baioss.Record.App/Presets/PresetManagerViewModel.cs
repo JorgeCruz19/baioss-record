@@ -21,6 +21,9 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
 {
     private readonly IPresetStore _store;
     private readonly EventHandler _onStoreChanged;
+    // Resuelve el ViewModel VIGENTE de un canal por su Id (contra la colección viva del shell): si hubo un rebind
+    // con esta ventana abierta, TargetChannel apunta a un VM ya DISPUESTO. (Auditoría N10.)
+    private readonly Func<Guid, ChannelViewModel?>? _resolveChannel;
 
     public IReadOnlyList<ChannelViewModel> Channels { get; }
     public ObservableCollection<CategoryFilter> Categories { get; }
@@ -41,10 +44,12 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
     [ObservableProperty] private string _detail = "";
     [ObservableProperty] private string _statusMessage = "";
 
-    public PresetManagerViewModel(IPresetStore store, IReadOnlyList<ChannelViewModel> channels)
+    public PresetManagerViewModel(IPresetStore store, IReadOnlyList<ChannelViewModel> channels,
+        Func<Guid, ChannelViewModel?>? resolveChannel = null)
     {
         _store = store;
         Channels = channels;
+        _resolveChannel = resolveChannel;
         TargetChannel = channels.FirstOrDefault();
 
         Categories = new ObservableCollection<CategoryFilter>(new[]
@@ -203,8 +208,16 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
     [RelayCommand(CanExecute = nameof(CanApply))]
     private void Apply()
     {
-        TargetChannel!.ApplyPreset(SelectedPreset!);
-        StatusMessage = $"Preset '{SelectedPreset!.Name}' aplicado al Canal {TargetChannel!.Key}.";
+        // Resuelve el VM VIGENTE del canal: si hubo un rebind con la ventana abierta, TargetChannel es un VM
+        // dispuesto (motor muerto) y aplicar no llegaría al motor vivo. Re-valida el estado del canal real. (N10.)
+        var target = _resolveChannel?.Invoke(TargetChannel!.ChannelId) ?? TargetChannel!;
+        if (target is not { IsConfigurable: true, IsRecording: false })
+        {
+            StatusMessage = $"El Canal {target.Key} no admite aplicar el preset ahora (¿grabando o no configurable?).";
+            return;
+        }
+        target.ApplyPreset(SelectedPreset!);
+        StatusMessage = $"Preset '{SelectedPreset!.Name}' aplicado al Canal {target.Key}.";
     }
 
     private void SelectAfterRefresh(Guid id)

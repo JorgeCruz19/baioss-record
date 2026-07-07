@@ -348,7 +348,9 @@ public sealed partial class ScheduleViewModel : ObservableObject
         if (SegmentEnabled && SegmentMinutes <= 0) { StatusMessage = "Los minutos por segmento deben ser mayores que 0."; return; }
 
         var kind = SelectedRecurrence.Kind;
-        var offset = DateTimeOffset.Now.Offset;
+        // La hora del día se interpreta en la ZONA local (offset por-ocurrencia, DST-correcto), no en un offset
+        // fijo capturado ahora: así una recurrente no se corre 1 h tras un cambio de horario de verano. (N4.)
+        var tz = TimeZoneInfo.Local;
         var now = _clock.UtcNow;
 
         var weekdays = Weekdays.None;
@@ -368,14 +370,15 @@ public sealed partial class ScheduleViewModel : ObservableObject
         if (kind == RecurrenceKind.Once)
         {
             if (SelectedDate is not { } d) { StatusMessage = "Elige una fecha."; return; }
-            runAt = new DateTimeOffset(d.Year, d.Month, d.Day, start.Hours, start.Minutes, start.Seconds, offset);
+            var wall = new DateTime(d.Year, d.Month, d.Day, start.Hours, start.Minutes, start.Seconds, DateTimeKind.Unspecified);
+            runAt = new DateTimeOffset(wall, tz.GetUtcOffset(wall)); // offset del DST vigente ESE día
             if (runAt <= now) { StatusMessage = "Esa fecha/hora ya pasó; elige una futura."; return; }
         }
         else
         {
             // (3) Primera ocurrencia FUTURA: si la hora de hoy ya pasó, empieza el próximo día válido
             // (evita que una tarea recién creada arranque un trozo de inmediato).
-            runAt = ScheduleValidator.NextRecurringAnchor(kind, weekdays, start, offset, now);
+            runAt = ScheduleValidator.NextRecurringAnchor(kind, weekdays, start, tz, now);
         }
 
         var job = new ScheduledJob

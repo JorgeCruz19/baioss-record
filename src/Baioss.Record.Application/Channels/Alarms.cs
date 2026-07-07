@@ -23,13 +23,15 @@ public enum AlarmType
     FramesDropped,
     /// <summary>El archivo recién cerrado NO pasó la verificación (ffprobe no halló pistas o duración válida): posible grabación dañada.</summary>
     RecordingUnverified,
+    /// <summary>Almacenamiento en EMERGENCIA (disco casi lleno, p. ej. ≥ 95% ocupado): hay que liberar espacio ya. (Fase 3.)</summary>
+    DiskEmergency,
 }
 
 /// <summary>Una alarma activa de un canal, con desde cuándo está activa y un mensaje legible.</summary>
 public sealed record ChannelAlarm(AlarmType Type, string Message, DateTimeOffset Since)
 {
     /// <summary>True para alarmas que exigen acción inmediata del operador (rojas).</summary>
-    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.RecordingUnverified;
+    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.DiskEmergency or AlarmType.RecordingUnverified;
 }
 
 /// <summary>

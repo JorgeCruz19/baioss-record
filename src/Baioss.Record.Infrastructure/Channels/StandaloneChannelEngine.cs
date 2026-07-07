@@ -9,6 +9,7 @@ using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Recording;
+using Baioss.Record.Application.Storage;
 using Baioss.Record.Infrastructure.Preview;
 using Baioss.Record.Infrastructure.Storage;
 
@@ -35,6 +36,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly ILogger<StandaloneChannelEngine>? _log;
     private readonly DiskSpaceGuard? _diskGuard;
     private readonly DiskUsageRegistry? _diskUsage; // ritmo agregado del volumen entre canales (A7/#10)
+    private readonly IStorageGate? _storageGate;    // compuerta global: bloquea el arranque en emergencia (Fase 3b)
 
     // volatile: lo escriben Start/StopRecordingCoreAsync (bajo _transition) y lo LEEN sin lock el getter Status
     // (hilo de UI/API) y OnEngineAlarm (hilo de stderr de FFmpeg). volatile garantiza que esos lectores vean el
@@ -45,6 +47,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     // CONSISTENTE (que la BD no quede con el nombre temporal) cuando el operador nombra al detener.
     private readonly object _renameLock = new();
     private readonly List<Segment> _sessionSegments = new();
+    // Snapshot de los segmentos de la ÚLTIMA sesión terminada (para corregir sus rutas en BD al renombrar):
+    // inmune a que una grabación nueva vacíe _sessionSegments mientras el operador nombra en el diálogo. (N9.)
+    private readonly List<Segment> _completedSessionSegments = new();
     private readonly List<Task> _pendingPersists = new();
 
     private double _peakL = -60, _peakR = -60;
@@ -59,6 +64,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly Dictionary<AlarmType, ChannelAlarm> _alarms = new();
     private StorageInfo _storage = StorageInfo.Unknown;
     private volatile bool _autoStopping;
+    // Último nivel de disco PUBLICADO al bus: StorageLow solo se emite al CAMBIAR de nivel, no en cada sondeo. (N11.)
+    private DiskLevel _lastDiskLevel = DiskLevel.Ok;
 
     // Serializa Start/Stop del canal: la UI, el scheduler y el auto-stop por disco pueden invocarlos a la vez.
     // Sin esto, dos transiciones concurrentes corrompían _session y el wiring del DiskSpaceGuard. (Auditoría A5/A9/#31.)
@@ -77,7 +84,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         ILogger<StandaloneChannelEngine>? log = null,
         IRecordingProfileRepository? profiles = null,
         DiskSpaceGuard? diskGuard = null,
-        DiskUsageRegistry? diskUsage = null)
+        DiskUsageRegistry? diskUsage = null,
+        IStorageGate? storageGate = null)
     {
         ChannelId = channelId ?? Guid.NewGuid();
         _key = key;
@@ -92,6 +100,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _log = log;
         _diskGuard = diskGuard;
         _diskUsage = diskUsage;
+        _storageGate = storageGate;
 
         _engine.StateChanged += (_, _) => Raise();
         _engine.StatsUpdated += OnStats;
@@ -260,12 +269,21 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// </summary>
     private void Preflight(RecordingProfile profile, string? recordingName)
     {
+        // 0) Compuerta GLOBAL de almacenamiento (Fase 3b): si el volumen está en EMERGENCIA de espacio y la opción
+        //    de bloqueo está activa (opt-in), NO se inicia una grabación nueva —grabar a un disco casi lleno la
+        //    corrompería—. El estado lo mantiene el coordinador global, que vigila el volumen también en IDLE (lo
+        //    que la guarda por-canal, que solo corre grabando, no cubre). Bloqueante: lanza para que la UI/API/
+        //    scheduler avisen y no se cree una sesión a medias.
+        if (_storageGate is { ShouldBlockNewRecordings: true } gate)
+            throw new InvalidOperationException(gate.BlockReason
+                ?? "Almacenamiento en EMERGENCIA: no se pueden iniciar nuevas grabaciones hasta liberar espacio.");
+
         // 1) Perfil coherente (bitrate/GOP/resolución/calidad/audio).
         if (!RecordingProfileValidator.IsValid(profile, out var errors))
             throw new InvalidOperationException("Perfil de grabación inválido: " + string.Join(" ", errors));
 
         // 2) Carpeta de destino escribible (existe y admite crear/borrar un archivo).
-        var dir = Path.Combine(_engine.OutputRoot, _key);
+        var dir = _engine.OutputRoot; // sin subcarpeta por canal: preflight sobre la carpeta destino configurada
 
         // 2b) Longitud de ruta (Windows ~260): un nombre de grabación larguísimo haría fallar a FFmpeg en
         // SILENCIO al abrir el archivo. Se reserva margen para la extensión, el dedupe « N» y el contador de
@@ -337,7 +355,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // segmento quedaría sin registrar (lo tendría que rescatar el reconciliador en el próximo arranque).
         // Esperarlas aquí lo evita y, de paso, garantiza que al volver de un Stop el segmento ya está en la BD. (N2.)
         Task[] persists;
-        lock (_renameLock) persists = _pendingPersists.ToArray();
+        lock (_renameLock)
+        {
+            persists = _pendingPersists.ToArray();
+            _completedSessionSegments.Clear();
+            _completedSessionSegments.AddRange(_sessionSegments); // snapshot para el renombrado posterior (N9)
+        }
         if (persists.Length > 0)
             try { await Task.WhenAll(persists).ConfigureAwait(false); } catch { /* cada persist ya registró su propio error */ }
 
@@ -345,6 +368,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // de un archivo dañado y debe persistir hasta la próxima grabación).
         SetAlarm(AlarmType.DiskLow, false);
         SetAlarm(AlarmType.DiskCritical, false);
+        SetAlarm(AlarmType.DiskEmergency, false);
         SetAlarm(AlarmType.FramesDropped, false);
         _drops.Reset();
         _storage = StorageInfo.Unknown;
@@ -404,7 +428,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // Espera la persistencia en vuelo y corrige la ruta en la BD (que no quede el nombre temporal).
         Task[] pending;
         List<Segment> segs;
-        lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _sessionSegments.ToList(); }
+        lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _completedSessionSegments.ToList(); }
         try { await Task.WhenAll(pending).ConfigureAwait(false); } catch { /* ya registrado en PersistSegmentAsync */ }
 
         if (_segments is not null)
@@ -454,6 +478,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         AlarmType.AudioSilence => "Silencio de audio",
         AlarmType.DiskLow => "Espacio en disco bajo",
         AlarmType.DiskCritical => "Disco casi lleno",
+        AlarmType.DiskEmergency => "Almacenamiento en EMERGENCIA — libera espacio ya",
         AlarmType.Slate => "Sin señal — grabando carta de ajuste",
         AlarmType.EncoderFallback => "Codificador por GPU no disponible — grabando con codificador alternativo",
         AlarmType.FramesDropped => "Frames perdidos — el equipo no da abasto (CPU/GPU/disco)",
@@ -463,18 +488,27 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     // --- Guarda de disco ---
 
-    private void OnDiskUpdated(object? sender, (DiskLevel Level, StorageInfo Info) e)
+    private void OnDiskUpdated(object? sender, (DiskLevel Level, StorageInfo Info, bool AutoStop) e)
     {
         _storage = e.Info;
         SetAlarm(AlarmType.DiskLow, e.Level == DiskLevel.Low);
         SetAlarm(AlarmType.DiskCritical, e.Level == DiskLevel.Critical);
+        SetAlarm(AlarmType.DiskEmergency, e.Level == DiskLevel.Emergency); // ≥95% ocupado (Fase 3)
         Raise(); // refresca el "tiempo restante" aunque no cambie el nivel
 
-        if (e.Level != DiskLevel.Ok && _bus is not null)
-            _ = _bus.PublishAsync(new StorageLow(ChannelId, e.Info.FreeBytes, e.Info.EstimatedRemaining ?? TimeSpan.Zero));
+        // StorageLow al bus SOLO en TRANSICIÓN de nivel (Ok→Low→Critical o recuperación), no en cada sondeo
+        // (la guarda evalúa cada pocos segundos): antes inundaba la tabla EventLog con miles de filas/día por
+        // canal mientras el disco seguía bajo, sin aportar información nueva. (Auditoría N11.)
+        if (e.Level != _lastDiskLevel)
+        {
+            if (e.Level != DiskLevel.Ok && _bus is not null)
+                _ = _bus.PublishAsync(new StorageLow(ChannelId, e.Info.FreeBytes, e.Info.EstimatedRemaining ?? TimeSpan.Zero));
+            _lastDiskLevel = e.Level;
+        }
 
-        // Crítico → detener ordenadamente (en otra tarea: no se puede parar la guarda desde su propio hilo).
-        if (e.Level == DiskLevel.Critical && !_autoStopping)
+        // AUTO-STOP: solo la condición DURA "a punto de agotarse" (piso de bytes / tiempo crítico), no un simple
+        // % alto (eso es alerta/emergencia). En otra tarea: no se puede parar la guarda desde su propio hilo. (Fase 3.)
+        if (e.AutoStop && !_autoStopping)
         {
             _autoStopping = true;
             _log?.LogWarning("Canal {Key}: disco crítico ({Free:N0} bytes libres); deteniendo la grabación para no corromper el archivo.", _key, e.Info.FreeBytes);

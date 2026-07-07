@@ -216,17 +216,27 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // ¿Era manual? Las programadas ya tienen nombre y las gestiona el scheduler. Se decide ANTES de
         // parar, porque al detener pueden cambiar los indicadores del canal.
         bool manual = !IsScheduledRecording && _renamer is not null;
-        await _engine.StopRecordingAsync();
-        if (!manual) return;
-
-        // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).
-        // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
-        var dialog = new RecordingNameWindow(Key, $"Grabación {DateTime.Now:dd-MM-yyyy}")
+        try
         {
-            Owner = System.Windows.Application.Current?.MainWindow,
-        };
-        if (dialog.ShowDialog() == true)
-            await _renamer!.RenameLastRecordingAsync(dialog.RecordingName);
+            await _engine.StopRecordingAsync();
+            if (!manual) return;
+
+            // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).
+            // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
+            var dialog = new RecordingNameWindow(Key, $"Grabación {DateTime.Now:dd-MM-yyyy}")
+            {
+                Owner = System.Windows.Application.Current?.MainWindow,
+            };
+            if (dialog.ShowDialog() == true)
+                await _renamer!.RenameLastRecordingAsync(dialog.RecordingName);
+        }
+        catch (Exception ex)
+        {
+            // Simétrico con StartAsync: un fallo al detener/renombrar (I/O, BD, renombrado) NO debe quedar solo en
+            // el log —el handler global lo tragaría— sin que el operador se entere. (Auditoría N26.)
+            System.Windows.MessageBox.Show(ex.Message, "No se pudo detener/renombrar la grabación",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
     }
     private bool CanStop() => IsRecording;
 

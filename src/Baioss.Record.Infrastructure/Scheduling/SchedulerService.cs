@@ -33,8 +33,17 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     // lo escribe el bucle del BackgroundService y lo lee/modifica la UI (saltar / indicador de activo). El
     // SessionId permite que el auto-stop detenga SOLO la sesión que el scheduler inició: si el operador paró
     // la programada y arrancó una manual en ese mismo canal, no se la corta al vencer la duración. (Auditoría #20.)
-    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, Guid ChannelId, Guid SessionId)> _active = new();
-    private readonly HashSet<Guid> _warnedBusy = new();
+    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId)> _active = new();
+    // Concurrente porque el tick ahora procesa los trabajos EN PARALELO (N7).
+    private readonly ConcurrentDictionary<Guid, byte> _warnedBusy = new();
+    // N13: última ocurrencia YA completada (auto-stop) por trabajo, para no re-dispararla si el reloj RETROCEDE
+    // (corrección NTP) dentro de su ventana. En memoria: cubre el caso frecuente (misma sesión); el caso raro
+    // «reinicio + reloj atrás dentro de la ventana» quedaría sin cubrir (requeriría persistir un LastCompletedAt).
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _lastCompletedOcc = new();
+    // N22: fallos consecutivos de arranque por ocurrencia. Tras MaxStartAttempts se deja de reintentar cada 1 s
+    // (se marca la ocurrencia como disparada) para no llenar el log ni martillear un start que siempre falla.
+    private readonly ConcurrentDictionary<Guid, (DateTimeOffset Occ, int Count)> _startFailures = new();
+    private const int MaxStartAttempts = 3;
 
     // Caché de la lista de trabajos para el tick de 1 s: evita releer TODA la tabla (abriendo una conexión
     // SQLite nueva) 86 400 veces/día. Se invalida en CADA escritura —todas pasan por este servicio, único
@@ -155,48 +164,58 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     {
         var now = _clock.UtcNow;
 
-        // 1) Auto-stop de las grabaciones programadas cuya duración expiró.
-        foreach (var (jobId, info) in _active.ToList())
-        {
-            if (now < info.StopAt) continue;
-            if (_channels.TryGet(info.ChannelId, out var ch) && ch is not null)
-            {
-                // Detener SOLO si el canal sigue grabando la MISMA sesión que el scheduler inició. Si el
-                // operador detuvo la programada (Stop+renombrar) y arrancó una grabación manual, el canal
-                // grabaría otra sesión: no debemos cortársela al vencer la duración de la programada. (Auditoría #20.)
-                if (ch.Status.SessionId != info.SessionId)
-                {
-                    _log.LogWarning("Scheduler: la grabación programada del canal {Channel} ya no está en curso " +
-                        "(sesión actual {Actual} ≠ {Esperada}); no se auto-detiene (es otra grabación).",
-                        info.ChannelId, ch.Status.SessionId, info.SessionId);
-                }
-                else
-                {
-                    try
-                    {
-                        await ch.StopRecordingAsync(ct).ConfigureAwait(false);
-                        // La segmentación es propia de la grabación programada: se retira al terminar para no
-                        // arrastrarla a una grabación manual posterior.
-                        if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
-                        _log.LogInformation("Scheduler: fin de grabación programada en canal {Channel}.", info.ChannelId);
-                    }
-                    catch (Exception ex) { _log.LogError(ex, "Scheduler: error al detener canal {Channel}.", info.ChannelId); }
-                }
-            }
-            if (_active.TryRemove(jobId, out _)) RaiseActiveChanged();
-        }
+        // 1) Auto-stop de las grabaciones programadas cuya duración expiró — EN PARALELO: un stop lento (hasta 30 s
+        //    de flush) no debe retrasar el de los demás canales ni los starts de este tick. El _transition por
+        //    canal ya serializa las transiciones de un mismo canal. (Auditoría N7.)
+        var expired = _active.Where(kv => now >= kv.Value.StopAt).ToList();
+        if (expired.Count > 0)
+            await Task.WhenAll(expired.Select(kv => AutoStopExpiredAsync(kv.Key, kv.Value, ct))).ConfigureAwait(false);
 
-        // 2) Disparo de starts/stops según la franja vigente de cada trabajo.
+        // 2) Disparo de starts/stops según la franja vigente de cada trabajo — también EN PARALELO por trabajo. (N7.)
         var jobs = await GetJobsCachedAsync(ct).ConfigureAwait(false);
-        foreach (var job in jobs)
-        {
-            if (!job.Enabled) continue;
-            if (ScheduleEvaluator.LatestSlotAtOrBefore(job, now) is not { } occ) continue;
+        var actions = jobs.Where(j => j.Enabled).Select(j => HandleJobTickAsync(j, now, ct)).ToList();
+        if (actions.Count > 0) await Task.WhenAll(actions).ConfigureAwait(false);
+    }
 
-            if (job.Action == ScheduledAction.StartRecording) await TryStartAsync(job, occ, now, ct).ConfigureAwait(false);
-            else if (job.Action == ScheduledAction.StopRecording) await TryStopAsync(job, occ, now, ct).ConfigureAwait(false);
-            // SwitchProfile / SwitchSource: pendientes (Fase 2).
+    /// <summary>Auto-stop de una grabación programada cuya duración expiró (aislado para el tick paralelo). Detiene
+    /// SOLO si el canal sigue en la MISMA sesión que inició el scheduler (#20), retira la segmentación, marca la
+    /// ocurrencia como COMPLETADA (N13) y quita el trabajo de los activos.</summary>
+    private async Task AutoStopExpiredAsync(Guid jobId, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId) info, CancellationToken ct)
+    {
+        if (_channels.TryGet(info.ChannelId, out var ch) && ch is not null)
+        {
+            // Detener SOLO si el canal sigue grabando la MISMA sesión que el scheduler inició. Si el operador
+            // detuvo la programada y arrancó una grabación manual, no debemos cortársela al vencer la duración. (#20.)
+            if (ch.Status.SessionId != info.SessionId)
+            {
+                _log.LogWarning("Scheduler: la grabación programada del canal {Channel} ya no está en curso " +
+                    "(sesión actual {Actual} ≠ {Esperada}); no se auto-detiene (es otra grabación).",
+                    info.ChannelId, ch.Status.SessionId, info.SessionId);
+            }
+            else
+            {
+                try
+                {
+                    await ch.StopRecordingAsync(ct).ConfigureAwait(false);
+                    // La segmentación es propia de la grabación programada: se retira al terminar.
+                    if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
+                    _log.LogInformation("Scheduler: fin de grabación programada en canal {Channel}.", info.ChannelId);
+                }
+                catch (Exception ex) { _log.LogError(ex, "Scheduler: error al detener canal {Channel}.", info.ChannelId); }
+            }
         }
+        _lastCompletedOcc[jobId] = info.Occ; // N13: ocurrencia completada → no re-disparar si el reloj retrocede
+        if (_active.TryRemove(jobId, out _)) RaiseActiveChanged();
+    }
+
+    /// <summary>Procesa un trabajo en el tick: resuelve su franja vigente y dispara start/stop. Aislado para
+    /// ejecutarse en PARALELO con los demás trabajos. (Auditoría N7.)</summary>
+    private async Task HandleJobTickAsync(ScheduledJob job, DateTimeOffset now, CancellationToken ct)
+    {
+        if (ScheduleEvaluator.LatestSlotAtOrBefore(job, now) is not { } occ) return;
+        if (job.Action == ScheduledAction.StartRecording) await TryStartAsync(job, occ, now, ct).ConfigureAwait(false);
+        else if (job.Action == ScheduledAction.StopRecording) await TryStopAsync(job, occ, now, ct).ConfigureAwait(false);
+        // SwitchProfile / SwitchSource: pendientes (Fase 2).
     }
 
     private async Task TryStartAsync(ScheduledJob job, DateTimeOffset occ, DateTimeOffset now, CancellationToken ct)
@@ -205,6 +224,10 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
         // El operador saltó ESTA ocurrencia: no se inicia ni se reanuda (las siguientes sí).
         if (job.SkippedOccurrence is { } skipped && skipped == occ) return;
+
+        // N13: si ESTA ocurrencia ya se COMPLETÓ (auto-stop) y el reloj RETROCEDIÓ a su ventana (corrección NTP),
+        // no la re-dispares. LastRunAt no basta: se pone al ARRANCAR y debe permitir la reanudación tras reinicio.
+        if (_lastCompletedOcc.TryGetValue(job.Id, out var done) && done >= occ) return;
 
         DateTimeOffset? stopAt = job.Duration is { } d ? occ + d : null;
         // Con duración: vigente mientras no se llegue al fin (permite reanudar tras un reinicio dentro de
@@ -224,11 +247,11 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         // No interferir con una grabación manual (u otra) en curso en ese canal.
         if (ch.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
         {
-            if (_warnedBusy.Add(job.Id))
+            if (_warnedBusy.TryAdd(job.Id, 0))
                 _log.LogWarning("Scheduler: «{Title}» saltada; el canal {Channel} ya está grabando.", job.Title, job.ChannelId);
             return;
         }
-        _warnedBusy.Remove(job.Id);
+        _warnedBusy.TryRemove(job.Id, out _);
 
         // Aplica la segmentación PROPIA de esta grabación programada al perfil del canal (la grabación
         // usa el perfil activo). Se fija siempre (política o null) para no heredar restos de otra.
@@ -237,6 +260,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         try
         {
             await ch.StartRecordingAsync(job.ProfileId ?? Guid.Empty, "Programación", ScheduledName(job, occ), ct).ConfigureAwait(false);
+            _startFailures.TryRemove(job.Id, out _); // N22: arrancó → limpia el contador de fallos de esta franja
             job.LastRunAt = occ;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
             _cache = null;
@@ -244,13 +268,31 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             {
                 // Captura la sesión recién creada para validar luego que el auto-stop no pise otra grabación. (#20.)
                 var sessionId = ch.Status.SessionId ?? Guid.Empty;
-                _active[job.Id] = (st, job.ChannelId, sessionId);
+                _active[job.Id] = (st, occ, job.ChannelId, sessionId);
                 RaiseActiveChanged();
             }
             _log.LogInformation("Scheduler: inicio de «{Title}» en canal {Channel}{Until}.",
                 job.Title, job.ChannelId, stopAt is { } e ? $" (hasta {e:HH:mm})" : "");
         }
-        catch (Exception ex) { _log.LogError(ex, "Scheduler: error al iniciar «{Title}».", job.Title); }
+        catch (Exception ex)
+        {
+            // N22: NO reintentar en bucle cada 1 s. Cuenta los fallos de ESTA ocurrencia; tras MaxStartAttempts,
+            // marca la franja como disparada (LastRunAt=occ + completada) para dejar de intentarla y avisa claro.
+            var next = _startFailures.TryGetValue(job.Id, out var f) && f.Occ == occ ? f.Count + 1 : 1;
+            _startFailures[job.Id] = (occ, next);
+            if (next >= MaxStartAttempts)
+            {
+                _log.LogError(ex, "Scheduler: «{Title}» falló al iniciar {N} veces; se ABANDONA esta ocurrencia ({Occ:dd-MM HH:mm}). Revisa perfil/carpeta/señal.", job.Title, next, occ);
+                job.LastRunAt = occ;
+                _lastCompletedOcc[job.Id] = occ; // trátala como cerrada: no volver a intentar esta franja
+                try { await _repo.UpdateAsync(job, ct).ConfigureAwait(false); _cache = null; } catch { /* se reintentará el marcado en el próximo tick */ }
+                _startFailures.TryRemove(job.Id, out _);
+            }
+            else
+            {
+                _log.LogWarning(ex, "Scheduler: «{Title}» falló al iniciar (intento {N}/{Max}); se reintentará.", job.Title, next, MaxStartAttempts);
+            }
+        }
     }
 
     private async Task TryStopAsync(ScheduledJob job, DateTimeOffset occ, DateTimeOffset now, CancellationToken ct)

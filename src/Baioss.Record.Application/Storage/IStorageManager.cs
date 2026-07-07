@@ -1,3 +1,4 @@
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 
@@ -24,4 +25,12 @@ public interface IStorageManager
 
     /// <summary>Aplica auto-delete/archivado según la política (7/30/90 días o personalizada).</summary>
     Task ApplyRetentionAsync(RetentionPolicy policy, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retención por ESPACIO: mantiene al menos <paramref name="minFreeGB"/> GB (o <paramref name="minFreePercent"/>%,
+    /// se aplica el objetivo MAYOR) libres en el volumen, borrando/archivando las grabaciones NO protegidas más
+    /// antiguas. Devuelve el nº de archivos tratados. (Gestión de almacenamiento — Fase 2.)
+    /// </summary>
+    Task<int> EnforceFreeSpaceAsync(string volume, double minFreeGB, int minFreePercent,
+        RetentionAction action, string? archivePath, CancellationToken ct = default);
 }

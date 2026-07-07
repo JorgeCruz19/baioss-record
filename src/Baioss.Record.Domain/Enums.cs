@@ -54,6 +54,19 @@ public enum AudioCodec
     Mp2 // MPEG-1/2 Audio Layer II (broadcast clásico)
 }
 
+/// <summary>
+/// Protección de una grabación frente a la limpieza automática (retención). CUALQUIER valor distinto de
+/// <see cref="None"/> EXCLUYE la sesión de todo borrado/archivado automático; los niveles solo cambian la
+/// etiqueta para el operador (Importante = destacada; Protegida = no eliminar nunca). Se persiste como entero,
+/// así que los valores NO deben reordenarse. (Gestión de almacenamiento — Fase 1.)
+/// </summary>
+public enum RecordingProtection
+{
+    None = 0,       // sujeta a la retención automática
+    Important = 1,  // marcada como importante
+    Protected = 2,  // protegida / no eliminar nunca
+}
+
 /// <summary>Contenedor de salida.</summary>
 public enum ContainerFormat
 {

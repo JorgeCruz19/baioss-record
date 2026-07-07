@@ -6,12 +6,16 @@ using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Scheduling;
+using Baioss.Record.Application.Storage;
 using Baioss.Record.App.Inputs;
 using Baioss.Record.App.Preview;
 using Baioss.Record.App.Presets;
+using Baioss.Record.App.Recordings;
 using Baioss.Record.App.Scheduling;
+using Baioss.Record.App.Storage;
 
 namespace Baioss.Record.App;
 
@@ -29,6 +33,9 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly IDeviceEnumerator _devices;
     private readonly ISchedulerService _scheduler;
     private readonly IClock _clock;
+    private readonly IRecordingSessionRepository _sessions;
+    private readonly IStorageStatusProvider _storageStatus;
+    private readonly IStorageSettingsStore _storageSettings;
 
     public ObservableCollection<ChannelViewModel> Channels { get; }
 
@@ -36,7 +43,8 @@ public sealed partial class ShellViewModel : ObservableObject
     public string ChannelsSubtitle => $"· grabación broadcast de {Channels.Count} canal{(Channels.Count == 1 ? "" : "es")}";
 
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
-        IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock)
+        IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
+        IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings)
     {
         _host = host;
         _previews = previews;
@@ -44,6 +52,9 @@ public sealed partial class ShellViewModel : ObservableObject
         _devices = devices;
         _scheduler = scheduler;
         _clock = clock;
+        _sessions = sessions;
+        _storageStatus = storageStatus;
+        _storageSettings = storageSettings;
 
         Channels = new ObservableCollection<ChannelViewModel>(
             host.Channels
@@ -54,6 +65,11 @@ public sealed partial class ShellViewModel : ObservableObject
         _scheduler.ActiveChanged += OnScheduledActiveChanged;
         RefreshScheduledActive();
         RefreshTodayTasks();
+
+        // Indicador GLOBAL de almacenamiento (Fase 4b): estado del volumen de grabación, visible TAMBIÉN en reposo
+        // (la guarda por-canal solo informa grabando). El coordinador lo publica en un hilo de fondo → marshalar.
+        ApplyStorage(_storageStatus.Current);
+        _storageStatus.Changed += OnStorageChanged;
 
         // Refresco periódico de la tabla «HOY» (hora de las filas, altas/bajas de tareas, cambio de día).
         _todayTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
@@ -131,10 +147,52 @@ public sealed partial class ShellViewModel : ObservableObject
         foreach (var vm in Channels) vm.IsScheduledRecording = active.Contains(vm.ChannelId);
     }
 
+    // ---------------------------------------------------------------------
+    //  Indicador global de almacenamiento (Fase 4b)
+    // ---------------------------------------------------------------------
+
+    /// <summary>Texto del indicador de almacenamiento de la barra superior («52 GB libres · 88%»).</summary>
+    [ObservableProperty] private string _storageText = "—";
+    /// <summary>Salud del volumen (Ok/Aviso/Crítico/Emergencia): la usa la barra para el color.</summary>
+    [ObservableProperty] private StorageHealth _storageHealth = StorageHealth.Unknown;
+    /// <summary>Muestra la franja roja de alerta (crítico/emergencia).</summary>
+    [ObservableProperty] private bool _showStorageBanner;
+    [ObservableProperty] private string _storageBannerText = "";
+    [ObservableProperty] private string _storageTooltip = "Almacenamiento del volumen de grabación";
+
+    /// <summary>El coordinador publica el estado en un hilo de fondo (sondeo cada 15 s): marshalar al hilo de UI.</summary>
+    private void OnStorageChanged(object? sender, StorageSnapshot s)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ApplyStorage(s));
+
+    private void ApplyStorage(StorageSnapshot s)
+    {
+        if (s.Health == StorageHealth.Unknown || s.TotalBytes <= 0)
+        {
+            StorageText = "—";
+            StorageHealth = StorageHealth.Unknown;
+            ShowStorageBanner = false;
+            StorageBannerText = "";
+            StorageTooltip = "Almacenamiento del volumen de grabación (midiendo…)";
+            return;
+        }
+        StorageHealth = s.Health;
+        StorageText = $"{StorageFormat.Bytes(s.FreeBytes)} libres · {s.UsedPercent:0}%";
+        StorageTooltip = $"Volumen de grabación: {StorageFormat.Bytes(s.FreeBytes)} libres de {StorageFormat.Bytes(s.TotalBytes)} ({s.UsedPercent:0.#}% ocupado)";
+        ShowStorageBanner = s.Health is StorageHealth.Critical or StorageHealth.Emergency;
+        StorageBannerText = s.Health switch
+        {
+            StorageHealth.Emergency => "⚠  ALMACENAMIENTO EN EMERGENCIA  —  libera espacio para seguir grabando con normalidad",
+            StorageHealth.Critical => "⚠  Almacenamiento crítico  —  queda muy poco espacio en el volumen de grabación",
+            _ => "",
+        };
+    }
+
     [RelayCommand]
     private void OpenPresets()
     {
-        var viewModel = new PresetManagerViewModel(_presetStore, Channels.ToList());
+        // Snapshot para el desplegable (estable), + resolver para aplicar al VM VIGENTE por Id (por si hay un
+        // rebind con la ventana abierta → el VM seleccionado quedaría dispuesto). (Auditoría N10.)
+        var viewModel = new PresetManagerViewModel(_presetStore, Channels.ToList(), ResolveChannel);
         var window = new PresetManagerWindow
         {
             DataContext = viewModel,
@@ -172,7 +230,9 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand]
     private void OpenGeneralSettings()
     {
-        var viewModel = new GeneralSettingsViewModel(Channels.ToList());
+        // Colección VIVA (no snapshot): si un rebind reemplaza un ChannelViewModel, el ItemsControl re-enlaza sus
+        // controles (carpeta / slate) al VM nuevo, en vez de editar el motor ya dispuesto. (Auditoría N10.)
+        var viewModel = new GeneralSettingsViewModel(Channels);
         var window = new GeneralSettingsWindow
         {
             DataContext = viewModel,
@@ -180,6 +240,37 @@ public sealed partial class ShellViewModel : ObservableObject
         };
         window.Show();
     }
+
+    [RelayCommand]
+    private void OpenRecordings()
+    {
+        // Mapa estable ChannelId→Key (la clave A/B/C/D no cambia con un rebind): para etiquetar el canal de cada
+        // grabación y poblar el filtro por canal. Se toma un snapshot al abrir (los canales no se crean/destruyen
+        // en caliente, solo se reconstruyen conservando su Id/Key).
+        var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key);
+        var viewModel = new RecordingsViewModel(_sessions, _clock, channelKeys);
+        var window = new RecordingsWindow
+        {
+            DataContext = viewModel,
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.Show();
+    }
+
+    [RelayCommand]
+    private void OpenStorageSettings()
+    {
+        var window = new StorageSettingsWindow
+        {
+            DataContext = new StorageSettingsViewModel(_storageSettings),
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.Show();
+    }
+
+    /// <summary>ViewModel VIGENTE de un canal por su Id (contra la colección viva): para que ventanas abiertas
+    /// resuelvan el motor vivo tras un rebind, no el VM dispuesto que capturaron. (Auditoría N10.)</summary>
+    private ChannelViewModel? ResolveChannel(Guid channelId) => Channels.FirstOrDefault(c => c.ChannelId == channelId);
 
     private Task RebindAsync(Guid channelId, InputSource def) => _host.RebindAsync(channelId, def);
 
