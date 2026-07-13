@@ -37,6 +37,15 @@ public interface ICaptureSource : IAsyncDisposable
     /// </summary>
     int AudioInputIndex => 0;
 
+    /// <summary>
+    /// True si la fuente reporta por sí misma la PÉRDIDA y la RECUPERACIÓN de señal (vía <see cref="SignalChanged"/>),
+    /// de modo que el motor NO necesita SONDEAR el dispositivo para detectar la vuelta de la señal. NDI lo hace (su
+    /// receptor detecta presencia); DeckLink/DirectShow/archivo NO → el motor sondea el dispositivo. Sondear una
+    /// fuente NDI sería redundante y DAÑINO: abriría un ffmpeg que se conecta a los sockets del PROPIO receptor (no
+    /// prueba la fuente NDI real), compitiendo con el pipeline y dando falsos positivos de recuperación. (Auditoría #39/#59.)
+    /// </summary>
+    bool SelfReportsRecovery => false;
+
     Task OpenAsync(CancellationToken ct = default);
     Task CloseAsync(CancellationToken ct = default);
 

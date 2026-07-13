@@ -979,6 +979,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 RaiseAlarm(AlarmType.SignalLoss, true);
             }
 
+            // Recuperación por SONDEO del dispositivo — SOLO para fuentes que NO se auto-reportan. Una fuente NDI
+            // señala la vuelta de la señal ella misma (el receptor detecta presencia → SignalChanged → ExitSlate en
+            // OnSourceSignalChanged), así que sondearla es redundante y DAÑINO: el sondeo abre un ffmpeg que se
+            // conecta a los sockets del PROPIO receptor (no prueba la fuente NDI real), compite con el pipeline y da
+            // falsos positivos. Para NDI seguimos vigilando el slate PROLONGADO (arriba) pero no sondeamos. (#39/#59.)
+            if (_source?.SelfReportsRecovery == true) continue;
+
             if (await ProbeDeviceAsync(ct).ConfigureAwait(false) && !ct.IsCancellationRequested)
             {
                 // Solo termina el bucle si la SALIDA del slate tuvo éxito; si el rebuild falló (la señal volvió a

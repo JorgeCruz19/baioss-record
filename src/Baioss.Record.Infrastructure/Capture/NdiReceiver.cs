@@ -55,6 +55,12 @@ public sealed class NdiReceiver : IAsyncDisposable
     /// actualice su <c>CurrentSignal</c> y el canal entre/salga de carta de ajuste sin esperar al watchdog. (C3.)</summary>
     public event Action<bool>? PresenceChanged;
 
+    /// <summary>Se dispara cuando la fuente cambia de formato (resolución/pixel) EN CALIENTE sin perder presencia
+    /// (p. ej. vMix 720→1080 al vuelo): el receptor ya sirve el formato nuevo, pero el FFmpeg en marcha sigue con
+    /// el <c>-video_size</c> viejo hasta que el pipeline se RECONSTRUYA. La fuente lo usa para actualizar
+    /// <c>CurrentSignal</c> (y avisar). No se fuerza el rebuild aquí (sería una carrera con el slate). (N20/#32.)</summary>
+    public event Action? FormatChanged;
+
     /// <summary>Sin frames de vídeo durante este tiempo ⇒ se considera pérdida de señal NDI.</summary>
     public TimeSpan PresenceTimeout { get; init; } = TimeSpan.FromSeconds(3);
 
@@ -222,23 +228,22 @@ public sealed class NdiReceiver : IAsyncDisposable
         }
         if (Width == 0) // primer frame o re-detección tras pérdida prolongada: fija el formato y desbloquea StartAsync
         {
-            Width = v.xres; Height = v.yres;
-            if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
-            // El FourCC real decide el -pixel_format y los bytes por píxel. Con UYVY_BGRA casi siempre es UYVY
-            // (16 bpp); BGRA solo si la fuente lleva alfa. Cualquier otro caso → bgra como red de seguridad.
-            switch (v.FourCC)
-            {
-                case NDIlib.FourCC_type_e.FourCC_type_UYVY:
-                    VideoPixelFormat = "uyvy422"; _bytesPerPixel = 2; break;
-                case NDIlib.FourCC_type_e.FourCC_type_BGRA:
-                case NDIlib.FourCC_type_e.FourCC_type_BGRX:
-                    VideoPixelFormat = "bgra"; _bytesPerPixel = 4; break;
-                default:
-                    VideoPixelFormat = "bgra"; _bytesPerPixel = 4;
-                    _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
-                    break;
-            }
+            ApplyFormat(ref v);
             _firstVideo.TrySetResult(true);
+        }
+        else if (FormatDiffers(v.xres, v.yres, PixelFormatFor(v.FourCC), Width, Height, VideoPixelFormat))
+        {
+            // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel al
+            // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y BuildInputArguments
+            // sean correctos, AVISA (el FFmpeg en marcha sigue con el -video_size viejo → imagen corrupta hasta
+            // reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que la fuente
+            // actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
+            int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat;
+            ApplyFormat(ref v);
+            _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP} → {W}x{H} {P}); el pipeline en " +
+                "marcha seguirá con el formato anterior hasta reconstruirse (rebind o salida de carta de ajuste).",
+                _sourceName, oldW, oldH, oldPix, Width, Height, VideoPixelFormat);
+            try { FormatChanged?.Invoke(); } catch { /* no romper el bucle de recepción */ }
         }
 
         // Notifica la recuperación AHORA, con el formato ya re-fijado (ver nota arriba): así CurrentSignal
@@ -257,6 +262,39 @@ public sealed class NdiReceiver : IAsyncDisposable
         if (!_videoQueue.Writer.TryWrite(new Frame(buf, size)))
             ArrayPool<byte>.Shared.Return(buf);                   // cola completada (cierre): no se encola
     }
+
+    /// <summary>Fija el formato (resolución/tasa/pixel/bytes-por-píxel) a partir del frame. Lo comparten el primer
+    /// frame, la re-detección tras pérdida prolongada (#32) y el cambio de formato en caliente (N20). El FourCC real
+    /// decide el -pixel_format: con UYVY_BGRA casi siempre UYVY (16 bpp); BGRA solo si la fuente lleva alfa.</summary>
+    private void ApplyFormat(ref NDIlib.video_frame_v2_t v)
+    {
+        Width = v.xres; Height = v.yres;
+        if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
+        switch (v.FourCC)
+        {
+            case NDIlib.FourCC_type_e.FourCC_type_UYVY:
+                VideoPixelFormat = "uyvy422"; _bytesPerPixel = 2; break;
+            case NDIlib.FourCC_type_e.FourCC_type_BGRA:
+            case NDIlib.FourCC_type_e.FourCC_type_BGRX:
+                VideoPixelFormat = "bgra"; _bytesPerPixel = 4; break;
+            default:
+                VideoPixelFormat = "bgra"; _bytesPerPixel = 4;
+                _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
+                break;
+        }
+    }
+
+    /// <summary>-pixel_format de FFmpeg para un FourCC NDI (uyvy422 / bgra). Pura.</summary>
+    private static string PixelFormatFor(NDIlib.FourCC_type_e fourCC) => fourCC switch
+    {
+        NDIlib.FourCC_type_e.FourCC_type_UYVY => "uyvy422",
+        NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX => "bgra",
+        _ => "bgra",
+    };
+
+    /// <summary>¿El formato entrante difiere del cacheado? (resolución o pixel). Pura y testeable. (N20.)</summary>
+    internal static bool FormatDiffers(int newW, int newH, string newPix, int oldW, int oldH, string oldPix)
+        => newW != oldW || newH != oldH || !string.Equals(newPix, oldPix, StringComparison.Ordinal);
 
     private void OnAudio(ref NDIlib.audio_frame_v2_t a)
     {

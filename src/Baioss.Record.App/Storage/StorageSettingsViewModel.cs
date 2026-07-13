@@ -33,6 +33,8 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
     [ObservableProperty] private bool _stopNewRecordingsOnEmergency;
 
     [ObservableProperty] private string _statusMessage = "";
+    /// <summary>True si <see cref="StatusMessage"/> es un aviso/error (la UI lo pinta en rojo en vez de verde).</summary>
+    [ObservableProperty] private bool _statusIsError;
 
     public StorageSettingsViewModel(IStorageSettingsStore store)
     {
@@ -67,6 +69,14 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
     [RelayCommand]
     private void Save()
     {
+        // Validación: archivar SIN carpeta no tiene sentido (el saneado lo pasaría a «borrar» en silencio; mejor avisar).
+        if (ArchiveInsteadOfDelete && string.IsNullOrWhiteSpace(ArchivePath))
+        {
+            StatusIsError = true;
+            StatusMessage = "⚠ Indica una carpeta de archivado, o desmarca «Archivar en otra carpeta».";
+            return;
+        }
+
         var s = new StorageSettings
         {
             RetentionEnabled = RetentionEnabled,
@@ -82,8 +92,17 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
             AutoCleanupOnEmergency = AutoCleanupOnEmergency,
             StopNewRecordingsOnEmergency = StopNewRecordingsOnEmergency,
         };
-        _store.Save(s);
-        Load(_store.Current); // refleja los valores SANEADOS realmente aplicados
-        StatusMessage = "✔ Ajustes guardados y aplicados (los servicios los usarán en su próximo ciclo).";
+        var clean = s.Sanitized(); // para saber si el saneado AJUSTÓ algún valor (y avisarlo)
+        _store.Save(s);            // el almacén sanea igual internamente y persiste
+        Load(_store.Current);      // refleja los valores SANEADOS realmente aplicados
+
+        bool adjusted = clean.RetentionDays != s.RetentionDays || clean.MinFreePercent != s.MinFreePercent
+            || clean.IntervalMinutes != s.IntervalMinutes || clean.WarnPercent != s.WarnPercent
+            || clean.CriticalPercent != s.CriticalPercent || clean.EmergencyPercent != s.EmergencyPercent
+            || clean.Action != s.Action;
+        StatusIsError = false;
+        StatusMessage = adjusted
+            ? "✔ Guardado. Algunos valores se ajustaron al rango válido (aviso ≤ crítico ≤ emergencia · mín. 5 min · % 0–100)."
+            : "✔ Ajustes guardados y aplicados (los servicios los usarán en su próximo ciclo).";
     }
 }

@@ -119,8 +119,9 @@ Con `FragmentedMp4=false`, el stall-kill del watchdog (30 s), un crash del encod
 ### N19. ✅ CORREGIDO — `CanRebind` exige que TODOS los canales sean reales: un canal caído a simulado bloquea el gestor de entradas ENTERO
 `ChannelHost.cs:65` — y justo la vía de recuperación de ese canal es reasignarle la entrada… que está deshabilitada. Única salida: reiniciar la app. **Fix aplicado:** `CanRebind => _ctx.Real` (basta que haya FFmpeg). Reasignar a un canal caído a simulado lo reconstruye como motor real (`RebindCoreAsync`); si fallara, `RestoreChannelAsync` lo deja funcional. Los canales grabando siguen bloqueados aparte.
 
-### N20. ⏸️ APLAZADO (NDI, sin hardware para verificar) — NDI: cambio de formato sin hueco de presencia (o con slate OFF / solo-preview) = imagen corrupta persistente
+### N20. 🟡 PARCIAL (2026-07-06) — NDI: cambio de formato sin hueco de presencia (o con slate OFF / solo-preview) = imagen corrupta persistente
 El #32 solo re-detecta si hubo pérdida ≥ 5 s Y hay un ReplaceProcess posterior (salida de slate). Si la fuente cambia de resolución al vuelo (vMix 720→1080) o no hay slate, el ffmpeg en marcha —y sus reinicios del supervisor, que reutilizan el MISMO argv— sigue leyendo con el `-video_size` viejo → basura hasta rebind manual.
+**AVANCE (2026-07-06):** el receptor NDI ahora DETECTA el cambio de formato en caliente (`NdiReceiver.FormatDiffers` por frame), re-fija el formato cacheado (helper `ApplyFormat`), avisa por log y emite `FormatChanged` → `NdiCaptureSource` republica `CurrentSignal`. Con esto una reconstrucción posterior (rebind / salida de slate) ya usa el formato NUEVO, y el operador ve el aviso. PENDIENTE: la RECONSTRUCCIÓN AUTOMÁTICA del pipeline en preview/slate-off (requiere un camino formato-cambiado→ReplaceProcess con serialización correcta frente al slate; no se hizo por riesgo/carrera). No verificado en vivo (sin fuente NDI activa ahora).
 
 ---
 
@@ -140,7 +141,7 @@ El #32 solo re-detecta si hubo pérdida ≥ 5 s Y hay un ReplaceProcess posterio
 ---
 
 ## Pendientes ya conocidos (auditoría anterior, sin cambios)
-A3/A4 (drift A/V NDI bajo CPU), A10 (API sin auth), #19 (offset A/V inicial NDI), #35 (`-r` sobre rawvideo), #39/#59 (la sonda de recuperación NDI compite con el receptor), #47/#48 (optimizaciones ffmpeg). **#55 ✅ HECHO (2026-07-05):** el watchdog vigila ahora el crecimiento del ARCHIVO (sonda + `FileGrowthTracker`, +3 tests), no solo el progreso de stdout — red de seguridad que complementa N1/N6. Verificado en vivo (sin falso positivo en 42 s).
+A3/A4 (drift A/V NDI bajo CPU), A10 (API sin auth), #19 (offset A/V inicial NDI), #35 (`-r` sobre rawvideo), #47/#48 (optimizaciones ffmpeg). **#39/#59 ✅ HECHO (2026-07-06):** el sondeo de recuperación ya NO corre para fuentes que se auto-reportan (`ICaptureSource.SelfReportsRecovery`; NDI=true) → deja de competir con el receptor y de dar falsos positivos; la recuperación NDI llega por `PresenceChanged`. **N20 🟡 parcial** (ver arriba). **#55 ✅ HECHO (2026-07-05):** el watchdog vigila ahora el crecimiento del ARCHIVO (sonda + `FileGrowthTracker`, +3 tests), no solo el progreso de stdout — red de seguridad que complementa N1/N6. Verificado en vivo (sin falso positivo en 42 s).
 
 ## Orden de ataque recomendado
 1. **Lote 1 — pérdida de material (urgente)**: N1 (+ persistir/re-sembrar slate), N2, N3 (+ N21 trivial de paso).

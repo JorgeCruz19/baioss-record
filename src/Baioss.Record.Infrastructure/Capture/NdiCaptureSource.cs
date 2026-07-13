@@ -33,6 +33,11 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// <summary>NDI sirve el audio en una entrada FFmpeg aparte (la 1); el vídeo va en la 0.</summary>
     public int AudioInputIndex => 1;
 
+    /// <summary>NDI reporta pérdida y recuperación de señal por sí mismo (el receptor detecta la presencia de
+    /// vídeo y lo publica en <see cref="SignalChanged"/>): el motor NO debe sondear el dispositivo para NDI
+    /// (sondearlo abriría un ffmpeg contra los sockets del propio receptor → competencia + falsos positivos). (#39/#59.)</summary>
+    public bool SelfReportsRecovery => true;
+
     /// <summary>Formato de píxel negociado con la fuente (uyvy422 normalmente; bgra si lleva alfa); null si no abierta.</summary>
     public string? VideoPixelFormat => _receiver?.VideoPixelFormat;
 
@@ -47,6 +52,7 @@ public sealed class NdiCaptureSource : ICaptureSource
         if (_receiver is not null)
         {
             _receiver.PresenceChanged -= OnReceiverPresence;
+            _receiver.FormatChanged -= OnReceiverFormatChanged;
             await _receiver.DisposeAsync().ConfigureAwait(false);
             _receiver = null;
         }
@@ -66,6 +72,9 @@ public sealed class NdiCaptureSource : ICaptureSource
         // El receptor avisa de pérdida/recuperación de vídeo en caliente (antes NDI nunca reportaba pérdida y
         // CurrentSignal quedaba «Locked» para siempre → ni SignalLost ni slate). (Auditoría 24/7, C3/#16.)
         _receiver.PresenceChanged += OnReceiverPresence;
+        // …y del cambio de formato EN CALIENTE (resolución/pixel al vuelo): actualiza CurrentSignal con el formato
+        // nuevo para que la UI y una futura reconstrucción del pipeline lo reflejen. (N20.)
+        _receiver.FormatChanged += OnReceiverFormatChanged;
 
         var res = new Resolution(_receiver.Width, _receiver.Height);
         var rate = new FrameRate(_receiver.FrameRateN, _receiver.FrameRateD);
@@ -91,6 +100,20 @@ public sealed class NdiCaptureSource : ICaptureSource
         {
             CurrentSignal = SignalInfo.None;
         }
+        SignalChanged?.Invoke(this, CurrentSignal);
+    }
+
+    /// <summary>La fuente NDI cambió de formato EN CALIENTE (resolución/pixel al vuelo): republica CurrentSignal
+    /// con la resolución/tasa nuevas para que la UI lo muestre. El receptor ya sirve el formato nuevo; el pipeline
+    /// FFmpeg se corregirá al reconstruirse. (N20.)</summary>
+    private void OnReceiverFormatChanged()
+    {
+        if (_receiver is null) return;
+        var res = new Resolution(_receiver.Width, _receiver.Height);
+        var rate = new FrameRate(_receiver.FrameRateN, _receiver.FrameRateD);
+        CurrentSignal = new SignalInfo(SignalState.Locked, res, rate,
+            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
+            FormatLabel: $"{res.Width}×{res.Height} · NDI");
         SignalChanged?.Invoke(this, CurrentSignal);
     }
 
@@ -140,6 +163,7 @@ public sealed class NdiCaptureSource : ICaptureSource
         if (_receiver is not null)
         {
             _receiver.PresenceChanged -= OnReceiverPresence;
+            _receiver.FormatChanged -= OnReceiverFormatChanged;
             await _receiver.DisposeAsync().ConfigureAwait(false);
         }
         _receiver = null;
