@@ -59,7 +59,7 @@ public sealed partial class ShellViewModel : ObservableObject
         Channels = new ObservableCollection<ChannelViewModel>(
             host.Channels
                 .OrderBy(e => e.Status.Key, StringComparer.Ordinal)
-                .Select(e => new ChannelViewModel(e, previews.For(e.ChannelId), SkipScheduledAsync)));
+                .Select(e => new ChannelViewModel(e, previews.For(e.ChannelId), SkipScheduledAsync, PersistOutputDirAsync)));
 
         _host.ChannelRebound += OnChannelRebound;
         _scheduler.ActiveChanged += OnScheduledActiveChanged;
@@ -82,6 +82,10 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly SemaphoreSlim _refreshing = new(1, 1);
 
     private Task SkipScheduledAsync(Guid channelId) => _scheduler.SkipCurrentAsync(channelId);
+
+    /// <summary>Persiste la carpeta de destino que el operador elige en «Configuración general», para que
+    /// SOBREVIVA a reinicios (antes solo vivía en memoria y volvía al default en cada arranque).</summary>
+    private Task PersistOutputDirAsync(Guid channelId, string path) => _host.PersistOutputDirectoryAsync(channelId, path);
 
     private void OnScheduledActiveChanged(object? sender, EventArgs e)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => { RefreshScheduledActive(); RefreshTodayTasks(); });
@@ -283,7 +287,7 @@ public sealed partial class ShellViewModel : ObservableObject
             {
                 if (Channels[i].ChannelId != channelId) continue;
                 Channels[i].Dispose();
-                Channels[i] = new ChannelViewModel(_host.Get(channelId), _previews.For(channelId), SkipScheduledAsync);
+                Channels[i] = new ChannelViewModel(_host.Get(channelId), _previews.For(channelId), SkipScheduledAsync, PersistOutputDirAsync);
                 break;
             }
             RefreshScheduledActive(); // el VM nuevo refleja si hay grabación programada activa

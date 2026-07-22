@@ -158,8 +158,8 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
 
     private async Task<ChannelBuild> BuildChannelAsync(string key, CancellationToken ct)
     {
-        var (channelId, def, profile) = await SeedAndResolveAsync(key, ct).ConfigureAwait(false);
-        var (engine, preview) = await BuildRuntimeAsync(key, channelId, def, profile, ct).ConfigureAwait(false);
+        var (channelId, def, profile, outputDir) = await SeedAndResolveAsync(key, ct).ConfigureAwait(false);
+        var (engine, preview) = await BuildRuntimeAsync(key, channelId, def, profile, outputDir, ct).ConfigureAwait(false);
         return new ChannelBuild(key, channelId, engine, preview, def);
     }
 
@@ -261,7 +261,8 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var channel = await channels.GetAsync(channelId, ct).ConfigureAwait(false);
         var profile = (channel?.ProfileId is { } pid ? await profiles.GetAsync(pid, ct).ConfigureAwait(false) : null)
                       ?? DemoProfile(key);
-        var (engine, preview) = await BuildRuntimeAsync(key, channelId, newDef, profile, ct).ConfigureAwait(false);
+        // Conserva la carpeta de destino configurada al reconstruir el canal por rebind (si no, volvería al default).
+        var (engine, preview) = await BuildRuntimeAsync(key, channelId, newDef, profile, channel?.OutputDirectory, ct).ConfigureAwait(false);
 
         // 3) Compromiso: intercambia el runtime y notifica a la UI (re-enlaza el preview). A partir de aquí el
         //    canal ya opera con la entrada nueva.
@@ -294,6 +295,33 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Persiste la CARPETA DE DESTINO elegida por el operador para un canal, de modo que SOBREVIVA a reinicios
+    /// (antes solo vivía en el motor en memoria y cada arranque volvía al default). Actualiza también el motor en
+    /// vivo (fuente única de verdad) y escribe el vínculo en <see cref="Channel.OutputDirectory"/>. Best-effort:
+    /// un fallo de persistencia se registra pero no interrumpe (la ruta ya está aplicada en la sesión en curso).
+    /// </summary>
+    public async Task PersistOutputDirectoryAsync(Guid channelId, string path, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (_engines.TryGetValue(channelId, out var engine) && engine is IConfigurableRecording cfg)
+            cfg.OutputDirectory = path;
+        try
+        {
+            var channels = _sp.GetRequiredService<IChannelRepository>();
+            var channel = await channels.GetAsync(channelId, ct).ConfigureAwait(false);
+            if (channel is not null && !string.Equals(channel.OutputDirectory, path, StringComparison.Ordinal))
+            {
+                channel.OutputDirectory = path;
+                await channels.UpdateAsync(channel, ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Canal {Id}: la carpeta de destino «{Path}» se aplicó pero NO se pudo persistir (revertirá al reiniciar).", channelId, path);
+        }
+    }
+
+    /// <summary>
     /// Restaura un canal a un motor FUNCIONAL tras un fallo/timeout de reasignación: lo reconstruye desde el
     /// estado PERSISTIDO (que, al persistir la nueva entrada solo en éxito, apunta a la entrada ANTERIOR) con
     /// la misma construcción guardada del arranque —acotada y con caída a simulado—, así que NUNCA lanza y
@@ -322,7 +350,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         }
     }
 
-    private async Task<(Guid ChannelId, InputSource Def, RecordingProfile Profile)> SeedAndResolveAsync(string key, CancellationToken ct)
+    private async Task<(Guid ChannelId, InputSource Def, RecordingProfile Profile, string? OutputDir)> SeedAndResolveAsync(string key, CancellationToken ct)
     {
         // Repos singleton STATELESS sobre el factory de DbContext (contexto de corta vida por operación):
         // seguros de usar EN PARALELO desde la construcción de varios canales. Además cada key siembra SU
@@ -344,11 +372,12 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         var persisted = await channels.GetAsync(channelId, ct).ConfigureAwait(false) ?? channel;
         var def = (persisted.InputSourceId is { } sid ? await sources.GetAsync(sid, ct).ConfigureAwait(false) : null) ?? clip;
         var activeProfile = (persisted.ProfileId is { } pid ? await profiles.GetAsync(pid, ct).ConfigureAwait(false) : null) ?? profile;
-        return (channelId, def, activeProfile);
+        // Carpeta de destino persistida (si el operador la configuró); null ⇒ el runtime usará el default.
+        return (channelId, def, activeProfile, persisted.OutputDirectory);
     }
 
     private async Task<(IChannelEngine Engine, IChannelPreviewSource Preview)> BuildRuntimeAsync(
-        string key, Guid channelId, InputSource def, RecordingProfile profile, CancellationToken ct = default)
+        string key, Guid channelId, InputSource def, RecordingProfile profile, string? outputDirectory, CancellationToken ct = default)
     {
         var locator = _sp.GetRequiredService<IFfmpegLocator>();
         var bus = _sp.GetRequiredService<IEventBus>();
@@ -364,7 +393,8 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // Motor de captura UNIFICADO: un solo proceso abre la fuente y da preview + grabación a la vez.
         var capture = new FfmpegChannelEngine(locator, loggers.CreateLogger<FfmpegChannelEngine>())
         {
-            OutputRoot = Path.Combine(_ctx.Root, "recordings"),
+            // Carpeta de destino: la ruta PERSISTIDA por el operador si la hay; si no, el default <raíz>/recordings.
+            OutputRoot = string.IsNullOrWhiteSpace(outputDirectory) ? Path.Combine(_ctx.Root, "recordings") : outputDirectory,
             FragmentedMp4 = _ctx.FragmentedMp4, // fMP4 robusto vs MP4 estándar (moov, sin remux) según config
         };
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo

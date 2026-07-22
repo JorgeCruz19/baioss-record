@@ -24,13 +24,20 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private readonly IConfigurableRecording? _config;
     private readonly IPostRecordingRename? _renamer;
     private readonly Func<Guid, Task>? _skipScheduled;
+    private readonly Func<Guid, string, Task>? _persistOutputDir;
 
-    public ChannelViewModel(IChannelEngine engine, IChannelPreviewSource? preview = null, Func<Guid, Task>? skipScheduled = null)
+    /// <summary>Verdadero mientras <see cref="InitFromProfile"/> carga los valores persistidos, para que los
+    /// setters NO re-persistan lo que se acaba de leer (evita reescribir la ruta en cada arranque).</summary>
+    private bool _loadingConfig;
+
+    public ChannelViewModel(IChannelEngine engine, IChannelPreviewSource? preview = null,
+        Func<Guid, Task>? skipScheduled = null, Func<Guid, string, Task>? persistOutputDir = null)
     {
         _engine = engine;
         _config = engine as IConfigurableRecording;
         _renamer = engine as IPostRecordingRename;
         _skipScheduled = skipScheduled;
+        _persistOutputDir = persistOutputDir;
         IsConfigurable = _config is not null;
         Preview = preview;
 
@@ -139,7 +146,11 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
     partial void OnOutputDirectoryChanged(string value)
     {
-        if (_config is not null && !string.IsNullOrWhiteSpace(value)) _config.OutputDirectory = value;
+        if (_config is null || string.IsNullOrWhiteSpace(value)) return;
+        _config.OutputDirectory = value; // efecto inmediato en el motor en vivo (sesión en curso)
+        // Persiste la ruta para que SOBREVIVA a reinicios (antes solo vivía en memoria → cada arranque volvía al
+        // default). NO durante la carga inicial (que solo refleja lo ya persistido). Best-effort, sin bloquear la UI.
+        if (!_loadingConfig) _ = _persistOutputDir?.Invoke(ChannelId, value);
     }
 
     [RelayCommand]
@@ -153,8 +164,13 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private void InitFromProfile()
     {
         if (_config is null) return;
-        OutputDirectory = _config.OutputDirectory;
-        SlateOnSignalLoss = _config.Profile.SlateOnSignalLoss;
+        _loadingConfig = true; // no re-persistir los valores que se acaban de leer
+        try
+        {
+            OutputDirectory = _config.OutputDirectory;
+            SlateOnSignalLoss = _config.Profile.SlateOnSignalLoss;
+        }
+        finally { _loadingConfig = false; }
         RefreshProfileText();
     }
 

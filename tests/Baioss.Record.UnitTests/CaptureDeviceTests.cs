@@ -144,6 +144,9 @@ public class CaptureDeviceTests
         Assert.Contains("-f decklink", joined);
         Assert.Contains("-format_code Hp50", joined);
         Assert.Contains("-i DeckLink Mini Recorder", joined);
+        // draw_bars=false: sin él, el demuxer decklink graba barras SMPTE durante la re-sincronización del
+        // dispositivo al reabrirlo (arranque/parada de grabación) → basura al inicio del MP4. (#33.)
+        Assert.Contains("-draw_bars false", joined);
     }
 
     [Fact]

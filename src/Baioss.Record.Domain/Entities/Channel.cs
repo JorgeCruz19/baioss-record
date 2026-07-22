@@ -20,6 +20,12 @@ public sealed class Channel
     /// <summary>Perfil de grabación activo.</summary>
     public Guid? ProfileId { get; set; }
 
+    /// <summary>Carpeta de destino elegida por el operador para las grabaciones de este canal. <c>null</c> =
+    /// sin configurar ⇒ el host usa la carpeta por defecto (<c>&lt;raíz&gt;/recordings</c>). Se persiste al
+    /// elegirla en «Configuración general» para que SOBREVIVA a reinicios (antes solo vivía en memoria y se
+    /// perdía al reiniciar, volviendo al default en cada arranque).</summary>
+    public string? OutputDirectory { get; set; }
+
     /// <summary>Modo de grabación continua 24/7 con watchdog y auto-recuperación.</summary>
     public bool ContinuousMode { get; set; }
 

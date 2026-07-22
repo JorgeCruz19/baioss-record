@@ -29,6 +29,26 @@ public sealed class SqlitePersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task Channel_OutputDirectory_RoundTrips_AndDefaultsNull()
+    {
+        var channels = _sp.GetRequiredService<IChannelRepository>();
+
+        // Canal recién creado SIN carpeta configurada: OutputDirectory = null ⇒ el host usará el default.
+        var channel = new Channel { Key = "A", Name = "Canal A" };
+        await channels.AddAsync(channel);
+        var fresh = await channels.GetAsync(channel.Id);
+        Assert.NotNull(fresh);
+        Assert.Null(fresh!.OutputDirectory);
+
+        // El operador elige una carpeta: se persiste y SOBREVIVE (se lee de vuelta idéntica). Esto es lo que
+        // antes NO ocurría: la ruta solo vivía en el motor en memoria y volvía al default al reiniciar.
+        fresh.OutputDirectory = @"D:\capturer01";
+        await channels.UpdateAsync(fresh);
+        var afterSet = await channels.GetAsync(channel.Id);
+        Assert.Equal(@"D:\capturer01", afterSet!.OutputDirectory);
+    }
+
+    [Fact]
     public async Task RoundTrip_PreservesValueObjectsAndHistory()
     {
         var sources = _sp.GetRequiredService<IInputSourceRepository>();

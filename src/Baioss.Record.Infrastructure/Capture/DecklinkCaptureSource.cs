@@ -45,6 +45,14 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
     public IReadOnlyList<string> BuildInputArguments()
     {
         var args = new List<string> { "-f", "decklink" };
+        // draw_bars=false: el demuxer decklink DIBUJA barras SMPTE por defecto (draw_bars=true) mientras no hay
+        // una señal válida —incluida la RE-SINCRONIZACIÓN de ~1 s al ABRIR el dispositivo—. Como iniciar/detener
+        // la grabación REEMPLAZA el proceso FFmpeg (preview→grabación→preview), cada arranque REABRE la tarjeta y
+        // esa ventana de sync rellenaba con barras → se GRABABAN unas décimas de barras al INICIO del archivo (y
+        // se veían en el preview al detener). No es ningún «clip de respaldo»: es FFmpeg dibujando barras. Al
+        // desactivarlo, la grabación empieza en el primer frame REAL; la pérdida de señal EN CALIENTE la sigue
+        // cubriendo el watchdog del motor (negros/congelados → carta de ajuste), no estas barras crudas. (#33.)
+        args.AddRange(new[] { "-draw_bars", "false" });
         // Parámetros típicos: formato de pixel, modo de video, canales de audio.
         if (Definition.Parameters.TryGetValue("format_code", out var fmt))
             args.AddRange(new[] { "-format_code", fmt });

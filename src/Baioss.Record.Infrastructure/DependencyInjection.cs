@@ -126,6 +126,10 @@ public static class DependencyInjection
         // salta. En PostgreSQL lo resolvería una migración; aquí solo SQLite (MVP single-box).
         if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "Protection"))
             db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"Protection\" INTEGER NOT NULL DEFAULT 0;");
+        // Columna de CARPETA DE DESTINO por canal (persistir la ruta elegida por el operador para que sobreviva a
+        // reinicios; NULL = usar la carpeta por defecto). Mismo upgrade idempotente que Protection. (Carpeta destino.)
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Channels", "OutputDirectory"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Channels\" ADD COLUMN \"OutputDirectory\" TEXT NULL;");
     }
 
     /// <summary>¿Existe la columna en la tabla SQLite? (<c>PRAGMA table_info</c>). Para upgrades idempotentes de esquema.</summary>
