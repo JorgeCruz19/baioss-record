@@ -49,6 +49,48 @@ public sealed class SqlitePersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetPurgeCandidates_FiltersByVolumePrefix_ForMultiDiskCleanup()
+    {
+        var sources = _sp.GetRequiredService<IInputSourceRepository>();
+        var profiles = _sp.GetRequiredService<IRecordingProfileRepository>();
+        var channels = _sp.GetRequiredService<IChannelRepository>();
+        var sessions = _sp.GetRequiredService<IRecordingSessionRepository>();
+        var segments = _sp.GetRequiredService<IRepository<Segment>>();
+
+        var source = new InputSource { Name = "S", Type = InputType.File, Uri = @"C:\x.mp4", ExpectedResolution = Resolution.Hd720, ExpectedFrameRate = FrameRate.P25 };
+        var profile = new RecordingProfile { Name = "P", VideoCodec = VideoCodec.H264x264, VideoBitrate = Bitrate.FromMbps(8), AudioBitrate = Bitrate.FromKbps(256), Container = ContainerFormat.Mp4 };
+        var channel = new Channel { Key = "A", Name = "Canal A", InputSourceId = source.Id, ProfileId = profile.Id };
+        await sources.AddAsync(source);
+        await profiles.AddAsync(profile);
+        await channels.AddAsync(channel);
+
+        // Dos grabaciones FINALIZADAS (candidatas a purga), una con archivo en el disco D: y otra en C:.
+        async Task AddEnded(string filePath, DateTimeOffset ended)
+        {
+            var s = new RecordingSession
+            {
+                ChannelId = channel.Id, ProfileId = profile.Id, InputSourceId = source.Id,
+                StartedAt = ended.AddMinutes(-10), EndedAt = ended, State = RecordingState.Idle,
+                Resolution = Resolution.Hd1080, FrameRate = FrameRate.P25,
+                VideoCodec = VideoCodec.H264x264, AudioCodec = AudioCodec.Aac,
+            };
+            await sessions.AddAsync(s);
+            await segments.AddAsync(new Segment { SessionId = s.Id, Index = 0, FilePath = filePath, Status = SegmentStatus.Completed, SizeBytes = 1000, StartedAt = s.StartedAt, EndedAt = ended });
+        }
+        await AddEnded(@"D:\capturer01\A_1.mp4", DateTimeOffset.UtcNow.AddDays(-2));
+        await AddEnded(@"C:\rec\A_2.mp4", DateTimeOffset.UtcNow.AddDays(-1));
+
+        // Sin prefijo → ambas (comportamiento clásico de un solo disco).
+        var all = await sessions.GetPurgeCandidatesAsync(10, null);
+        Assert.Equal(2, all.Count);
+
+        // Prefijo «D:\» → SOLO la de D: (multi-disco: liberar D: no debe borrar material de C:).
+        var onlyD = await sessions.GetPurgeCandidatesAsync(10, @"D:\");
+        Assert.Single(onlyD);
+        Assert.All(onlyD, s => Assert.Contains(s.Segments, seg => seg.FilePath!.StartsWith(@"D:\")));
+    }
+
+    [Fact]
     public async Task RoundTrip_PreservesValueObjectsAndHistory()
     {
         var sources = _sp.GetRequiredService<IInputSourceRepository>();

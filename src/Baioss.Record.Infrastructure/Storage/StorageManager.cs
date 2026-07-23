@@ -87,12 +87,16 @@ public sealed class StorageManager : IStorageManager
         long target = ComputeFreeTarget(total, minFreeGB, minFreePercent);
         if (target <= 0 || total <= 0 || free >= target) return 0; // desactivado, sin medida, o ya hay sitio
 
+        // ACOTA el borrado al DISCO que se está liberando (multi-disco): solo se purgan grabaciones cuyo archivo
+        // está en ESTE volumen. Sin esto, se borrarían las más antiguas de CUALQUIER disco —que no liberan este— y
+        // el bucle arrasaría material de otros discos sin recuperar espacio aquí. (Multi-disco.)
+        string? prefix = VolumePrefixOf(volume);
         bool archive = action == RetentionAction.Archive && !string.IsNullOrWhiteSpace(archivePath);
         int totalHandled = 0;
         for (int round = 0; round < 1000; round++) // tope de seguridad contra bucle
         {
             if (ReadDrive(volume).Free >= target) break;
-            var candidates = await _sessions.GetPurgeCandidatesAsync(20, ct).ConfigureAwait(false);
+            var candidates = await _sessions.GetPurgeCandidatesAsync(20, prefix, ct).ConfigureAwait(false);
             if (candidates.Count == 0) break; // no queda nada finalizado y NO protegido que borrar
 
             int handledThisRound = 0;
@@ -178,6 +182,15 @@ public sealed class StorageManager : IStorageManager
             catch (Exception ex) { _log.LogWarning(ex, "Retención: no se pudo retirar la sesión {Id} de la BD.", session.Id); }
         }
         return handled;
+    }
+
+    /// <summary>Raíz del volumen de una ruta (p. ej. «D:\») para acotar la purga a ese disco. Normaliza con
+    /// GetFullPath para unificar separadores/relativos. En error, null → sin acotar (borra global; solo pasaría
+    /// con una ruta malformada, que no ocurre con carpetas reales). (Multi-disco.)</summary>
+    internal static string? VolumePrefixOf(string volume)
+    {
+        try { return Path.GetPathRoot(Path.GetFullPath(volume)); }
+        catch { return null; }
     }
 
     /// <summary>Lee (libres, total) del volumen. Best-effort; en error devuelve (long.MaxValue, 0) → NUNCA dispara la

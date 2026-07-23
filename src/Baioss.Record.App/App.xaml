@@ -25,6 +25,32 @@
                 <Setter Property="FontFamily" Value="Segoe UI"/>
             </Style>
 
+            <!-- Tooltip OSCURO. Sin esto, el estilo implícito de TextBlock de arriba (texto claro, para el tema
+                 oscuro) hace que el texto del tooltip salga CLARO sobre el fondo CLARO por defecto de WPF → el
+                 contenido NO SE VE. Fondo oscuro + borde + texto claro, con ajuste de línea y soporte multilínea
+                 (los saltos «\n» del tooltip de almacenamiento se respetan), para que sea legible en TODA la app. -->
+            <Style TargetType="ToolTip">
+                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                <Setter Property="Background" Value="#0C0F15"/>
+                <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="10,7"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="MaxWidth" Value="480"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToolTip">
+                            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <TextBlock Text="{TemplateBinding Content}" TextWrapping="Wrap"
+                                           Foreground="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <!-- Botón de transporte base -->
             <Style x:Key="TransportButton" TargetType="Button">
                 <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>

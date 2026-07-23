@@ -45,9 +45,11 @@ public interface IRecordingSessionRepository : IRepository<RecordingSession>
     /// <summary>Marca (o quita) la protección de una sesión frente a la retención automática. Devuelve false si no existe.</summary>
     Task<bool> SetProtectionAsync(Guid id, RecordingProtection protection, CancellationToken ct = default);
 
-    /// <summary>Sesiones FINALIZADAS y NO protegidas, más ANTIGUAS primero (por fin), en CUALQUIER canal, para
-    /// liberar espacio (retención por espacio). <paramref name="take"/> limita el lote. (Fase 2.)</summary>
-    Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, CancellationToken ct = default);
+    /// <summary>Sesiones FINALIZADAS y NO protegidas, más ANTIGUAS primero (por fin), para liberar espacio
+    /// (retención por espacio). <paramref name="take"/> limita el lote. <paramref name="volumePrefix"/> (p. ej.
+    /// «D:\») ACOTA a las grabaciones cuyo archivo está EN ESE VOLUMEN — imprescindible con varios discos, para
+    /// no borrar de un disco distinto al que se quiere liberar; <c>null</c>/vacío = cualquier disco. (Fase 2 / multi-disco.)</summary>
+    Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, string? volumePrefix, CancellationToken ct = default);
 }
 
 /// <summary>Append-only para el registro de eventos/auditoría.</summary>

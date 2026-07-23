@@ -96,6 +96,9 @@ public static class ApiEndpoints
         // --- Ajustes de almacenamiento (Fase 4c): retención + alertas por % + modo emergencia, editables en
         //     caliente. GET devuelve los vigentes; PUT los guarda (se SANEAN) y los servicios de fondo los aplican
         //     en su próximo ciclo SIN reiniciar. El body de PUT es un objeto StorageSettings completo. ---
+        // Estado GLOBAL del almacenamiento tal como lo ve el indicador de la UI (MULTI-DISCO): peor disco +
+        // nº de discos vigilados + desglose por disco + emergencia. Lo publica el coordinador de emergencia.
+        api.MapGet("/storage/status", ([FromServices] IStorageStatusProvider provider) => Results.Ok(provider.Current));
         api.MapGet("/storage/settings", ([FromServices] IStorageSettingsStore store) => Results.Ok(store.Current));
         // [FromServices] EXPLÍCITO en `store`: sin él, ASP.NET lo infiere como un 2º body (junto a `body`) y falla
         // al construir el endpoint —rompiendo TODA la API— si el test/DI no lo tiene registrado. (Como en /recordings.)

@@ -135,12 +135,17 @@ public sealed class RecordingSessionRepository(IDbContextFactory<BaiossDbContext
         return true;
     }
 
-    public async Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, string? volumePrefix, CancellationToken ct = default)
     {
         await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.Sessions.AsNoTracking()
+        var q = db.Sessions.AsNoTracking()
             .Include(s => s.Segments)
-            .Where(s => s.EndedAt != null && s.Protection == RecordingProtection.None) // finalizadas y NO protegidas
+            .Where(s => s.EndedAt != null && s.Protection == RecordingProtection.None); // finalizadas y NO protegidas
+        // Acota al VOLUMEN pedido (multi-disco): solo sesiones con algún segmento cuyo archivo está en ese disco.
+        // StartsWith → LIKE 'prefijo%' (SQLite es insensible a mayúsculas en ASCII, así que «D:\» casa con «d:\»).
+        if (!string.IsNullOrEmpty(volumePrefix))
+            q = q.Where(s => s.Segments.Any(seg => seg.FilePath != null && seg.FilePath.StartsWith(volumePrefix)));
+        return await q
             .OrderBy(s => s.EndedAt)                                                   // más antiguas primero
             .Take(take)
             .ToListAsync(ct).ConfigureAwait(false);

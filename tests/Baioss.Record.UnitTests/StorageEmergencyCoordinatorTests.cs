@@ -88,4 +88,29 @@ public sealed class StorageEmergencyCoordinatorTests
     [Fact]
     public void HealthFor_ZeroThresholds_AreDisabled()
         => Assert.Equal(StorageHealth.Ok, StorageEmergencyCoordinator.HealthFor(99.9, 0, 0, 0));
+
+    // --- NormalizeVolume: clasifica una carpeta de destino por DISCO (raíz del volumen) (multi-disco) ---
+
+    [Theory]
+    [InlineData(@"D:\capturer01\A_20260721.mp4", @"D:\")]
+    [InlineData(@"D:\capturer01", @"D:\")]
+    [InlineData(@"C:\Users\x\recordings", @"C:\")]
+    public void NormalizeVolume_ReturnsDriveRoot(string path, string expected)
+        => Assert.Equal(expected, StorageEmergencyCoordinator.NormalizeVolume(path));
+
+    [Fact]
+    public void NormalizeVolume_SameDrive_DifferentFolders_ShareVolume()
+        => Assert.Equal(StorageEmergencyCoordinator.NormalizeVolume(@"D:\a"),
+                        StorageEmergencyCoordinator.NormalizeVolume(@"D:\b\c\d"));
+
+    [Fact]
+    public void NormalizeVolume_DifferentDrives_DifferValues()
+        => Assert.NotEqual(StorageEmergencyCoordinator.NormalizeVolume(@"C:\rec"),
+                           StorageEmergencyCoordinator.NormalizeVolume(@"D:\rec"));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void NormalizeVolume_BlankPath_IsNull(string path)
+        => Assert.Null(StorageEmergencyCoordinator.NormalizeVolume(path));
 }

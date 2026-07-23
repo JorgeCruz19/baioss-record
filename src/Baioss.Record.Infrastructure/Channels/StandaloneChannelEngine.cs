@@ -274,8 +274,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         //    corrompería—. El estado lo mantiene el coordinador global, que vigila el volumen también en IDLE (lo
         //    que la guarda por-canal, que solo corre grabando, no cubre). Bloqueante: lanza para que la UI/API/
         //    scheduler avisen y no se cree una sesión a medias.
-        if (_storageGate is { ShouldBlockNewRecordings: true } gate)
-            throw new InvalidOperationException(gate.BlockReason
+        // Bloqueo POR DISCO (multi-disco): solo frena si el DISCO de destino de ESTE canal está en emergencia
+        // (no lo frena la emergencia de otro disco donde graba otro canal). (Fase 3b / multi-disco.)
+        if (_storageGate is not null && _storageGate.ShouldBlockRecordingTo(_engine.OutputRoot))
+            throw new InvalidOperationException(_storageGate.BlockReasonFor(_engine.OutputRoot)
                 ?? "Almacenamiento en EMERGENCIA: no se pueden iniciar nuevas grabaciones hasta liberar espacio.");
 
         // 1) Perfil coherente (bitrate/GOP/resolución/calidad/audio).

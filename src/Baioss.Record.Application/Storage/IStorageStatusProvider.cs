@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Baioss.Record.Application.Storage;
 
 /// <summary>Salud del almacenamiento del volumen de grabación, para el indicador GLOBAL de la UI. (Fase 4b.)</summary>
@@ -15,11 +17,18 @@ public enum StorageHealth
     Emergency,
 }
 
+/// <summary>Estado de UN disco de grabación (para el desglose por disco del indicador/tooltip). (Multi-disco.)</summary>
+public sealed record VolumeStatus(string Label, long FreeBytes, long TotalBytes, double UsedPercent, StorageHealth Health);
+
 /// <summary>
-/// Instantánea del estado del volumen de grabación (para el indicador GLOBAL de almacenamiento de la UI, que
-/// se ve TAMBIÉN en reposo). La produce el coordinador de emergencia, que vigila el volumen de forma continua.
+/// Instantánea del estado del almacenamiento de grabación para el indicador GLOBAL de la UI (visible TAMBIÉN
+/// en reposo). La produce el coordinador de emergencia, que vigila los volúmenes de forma continua. Con VARIOS
+/// discos de destino (un canal por disco, o mezcla), los campos «planos» (Free/Total/UsedPercent/Health) reflejan
+/// el disco MÁS crítico; <see cref="VolumeCount"/> dice cuántos discos se vigilan, <see cref="WorstLabel"/> cuál es
+/// el peor, y <see cref="Volumes"/> el desglose de TODOS (peor primero) para el tooltip.
 /// </summary>
-public sealed record StorageSnapshot(long FreeBytes, long TotalBytes, double UsedPercent, StorageHealth Health, bool IsEmergency)
+public sealed record StorageSnapshot(long FreeBytes, long TotalBytes, double UsedPercent, StorageHealth Health,
+    bool IsEmergency, int VolumeCount = 1, string? WorstLabel = null, IReadOnlyList<VolumeStatus>? Volumes = null)
 {
     public double FreeGiB => FreeBytes / 1_073_741_824d;
 

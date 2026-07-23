@@ -9,9 +9,18 @@ namespace Baioss.Record.Application.Storage;
 /// </summary>
 public interface IStorageGate
 {
-    /// <summary>True si debe BLOQUEARSE el inicio de nuevas grabaciones (emergencia activa + opción de bloqueo habilitada).</summary>
+    /// <summary>True si debe BLOQUEARSE el inicio de nuevas grabaciones (emergencia activa en ALGÚN disco de
+    /// grabación + opción de bloqueo habilitada). Global; para bloqueo POR DISCO usa <see cref="ShouldBlockRecordingTo"/>.</summary>
     bool ShouldBlockNewRecordings { get; }
 
     /// <summary>Motivo legible del bloqueo (para el error mostrado al operador), o null si no bloquea.</summary>
     string? BlockReason { get; }
+
+    /// <summary>¿Bloquear una grabación cuyo destino es <paramref name="destinationFolder"/>? Con VARIOS discos, solo
+    /// bloquea si el DISCO de ESE destino está en emergencia (no frena un canal cuyo disco está bien). Por defecto
+    /// (implementaciones antiguas) cae al comportamiento global.</summary>
+    bool ShouldBlockRecordingTo(string destinationFolder) => ShouldBlockNewRecordings;
+
+    /// <summary>Motivo del bloqueo para ese destino concreto, o null si no bloquea. Por defecto, el global.</summary>
+    string? BlockReasonFor(string destinationFolder) => BlockReason;
 }

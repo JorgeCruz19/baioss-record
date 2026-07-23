@@ -10,6 +10,9 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>Baioss.Record.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Icono del EJECUTABLE (el que se ve en el Explorador y en accesos directos del .exe): logo Baioss,
+         .ico multi-tamaño (16/24/32/48/64/128) generado desde assets\icon.png. -->
+    <ApplicationIcon>..\..\assets\icon.ico</ApplicationIcon>
     <!-- RID soportado para publicar el release portable (self-contained). -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <!-- Trim de recursos satélite: el release solo necesita el idioma neutro. -->
@@ -29,6 +32,13 @@
     <EmbeddedResource Include="appsettings.json" LogicalName="appsettings.json">
       <CopyToOutputDirectory Condition="'$(Configuration)' == 'Debug'">PreserveNewest</CopyToOutputDirectory>
     </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- El mismo icono como recurso WPF EMBEBIDO, para usarlo en Window.Icon en tiempo de ejecución (barra de
+       título y taskbar de la ventana). Se enlaza desde assets\ (sin duplicar el archivo) y queda accesible
+       en XAML como «Assets/icon.ico». -->
+  <ItemGroup>
+    <Resource Include="..\..\assets\icon.ico" Link="Assets\icon.ico" />
   </ItemGroup>
 
   <ItemGroup>

@@ -188,7 +188,10 @@ public partial class App : System.Windows.Application
             sp.GetRequiredService<Baioss.Record.Application.Persistence.IRetentionPolicyRepository>(),
             sp.GetRequiredService<Baioss.Record.Application.Storage.IStorageSettingsStore>(),
             sp.GetRequiredService<ILogger<RetentionService>>())
-        { RecordingsRoot = Path.Combine(root, "recordings") });
+        {
+            RecordingsRoot = Path.Combine(root, "recordings"),
+            RecordingRootsProvider = ChannelDestinations(sp), // MULTI-DISCO: limpia en el disco de cada canal
+        });
         // Coordinador GLOBAL de emergencia de almacenamiento (Fase 3b): vigila el volumen de grabación de forma
         // continua —también en IDLE, que la guarda por-canal (solo activa grabando) NO cubre— y, al entrar en
         // emergencia, AUDITA el evento y —opt-in— auto-limpia y/o BLOQUEA nuevas grabaciones (vía IStorageGate en
@@ -200,6 +203,7 @@ public partial class App : System.Windows.Application
             sp.GetRequiredService<ILogger<StorageEmergencyCoordinator>>())
         {
             RecordingsRoot = Path.Combine(root, "recordings"),
+            RecordingRootsProvider = ChannelDestinations(sp), // MULTI-DISCO: vigila el disco de destino de cada canal
         });
         s.AddSingleton<Baioss.Record.Application.Storage.IStorageGate>(sp => sp.GetRequiredService<StorageEmergencyCoordinator>());
         s.AddSingleton<Baioss.Record.Application.Storage.IStorageStatusProvider>(sp => sp.GetRequiredService<StorageEmergencyCoordinator>());
@@ -464,6 +468,21 @@ public partial class App : System.Windows.Application
         }
         return null;
     }
+
+    /// <summary>Provee las carpetas de destino VIGENTES de los canales para la vigilancia MULTI-DISCO de
+    /// almacenamiento (coordinador de emergencia + retención). PEREZOSO: resuelve el <see cref="IChannelManager"/>
+    /// al invocarse (en cada sondeo, ya con los canales compuestos), NO al registrar los servicios —así no fuerza
+    /// construir los canales antes de tiempo—. Devuelve las rutas resueltas (cada canal en su disco).</summary>
+    private static Func<IReadOnlyCollection<string>> ChannelDestinations(IServiceProvider sp) => () =>
+    {
+        var mgr = sp.GetService<IChannelManager>();
+        if (mgr is null) return Array.Empty<string>();
+        return mgr.Channels
+            .Select(c => (c as IConfigurableRecording)?.OutputDirectory)
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Select(d => d!)
+            .ToList();
+    };
 
     protected override void OnExit(ExitEventArgs e)
     {

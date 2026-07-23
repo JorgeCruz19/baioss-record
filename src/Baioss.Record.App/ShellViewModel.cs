@@ -176,17 +176,37 @@ public sealed partial class ShellViewModel : ObservableObject
             StorageHealth = StorageHealth.Unknown;
             ShowStorageBanner = false;
             StorageBannerText = "";
-            StorageTooltip = "Almacenamiento del volumen de grabación (midiendo…)";
+            StorageTooltip = "Almacenamiento de los discos de grabación (midiendo…)";
             return;
         }
         StorageHealth = s.Health;
-        StorageText = $"{StorageFormat.Bytes(s.FreeBytes)} libres · {s.UsedPercent:0}%";
-        StorageTooltip = $"Volumen de grabación: {StorageFormat.Bytes(s.FreeBytes)} libres de {StorageFormat.Bytes(s.TotalBytes)} ({s.UsedPercent:0.#}% ocupado)";
+        // Con VARIOS discos, la pastilla refleja el PEOR (y antepone su etiqueta para saber cuál es); con uno solo,
+        // igual que siempre. El desglose de todos va en el tooltip. (Multi-disco.)
+        bool multi = s.VolumeCount > 1;
+        StorageText = multi
+            ? $"{s.WorstLabel} {StorageFormat.Bytes(s.FreeBytes)} · {s.UsedPercent:0}%"
+            : $"{StorageFormat.Bytes(s.FreeBytes)} libres · {s.UsedPercent:0}%";
+
+        if (multi && s.Volumes is { Count: > 0 })
+        {
+            var lines = s.Volumes.Select(v =>
+                $"{v.Label}: {StorageFormat.Bytes(v.FreeBytes)} libres de {StorageFormat.Bytes(v.TotalBytes)} ({v.UsedPercent:0.#}% ocupado)");
+            StorageTooltip = $"Discos de grabación (peor primero · {s.VolumeCount} discos):\n" + string.Join("\n", lines);
+        }
+        else
+        {
+            StorageTooltip = $"Volumen de grabación: {StorageFormat.Bytes(s.FreeBytes)} libres de {StorageFormat.Bytes(s.TotalBytes)} ({s.UsedPercent:0.#}% ocupado)";
+        }
+
         ShowStorageBanner = s.Health is StorageHealth.Critical or StorageHealth.Emergency;
         StorageBannerText = s.Health switch
         {
-            StorageHealth.Emergency => "⚠  ALMACENAMIENTO EN EMERGENCIA  —  libera espacio para seguir grabando con normalidad",
-            StorageHealth.Critical => "⚠  Almacenamiento crítico  —  queda muy poco espacio en el volumen de grabación",
+            StorageHealth.Emergency => multi
+                ? $"⚠  ALMACENAMIENTO EN EMERGENCIA en {s.WorstLabel}  —  libera espacio para seguir grabando en ese disco"
+                : "⚠  ALMACENAMIENTO EN EMERGENCIA  —  libera espacio para seguir grabando con normalidad",
+            StorageHealth.Critical => multi
+                ? $"⚠  Almacenamiento crítico en {s.WorstLabel}  —  queda muy poco espacio en ese disco"
+                : "⚠  Almacenamiento crítico  —  queda muy poco espacio en el volumen de grabación",
             _ => "",
         };
     }
