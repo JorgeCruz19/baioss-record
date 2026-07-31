@@ -32,6 +32,7 @@ public sealed class FfmpegArgumentBuilder
     private string? _baseName;
     private int _segmentStartNumber = 1;
     private bool _fragmentedMp4 = true; // true = fMP4 robusto ante corte; false = MP4 estándar (moov, seekable, sin remux)
+    private string? _recordSink; // dispositivo persistente: salida codificada a TCP en vez de a archivo (ver WithRecordSink)
 
     // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
     // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
@@ -78,6 +79,17 @@ public sealed class FfmpegArgumentBuilder
     /// <summary>Número del PRIMER segmento (1-based). Permite numeración continua entre reinicios/slate.</summary>
     public FfmpegArgumentBuilder WithSegmentStartNumber(int n)
     { _segmentStartNumber = n < 1 ? 1 : n; return this; }
+
+    /// <summary>
+    /// DISPOSITIVO PERSISTENTE: manda la salida ya CODIFICADA a una URL (MPEG-TS por TCP loopback) en vez de a
+    /// un archivo. El proceso de captura queda así SIEMPRE igual —grabe o no—, de modo que iniciar/detener
+    /// grabación ya NO obliga a reemplazarlo ni, por tanto, a REABRIR el dispositivo (que en una DeckLink con el
+    /// conector compartido cuesta ~1 s de re-enganche grabado como negro/barras). Quien escribe el archivo es un
+    /// SEGUNDO proceso construido con <see cref="BuildRecorder"/>, que solo copia el flujo. <c>null</c> = modo
+    /// clásico (la grabación va directa al archivo desde este mismo proceso).
+    /// </summary>
+    public FfmpegArgumentBuilder WithRecordSink(string? ffmpegUrl)
+    { _recordSink = string.IsNullOrWhiteSpace(ffmpegUrl) ? null : ffmpegUrl; return this; }
 
     public IReadOnlyList<string> Build()
     {
@@ -333,6 +345,18 @@ public sealed class FfmpegArgumentBuilder
     /// </summary>
     private IEnumerable<string> RecordOutputTail(RecordingProfile p, string recMux, string recExt)
     {
+        // DISPOSITIVO PERSISTENTE: la salida codificada va a un socket, no a un archivo. Este proceso queda
+        // IDÉNTICO grabe o no, así que iniciar/detener grabación no lo reemplaza y el dispositivo NO se reabre.
+        // El archivo lo escribe el proceso construido por BuildRecorder. MPEG-TS porque admite engancharse a
+        // mitad del flujo (PAT/PMT periódicos + cabeceras en cada keyframe), que es justo lo que hace el grabador.
+        if (_recordSink is not null)
+        {
+            IsSegmentedOutput = false;
+            OutputFilePath = "";
+            SegmentFileGlob = "";
+            return new[] { "-f", "mpegts", _recordSink };
+        }
+
         if (p.Segmentation is { Trigger: SegmentTrigger.Duration or SegmentTrigger.Size or SegmentTrigger.WallClock } seg)
         {
             IsSegmentedOutput = true;
@@ -406,6 +430,38 @@ public sealed class FfmpegArgumentBuilder
 
     /// <summary>Base del nombre: la elegida (manual/programada) o, en su defecto, {canal}_{fecha_hora}.</summary>
     private string ResolvedBase() => _baseName ?? $"{_channelKey}_{DateTime.Now:yyyyMMdd_HHmmss}";
+
+    /// <summary>
+    /// Argv del proceso GRABADOR del modo «dispositivo persistente»: lee por TCP el flujo MPEG-TS ya codificado
+    /// que emite el proceso de captura y lo COPIA al archivo (<c>-c copy</c>: sin recodificar, coste mínimo).
+    /// Arrancarlo/detenerlo NO toca el dispositivo, que es justamente el objetivo.
+    /// <para>Detalles que importan: <c>-c copy</c> mantiene EXACTAMENTE la codificación del perfil (la hizo el
+    /// proceso de captura); al cerrarse el socket, FFmpeg ve EOF y FINALIZA el contenedor (moov) igual que con
+    /// la «q»; y la cola de salida es la MISMA de siempre (<see cref="RecordOutputTail"/>), así que archivo
+    /// único, segmentación y fMP4 robusto se comportan como en el modo clásico. <c>-fflags +discardcorrupt</c>
+    /// descarta el posible paquete parcial del enganche inicial al flujo.</para>
+    /// </summary>
+    public IReadOnlyList<string> BuildRecorder(string streamUrl)
+    {
+        var profile = _profile ?? throw new InvalidOperationException("Falta el perfil.");
+        if (string.IsNullOrWhiteSpace(streamUrl))
+            throw new InvalidOperationException("Falta la URL del flujo de captura.");
+
+        var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
+        var args = new List<string>
+        {
+            "-hide_banner", "-progress", "pipe:1", "-stats_period", "1",
+            "-fflags", "+discardcorrupt",
+            "-f", "mpegts", "-i", streamUrl,
+            "-map", "0", "-c", "copy",
+        };
+        // La cola de salida se construye SIN el desvío a socket (aquí sí queremos archivo/segmentos).
+        var sink = _recordSink;
+        _recordSink = null;
+        try { args.AddRange(RecordOutputTail(profile, recMux, recExt)); }
+        finally { _recordSink = sink; }
+        return args;
+    }
 
     /// <summary>
     /// Argv de la CARTA DE AJUSTE (slate): al perder la señal en vivo durante la grabación, sustituye la

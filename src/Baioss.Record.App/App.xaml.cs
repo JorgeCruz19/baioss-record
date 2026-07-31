@@ -53,8 +53,13 @@ public partial class App : System.Windows.Application
     private bool _shuttingDown;
     private bool _shutdownComplete;
     /// <summary>Tope del apagado ordenado: si se excede (un FFmpeg/servicio atascado) se fuerza la salida, para
-    /// que el proceso NUNCA quede vivo bloqueando el mutex de instancia única («ya está en ejecución» al reabrir).</summary>
-    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(20);
+    /// que el proceso NUNCA quede vivo bloqueando el mutex de instancia única («ya está en ejecución» al reabrir).
+    /// <para>DEBE superar con margen al <c>GracefulTimeout</c> del supervisor (30 s), que es lo que FFmpeg puede
+    /// tardar en cerrar el contenedor tras la «q». Estaba en 20 s: al vencer se forzaba la salida y el Job Object
+    /// mataba a los FFmpeg A MITAD del flush → con MP4 estándar (sin fragmentar) el archivo quedaba SIN moov e
+    /// ilegible. Con varios canales —y más aún desde que el modo de dispositivo persistente añade un segundo
+    /// proceso por canal— el presupuesto de 20 s se agotaba con facilidad.</para></summary>
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(45);
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -147,8 +152,11 @@ public partial class App : System.Windows.Application
         // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner
         // false SOLO en máquinas con SAI/UPS, como pidió el operador). (Recording:FragmentedMp4.)
         bool fragmentedMp4 = builder.Configuration.GetValue("Recording:FragmentedMp4", true);
+        // DISPOSITIVO PERSISTENTE: sin valor (por defecto) = automático, solo en las entradas que sufren el bache
+        // al reabrirse (DeckLink). true = forzarlo en todas; false = desactivarlo (vuelve al modo clásico).
+        bool? persistentDevice = builder.Configuration.GetValue<bool?>("Recording:PersistentDevice");
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente.
-        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount, fragmentedMp4));
+        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount, fragmentedMp4, persistentDevice));
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
         // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.

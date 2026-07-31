@@ -295,6 +295,80 @@ public class FfmpegArgumentBuilderTests
         Assert.Contains("ebur128=peak=true", joined);
     }
 
+    // --- DISPOSITIVO PERSISTENTE: la salida codificada va a un socket y el archivo lo escribe otro proceso ---
+    // Es lo que permite que iniciar/detener grabación NO reemplace el proceso de captura y, por tanto, NO reabra
+    // el dispositivo (en DeckLink half-duplex esa reapertura cuesta ≈1 s de negro grabado al inicio).
+
+    [Fact]
+    public void WithRecordSink_SendsEncodedOutputToSocket_InsteadOfFile()
+    {
+        var joined = string.Join(' ', NewLiveBuilder(SoftwareMp4(), hasAudio: true, analyze: false)
+            .WithRecordSink("tcp://127.0.0.1:9500")
+            .BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("-c:v libx264", joined);                 // sigue codificando (el perfil manda)
+        Assert.Contains("-f mpegts tcp://127.0.0.1:9500", joined); // …pero al relé, no al disco
+        Assert.DoesNotContain("-y", joined);                     // este proceso NO escribe archivo
+        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined); // el preview sigue igual
+    }
+
+    [Fact]
+    public void WithRecordSink_ProducesSameArgv_RecordingOrNot_SoTheDeviceIsNeverReopened()
+    {
+        // CLAVE del arreglo: con el desvío a socket, el argv de «grabando» y el de «en reposo» son IDÉNTICOS,
+        // así que no hay ningún motivo para reemplazar el proceso al iniciar/detener → el dispositivo no se reabre.
+        string idle = string.Join(' ', NewLiveBuilder(SoftwareMp4(), true, false)
+            .WithRecordSink("tcp://127.0.0.1:9500").BuildLive(recording: true, 640, 360));
+        string rec = string.Join(' ', NewLiveBuilder(SoftwareMp4(), true, false)
+            .WithRecordSink("tcp://127.0.0.1:9500").BuildLive(recording: true, 640, 360));
+
+        Assert.Equal(idle, rec);
+    }
+
+    [Fact]
+    public void BuildRecorder_CopiesStreamToFile_WithoutReencoding()
+    {
+        var builder = NewLiveBuilder(SoftwareMp4(), hasAudio: true, analyze: false)
+            .WithRecordSink("tcp://127.0.0.1:9500")
+            .WithBaseName("Programa");
+
+        var joined = string.Join(' ', builder.BuildRecorder("tcp://127.0.0.1:9600"));
+
+        Assert.Contains("-i tcp://127.0.0.1:9600", joined);  // lee el flujo del relé
+        Assert.Contains("-c copy", joined);                  // NO recodifica: coste mínimo
+        Assert.DoesNotContain("-c:v libx264", joined);       // la codificación ya la hizo la captura
+        Assert.Contains("-y", joined);                       // …y escribe el archivo
+        Assert.Contains("Programa", joined);                 // con el nombre elegido
+        Assert.Contains("-movflags +frag_keyframe+empty_moov+default_base_moof", joined); // fMP4 robusto igual que siempre
+        Assert.EndsWith(".mp4", builder.OutputFilePath);
+    }
+
+    [Fact]
+    public void BuildRecorder_Segmented_KeepsSegmentMuxer()
+    {
+        // La segmentación debe seguir funcionando en el proceso grabador (cada segmento un archivo completo).
+        var profile = SoftwareMp4();
+        profile.Segmentation = new SegmentationPolicy { Trigger = SegmentTrigger.Duration, Duration = TimeSpan.FromMinutes(5) };
+        var builder = NewLiveBuilder(profile, true, false)
+            .WithRecordSink("tcp://127.0.0.1:9500").WithBaseName("Programa");
+
+        var joined = string.Join(' ', builder.BuildRecorder("tcp://127.0.0.1:9600"));
+
+        Assert.Contains("-f segment", joined);
+        Assert.Contains("-segment_time 300", joined);
+        Assert.Contains("-c copy", joined);
+        Assert.True(builder.IsSegmentedOutput);
+    }
+
+    [Fact]
+    public void BuildLive_WithoutRecordSink_StillWritesFileDirectly()
+    {
+        // El modo CLÁSICO no cambia: sin desvío, la grabación sigue yendo directa al archivo desde el mismo proceso.
+        var joined = BuildLive(SoftwareMp4(), recording: true);
+        Assert.Contains("-y", joined);
+        Assert.DoesNotContain("-f mpegts tcp://", joined);
+    }
+
     [Fact]
     public void BuildLive_Recording_Nvenc_ConvertsRecordBranchToEncoderFormat()
     {

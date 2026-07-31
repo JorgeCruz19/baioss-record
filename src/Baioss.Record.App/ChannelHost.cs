@@ -24,7 +24,11 @@ namespace Baioss.Record.App;
 
 /// <summary>Entorno de composición (modo real, rutas, códec demo y nº de canales), calculado al arrancar.</summary>
 public sealed record ChannelCompositionContext(
-    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true);
+    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true,
+    // DISPOSITIVO PERSISTENTE (ver FfmpegChannelEngine.PersistentDevice): null = automático (solo para las
+    // entradas que sufren el bache al reabrirse, hoy DeckLink); true/false = forzarlo o desactivarlo a mano
+    // desde «Recording:PersistentDevice».
+    bool? PersistentDevice = null);
 
 /// <summary>
 /// Compone y MANTIENE el runtime de cada canal (fuente + grabador + monitor + preview + motor), y
@@ -396,6 +400,11 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             // Carpeta de destino: la ruta PERSISTIDA por el operador si la hay; si no, el default <raíz>/recordings.
             OutputRoot = string.IsNullOrWhiteSpace(outputDirectory) ? Path.Combine(_ctx.Root, "recordings") : outputDirectory,
             FragmentedMp4 = _ctx.FragmentedMp4, // fMP4 robusto vs MP4 estándar (moov, sin remux) según config
+            // DISPOSITIVO PERSISTENTE: por defecto, solo para las entradas que pagan el bache al reabrirse. Hoy es
+            // DeckLink: con el conector en modo compartido (half-duplex, la única forma de usar las 4 entradas de
+            // una Duo 2) cada reapertura invierte la dirección del BNC y el receptor SDI tarda ≈1 s en enganchar,
+            // que se grababa como negro al principio del archivo. Configurable en «Recording:PersistentDevice».
+            PersistentDevice = _ctx.PersistentDevice ?? def.Type is InputType.DecklinkSdi,
         };
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 
