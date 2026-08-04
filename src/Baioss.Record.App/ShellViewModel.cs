@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Licensing;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Scheduling;
@@ -36,6 +37,8 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly IRecordingSessionRepository _sessions;
     private readonly IStorageStatusProvider _storageStatus;
     private readonly IStorageSettingsStore _storageSettings;
+    // Opcional a propósito: si el subsistema de licencias no se pudo componer, la app funciona igual (sin restricciones).
+    private readonly ILicenseService? _license;
 
     public ObservableCollection<ChannelViewModel> Channels { get; }
 
@@ -44,7 +47,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
-        IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings)
+        IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, ILicenseService? license = null)
     {
         _host = host;
         _previews = previews;
@@ -55,6 +58,7 @@ public sealed partial class ShellViewModel : ObservableObject
         _sessions = sessions;
         _storageStatus = storageStatus;
         _storageSettings = storageSettings;
+        _license = license;
 
         Channels = new ObservableCollection<ChannelViewModel>(
             host.Channels
@@ -70,6 +74,9 @@ public sealed partial class ShellViewModel : ObservableObject
         // (la guarda por-canal solo informa grabando). El coordinador lo publica en un hilo de fondo → marshalar.
         ApplyStorage(_storageStatus.Current);
         _storageStatus.Changed += OnStorageChanged;
+
+        // Indicador de licencia (prueba/caducada): visible solo cuando hay algo que atender.
+        if (_license is not null) { ApplyLicense(_license.Current); _license.Changed += OnLicenseChanged; }
 
         // Refresco periódico de la tabla «HOY» (hora de las filas, altas/bajas de tareas, cambio de día).
         _todayTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
@@ -290,6 +297,38 @@ public sealed partial class ShellViewModel : ObservableObject
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();
+    }
+
+    [RelayCommand]
+    private void OpenLicense()
+    {
+        if (_license is null) return; // subsistema de licencias no disponible: la app sigue funcionando sin él
+        var window = new Baioss.Record.App.Licensing.LicenseWindow
+        {
+            DataContext = new Baioss.Record.App.Licensing.LicenseViewModel(_license),
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.Show();
+    }
+
+    // --- Indicador de licencia en la barra superior ---
+
+    /// <summary>Texto de la pastilla de licencia («Prueba: 9 días restantes», «Licencia activa»…).</summary>
+    [ObservableProperty] private string _licenseText = "";
+    /// <summary>La pastilla solo se muestra si hay algo que decir (prueba, caducada o no verificable).</summary>
+    [ObservableProperty] private bool _showLicense;
+    /// <summary>Resalta en ámbar/rojo cuando quedan pocos días o ya caducó.</summary>
+    [ObservableProperty] private bool _licenseNeedsAttention;
+
+    private void OnLicenseChanged(object? sender, LicenseInfo info)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ApplyLicense(info));
+
+    private void ApplyLicense(LicenseInfo info)
+    {
+        LicenseText = info.Summary;
+        LicenseNeedsAttention = info.NeedsAttention;
+        // Con licencia activa no se molesta al operador: la pastilla solo aparece cuando hay algo que atender.
+        ShowLicense = info.State is not LicenseState.Licensed;
     }
 
     /// <summary>ViewModel VIGENTE de un canal por su Id (contra la colección viva): para que ventanas abiertas

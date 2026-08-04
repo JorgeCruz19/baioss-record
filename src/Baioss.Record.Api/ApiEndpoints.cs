@@ -96,6 +96,20 @@ public static class ApiEndpoints
         // --- Ajustes de almacenamiento (Fase 4c): retención + alertas por % + modo emergencia, editables en
         //     caliente. GET devuelve los vigentes; PUT los guarda (se SANEAN) y los servicios de fondo los aplican
         //     en su próximo ciclo SIN reiniciar. El body de PUT es un objeto StorageSettings completo. ---
+        // --- Licencia: estado y activación. [FromServices] EXPLÍCITO (si no, ASP.NET infiere el servicio como
+        //     cuerpo de la petición y rompe TODA la API al construir los endpoints). ---
+        api.MapGet("/license", ([FromServices] Baioss.Record.Application.Licensing.ILicenseService lic) =>
+            Results.Ok(new { lic.Current.State, lic.Current.DaysRemaining, lic.Current.Summary, lic.MachineCode, lic.Current.CanStartRecording }));
+
+        api.MapPost("/license/activate", (ActivateBody body, [FromServices] Baioss.Record.Application.Licensing.ILicenseService lic) =>
+        {
+            var result = lic.Activate(body.Key ?? "");
+            // 422 y no 500: una clave incorrecta es una entrada inválida del usuario, no un fallo del servidor.
+            return result.Success
+                ? Results.Ok(new { result.Message, lic.Current.State, lic.MachineCode })
+                : Results.UnprocessableEntity(new { error = result.Message, reason = result.Rejection.ToString() });
+        });
+
         // Estado GLOBAL del almacenamiento tal como lo ve el indicador de la UI (MULTI-DISCO): peor disco +
         // nº de discos vigilados + desglose por disco + emergencia. Lo publica el coordinador de emergencia.
         api.MapGet("/storage/status", ([FromServices] IStorageStatusProvider provider) => Results.Ok(provider.Current));
@@ -150,4 +164,6 @@ public static class ApiEndpoints
 
     public sealed record StartBody(Guid ProfileId, string? Operator);
     public sealed record ProtectionBody(string Level);
+    /// <summary>Cuerpo de la activación de licencia: la clave tal como la recibió el cliente.</summary>
+    public sealed record ActivateBody(string? Key);
 }

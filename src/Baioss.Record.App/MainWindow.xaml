@@ -10,7 +10,9 @@
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,10">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="🛠 Configuración"
+                    <Button Content="🔑 Licencia"
+                            Command="{Binding OpenLicenseCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="🛠 Configuración" Margin="8,0,0,0"
                             Command="{Binding OpenGeneralSettingsCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="🗄 Almacenamiento" Margin="8,0,0,0"
                             Command="{Binding OpenStorageSettingsCommand}" Style="{StaticResource TransportButton}"/>
@@ -28,6 +30,27 @@
                     <TextBlock Text="RECORD" FontSize="18" FontWeight="Bold" Foreground="#3B82F6" Margin="6,0,0,0"/>
                     <TextBlock Text="{Binding ChannelsSubtitle}" FontSize="13"
                                Foreground="#8A92A0" Margin="12,3,0,0" VerticalAlignment="Center"/>
+                    <!-- Licencia: la pastilla solo aparece si hay algo que atender (prueba en curso, caducada o
+                         no verificable). Con licencia activa no se molesta al operador. -->
+                    <Border VerticalAlignment="Center" Margin="16,0,0,0" CornerRadius="6" Padding="10,4"
+                            Visibility="{Binding ShowLicense, Converter={StaticResource BoolToVis}}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="{StaticResource ButtonBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding LicenseNeedsAttention}" Value="True">
+                                        <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="🔑" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="{Binding LicenseText}" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
                     <!-- Indicador GLOBAL de almacenamiento (Fase 4b): visible también en reposo; color por salud -->
                     <Border VerticalAlignment="Center" Margin="16,0,0,0" CornerRadius="6" Padding="10,4"
                             ToolTip="{Binding StorageTooltip}">

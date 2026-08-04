@@ -223,6 +223,31 @@ public partial class App : System.Windows.Application
         s.AddHostedService(sp => new Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor(
             sp.GetRequiredService<IChannelManager>(),
             sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor>>()));
+        // --- Licenciamiento: prueba de 14 días + licencia PERPETUA atada a este equipo. ---
+        // REGLA DURA: nada de esto puede impedir que la app ARRANQUE ni que grabe por un fallo propio. Por eso la
+        // huella y el servicio se construyen dentro de try/catch y, si algo falla, sencillamente NO se registra la
+        // compuerta: el canal la recibe como null y graba sin restricción (fail-open). Un impago cuesta dinero;
+        // dejar sin grabar a una emisora por un bug nuestro cuesta mucho más.
+        try
+        {
+            s.AddSingleton<Baioss.Record.Application.Licensing.IMachineFingerprint>(sp =>
+                new Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint(
+                    sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint>>()));
+            s.AddSingleton(sp => new Baioss.Record.Infrastructure.Licensing.LicenseStore(
+                sp.GetRequiredService<Baioss.Record.Application.Licensing.IMachineFingerprint>(),
+                sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Licensing.LicenseStore>>()));
+            s.AddSingleton<Baioss.Record.Infrastructure.Licensing.LicenseService>();
+            s.AddSingleton<Baioss.Record.Application.Licensing.ILicenseService>(sp =>
+                sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+            s.AddSingleton<Baioss.Record.Application.Licensing.ILicenseGate>(sp =>
+                sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+            s.AddHostedService(sp => sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Licenciamiento: no se pudo componer el subsistema; la app funcionará SIN restricciones.");
+        }
+
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 

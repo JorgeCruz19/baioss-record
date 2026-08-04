@@ -414,10 +414,12 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // Compuerta global de emergencia de almacenamiento (Fase 3b): el pre-vuelo del canal la consulta para
         // bloquear el arranque de nuevas grabaciones si el disco está en emergencia (singleton; opcional).
         var storageGate = _sp.GetService<Baioss.Record.Application.Storage.IStorageGate>();
+        // Compuerta de licencia (opcional): si no está registrada, el canal graba sin restricción alguna.
+        var licenseGate = _sp.GetService<Baioss.Record.Application.Licensing.ILicenseGate>();
 
         var engine = new StandaloneChannelEngine(
             key, source, profile, capture, channelId,
-            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard, _diskUsage, storageGate);
+            sessions, segments, bus, monitor, loggers.CreateLogger<StandaloneChannelEngine>(), profilesRepo, diskGuard, _diskUsage, storageGate, licenseGate);
         // NOTA: la entrada vigente (_sources[channelId]) la fija el LLAMADOR (Initialize al mezclar, o RebindAsync),
         // no aquí, porque la construcción inicial corre en paralelo y _sources no es un diccionario concurrente.
         return (engine, capture);

@@ -7,6 +7,7 @@ using Baioss.Record.Domain.Events;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Licensing;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Recording;
 using Baioss.Record.Application.Storage;
@@ -37,6 +38,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly DiskSpaceGuard? _diskGuard;
     private readonly DiskUsageRegistry? _diskUsage; // ritmo agregado del volumen entre canales (A7/#10)
     private readonly IStorageGate? _storageGate;    // compuerta global: bloquea el arranque en emergencia (Fase 3b)
+    // Compuerta de LICENCIA: solo se consulta al INICIAR una grabación pedida por una persona, la API o el
+    // programador. NUNCA en la recuperación tras una caída, ni al cortar segmento, ni al detener: una grabación
+    // que ya está en marcha no se interrumpe jamás por licencia.
+    private readonly ILicenseGate? _licenseGate;
 
     // volatile: lo escriben Start/StopRecordingCoreAsync (bajo _transition) y lo LEEN sin lock el getter Status
     // (hilo de UI/API) y OnEngineAlarm (hilo de stderr de FFmpeg). volatile garantiza que esos lectores vean el
@@ -85,7 +90,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         IRecordingProfileRepository? profiles = null,
         DiskSpaceGuard? diskGuard = null,
         DiskUsageRegistry? diskUsage = null,
-        IStorageGate? storageGate = null)
+        IStorageGate? storageGate = null,
+        ILicenseGate? licenseGate = null)
     {
         ChannelId = channelId ?? Guid.NewGuid();
         _key = key;
@@ -101,6 +107,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _diskGuard = diskGuard;
         _diskUsage = diskUsage;
         _storageGate = storageGate;
+        _licenseGate = licenseGate;
 
         _engine.StateChanged += (_, _) => Raise();
         _engine.StatsUpdated += OnStats;
@@ -269,6 +276,16 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// </summary>
     private void Preflight(RecordingProfile profile, string? recordingName)
     {
+        // 0a) Compuerta de LICENCIA: solo bloquea si consta que el periodo de prueba TERMINÓ y no hay licencia.
+        //     Es el ÚNICO punto donde la licencia impide algo: la app arranca, previsualiza, detiene grabaciones y
+        //     opera con normalidad sin licencia; lo único que se frena es EMPEZAR a grabar. Ante cualquier duda
+        //     (estado no verificable, fallo del subsistema) NO bloquea: en un grabador 24/7 dejar de grabar por un
+        //     fallo nuestro sería peor que un impago. Excepción PROPIA para que el programador de grabaciones no
+        //     dé por perdida la franja: si se activa la licencia a mitad, el resto debe grabarse.
+        if (_licenseGate is { ShouldBlockNewRecordings: true } license)
+            throw new LicenseBlockedException(license.BlockReason
+                ?? "El periodo de prueba ha terminado. Activa la licencia para volver a grabar.");
+
         // 0) Compuerta GLOBAL de almacenamiento (Fase 3b): si el volumen está en EMERGENCIA de espacio y la opción
         //    de bloqueo está activa (opt-in), NO se inicia una grabación nueva —grabar a un disco casi lleno la
         //    corrompería—. El estado lo mantiene el coordinador global, que vigila el volumen también en IDLE (lo

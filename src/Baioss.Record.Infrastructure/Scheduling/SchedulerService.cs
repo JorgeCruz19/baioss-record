@@ -7,6 +7,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Licensing;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Scheduling;
 
@@ -43,6 +44,8 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     // N22: fallos consecutivos de arranque por ocurrencia. Tras MaxStartAttempts se deja de reintentar cada 1 s
     // (se marca la ocurrencia como disparada) para no llenar el log ni martillear un start que siempre falla.
     private readonly ConcurrentDictionary<Guid, (DateTimeOffset Occ, int Count)> _startFailures = new();
+    /// <summary>Último aviso por licencia de cada franja: el tick corre cada segundo y no queremos inundar el log.</summary>
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _licenseWarned = new();
     private const int MaxStartAttempts = 3;
 
     // Caché de la lista de trabajos para el tick de 1 s: evita releer TODA la tabla (abriendo una conexión
@@ -273,6 +276,19 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             }
             _log.LogInformation("Scheduler: inicio de «{Title}» en canal {Channel}{Until}.",
                 job.Title, job.ChannelId, stopAt is { } e ? $" (hasta {e:HH:mm})" : "");
+        }
+        catch (LicenseBlockedException ex)
+        {
+            // Bloqueo por LICENCIA: NO cuenta como fallo de la franja ni la abandona. El operador puede activar la
+            // licencia a mitad de la ventana y lo que quede de programa DEBE grabarse; si lo tratáramos como un
+            // fallo normal, tras unos intentos la franja se daría por perdida para siempre. Se avisa espaciado
+            // para no inundar el log (el tick corre cada segundo).
+            if (_licenseWarned.TryGetValue(job.Id, out var last) is false || _clock.UtcNow - last > TimeSpan.FromMinutes(10))
+            {
+                _licenseWarned[job.Id] = _clock.UtcNow;
+                _log.LogWarning("Scheduler: «{Title}» no puede iniciar por LICENCIA ({Reason}). Se reintentará mientras dure la franja.",
+                    job.Title, ex.Message);
+            }
         }
         catch (Exception ex)
         {
