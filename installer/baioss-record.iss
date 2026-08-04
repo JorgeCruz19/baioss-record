@@ -1,0 +1,196 @@
+; ============================================================================
+;  Instalador de Baioss Record (Inno Setup 6)
+;
+;  Se compila con:  scripts\build-installer.ps1
+;  (ese script publica primero la app en .\publish\ y luego invoca a ISCC)
+;
+;  DECISIONES QUE CONVIENE CONOCER:
+;
+;  * NO se instala en «Archivos de programa». La aplicación escribe data\, logs\ y
+;    recordings\ JUNTO a su ejecutable y corre sin privilegios de administrador; dentro
+;    de Archivos de programa Windows se lo impediría y no podría ni grabar ni guardar su
+;    base de datos. Por eso el destino por defecto es C:\Baioss\Record y, además, se
+;    concede permiso de escritura al grupo Usuarios sobre esa carpeta.
+;
+;  * Al desinstalar NO se borran las grabaciones ni la base de datos: son material del
+;    cliente. Solo se retira el programa.
+; ============================================================================
+
+#define AppName        "Baioss Record"
+#define AppVersion     "1.0.0"
+#define AppPublisher   "Baioss"
+#define AppExeName     "Baioss.Record.App.exe"
+#define SourceDir      "..\publish"
+
+[Setup]
+AppId={{7C4B1E92-3D5A-4F18-9B2C-8A6E0D7F1C34}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+DefaultDirName={sd}\Baioss\Record
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+OutputDir=..\dist
+OutputBaseFilename=BaiossRecord-{#AppVersion}-Setup
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
+; Se requiere administrador para instalar fuera del perfil del usuario y crear los
+; accesos directos para todos los usuarios del equipo.
+PrivilegesRequired=admin
+UninstallDisplayIcon={app}\{#AppExeName}
+SetupIconFile=..\assets\icon.ico
+LicenseFile=EULA.txt
+
+[Languages]
+Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
+Name: "startupicon"; Description: "Iniciar {#AppName} al encender el equipo"; GroupDescription: "Inicio automático:"
+
+[Files]
+; Se EXCLUYE lo que genera la aplicación al ejecutarse. La carpeta publish\ es también la
+; que se usa para probar en desarrollo, así que sin estos «Excludes» el instalador se
+; llevaría la base de datos de pruebas, los registros y las grabaciones del desarrollador
+; hasta el equipo del cliente (que además arrancaría con canales y sesiones ajenos).
+Source: "{#SourceDir}\*"; DestDir: "{app}"; \
+    Excludes: "data\*,logs\*,recordings\*,*.log,*.db,*.db-shm,*.db-wal"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Dirs]
+; Permiso de ESCRITURA para los usuarios: la app guarda aquí su base de datos, los
+; registros y (si no se cambia) las grabaciones. Sin esto no arrancaría bien.
+Name: "{app}"; Permissions: users-modify
+Name: "{commonappdata}\Baioss\Record"; Permissions: users-modify
+
+[Icons]
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+; Inicio automático para TODOS los usuarios ({commonstartup}), no {userstartup}: como la
+; instalación corre elevada, «userstartup» sería la carpeta de Inicio del ADMINISTRADOR que
+; instala, no la del operador que luego usa el equipo — y el arranque automático no ocurriría.
+Name: "{commonstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: startupicon
+
+[Run]
+Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName} ahora"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; Solo lo que genera el programa al ejecutarse; NUNCA las grabaciones ni la base de datos.
+Type: filesandordirs; Name: "{app}\logs"
+
+[Code]
+var
+  ModePage: TInputOptionWizardPage;
+  KeyPage: TInputQueryWizardPage;
+  MachineCode: String;
+
+const
+  ModeTrial = 0;
+  ModeLicense = 1;
+
+procedure InitializeWizard;
+begin
+  ModePage := CreateInputOptionPage(wpSelectTasks,
+    'Tipo de instalación',
+    'Cómo quieres usar Baioss Record en este equipo',
+    'Puedes empezar con el periodo de prueba y activar la licencia más adelante, sin reinstalar nada.',
+    True, False);
+  ModePage.Add('Periodo de prueba de 14 días');
+  ModePage.Add('Ya tengo una licencia para este equipo');
+  ModePage.SelectedValueIndex := ModeTrial;
+
+  KeyPage := CreateInputQueryPage(ModePage.ID,
+    'Licencia',
+    'Introduce la licencia de este equipo',
+    'Pega la licencia tal como te la enviaron. Se comprobará al abrir el programa; si no fuese válida, ' +
+    'podrás volver a introducirla desde la ventana Licencia de la aplicación.');
+  KeyPage.Add('Licencia:', False);
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  { La página de la clave solo se muestra si el usuario eligió «ya tengo una licencia». }
+  Result := (PageID = KeyPage.ID) and (ModePage.SelectedValueIndex <> ModeLicense);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  { No se deja continuar con el campo vacío: es un despiste muy fácil de cometer. }
+  Result := True;
+  if (CurPageID = KeyPage.ID) and (Trim(KeyPage.Values[0]) = '') then
+  begin
+    MsgBox('Introduce la licencia, o vuelve atrás y elige el periodo de prueba.', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+procedure ReadMachineCode;
+var
+  TempFile: String;
+  ResultCode: Integer;
+  Lines: TArrayOfString;
+begin
+  { Consulta el código de este equipo ejecutando la app ya instalada con «--machine-code».
+    Se hace así, y no replicando el cálculo aquí, para que sea EXACTAMENTE el mismo que usa
+    el programa: si difiriera en un solo bit, las licencias emitidas no validarían. }
+  MachineCode := '';
+  TempFile := ExpandConstant('{tmp}\machine-code.txt');
+  if Exec(ExpandConstant('{app}\{#AppExeName}'), '--machine-code "' + TempFile + '"',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if LoadStringsFromFile(TempFile, Lines) and (GetArrayLength(Lines) > 0) then
+      MachineCode := Trim(Lines[0]);
+  end;
+end;
+
+procedure WritePendingLicense;
+var
+  Dir: String;
+begin
+  { Deja la licencia preparada para que la aplique la app en su primer arranque. El instalador
+    no puede escribir directamente el estado de licencia porque va firmado con una clave
+    derivada de la huella del equipo: se deja la clave en claro y la valida el programa. }
+  Dir := ExpandConstant('{commonappdata}\Baioss\Record');
+  ForceDirectories(Dir);
+  SaveStringToFile(Dir + '\pending-license.txt', Trim(KeyPage.Values[0]), False);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if ModePage.SelectedValueIndex = ModeLicense then
+      WritePendingLicense
+    else
+      ReadMachineCode;
+  end;
+end;
+
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo + NewLine + NewLine;
+  if ModePage.SelectedValueIndex = ModeLicense then
+    Result := Result + 'Tipo de instalación:' + NewLine + Space + 'Con licencia' + NewLine + NewLine
+  else
+    Result := Result + 'Tipo de instalación:' + NewLine + Space + 'Periodo de prueba de 14 días' + NewLine + NewLine;
+  if MemoTasksInfo <> '' then
+    Result := Result + MemoTasksInfo + NewLine;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { Al terminar, en modo prueba se muestra el código de equipo: es justo lo que el cliente
+    necesita enviar para que le emitan su licencia. }
+  if (CurPageID = wpFinished) and (ModePage.SelectedValueIndex = ModeTrial) and (MachineCode <> '') then
+    WizardForm.FinishedLabel.Caption :=
+      'La instalación ha terminado.' + #13#10#13#10 +
+      'Tienes 14 días de prueba con todas las funciones.' + #13#10#13#10 +
+      'El código de este equipo es:' + #13#10 + MachineCode + #13#10#13#10 +
+      'Envíaselo a tu proveedor para recibir la licencia permanente. También puedes verlo en ' +
+      'cualquier momento desde el botón Licencia del programa.';
+end;

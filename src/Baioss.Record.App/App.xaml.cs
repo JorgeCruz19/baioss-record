@@ -61,6 +61,12 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         WireGlobalExceptionHandlers();
 
+        // Modo de servicio para el INSTALADOR: «--machine-code <archivo>» escribe el código de este equipo en el
+        // archivo indicado y sale. El asistente lo usa para MOSTRAR el código en la página de licencia, sin
+        // duplicar el cálculo de la huella (que debe ser idéntico bit a bit al de la app). Se resuelve ANTES del
+        // mutex de instancia única: es una consulta de un segundo y debe funcionar aunque la app ya esté abierta.
+        if (TryHandleMachineCodeRequest(e.Args)) { Shutdown(0); return; }
+
         // Instancia única: una 2ª instancia chocaría al enlazar el puerto 5005 (Kestrel) y al abrir la BD.
         // Mejor avisar y salir limpio que cerrar el proceso con un error opaco. (Auditoría A2/#5.)
         _instanceMutex = new Mutex(initiallyOwned: true, @"Local\Baioss.Record.App.SingleInstance", out bool isFirst);
@@ -83,6 +89,52 @@ public partial class App : System.Windows.Application
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    /// <summary>
+    /// «--machine-code &lt;archivo&gt;»: escribe el código de equipo y termina. Lo invoca el instalador para poder
+    /// enseñárselo al cliente en el asistente. Devuelve true si la app debe salir sin abrir la interfaz.
+    /// </summary>
+    private static bool TryHandleMachineCodeRequest(string[] args)
+    {
+        int i = Array.FindIndex(args, a => string.Equals(a, "--machine-code", StringComparison.OrdinalIgnoreCase));
+        if (i < 0) return false;
+        try
+        {
+            var fingerprint = new Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint>.Instance);
+            if (i + 1 < args.Length) File.WriteAllText(args[i + 1], fingerprint.Code);
+        }
+        catch { /* el instalador simplemente no mostrará el código; no es motivo para fallar la instalación */ }
+        return true;
+    }
+
+    /// <summary>
+    /// Recoge la licencia que el INSTALADOR dejó preparada («pending-license.txt») y la activa en el primer
+    /// arranque. El instalador no puede escribir directamente el estado de licencia porque va firmado con una
+    /// clave derivada de la huella del equipo; deja la clave en claro y es la app quien la valida y la guarda.
+    /// Best-effort: si la clave no fuera válida, el archivo se retira igualmente y la app queda en periodo de
+    /// prueba (el operador puede activarla luego desde la ventana de Licencia).
+    /// </summary>
+    private static void ConsumePendingLicense(IServiceProvider services)
+    {
+        var pending = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Baioss", "Record", "pending-license.txt");
+        try
+        {
+            if (!File.Exists(pending)) return;
+            var key = File.ReadAllText(pending).Trim();
+            var license = services.GetService<Baioss.Record.Application.Licensing.ILicenseService>();
+            if (license is not null && !string.IsNullOrWhiteSpace(key))
+            {
+                var result = license.Activate(key);
+                if (result.Success) Serilog.Log.Information("Licencia aplicada desde la instalación.");
+                else Serilog.Log.Warning("La licencia indicada en la instalación no es válida: {Message}", result.Message);
+            }
+            File.Delete(pending); // no se reintenta en cada arranque
+        }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo aplicar la licencia dejada por el instalador."); }
     }
 
     private async Task StartHostAsync()
@@ -265,6 +317,9 @@ public partial class App : System.Windows.Application
         await Task.Run(() => app.Services.GetRequiredService<ChannelHost>());
 
         await app.StartAsync();
+
+        // Si el instalador dejó una licencia preparada, se aplica ahora (una sola vez).
+        ConsumePendingLicense(app.Services);
 
         // Recovery tras un cierre ABRUPTO: cierra las sesiones que quedaron «grabando» de una ejecución
         // anterior (crash/kill) para que la BD no arrastre grabaciones colgadas. La BD ya está compuesta (la

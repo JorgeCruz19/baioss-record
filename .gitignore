@@ -21,3 +21,6 @@ data/
 
 ## FFmpeg binarios (se distribuyen aparte / por instalador)
 tools/ffmpeg/
+
+# Instaladores generados (pesan ~140 MB): son artefactos de distribución, no fuente.
+/dist/

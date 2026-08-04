@@ -1,0 +1,55 @@
+CONTRATO DE LICENCIA DE USO — BAIOSS RECORD
+
+IMPORTANTE: lee este contrato antes de instalar. Al instalar y usar Baioss Record
+aceptas las condiciones siguientes.
+
+1. LICENCIA
+   Baioss concede al cliente un derecho de uso de Baioss Record, no exclusivo e
+   intransferible, para UN (1) equipo por cada licencia adquirida. La licencia es
+   permanente: no caduca.
+
+2. PERIODO DE PRUEBA
+   El programa puede usarse durante CATORCE (14) días con todas sus funciones sin
+   adquirir licencia. Al terminar ese periodo no se podrán iniciar grabaciones nuevas
+   hasta activar una licencia. Las grabaciones ya realizadas siguen siendo del cliente
+   y permanecen accesibles.
+
+3. VINCULACIÓN AL EQUIPO
+   Cada licencia queda vinculada al equipo para el que se emite y no funciona en otro.
+   En caso de sustitución o avería del equipo, el cliente puede solicitar la reemisión
+   de su licencia para el equipo nuevo.
+
+4. RESTRICCIONES
+   No está permitido revender, alquilar, sublicenciar ni redistribuir el programa, ni
+   descompilarlo o realizar ingeniería inversa, salvo en la medida en que la ley
+   aplicable lo permita expresamente.
+
+5. PROPIEDAD DEL MATERIAL GRABADO
+   Las grabaciones producidas con el programa son propiedad exclusiva del cliente.
+   Baioss no accede a ellas ni reclama derecho alguno sobre ellas. El programa funciona
+   sin conexión y no envía material a ningún servidor.
+
+6. GARANTÍA Y RESPONSABILIDAD
+   El programa se proporciona «tal cual». En la medida en que lo permita la ley
+   aplicable, Baioss no será responsable de pérdidas de material, lucro cesante ni
+   daños indirectos derivados del uso del programa. El cliente es responsable de
+   verificar sus grabaciones y de mantener copias de seguridad del material crítico.
+
+7. COMPONENTES DE TERCEROS
+   El programa incorpora FFmpeg, distribuido bajo su propia licencia (LGPL/GPL según
+   la compilación empleada), cuyos términos acompañan al producto. Si se utiliza
+   captura NDI, se aplican además los términos de NDI (NewTek/Vizrt).
+
+8. LEGISLACIÓN APLICABLE
+   Este contrato se rige por la legislación del país donde Baioss tenga su domicilio
+   social, sin perjuicio de los derechos que la normativa de consumo reconozca al
+   cliente.
+
+Para soporte o para adquirir licencias, ponte en contacto con tu proveedor de Baioss.
+
+--------------------------------------------------------------------------------
+NOTA PARA EL EDITOR DE ESTE ARCHIVO: este texto es una BASE de trabajo, no un
+documento revisado por un abogado. Antes de vender el producto conviene que lo
+revise un profesional y que se sustituyan los datos de la empresa (razón social,
+domicilio y jurisdicción).
+--------------------------------------------------------------------------------
