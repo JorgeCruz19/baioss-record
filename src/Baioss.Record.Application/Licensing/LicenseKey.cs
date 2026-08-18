@@ -116,7 +116,14 @@ public static class LicenseKey
     {
         if (fingerprint.Length is 0 or > 255) return LicenseRejection.BadSignature; // sin huella no se valida nada
         if (!TryDecode(licenseKey, out var payload) || payload is null) return LicenseRejection.Malformed;
+        if (payload.Version is 0) return LicenseRejection.Malformed; // la versión 0 no existe: clave corrupta
         if (payload.Version > CurrentVersion) return LicenseRejection.UnsupportedVersion;
+
+        // Un TIPO que esta build no conoce se rechaza IGUAL que una versión futura. El byte de tipo existe para
+        // añadir licencias temporales sin cambiar la versión del formato: si esta guarda no estuviera, una
+        // licencia temporal emitida en el futuro validaría aquí como PERPETUA (esta build no tiene noción de
+        // caducidad), y las builds ya desplegadas no se pueden corregir a posteriori.
+        if (!Enum.IsDefined(payload.Type)) return LicenseRejection.UnsupportedVersion;
 
         byte[] spki;
         try { spki = Convert.FromBase64String(publicKeyBase64); }

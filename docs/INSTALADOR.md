@@ -54,6 +54,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -SkipPublis
 
 **Al desinstalar no se borran las grabaciones ni la base de datos.** Son material del cliente. Solo se retira el programa y sus registros.
 
+**El instalador crea una clave de registro del equipo (`HKLM\Software\Baioss\Record`) con permiso de escritura para Usuarios.** Es la tercera copia del estado de licencia/prueba, compartida por todas las cuentas del PC: sin ella, bastaba borrar el archivo de `ProgramData` y entrar con otra cuenta de Windows para reiniciar el periodo de prueba. No se borra al desinstalar a propósito — desinstalar y reinstalar no reinicia la prueba.
+
 **No se empaquetan datos de desarrollo.** La carpeta `publish\` es también la que se usa para probar en local, así que el instalador excluye expresamente `data\`, `logs\` y `recordings\`; sin eso, la base de datos de pruebas y los registros del desarrollador acabarían en el equipo del cliente.
 
 ---

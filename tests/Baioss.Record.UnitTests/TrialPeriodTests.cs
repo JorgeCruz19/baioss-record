@@ -52,8 +52,9 @@ public sealed class TrialPeriodTests
     [Fact]
     public void TurningTheClockBack_DoesNotExtendTheTrial()
     {
-        // Se llegó al día 13 (marca de agua); alguien atrasa el reloj al día 1 para «renovar» la prueba.
-        var mark = TrialPeriod.Advance(Fresh, Start.AddDays(13), TimeSpan.Zero);
+        // Se llegó al día 13 con la app abierta (la marca de agua siguió al reloj real); alguien atrasa el
+        // reloj al día 1 para «renovar» la prueba.
+        var mark = TrialPeriod.Advance(Fresh, Start.AddDays(13), TimeSpan.FromDays(13));
         var (days, _) = TrialPeriod.Evaluate(mark, Start.AddDays(1));
         Assert.Equal(1, days); // sigue contando desde la marca de agua, no desde el reloj falseado
     }
@@ -99,13 +100,42 @@ public sealed class TrialPeriodTests
     [Fact]
     public void Advance_AccumulatesUsage_AndNeverLowersTheHighWater()
     {
-        var mark = TrialPeriod.Advance(Fresh, Start.AddDays(3), TimeSpan.FromHours(2));
-        Assert.Equal(Start.AddDays(3), mark.HighWater);
+        var mark = TrialPeriod.Advance(Fresh, Start.AddHours(2), TimeSpan.FromHours(2));
+        Assert.Equal(Start.AddHours(2), mark.HighWater);
         Assert.Equal(7200, mark.UsedSeconds);
 
-        var back = TrialPeriod.Advance(mark, Start.AddDays(1), TimeSpan.FromHours(1)); // reloj atrasado
-        Assert.Equal(Start.AddDays(3), back.HighWater); // no baja
-        Assert.Equal(10800, back.UsedSeconds);          // el uso sigue sumando
+        var back = TrialPeriod.Advance(mark, Start.AddHours(1), TimeSpan.FromHours(1)); // reloj atrasado
+        Assert.Equal(Start.AddHours(2), back.HighWater); // no baja
+        Assert.Equal(10800, back.UsedSeconds);           // el uso sigue sumando
+    }
+
+    // --- Salto ACCIDENTAL del reloj hacia el futuro (pila CMOS, año mal tecleado, NTP roto) ---
+
+    [Fact]
+    public void AccidentalClockJumpForward_DoesNotBurnTheTrialPermanently()
+    {
+        // REGRESIÓN: día 2 real de la prueba; el reloj salta a 2030 durante UN tick de un minuto y luego se
+        // corrige. Antes, la marca de agua se quedaba envenenada en 2030 (y persistida) y la prueba caducaba
+        // ENTERA e irrecuperablemente — bloqueando grabaciones nuevas — por un fallo accidental de un minuto.
+        var mark = TrialPeriod.Advance(Fresh, Start.AddDays(2), TimeSpan.FromDays(2));
+        mark = TrialPeriod.Advance(mark, Start.AddYears(4), TimeSpan.FromMinutes(1)); // reloj roto un tick
+
+        // La marca solo pudo avanzar el doble del tiempo real medido (2 minutos), no 4 años.
+        Assert.True(mark.HighWater <= Start.AddDays(2).AddMinutes(2));
+
+        // Con el reloj ya corregido, la prueba sigue viva con lo consumido de verdad (2 días).
+        var (days, expired) = TrialPeriod.Evaluate(mark, Start.AddDays(2));
+        Assert.False(expired);
+        Assert.Equal(12, days);
+    }
+
+    [Fact]
+    public void HighWater_CannotOutrunRealElapsedTime()
+    {
+        // El reloj de pared dice «+3 días» pero el monotónico solo midió 2 horas: la marca avanza como mucho
+        // el DOBLE de lo real (4 horas). Un salto mayor es un reloj roto, no tiempo consumido.
+        var mark = TrialPeriod.Advance(Fresh, Start.AddDays(3), TimeSpan.FromHours(2));
+        Assert.Equal(Start.AddHours(4), mark.HighWater);
     }
 
     [Fact]

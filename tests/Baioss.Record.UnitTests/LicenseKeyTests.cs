@@ -112,6 +112,37 @@ public sealed class LicenseKeyTests
     }
 
     [Fact]
+    public void LicenseOfAFutureType_IsRejected_NotAcceptedAsPerpetual()
+    {
+        // El byte de tipo existe para poder emitir licencias TEMPORALES en el futuro sin cambiar la versión del
+        // formato. Esta build no sabe caducarlas: si aceptara un tipo desconocido, una temporal futura validaría
+        // aquí como PERPETUA. Debe rechazarse como «necesitas una versión más nueva», con la firma siendo válida.
+        var futureType = (LicenseType)7;
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var issuedOn = new DateOnly(2026, 8, 3);
+        var message = LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, futureType, issuedOn);
+        var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        string key = LicenseKey.Encode(LicenseKey.CurrentVersion, futureType, issuedOn, signature);
+        string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
+
+        Assert.Equal(LicenseRejection.UnsupportedVersion, LicenseKey.Verify(key, MachineA, pub));
+    }
+
+    [Fact]
+    public void VersionZero_IsMalformed()
+    {
+        // La versión 0 no existe (la primera es la 1): solo puede ser una clave corrompida, aunque venga firmada.
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var issuedOn = new DateOnly(2026, 8, 3);
+        var message = LicenseKey.BuildSignedMessage(MachineA, 0, LicenseType.Lifetime, issuedOn);
+        var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        string key = LicenseKey.Encode(0, LicenseType.Lifetime, issuedOn, signature);
+        string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
+
+        Assert.Equal(LicenseRejection.Malformed, LicenseKey.Verify(key, MachineA, pub));
+    }
+
+    [Fact]
     public void KeyIsReadable_GroupedAndWithoutConfusableCharacters()
     {
         var (key, _) = Issue(MachineA);

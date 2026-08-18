@@ -303,11 +303,14 @@ public sealed partial class ShellViewModel : ObservableObject
     private void OpenLicense()
     {
         if (_license is null) return; // subsistema de licencias no disponible: la app sigue funcionando sin él
+        var vm = new Baioss.Record.App.Licensing.LicenseViewModel(_license);
         var window = new Baioss.Record.App.Licensing.LicenseWindow
         {
-            DataContext = new Baioss.Record.App.Licensing.LicenseViewModel(_license),
+            DataContext = vm,
             Owner = System.Windows.Application.Current?.MainWindow,
         };
+        // El VM se suscribe al servicio (singleton): hay que desengancharlo al cerrar o cada apertura filtra un VM.
+        window.Closed += (_, _) => vm.Detach();
         window.Show();
     }
 

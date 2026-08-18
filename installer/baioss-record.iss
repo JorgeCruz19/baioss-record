@@ -17,7 +17,11 @@
 ; ============================================================================
 
 #define AppName        "Baioss Record"
+; Valor por DEFECTO: el script de construcción lo pasa con /DAppVersion=x.y.z. Sin el ifndef, este #define
+; PISABA el de la línea de comandos y el parámetro -Version del script no tenía ningún efecto.
+#ifndef AppVersion
 #define AppVersion     "1.0.0"
+#endif
 #define AppPublisher   "Baioss"
 #define AppExeName     "Baioss.Record.App.exe"
 #define SourceDir      "..\publish"
@@ -65,6 +69,14 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; \
 ; registros y (si no se cambia) las grabaciones. Sin esto no arrancaría bien.
 Name: "{app}"; Permissions: users-modify
 Name: "{commonappdata}\Baioss\Record"; Permissions: users-modify
+
+[Registry]
+; TERCERA copia del estado de licencia/prueba, COMPARTIDA por todos los usuarios del equipo. Las otras dos
+; (archivo en ProgramData y HKCU) las puede borrar un usuario estándar («borro el archivo y entro con otra
+; cuenta» reiniciaba la prueba); esta clave la crea el instalador ELEVADO y le concede escritura a Usuarios
+; para que la app (que corre sin elevación) pueda mantenerla. NO se borra al desinstalar a propósito:
+; desinstalar y reinstalar no debe reiniciar el periodo de prueba.
+Root: HKLM; Subkey: "Software\Baioss\Record"; Permissions: users-modify; Flags: noerror
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

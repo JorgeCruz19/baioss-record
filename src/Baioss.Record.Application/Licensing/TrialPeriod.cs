@@ -44,14 +44,30 @@ public static class TrialPeriod
     /// <summary>
     /// Marca actualizada tras un tick de la app: la marca de agua solo sube y el uso acumulado suma el tiempo
     /// realmente transcurrido (medido fuera, con reloj monotónico). Es lo que se persiste.
+    ///
+    /// <para><b>Tope de plausibilidad.</b> La marca de agua no puede AVANZAR más deprisa que el tiempo real
+    /// medido con el reloj monotónico (con margen ×2 para absorber correcciones legítimas). Sin este tope, un
+    /// reloj accidentalmente puesto en el futuro (pila CMOS, año mal tecleado, NTP roto) durante UN solo tick
+    /// dejaba HighWater envenenado para siempre y la prueba caducaba entera e irrecuperablemente — en vez de
+    /// consumir solo el tiempo que de verdad pasó. El tope NO debilita el anti-retroceso: atrasar el reloj sigue
+    /// sin bajar la marca, y el tiempo con la app cerrada nunca lo capturó la marca de agua tampoco antes.</para>
     /// </summary>
     public static TrialMark Advance(TrialMark mark, DateTimeOffset now, TimeSpan elapsedMonotonic)
     {
-        long add = elapsedMonotonic > TimeSpan.Zero ? (long)elapsedMonotonic.TotalSeconds : 0;
+        var elapsed = elapsedMonotonic > TimeSpan.Zero ? elapsedMonotonic : TimeSpan.Zero;
+
+        var highWater = mark.HighWater;
+        if (now > highWater)
+        {
+            var step = now - highWater;                    // cuánto pretende avanzar el reloj de pared
+            var allowed = elapsed + elapsed;               // lo plausible: el doble del tiempo real medido
+            highWater += step <= allowed ? step : allowed; // un salto mayor es un reloj roto, no tiempo consumido
+        }
+
         return mark with
         {
-            HighWater = now > mark.HighWater ? now : mark.HighWater,
-            UsedSeconds = mark.UsedSeconds + add,
+            HighWater = highWater,
+            UsedSeconds = mark.UsedSeconds + (long)elapsed.TotalSeconds,
         };
     }
 

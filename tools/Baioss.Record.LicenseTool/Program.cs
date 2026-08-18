@@ -5,7 +5,7 @@ using Baioss.Record.Application.Licensing;
 //
 //   baioss-license keygen
 //       Genera un par de claves NUEVO. La PRIVADA se guarda a buen recaudo (con ella se emiten licencias);
-//       la PÚBLICA se pega en la app (Licensing:PublicKey) para que pueda verificarlas.
+//       la PÚBLICA se pega en la app (src/Baioss.Record.Application/Licensing/LicensePublicKey.cs).
 //       Solo se hace UNA VEZ: si se pierde la privada, las licencias ya emitidas dejan de poder renovarse
 //       y hay que publicar una build con una pública nueva.
 //
@@ -54,9 +54,22 @@ static int Issue(string[] args)
     }
 
     // El código de equipo que ve el cliente es la huella en Base32 Crockford (tolerante a guiones/minúsculas).
-    if (!Base32Crockford.TryDecode(machine, out var fingerprint))
+    // Decodificación ESTRICTA con la longitud exacta de la huella: con la variante leniente, un código con un
+    // carácter de menos (dictado por teléfono, copiado a medias) producía una «huella» de otra longitud y la
+    // herramienta firmaba SIN ERROR una licencia que en el equipo del cliente jamás validaría («de otro equipo»).
+    if (!Base32Crockford.TryDecodeExact(machine, MachineFingerprintComposer.Length, out var fingerprint))
     {
-        Console.Error.WriteLine("El código de equipo no es válido (revisa que esté copiado completo).");
+        Console.Error.WriteLine($"El código de equipo no es válido: deben ser {MachineFingerprintComposer.Length * 8 / 5} caracteres " +
+                                "(4 grupos de 4). Revisa que esté copiado completo, sin caracteres de más ni de menos.");
+        return 1;
+    }
+
+    // La huella de «un equipo sin ningún identificador» es una CONSTANTE conocida (la misma en todos los equipos
+    // en ese estado). Emitir para ella sería vender una licencia universal: se rechaza y se pide revisar el equipo.
+    if (fingerprint.AsSpan().SequenceEqual(MachineFingerprintComposer.Compose(null, null, null, null)))
+    {
+        Console.Error.WriteLine("Ese código corresponde a un equipo SIN identificadores utilizables (huella genérica): una licencia");
+        Console.Error.WriteLine("emitida para él funcionaría en cualquier equipo en ese estado. Revisa el equipo del cliente antes de emitir.");
         return 1;
     }
 

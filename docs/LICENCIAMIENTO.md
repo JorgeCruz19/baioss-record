@@ -36,6 +36,8 @@ dotnet run --project tools/Baioss.Record.LicenseTool -- issue --machine D68J-FZN
 
 La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo que se firma, así que en otro ordenador la firma no valida.
 
+> La herramienta es estricta con el código de equipo: si le faltan o sobran caracteres **se niega a emitir** (antes firmaba en silencio una licencia que jamás validaría en el equipo del cliente). También se niega si el código corresponde a un equipo **sin identificadores utilizables** — esa huella es genérica y una licencia emitida para ella funcionaría en cualquier equipo en ese estado.
+
 ---
 
 ## 3. Qué pasa cuando termina la prueba
@@ -62,9 +64,13 @@ La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo 
 
 **El código de equipo y la licencia se leen en voz alta.** Usan un alfabeto sin caracteres confundibles (nada de `I`, `L`, `O`, `U`) y al teclear se aceptan minúsculas, espacios y las confusiones típicas (`O`→`0`, `I`→`1`).
 
-**El periodo de prueba resiste juegos con el reloj.** Se guarda la fecha de inicio, una marca de agua (el máximo momento visto, que nunca baja) y el **uso real acumulado medido con reloj monotónico**. Atrasar la hora no alarga la prueba; adelantarla y devolverla tampoco la congela. Un ajuste horario legítimo (NTP, cambio de zona) no resta días.
+**El periodo de prueba resiste juegos con el reloj.** Se guarda la fecha de inicio, una marca de agua (el máximo momento visto, que nunca baja) y el **uso real acumulado medido con reloj monotónico**. Atrasar la hora no alarga la prueba; adelantarla y devolverla tampoco la congela. Un ajuste horario legítimo (NTP, cambio de zona) no resta días. Y un reloj **accidentalmente puesto en el futuro** (pila CMOS, año mal tecleado) tampoco quema la prueba: la marca de agua no puede avanzar más deprisa que el tiempo real medido, así que solo se consume lo que de verdad pasó.
 
-**El estado vive en `%ProgramData%\Baioss\Record\license.dat`**, con copia en el registro del usuario. Fuera de la carpeta del programa a propósito: actualizar el producto suele reemplazarla y se llevaría por delante la marca de la prueba. Al leer se toma **la fecha más antigua** encontrada, así que borrar una copia no reinicia nada. Ambas copias van firmadas con una clave derivada de la huella: una marca copiada de otro PC no cuela.
+**El estado vive en `%ProgramData%\Baioss\Record\license.dat`**, con copia en el registro del **equipo** (HKLM, la crea el instalador y la comparte todo usuario del PC) y en el del **usuario** (HKCU). Fuera de la carpeta del programa a propósito: actualizar el producto suele reemplazarla y se llevaría por delante la marca de la prueba. Al leer se toma **la fecha más antigua** encontrada, así que borrar una copia no reinicia nada — y la copia HKLM cubre además el «borro el archivo y entro con otra cuenta de Windows». Todas las copias van firmadas con una clave derivada de la huella: una marca copiada de otro PC no cuela.
+
+**Si el estado guardado no valida, la clave se conserva.** Un fallo transitorio al leer un identificador del equipo puede cambiar la huella una sesión (y con ella la firma del estado). En ese caso se reinician las marcas de la prueba, pero la **clave de licencia se rescata** y se re-verifica: el cliente legítimo no pierde su activación por un hipo de E/S. Y si el estado directamente **no se puede leer** (archivo bloqueado por el antivirus o la copia de seguridad), no se toca nada: se queda en «no verificable» y se reintenta al minuto.
+
+**Activar solo confirma si de verdad quedó guardado.** Si la clave es válida pero no se pudo escribir en ninguna ubicación (permisos rotos), el botón lo dice claramente en vez de fingir éxito — y la licencia dejada por el instalador se conserva para reintentar en el próximo arranque.
 
 **Nunca se guarda un «ya activado».** Del disco solo sale el *texto* de la clave; que la licencia sea válida se decide **verificando la firma en cada arranque**. Si se guardara una bandera, bastaría editarla.
 

@@ -24,6 +24,10 @@ public sealed partial class LicenseViewModel : ObservableObject
     /// <summary>Código de ESTE equipo. Es lo único que el cliente tiene que enviar para pedir su licencia.</summary>
     public string MachineCode { get; }
 
+    /// <summary>Desengancha el VM del servicio (singleton). La ventana es transitoria y el servicio vive toda la
+    /// app: sin esto, cada apertura de la ventana de Licencia dejaba un VM retenido para siempre por el evento.</summary>
+    public void Detach() => _license.Changed -= OnLicenseChanged;
+
     [ObservableProperty] private string _statusText = "";
     [ObservableProperty] private string _detailText = "";
     [ObservableProperty] private bool _isLicensed;

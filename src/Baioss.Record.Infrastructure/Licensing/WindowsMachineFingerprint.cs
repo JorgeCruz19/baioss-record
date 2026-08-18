@@ -63,7 +63,7 @@ public sealed class WindowsMachineFingerprint : IMachineFingerprint
             using var key = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography");
             return key?.GetValue("MachineGuid") as string;
         }
-        catch (Exception ex) { _log.LogDebug(ex, "No se pudo leer MachineGuid."); return null; }
+        catch (Exception ex) { _log.LogWarning(ex, "No se pudo leer MachineGuid: la huella de ESTA sesión puede diferir de la registrada."); return null; }
     }
 
     /// <summary>Serial de SMBIOS que Windows publica en el registro (sin WMI). Muchos equipos lo dejan vacío o con
@@ -76,7 +76,7 @@ public sealed class WindowsMachineFingerprint : IMachineFingerprint
             using var key = baseKey.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
             return key?.GetValue(name) as string;
         }
-        catch (Exception ex) { _log.LogDebug(ex, "No se pudo leer {Name} de BIOS.", name); return null; }
+        catch (Exception ex) { _log.LogWarning(ex, "No se pudo leer {Name} de BIOS: la huella de ESTA sesión puede diferir de la registrada.", name); return null; }
     }
 
     /// <summary>Nº de serie del volumen del sistema (cambia al reformatear, no al mover el disco de equipo).</summary>
@@ -89,9 +89,13 @@ public sealed class WindowsMachineFingerprint : IMachineFingerprint
             var fs = new StringBuilder(261);
             if (GetVolumeInformationW(root, label, label.Capacity, out uint serial, out _, out _, fs, fs.Capacity))
                 return serial.ToString("X8");
+            // Un fallo aquí NO puede pasar en silencio: sin este componente la huella de ESTA sesión difiere de
+            // la registrada y la licencia dejaría de validar hasta el siguiente arranque sano.
+            _log.LogWarning("GetVolumeInformationW({Root}) devolvió false (error {Err}): la huella de ESTA sesión puede diferir de la registrada.",
+                root, System.Runtime.InteropServices.Marshal.GetLastWin32Error());
             return null;
         }
-        catch (Exception ex) { _log.LogDebug(ex, "No se pudo leer el serial del volumen del sistema."); return null; }
+        catch (Exception ex) { _log.LogWarning(ex, "No se pudo leer el serial del volumen del sistema: la huella de ESTA sesión puede diferir de la registrada."); return null; }
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

@@ -67,12 +67,27 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
             if (rejection != LicenseRejection.None)
                 return new LicenseActivationResult(false, rejection, MessageFor(rejection));
 
+            bool saved;
             lock (_sync)
             {
-                var record = _store.Read() ?? NewTrialRecord();
-                _store.Write(record with { LicenseKey = licenseKey.Trim() });
+                var read = _store.Read();
+                var record = read.Record ?? (NewTrialRecord() with { LicenseKey = read.SalvagedKey });
+                saved = _store.Write(record with { LicenseKey = licenseKey.Trim() });
             }
             Refresh(TimeSpan.Zero);
+
+            if (!saved)
+            {
+                // La clave ES válida pero no quedó guardada en NINGUNA ubicación: decir «activada» sería mentir
+                // — al caducar la prueba el equipo se bloquearía pese a la confirmación. Rejection.None con
+                // Success=false distingue «válida pero sin persistir» de una clave rechazada (quien deja la
+                // licencia pendiente del instalador usa esa distinción para reintentar en el próximo arranque).
+                _log.LogError("Licencias: la clave es válida pero NO se pudo guardar en ninguna ubicación (¿permisos de «{Path}»?).", _store.FilePath);
+                return new LicenseActivationResult(false, LicenseRejection.None,
+                    "La licencia es válida, pero no se pudo guardar en este equipo. " +
+                    $"Revisa los permisos de «{_store.FilePath}» y vuelve a intentarlo.");
+            }
+
             _log.LogInformation("Licencia ACTIVADA para el equipo {Code}.", MachineCode);
             return new LicenseActivationResult(true, LicenseRejection.None, "Licencia activada. Gracias.");
         }
@@ -100,14 +115,17 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
         }
     }
 
-    /// <summary>Recalcula el estado y, si cambió, lo publica. Suma <paramref name="elapsed"/> al uso acumulado.</summary>
+    /// <summary>Recalcula el estado y, si cambió, lo publica. Suma <paramref name="elapsed"/> al uso acumulado.
+    /// La publicación va DENTRO del lock: si fuera después de soltarlo, una instantánea calculada ANTES de una
+    /// activación podría publicarse DESPUÉS y pisar el estado «Licensed» recién activado con un «Expired» viejo
+    /// (bloqueando grabaciones nuevas hasta el siguiente ciclo). Los suscriptores de <see cref="Changed"/> solo
+    /// despachan al hilo de UI (BeginInvoke), así que no hay riesgo de reentrada bajo el lock.</summary>
     private void Refresh(TimeSpan elapsed)
     {
-        LicenseInfo next;
         lock (_sync)
         {
-            LicenseRecord? record;
-            try { record = _store.Read(); }
+            LicenseReadResult read;
+            try { read = _store.Read(); }
             catch (Exception ex)
             {
                 // No se pudo leer: NO se bloquea. Se avisa y se sigue grabando.
@@ -116,14 +134,33 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
                 return;
             }
 
-            var now = DateTimeOffset.UtcNow;
-            if (record is null)
+            // Lectura fallida TRANSITORIA (archivo bloqueado por antivirus/copia de seguridad, registro
+            // inaccesible) sin ninguna copia buena: NI se bloquea NI —crucial— se siembra una prueba nueva,
+            // porque eso sobrescribiría el estado bueno que volverá a ser legible en el próximo ciclo (y con
+            // él, la clave de licencia). Se publica Unknown (que no bloquea) y se reintenta.
+            if (read.Record is null && read.HadReadErrors)
             {
-                record = NewTrialRecord();     // primer arranque: empieza la prueba
-                _store.Write(record);
-                _log.LogInformation("Periodo de prueba iniciado ({Days} días). Código de equipo: {Code}.", TrialDays, MachineCode);
+                Publish(new LicenseInfo(LicenseState.Unknown, 0, null, MachineCode));
+                return;
             }
 
+            var now = DateTimeOffset.UtcNow;
+            var record = read.Record;
+            if (record is null)
+            {
+                // Primer arranque de verdad (no existe NINGUNA copia) o estado presente pero inválido: empieza
+                // la prueba. Del estado inválido se CONSERVA la clave rescatada: no se «cree» en ella — se
+                // re-verifica contra la huella como siempre —, pero perderla castigaría al cliente legítimo
+                // cuya huella cambió una sesión por un fallo transitorio de lectura.
+                record = NewTrialRecord() with { LicenseKey = read.SalvagedKey };
+                _store.Write(record);
+                if (read.SalvagedKey is not null)
+                    _log.LogWarning("Licencias: el estado guardado no era válido; se reinicia la prueba CONSERVANDO la clave de licencia (se re-verificará).");
+                else
+                    _log.LogInformation("Periodo de prueba iniciado ({Days} días). Código de equipo: {Code}.", TrialDays, MachineCode);
+            }
+
+            LicenseInfo next;
             // Licencia: se VERIFICA siempre, nunca se confía en un estado guardado.
             if (!string.IsNullOrWhiteSpace(record.LicenseKey) &&
                 LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, LicensePublicKey.ProviderPublicKeyBase64) == LicenseRejection.None)
@@ -142,8 +179,8 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
                 var (days, expired) = TrialPeriod.Evaluate(advanced, now, TrialDays);
                 next = new LicenseInfo(expired ? LicenseState.Expired : LicenseState.Trial, days, record.StartedAt, MachineCode);
             }
+            Publish(next);
         }
-        Publish(next);
     }
 
     private LicenseRecord NewTrialRecord()

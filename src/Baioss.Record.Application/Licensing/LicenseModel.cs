@@ -85,6 +85,9 @@ public sealed class LicenseBlockedException : InvalidOperationException
 }
 
 /// <summary>Resultado de intentar activar una clave de licencia.</summary>
+/// <remarks><c>Success=false</c> con <see cref="LicenseRejection.None"/> significa «la clave ES válida pero no
+/// se pudo GUARDAR» (permisos): el llamador puede reintentar más tarde — la licencia pendiente del instalador se
+/// conserva en ese caso — en vez de dar la clave por mala.</remarks>
 public sealed record LicenseActivationResult(bool Success, LicenseRejection Rejection, string Message);
 
 /// <summary>

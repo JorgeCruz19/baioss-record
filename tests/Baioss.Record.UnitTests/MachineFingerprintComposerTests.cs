@@ -87,4 +87,22 @@ public sealed class MachineFingerprintComposerTests
         Assert.False(MachineFingerprintComposer.HasAnyRealIdentifier(null, "", "Default string"));
         Assert.True(MachineFingerprintComposer.HasAnyRealIdentifier(null, "c9ddc3ed-b96d-4940"));
     }
+
+    [Fact]
+    public void MachineCode_DecodesStrictly_OnlyAtItsExactLength()
+    {
+        // REGRESIÓN (herramienta de emisión): con la decodificación leniente, un código con un carácter de menos
+        // o de más decodificaba «a otra huella» EN SILENCIO y se emitía una licencia que jamás validaría en el
+        // equipo real. La estricta exige la longitud exacta y sigue tolerando guiones y minúsculas.
+        var fp = MachineFingerprintComposer.Compose("guid", "vol");
+        string code = MachineFingerprintComposer.ToCode(fp);
+
+        Assert.True(Base32Crockford.TryDecodeExact(code, MachineFingerprintComposer.Length, out var decoded));
+        Assert.Equal(fp, decoded);
+        Assert.True(Base32Crockford.TryDecodeExact(code.ToLowerInvariant().Replace("-", " "), MachineFingerprintComposer.Length, out _));
+
+        string flat = code.Replace("-", "");
+        Assert.False(Base32Crockford.TryDecodeExact(flat[..^1], MachineFingerprintComposer.Length, out _)); // uno de menos
+        Assert.False(Base32Crockford.TryDecodeExact(flat + "0", MachineFingerprintComposer.Length, out _)); // uno de más
+    }
 }

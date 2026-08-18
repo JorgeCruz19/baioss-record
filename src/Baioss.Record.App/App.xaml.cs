@@ -130,9 +130,16 @@ public partial class App : System.Windows.Application
             {
                 var result = license.Activate(key);
                 if (result.Success) Serilog.Log.Information("Licencia aplicada desde la instalación.");
+                else if (result.Rejection == Baioss.Record.Application.Licensing.LicenseRejection.None)
+                {
+                    // Clave VÁLIDA que no se pudo GUARDAR (permisos): se CONSERVA el archivo para reintentar en
+                    // el próximo arranque — borrarlo aquí destruiría la única copia de la clave del cliente.
+                    Serilog.Log.Warning("La licencia de la instalación es válida pero no se pudo guardar; se reintentará al próximo arranque. {Message}", result.Message);
+                    return;
+                }
                 else Serilog.Log.Warning("La licencia indicada en la instalación no es válida: {Message}", result.Message);
             }
-            File.Delete(pending); // no se reintenta en cada arranque
+            File.Delete(pending); // clave inválida o ya aplicada: no se reintenta en cada arranque
         }
         catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo aplicar la licencia dejada por el instalador."); }
     }
