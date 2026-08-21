@@ -49,10 +49,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // detiene sin tocar el dispositivo.
     private CaptureStreamRelay? _relay;
     private FfmpegProcessSupervisor? _recorder;
-    /// <summary>Perfil con el que se construyó el proceso de captura persistente (codifica en continuo). Si una
-    /// grabación pide OTRO perfil (cambio de preset), hay que reconstruirlo: FFmpeg no cambia el codificador en
-    /// caliente. Es la única reapertura de dispositivo que queda en el camino de grabación, y solo al cambiar de preset.</summary>
-    private RecordingProfile? _captureProfile;
+    /// <summary>FIRMA de codificación del perfil con el que se construyó la captura persistente (codifica en
+    /// continuo). Si una grabación pide un perfil que codifica DISTINTO, hay que reconstruirla: FFmpeg no cambia
+    /// el codificador en caliente. Se compara por FIRMA y no por referencia: el mismo objeto de perfil puede
+    /// editarse in situ (y la referencia no lo delataría), y un objeto nuevo con los mismos valores no debe
+    /// costar una reapertura del dispositivo.</summary>
+    private string? _captureProfileSignature;
+    // Frames perdidos que las stats del GRABADOR no ven: los que descarta el codificador de la CAPTURA (sus
+    // líneas de progreso se filtran mientras hay grabador) y los fragmentos que el relé descartó por overflow.
+    // Se FUNDEN en las stats publicadas para que el rastreador de drops del canal los alarme como siempre.
+    private long _captureDrops;
+    private long _overflowDrops;
 
     private RecordingState _state = RecordingState.Idle;
     private Guid _sessionId;
@@ -202,19 +209,37 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         // Dispositivo persistente: relé del flujo codificado. Se levanta ANTES del proceso de captura, porque
         // este se conectará a él nada más arrancar (la app es el servidor, como ya ocurre con el preview).
+        // SOLO si los códecs del perfil pueden viajar por MPEG-TS: con ProRes/DNxHR/AV1 o audio PCM el muxer TS
+        // los rechaza y —como en este modo la captura codifica también en reposo— el canal moriría en bucle de
+        // reinicios nada más arrancar (el perfil POR DEFECTO es MXF+PCM, así que este caso es el común, no el
+        // raro). Sin relé, todas las rutas del modo persistente caen solas al modo clásico (comprueban _relay).
         if (PersistentDevice)
         {
-            // Pre-roll equivalente a ~2,5 s del bitrate del perfil: cubre de sobra un GOP (para que el grabador
-            // encuentre un fotograma clave y no pierda contenido) sin que el archivo empiece mucho antes de lo pedido.
-            long bps = baseProfile.VideoBitrate.BitsPerSecond + baseProfile.AudioBitrate.BitsPerSecond;
-            _relay = new CaptureStreamRelay(_channelKey, _log)
+            if (!FfmpegCodecMap.CanCarryInMpegts(baseProfile.VideoCodec, baseProfile.AudioCodec, baseProfile.AudioOnly))
             {
-                PrerollBytes = CaptureStreamRelay.PrerollBytesFor(bps),
-            };
-            // El grabador no drenó y se descartaron datos (disco saturado): la grabación sigue pero con un salto,
-            // que es exactamente la semántica de FramesDropped.
-            _relay.RecorderOverflow += (_, _) => RaiseAlarm(AlarmType.FramesDropped, true);
-            _relay.Start();
+                _log.LogWarning("Canal {Key}: el perfil ({Video}+{Audio}) no puede viajar por MPEG-TS; el modo de " +
+                    "dispositivo persistente queda desactivado en este canal (se graba en modo clásico, con reapertura).",
+                    _channelKey, baseProfile.VideoCodec, baseProfile.AudioCodec);
+            }
+            else
+            {
+                // Pre-roll equivalente a ~2,5 s del bitrate del perfil: cubre de sobra un GOP (para que el grabador
+                // encuentre un fotograma clave y no pierda contenido) sin que el archivo empiece mucho antes de lo pedido.
+                long bps = baseProfile.VideoBitrate.BitsPerSecond + baseProfile.AudioBitrate.BitsPerSecond;
+                _relay = new CaptureStreamRelay(_channelKey, _log)
+                {
+                    PrerollBytes = CaptureStreamRelay.PrerollBytesFor(bps),
+                };
+                // El grabador no drenó y se descartaron datos (disco saturado): la grabación sigue pero con un
+                // salto, que es exactamente la semántica de FramesDropped. Además del aviso inmediato, la cuenta
+                // se funde en las stats (ver OnProgress) para que el rastreador de drops la sostenga.
+                _relay.RecorderOverflow += (_, _) =>
+                {
+                    Interlocked.Increment(ref _overflowDrops);
+                    RaiseAlarm(AlarmType.FramesDropped, true);
+                };
+                _relay.Start();
+            }
         }
 
         // Si la fuente todavía NO tiene señal (caso típico de NDI cuyo emisor aún no emite), el pipeline no se
@@ -334,10 +359,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             SetState(RecordingState.Starting);
             try
             {
-                if (PersistentDevice && _relay is not null && !_slate)
+                if (UsesRecorder(profile))
                     await StartRecorderProcessAsync(profile, ct).ConfigureAwait(false);
                 else
+                {
+                    // Modo clásico. Con relé activo pero un perfil que no viaja por TS (ProRes/DNxHR/PCM…),
+                    // esta grabación concreta va directa a archivo: fidelidad del material > evitar el bache.
+                    if (PersistentDevice && _relay is not null)
+                        _log.LogInformation("Canal {Key}: el perfil ({Video}+{Audio}) no viaja por MPEG-TS; esta grabación va en modo clásico (con reapertura).",
+                            _channelKey, profile.VideoCodec, profile.AudioCodec);
                     await ReplaceProcessAsync(recording: true, slate: false, ct).ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -373,11 +405,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         try
         {
             SetState(RecordingState.Stopping);
-            bool wasSlate = _slate;
             _slate = false; _slatePending = false;
             try
             {
-                if (PersistentDevice && _relay is not null && !wasSlate)
+                // La señal fiable de CÓMO se está grabando es _recorder, no el modo: en modo persistente una
+                // grabación puede haber ido en clásico (perfil que no viaja por TS, rutas de recuperación) y
+                // entonces quien escribe es el proceso de captura, que hay que reemplazar como siempre.
+                if (_recorder is not null)
                     // Dispositivo persistente: solo se para el GRABADOR. El proceso de captura sigue intacto, así
                     // que la tarjeta NO se cierra ni se reabre → sin bache al detener (ni al volver a grabar).
                     await StopRecorderProcessAsync().ConfigureAwait(false);
@@ -436,6 +470,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             _supervisor.Crashed -= OnRecordingProcessDied;
             _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
+            _supervisor.Restarted -= OnCaptureRestarted;
             await _supervisor.DisposeAsync().ConfigureAwait(false);
             _supervisor = null;
         }
@@ -449,7 +484,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         // Modo archivo único: el proceso que se acaba de cerrar dejó su archivo finalizado en disco →
         // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
-        if (_recordFile is not null)
+        // NUNCA si hay un proceso grabador vivo: entonces el archivo es SUYO, lo sigue escribiendo, y emitirlo
+        // aquí lo remuxearía/renombraría a medias — lo emite StopRecorderProcessAsync cuando de verdad cierra.
+        if (_recordFile is not null && _recorder is null)
         {
             // Solo en fMP4: se remuxea a faststart para arreglar el seek. En MP4 estándar (moov al final) el
             // archivo YA es seekable → sin remux (ni saturación de disco). (Config Recording:FragmentedMp4.)
@@ -473,10 +510,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{_port}")
             .WithFragmentedMp4(FragmentedMp4);
 
-        // DISPOSITIVO PERSISTENTE: la salida codificada va SIEMPRE al relé, nunca a un archivo desde este
-        // proceso. Así el argv del proceso de captura es IDÉNTICO se grabe o no, y por eso iniciar/detener
-        // grabación ya no lo reemplaza (ni reabre el dispositivo). El archivo lo escribe el proceso grabador.
-        if (PersistentDevice && _relay is not null && !slate)
+        // DISPOSITIVO PERSISTENTE: la salida codificada va al relé, nunca a un archivo desde este proceso. Así
+        // el argv del proceso de captura es IDÉNTICO se grabe o no, y por eso iniciar/detener grabación ya no lo
+        // reemplaza (ni reabre el dispositivo). El archivo lo escribe el proceso grabador.
+        // «!recording» es una RED DE SEGURIDAD deliberada: en modo persistente la grabación nunca pasa por aquí
+        // con recording=true (la lleva el proceso grabador); si alguna ruta lo pide igualmente —perfil que no
+        // cabe en TS, rutas de recuperación—, el proceso escribe el archivo DIRECTAMENTE (modo clásico, con su
+        // reapertura) en vez de mandar la salida a un relé del que nadie está grabando (material perdido).
+        if (PersistentDevice && _relay is not null && !slate && !recording)
             builder.WithRecordSink($"tcp://127.0.0.1:{_relay.SourcePort}");
 
         // Nombre del archivo. Si hay un nombre base (manual/programada), lo aplica; si no, el builder usa
@@ -495,12 +536,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         // En modo persistente (fuera del slate) la rama de codificación va SIEMPRE, se esté grabando o no: es el
         // precio de no poder añadir un codificador a un proceso ya lanzado, y lo que permite que grabar no lo
-        // reemplace. Se recuerda con qué perfil se construyó para detectar un cambio de preset (ver StartRecording).
-        bool encodeAlways = PersistentDevice && _relay is not null && !slate;
+        // reemplace. Se recuerda la FIRMA del perfil para detectar un cambio de preset (ver StartRecorderProcessAsync).
+        bool encodeAlways = PersistentDevice && _relay is not null && !slate && !recording;
         var args = slate
             ? builder.BuildSlate(recording, FrameWidth, FrameHeight)
             : builder.BuildLive(recording || encodeAlways, FrameWidth, FrameHeight);
-        if (encodeAlways) _captureProfile = profile;
+        if (encodeAlways) _captureProfileSignature = EncodingSignature(profile);
 
         if (recording)
         {
@@ -538,7 +579,48 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _supervisor.LogLine += OnLog;
         _supervisor.Crashed += OnRecordingProcessDied;
         _supervisor.Completed += OnRecordingProcessCompleted; // salida LIMPIA inesperada durante grabación (N6)
+        _supervisor.Restarted += OnCaptureRestarted;          // persistente: TS reiniciado → cortar pieza nueva
         await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>¿Esta grabación va por el proceso GRABADOR del modo persistente? Solo si el relé existe y los
+    /// códecs del perfil pueden viajar por MPEG-TS sin alterar el material; si no, modo clásico (con reapertura):
+    /// la fidelidad del archivo entregado manda sobre evitar el bache.</summary>
+    private bool UsesRecorder(RecordingProfile p) =>
+        PersistentDevice && _relay is not null &&
+        FfmpegCodecMap.CanCarryInMpegts(p.VideoCodec, p.AudioCodec, p.AudioOnly);
+
+    /// <summary>Firma de los campos del perfil que afectan a la CODIFICACIÓN de la captura persistente (no al
+    /// contenedor de archivo ni a la segmentación, que son del proceso grabador… salvo el contenedor, que entra
+    /// porque decide el codificador de audio efectivo). Dos perfiles con la misma firma producen el mismo flujo
+    /// codificado y NO obligan a reconstruir la captura (= no reabren el dispositivo).</summary>
+    private static string EncodingSignature(RecordingProfile p) => string.Join('|',
+        p.VideoCodec, p.HwAccel, p.VideoBitrate.BitsPerSecond, p.MaxBitrate?.BitsPerSecond,
+        p.PixelFormat, p.EncoderProfile, p.TargetResolution, p.OutputFrameRate, p.ScanType,
+        p.RateControl, p.Quality, p.GopSize, p.ClosedGop,
+        p.AudioCodec, p.AudioLayout, p.AudioBitrate.BitsPerSecond, p.AudioSampleRate,
+        p.AudioOnly, p.BurnTimecode, p.Container);
+
+    /// <summary>
+    /// La captura persistente se RELANZÓ internamente (caída del proceso con auto-reinicio del supervisor). El
+    /// proceso nuevo reinicia su base de tiempos (el TS empieza de cero): si hay un grabador copiando, seguir
+    /// escribiendo el MISMO archivo mezclaría dos bases de tiempo → se corta una PIEZA nueva.
+    /// </summary>
+    private void OnCaptureRestarted(object? sender, int n)
+    {
+        if (_disposed || _recorder is null) return;
+        _ = Task.Run(async () =>
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed || _recorder is null || _recordProfile is null ||
+                    _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+                await StartRecorderProcessAsync(_recordProfile, CancellationToken.None).ConfigureAwait(false); // cierra la pieza y abre otra
+            }
+            catch (Exception ex) { _log.LogError(ex, "Canal {Key}: fallo al cortar pieza tras el reinicio de la captura.", _channelKey); }
+            finally { _gate.Release(); }
+        });
     }
 
     /// <summary>
@@ -554,9 +636,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_recorder is not null) await StopRecorderProcessAsync().ConfigureAwait(false);
 
         // CAMBIO DE PRESET: FFmpeg no cambia el codificador de un proceso en marcha. Si la grabación pide un
-        // perfil distinto del que está codificando la captura, hay que reconstruirla — única reapertura de
-        // dispositivo que queda en este camino, y solo al cambiar de preset (no en cada grabación).
-        if (_supervisor is null || !ReferenceEquals(_captureProfile, profile))
+        // perfil que CODIFICA distinto del que emite la captura, hay que reconstruirla — única reapertura de
+        // dispositivo que queda en este camino. Se compara la FIRMA de codificación, no la referencia: el mismo
+        // objeto puede editarse in situ (y la referencia no lo delataría) y re-seleccionar el mismo preset como
+        // objeto nuevo no debe costar una reapertura.
+        if (_supervisor is null || _captureProfileSignature != EncodingSignature(profile))
         {
             _baseProfile = profile; // la captura pasa a codificar con el perfil de la grabación
             _log.LogInformation("Canal {Key}: el preset cambió; se reconstruye la captura para codificar con el perfil nuevo.", _channelKey);
@@ -596,6 +680,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             StallTimeout = TimeSpan.FromSeconds(30),
             FinalizeOnStop = true,     // escribe archivo: hay contenedor que cerrar (moov)
             RestartInternally = false, // reabrir el mismo archivo con -y lo TRUNCARÍA: la pieza nueva la hace el motor (N1)
+            // El grabador solo COPIA: tras la «q» finaliza el contenedor en 1-2 s (no codifica nada). Los 30 s
+            // por defecto inflaban el peor caso del cierre de la app (drenaje 20 s + cierre 30 s > ShutdownTimeout
+            // de 45 s) y el ForceExit mataba al grabador a MITAD del flush → archivo sin moov.
+            GracefulTimeout = TimeSpan.FromSeconds(10),
             RecordedBytesProbe = () => _state == RecordingState.Paused ? -1L : CurrentSessionBytes(), // #55
         };
         _recorder.ProgressLine += OnProgress;
@@ -625,15 +713,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // esperarlo: disponer el supervisor cancela y manda «q», que corta el proceso ANTES de que termine de
         // consumir lo que queda en la cola → se perdían los últimos segundos de la grabación. Con la espera, el
         // grabador drena todo, escribe el moov y sale solo; el «q» del Dispose queda de respaldo si se atasca.
-        var exited = new TaskCompletionSource();
-        void OnRecorderExit(object? _, int __) => exited.TrySetResult();
-        if (rec is not null) rec.Completed += OnRecorderExit;
+        // Se espera la TAREA de finalización del supervisor y no el evento Completed: un grabador que YA murió
+        // (caída, disco lleno) no re-emite un evento pasado —Crashed además nunca dispara Completed— y la espera
+        // consumía el tope ENTERO (20 s) con el canal cogido, tanto al pulsar Detener como en cada recuperación.
         _relay?.EndRecording();
         if (rec is not null)
         {
-            await Task.WhenAny(exited.Task, Task.Delay(RecorderDrainTimeout)).ConfigureAwait(false);
-            rec.Completed -= OnRecorderExit;
-            if (!exited.Task.IsCompleted)
+            var finished = rec.Finished;
+            await Task.WhenAny(finished, Task.Delay(RecorderDrainTimeout)).ConfigureAwait(false);
+            if (!finished.IsCompleted)
                 _log.LogWarning("Canal {Key}: el grabador no terminó de drenar en {T}; se fuerza el cierre ordenado.", _channelKey, RecorderDrainTimeout);
             await rec.DisposeAsync().ConfigureAwait(false);
         }
@@ -698,7 +786,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // codifica en continuo, y el grabador, que escribe el archivo). Las cifras que le importan al operador
         // son las de la GRABACIÓN, así que se ignoran las de la captura para que no se pisen entre sí.
         var rec = _recorder;
-        if (rec is not null && !ReferenceEquals(sender, rec)) return;
+        if (rec is not null && !ReferenceEquals(sender, rec))
+        {
+            // …salvo sus frames PERDIDOS: son pérdida REAL en el material (el codificador descartó cuadros)
+            // que el grabador (-c copy, drop=0) jamás reflejaría. Se acumulan y se funden más abajo, para que
+            // el rastreador de drops del canal alarme la saturación igual que en el modo clásico.
+            if (line.StartsWith("drop_frames=", StringComparison.Ordinal) &&
+                long.TryParse(line.AsSpan("drop_frames=".Length), out var d) && d > _captureDrops)
+                _captureDrops = d;
+            return;
+        }
 
         var stats = _parser.Feed(line);
         if (stats is null) return;
@@ -711,6 +808,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // RecordedBytes: bytes de la sesión, para que el monitor de salud calcule el ritmo de escritura sin
             // recorrer la carpeta del canal (que crece sin límite en 24/7). (Auditoría N16.)
             stats = stats with { Bitrate = new Bitrate(_realBitrateBps), RecordedBytes = _recordedBytes };
+        }
+        // Dispositivo persistente: funde en las stats los descartes que el grabador no ve — los del codificador
+        // de la captura y los fragmentos que el relé descartó por atasco — para que DropAlarmTracker los trate
+        // como los de siempre (sin esto, la alarma de saturación quedaba CIEGA durante la grabación persistente).
+        if (rec is not null)
+        {
+            long extra = _captureDrops + Interlocked.Read(ref _overflowDrops);
+            if (extra > 0) stats = stats with { DroppedFrames = stats.DroppedFrames + extra };
         }
         Stats = stats;
         StatsUpdated?.Invoke(this, stats);
@@ -764,11 +869,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     {
         // Fallo de APERTURA del codificador por hardware (NVENC agotado, driver/GPU ausente): degrada al
         // siguiente de la cadena (QSV→AMF→CPU) y reinicia, en lugar de dejar que el supervisor relance el
-        // mismo argv en vano. Solo durante la grabación (el preview no lleva codificador de salida).
-        var rec = _recordProfile;
-        if (!_encoderOpenError && rec is not null &&
-            _state is RecordingState.Recording or RecordingState.Starting &&
-            FfmpegEncoderError.IsOpenFailure(line))
+        // mismo argv en vano. Durante la grabación — y TAMBIÉN en reposo si la captura persistente codifica
+        // en continuo (ahí un preview clásico no lleva codificador, pero esta captura sí): sin esta rama, un
+        // canal persistente con NVENC agotado al arrancar quedaba en bucle de reinicios sin preview ni alarma.
+        var rec = _recordProfile ?? (PersistentDevice && _relay is not null ? _baseProfile : null);
+        bool encodes = _state is RecordingState.Recording or RecordingState.Starting
+                       || (PersistentDevice && _relay is not null && !_slate);
+        if (!_encoderOpenError && rec is not null && encodes && FfmpegEncoderError.IsOpenFailure(line))
         {
             _encoderOpenError = true;
             _log.LogWarning("Canal {Key}: el codificador de vídeo '{Encoder}' no pudo abrir → {Line}",
@@ -947,9 +1054,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_encoderOpenError || _fallbackPending) return;
         if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
+        // ¿QUIÉN murió? En modo persistente conviven DOS procesos y la recuperación es distinta: si murió la
+        // CAPTURA hay que reconstruirla (reabrir solo el grabador lo dejaría muriéndose de hambre en bucle
+        // contra un relé sin fuente); si murió el GRABADOR basta una pieza nueva sin tocar el dispositivo.
+        // Un evento de un proceso que ya no es ni la captura ni el grabador actuales es REZAGADO: se ignora.
+        bool captureDied = ReferenceEquals(sender, _supervisor);
+        if (!captureDied && !ReferenceEquals(sender, _recorder)) return;
+
         _recovering = true;
-        _log.LogWarning("Canal {Key}: el proceso de grabación murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).", _channelKey, exitCode);
-        _ = Task.Run(() => RecoverRecordingAsync(exitCode));
+        _log.LogWarning("Canal {Key}: el proceso de {Which} murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).",
+            _channelKey, captureDied ? "captura/grabación" : "grabación (copia)", exitCode);
+        _ = Task.Run(() => RecoverRecordingAsync(exitCode, captureDied));
     }
 
     /// <summary>
@@ -959,7 +1074,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// reintenta con más backoff hasta que la señal vuelva. <see cref="_recovering"/> se mantiene mientras dure
     /// la cadena de reintentos y se limpia al lograrlo o al dejar de grabar. (Auditoría N1.)
     /// </summary>
-    private async Task RecoverRecordingAsync(int exitCode)
+    private async Task RecoverRecordingAsync(int exitCode, bool captureDied)
     {
         bool retry = false;
         try
@@ -971,13 +1086,28 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 if (_disposed || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
                 bool slate = _recordProfile?.SlateOnSignalLoss == true;
                 if (slate) { _slate = true; _slateSince = DateTimeOffset.UtcNow; _slateAlarmRaised = false; }
-                // Dispositivo persistente: si el que murió fue el GRABADOR, basta con abrir una pieza nueva; la
-                // captura sigue viva y el dispositivo no se toca. (Con slate sí se reconstruye: ahí la fuente se
-                // sustituye por barras generadas y el dispositivo se libera a propósito.)
-                if (PersistentDevice && _relay is not null && !slate)
+
+                if (!slate && !captureDied && _recordProfile is not null && UsesRecorder(_recordProfile))
+                {
+                    // Murió el GRABADOR: pieza nueva sin tocar el dispositivo (la captura sigue viva).
+                    await StartRecorderProcessAsync(_recordProfile, CancellationToken.None).ConfigureAwait(false);
+                }
+                else if (!slate && captureDied && _recorder is not null)
+                {
+                    // Murió la CAPTURA con el grabador vivo: se cierra la pieza (su flujo ya no avanza), se
+                    // reconstruye la captura hacia el relé y se abre una pieza nueva. Empalmar la captura nueva
+                    // sobre el MISMO archivo mezclaría dos bases de tiempo: el TS del proceso nuevo empieza de cero.
+                    await StopRecorderProcessAsync().ConfigureAwait(false);
+                    await ReplaceProcessAsync(recording: false, slate: false, CancellationToken.None).ConfigureAwait(false);
                     await StartRecorderProcessAsync(_recordProfile!, CancellationToken.None).ConfigureAwait(false);
+                }
                 else
+                {
+                    // Slate o modo clásico. Si quedara un grabador vivo (grabación persistente que entra en
+                    // slate), se cierra ANTES: su pieza se emite bien y no queda huérfano en un relé sin fuente.
+                    if (_recorder is not null) await StopRecorderProcessAsync().ConfigureAwait(false);
                     await ReplaceProcessAsync(recording: true, slate: slate, CancellationToken.None).ConfigureAwait(false);
+                }
                 if (slate) { RaiseAlarm(AlarmType.Slate, true); StartRecoveryProbe(); }
             }
             catch (Exception ex)
@@ -989,7 +1119,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
         finally
         {
-            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode)); // mantiene _recovering=true durante la cadena
+            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode, captureDied)); // mantiene _recovering=true durante la cadena
             else _recovering = false;
         }
     }
@@ -1017,6 +1147,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _slate = true;
             _slateSince = DateTimeOffset.UtcNow;
             _slateAlarmRaised = false;
+            // Dispositivo persistente: cierra PRIMERO el grabador (emite su pieza mientras el flujo del relé aún
+            // se puede drenar). Sin esto quedaba huérfano leyendo un relé sin fuente, su archivo se emitía A
+            // MEDIO escribir al reemplazar la captura, y al volver la señal reanudaba un archivo ya emitido.
+            if (_recorder is not null) await StopRecorderProcessAsync().ConfigureAwait(false);
             await ReplaceProcessAsync(recording: true, slate: true, CancellationToken.None).ConfigureAwait(false);
             RaiseAlarm(AlarmType.Slate, true);
             StartRecoveryProbe();
@@ -1040,7 +1174,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         try
         {
             if (!_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return true; // ya no aplica
-            await ReplaceProcessAsync(recording: true, slate: false, CancellationToken.None).ConfigureAwait(false);
+            if (_recordProfile is not null && UsesRecorder(_recordProfile))
+            {
+                // Dispositivo persistente: la captura vuelve a codificar AL RELÉ (y de paso se emite la pieza
+                // de barras del slate) y la grabación continúa en una pieza NUEVA escrita por el grabador.
+                // El camino clásico (recording:true) aquí dejaba el canal «Recording» sin NADIE escribiendo
+                // archivo: con el desvío al relé, el proceso de captura no escribe ninguno.
+                await ReplaceProcessAsync(recording: false, slate: false, CancellationToken.None).ConfigureAwait(false);
+                await StartRecorderProcessAsync(_recordProfile, CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+                await ReplaceProcessAsync(recording: true, slate: false, CancellationToken.None).ConfigureAwait(false);
             _slate = false; // solo tras reconstruir con ÉXITO: si ReplaceProcessAsync lanzó, seguimos en slate
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false); // la señal volvió: retira la alarma de slate prolongado
@@ -1096,8 +1240,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         try
         {
             if (_fallbackPending) return;
-            var current = _recordProfile;
-            if (current is null || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+            // En modo persistente la CAPTURA codifica también en REPOSO, así que el fallo de apertura del
+            // codificador (NVENC agotado con N canales — MÁS probable aquí: todos codifican desde el arranque)
+            // puede ocurrir sin grabación en curso. Sin esta rama, la captura moría en bucle de reinicios
+            // eternos: sin preview, sin fallback y sin alarma.
+            bool recordingNow = _state is RecordingState.Recording or RecordingState.Starting;
+            bool idlePersistent = !recordingNow && PersistentDevice && _relay is not null;
+            var current = recordingNow ? _recordProfile : (idlePersistent ? _baseProfile : null);
+            if (current is null) return;
 
             var next = EncoderFallbackChain.Next(current.VideoCodec);
             if (next is null)
@@ -1116,14 +1266,33 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             var degraded = current.Clone();
             degraded.VideoCodec = next.Value;
             degraded.HwAccel = HwAccel.None;
-            _recordProfile = degraded;
 
-            _log.LogWarning("Canal {Key}: codificador '{From}' no disponible → degradando a '{To}' y reiniciando la grabación.",
+            _log.LogWarning("Canal {Key}: codificador '{From}' no disponible → degradando a '{To}' y reiniciando el pipeline.",
                 _channelKey, FfmpegCodecMap.VideoEncoder(from), FfmpegCodecMap.VideoEncoder(next.Value));
 
             // ReplaceProcessAsync resetea _encoderOpenError: el proceso entrante (con el códec degradado) se
             // re-evalúa por su propio stderr; si tampoco abre, disparará otro escalón.
-            await ReplaceProcessAsync(recording: true, slate: _slate, CancellationToken.None).ConfigureAwait(false);
+            if (idlePersistent)
+            {
+                // Captura persistente en reposo: degrada el perfil BASE y reconstruye sin grabación.
+                _baseProfile = degraded;
+                await ReplaceProcessAsync(recording: false, slate: false, CancellationToken.None).ConfigureAwait(false);
+            }
+            else if (_recorder is not null)
+            {
+                // Grabación persistente: pieza cerrada con el códec viejo, captura reconstruida con el degradado
+                // y pieza nueva — el grabador copia tal cual y NO puede cambiar de códec a mitad de archivo.
+                _recordProfile = degraded;
+                await StopRecorderProcessAsync().ConfigureAwait(false);
+                _baseProfile = degraded;
+                await ReplaceProcessAsync(recording: false, slate: false, CancellationToken.None).ConfigureAwait(false);
+                await StartRecorderProcessAsync(degraded, CancellationToken.None).ConfigureAwait(false);
+            }
+            else
+            {
+                _recordProfile = degraded;
+                await ReplaceProcessAsync(recording: true, slate: _slate, CancellationToken.None).ConfigureAwait(false);
+            }
             RaiseAlarm(AlarmType.EncoderFallback, true);
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al degradar el codificador.", _channelKey); }
@@ -1378,6 +1547,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             _supervisor.Crashed -= OnRecordingProcessDied;
             _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
+            _supervisor.Restarted -= OnCaptureRestarted;
             await _supervisor.DisposeAsync().ConfigureAwait(false);
         }
         if (_relay is not null) await _relay.DisposeAsync().ConfigureAwait(false);

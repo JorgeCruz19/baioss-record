@@ -81,6 +81,14 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Completa cuando el proceso terminó DEFINITIVAMENTE (salida normal, caída sin reinicio interno o stop).
+    /// A diferencia de esperar el evento <see cref="Completed"/>, sirve también cuando el final ya ocurrió
+    /// ANTES de empezar a esperar: un evento pasado no se vuelve a disparar, esta tarea ya está completada.
+    /// (Sin esto, detener un grabador que ya había muerto esperaba el timeout de drenaje entero.)
+    /// </summary>
+    public Task Finished => _runLoop ?? Task.CompletedTask;
+
     private async Task RunWithRestartAsync(IReadOnlyList<string> arguments, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested && _restartCount <= MaxRestarts)

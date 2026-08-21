@@ -313,16 +313,48 @@ public class FfmpegArgumentBuilderTests
     }
 
     [Fact]
-    public void WithRecordSink_ProducesSameArgv_RecordingOrNot_SoTheDeviceIsNeverReopened()
+    public void WithRecordSink_NeverWritesAFile_EvenIfAskedToRecord()
     {
-        // CLAVE del arreglo: con el desvío a socket, el argv de «grabando» y el de «en reposo» son IDÉNTICOS,
-        // así que no hay ningún motivo para reemplazar el proceso al iniciar/detener → el dispositivo no se reabre.
-        string idle = string.Join(' ', NewLiveBuilder(SoftwareMp4(), true, false)
-            .WithRecordSink("tcp://127.0.0.1:9500").BuildLive(recording: true, 640, 360));
-        string rec = string.Join(' ', NewLiveBuilder(SoftwareMp4(), true, false)
-            .WithRecordSink("tcp://127.0.0.1:9500").BuildLive(recording: true, 640, 360));
+        // Red de seguridad del motor: con el desvío a socket, este proceso JAMÁS escribe archivo (el archivo lo
+        // escribe el proceso grabador). El motor solo pide el desvío en reposo; si por error lo combinara con
+        // recording:true, no habría ningún archivo de salida — por eso el motor lo suprime al grabar en clásico.
+        var builder = NewLiveBuilder(SoftwareMp4(), true, false).WithRecordSink("tcp://127.0.0.1:9500");
+        var joined = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
 
-        Assert.Equal(idle, rec);
+        Assert.DoesNotContain("-y", joined.Split(' '));            // ningún archivo de salida (la «-y» lo delataría)
+        Assert.Contains("-f mpegts tcp://127.0.0.1:9500", joined); // solo el relé
+        Assert.Equal("", builder.OutputFilePath);                  // y el motor no puede creer que hay archivo
+    }
+
+    // --- Compuerta de compatibilidad con MPEG-TS (la condición del modo dispositivo persistente) ---
+
+    [Theory]
+    [InlineData(VideoCodec.H264Nvenc, AudioCodec.Aac)]
+    [InlineData(VideoCodec.H264x264, AudioCodec.Mp2)]
+    [InlineData(VideoCodec.HevcNvenc, AudioCodec.FdkAac)]
+    [InlineData(VideoCodec.Mpeg2Video, AudioCodec.Mp2)] // broadcast clásico
+    public void TsCompatibleProfiles_CanUsePersistentDevice(VideoCodec v, AudioCodec a)
+        => Assert.True(FfmpegCodecMap.CanCarryInMpegts(v, a));
+
+    [Theory]
+    [InlineData(VideoCodec.ProRes, AudioCodec.Aac)]     // el muxer TS rechaza ProRes → la captura moriría en bucle
+    [InlineData(VideoCodec.DnxHr, AudioCodec.Aac)]
+    [InlineData(VideoCodec.Av1Nvenc, AudioCodec.Aac)]   // AV1 no tiene transporte definido en TS
+    [InlineData(VideoCodec.H264Nvenc, AudioCodec.Pcm)]  // PCM no viaja en TS: coercerlo a AAC alteraría la entrega
+    public void TsIncompatibleProfiles_FallBackToClassicMode(VideoCodec v, AudioCodec a)
+        => Assert.False(FfmpegCodecMap.CanCarryInMpegts(v, a));
+
+    [Fact]
+    public void AudioOnlyProfile_IgnoresTheVideoCodec_ForTsCompatibility()
+        => Assert.True(FfmpegCodecMap.CanCarryInMpegts(VideoCodec.ProRes, AudioCodec.Aac, audioOnly: true));
+
+    [Fact]
+    public void DefaultProfile_MxfPcm_IsNotTsCompatible_SoThePersistentModeMustGateIt()
+    {
+        // El perfil POR DEFECTO del producto es MXF+PCM: si la compuerta no lo detectara, un canal DeckLink
+        // recién creado (modo persistente por defecto) moriría en bucle de reinicios nada más arrancar.
+        var p = new RecordingProfile { Name = "default" };
+        Assert.False(FfmpegCodecMap.CanCarryInMpegts(p.VideoCodec, p.AudioCodec, p.AudioOnly));
     }
 
     [Fact]

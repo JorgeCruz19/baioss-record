@@ -70,6 +70,20 @@ public static class FfmpegCodecMap
     public static bool IsGpuEncoder(VideoCodec codec) =>
         codec is VideoCodec.H264Nvenc or VideoCodec.HevcNvenc or VideoCodec.Av1Nvenc;
 
+    /// <summary>
+    /// ¿Puede un flujo con estos códecs viajar por MPEG-TS <b>sin alterar el material</b>? Es la condición para
+    /// el modo «dispositivo persistente» (el relé transporta TS y el grabador copia con <c>-c copy</c>).
+    /// <para>ProRes/DNxHD/DNxHR y AV1 no tienen transporte definido en TS — el muxer de FFmpeg los RECHAZA, y
+    /// como en ese modo la captura codifica también en reposo, el canal moriría en bucle de reinicios nada más
+    /// arrancar. El audio PCM tampoco viaja en TS estándar; FFmpeg lo coercería a AAC y el archivo entregado
+    /// dejaría de ser lo que el operador configuró (XDCAM/MXF broadcast exigen PCM). En todos esos casos se
+    /// graba en modo CLÁSICO: la fidelidad del material manda sobre evitar el bache de reapertura.</para>
+    /// </summary>
+    public static bool CanCarryInMpegts(VideoCodec video, AudioCodec audio, bool audioOnly = false) =>
+        (audioOnly || video is VideoCodec.H264Nvenc or VideoCodec.HevcNvenc or VideoCodec.H264x264
+            or VideoCodec.H265x265 or VideoCodec.Mpeg2Video or VideoCodec.H264Qsv or VideoCodec.H264Amf)
+        && audio is AudioCodec.Aac or AudioCodec.FdkAac or AudioCodec.Opus or AudioCodec.Mp3 or AudioCodec.Mp2;
+
     /// <summary>Banderas de entrada para decode acelerado por hardware.</summary>
     public static IEnumerable<string> HwAccelInput(HwAccel accel) => accel switch
     {

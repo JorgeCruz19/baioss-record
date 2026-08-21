@@ -42,14 +42,23 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
     private readonly TcpListener _recorderListener;
     private readonly CancellationTokenSource _cts = new();
 
-    // Ventana de pre-roll (bytes recientes) para que la grabación pueda arrancar en un keyframe ANTERIOR.
+    // Ventana de pre-roll (bytes recientes) y cola hacia el grabador, bajo UN MISMO candado: la instantánea
+    // del pre-roll y la creación de la cola deben ser ATÓMICAS respecto a cada fragmento entrante. Con candados
+    // separados, los fragmentos llegados entre BeginRecording y la conexión del grabador acababan en la ventana
+    // Y TAMBIÉN en la cola → se escribían DOS veces y la grabación arrancaba con un tramo de TS duplicado
+    // (discontinuidades/glitch al inicio de cada pieza).
+    private readonly object _sync = new();
     private readonly Queue<byte[]> _preroll = new();
     private long _prerollLength;
-    private readonly object _prerollLock = new();
+    private Delivery? _delivery;
 
-    // Cola hacia el grabador. Acotada: si se llena (disco atascado), se descarta en vez de frenar la captura.
-    private Channel<byte[]>? _recorderQueue;
-    private readonly object _queueLock = new();
+    /// <summary>Entrega de UNA grabación: la instantánea del pre-roll tomada al empezar y la cola del flujo en
+    /// vivo desde ese instante exacto. Van emparejadas para que no haya ni hueco ni solape entre ambas.</summary>
+    private sealed record Delivery(byte[][] Preroll, Channel<byte[]> Queue);
+
+    // Aviso de descartes con freno: durante un atasco de disco se descartan MUCHOS fragmentos seguidos; un log
+    // por fragmento sería una tormenta. El evento sí se eleva por fragmento (el motor acumula la cuenta).
+    private DateTimeOffset _lastOverflowWarnUtc;
 
     private Task? _sourceLoop;
     private Task? _recorderLoop;
@@ -117,14 +126,22 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
     /// </summary>
     public void BeginRecording()
     {
-        lock (_queueLock)
+        lock (_sync)
         {
-            _recorderQueue = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(RecorderQueueCapacity)
+            var queue = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(RecorderQueueCapacity)
             {
                 SingleReader = true,
                 SingleWriter = true,
-                FullMode = BoundedChannelFullMode.DropWrite, // nunca frenar al productor (la captura)
+                // Wait y NO DropWrite: con los modos Drop*, TryWrite devuelve true TAMBIÉN cuando descarta, así
+                // que el desbordamiento era indetectable y la alarma de overflow no podía dispararse jamás. Con
+                // Wait, TryWrite —que nunca bloquea— devuelve false con la cola llena: el fragmento lo
+                // descartamos NOSOTROS (la captura jamás se frena) y además nos enteramos para avisar.
+                FullMode = BoundedChannelFullMode.Wait,
             });
+            // Instantánea del pre-roll EN ESTE instante, emparejada con la cola: todo lo anterior viaja en la
+            // instantánea y todo lo posterior en la cola (el bombeo añade y encola bajo este mismo candado),
+            // así que el grabador recibe un flujo contiguo sin bytes duplicados ni huecos.
+            _delivery = new Delivery(_preroll.ToArray(), queue);
         }
     }
 
@@ -134,9 +151,9 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
     /// </summary>
     public void EndRecording()
     {
-        Channel<byte[]>? q;
-        lock (_queueLock) { q = _recorderQueue; _recorderQueue = null; }
-        q?.Writer.TryComplete();
+        Delivery? d;
+        lock (_sync) { d = _delivery; _delivery = null; }
+        d?.Queue.Writer.TryComplete();
     }
 
     private async Task AcceptSourceLoopAsync(CancellationToken ct)
@@ -153,7 +170,14 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: relé, fallo aceptando la captura.", _channelKey); }
-            finally { SourceConnected = false; }
+            finally
+            {
+                SourceConnected = false;
+                // La fuente se cerró (proceso de captura reemplazado o caído): su flujo ya NO empalma con el del
+                // proceso siguiente (otra base de tiempos y quizá otro perfil). Si la ventana sobreviviera, la
+                // próxima grabación arrancaría volcando TS VIEJO delante del flujo nuevo → se vacía.
+                lock (_sync) { _preroll.Clear(); _prerollLength = 0; }
+            }
         }
     }
 
@@ -173,36 +197,32 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
                 var chunk = new byte[n];
                 Buffer.BlockCopy(buffer, 0, chunk, 0, n);
 
-                AppendPreroll(chunk);
+                // Ventana de pre-roll y cola en UNA operación atómica (ver _sync): cada fragmento va a la
+                // ventana (acotada por bytes, descarta lo más antiguo) y, si hay grabación, a su cola.
+                bool dropped;
+                lock (_sync)
+                {
+                    _preroll.Enqueue(chunk);
+                    _prerollLength += chunk.Length;
+                    while (_prerollLength > PrerollBytes && _preroll.Count > 0)
+                        _prerollLength -= _preroll.Dequeue().Length;
 
-                Channel<byte[]>? q;
-                lock (_queueLock) q = _recorderQueue;
-                if (q is not null && !q.Writer.TryWrite(chunk))
+                    dropped = _delivery is not null && !_delivery.Queue.Writer.TryWrite(chunk);
+                }
+                if (dropped)
                 {
                     // Cola llena: el grabador no drena (disco atascado). Se descarta para NO frenar la captura.
-                    _log.LogWarning("Canal {Key}: el grabador no drena el flujo; se descartan datos (la grabación tendrá un salto).", _channelKey);
+                    var now = DateTimeOffset.UtcNow;
+                    if (now - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
+                    {
+                        _lastOverflowWarnUtc = now;
+                        _log.LogWarning("Canal {Key}: el grabador no drena el flujo; se descartan datos (la grabación tendrá un salto).", _channelKey);
+                    }
                     RecorderOverflow?.Invoke(this, EventArgs.Empty);
                 }
             }
         }
         finally { ArrayPool<byte>.Shared.Return(buffer); }
-    }
-
-    /// <summary>Mantiene la ventana de pre-roll acotada por bytes (descarta lo más antiguo).</summary>
-    private void AppendPreroll(byte[] chunk)
-    {
-        lock (_prerollLock)
-        {
-            _preroll.Enqueue(chunk);
-            _prerollLength += chunk.Length;
-            while (_prerollLength > PrerollBytes && _preroll.Count > 0)
-                _prerollLength -= _preroll.Dequeue().Length;
-        }
-    }
-
-    private byte[][] SnapshotPreroll()
-    {
-        lock (_prerollLock) return _preroll.ToArray();
     }
 
     private async Task AcceptRecorderLoopAsync(CancellationToken ct)
@@ -227,17 +247,18 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
     /// </summary>
     private async Task PumpRecorderAsync(NetworkStream stream, CancellationToken ct)
     {
-        Channel<byte[]>? q;
-        lock (_queueLock) q = _recorderQueue;
-        if (q is null) return; // ya se detuvo antes de que conectara: cerrar sin escribir
+        Delivery? d;
+        lock (_sync) d = _delivery;
+        if (d is null) return; // ya se detuvo antes de que conectara: cerrar sin escribir
 
         try
         {
-            // Pre-roll: arranca desde el keyframe ANTERIOR para no perder contenido al iniciar.
-            foreach (var chunk in SnapshotPreroll())
+            // Pre-roll: la instantánea tomada en BeginRecording — arranca desde el keyframe ANTERIOR para no
+            // perder contenido al iniciar, y empalma SIN solape con la cola (se congelaron juntas).
+            foreach (var chunk in d.Preroll)
                 await stream.WriteAsync(chunk, ct).ConfigureAwait(false);
 
-            await foreach (var chunk in q.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            await foreach (var chunk in d.Queue.Reader.ReadAllAsync(ct).ConfigureAwait(false))
                 await stream.WriteAsync(chunk, ct).ConfigureAwait(false);
 
             await stream.FlushAsync(ct).ConfigureAwait(false);
@@ -258,6 +279,6 @@ public sealed class CaptureStreamRelay : IAsyncDisposable
             try { await t.ConfigureAwait(false); } catch { /* los bucles no propagan */ }
         }
         _cts.Dispose();
-        lock (_prerollLock) { _preroll.Clear(); _prerollLength = 0; }
+        lock (_sync) { _preroll.Clear(); _prerollLength = 0; }
     }
 }
