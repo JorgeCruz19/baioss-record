@@ -25,7 +25,7 @@ public static class LicensePublicKey
     /// (con licencias que no validan y ninguna pista de por qué). Con <c>static readonly</c> el valor se lee
     /// siempre de este ensamblado.</para>
     /// </summary>
-    public static readonly string ProviderPublicKeyBase64 = "";
+    public static readonly string ProviderPublicKeyBase64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7oH6RoTT3bIjneQB2hKNWnrreKUjfQ2dATQM7ZWE06TZiklzNDpMok4vxmwoJitCZYFDyZFX5zrmcaiov4Lslg==";
 
     /// <summary>¿Está la build preparada para validar licencias? Si no, solo hay periodo de prueba.</summary>
     public static bool IsConfigured => !string.IsNullOrWhiteSpace(ProviderPublicKeyBase64);
