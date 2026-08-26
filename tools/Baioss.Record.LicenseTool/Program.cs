@@ -9,9 +9,10 @@ using Baioss.Record.Application.Licensing;
 //       Solo se hace UNA VEZ: si se pierde la privada, las licencias ya emitidas dejan de poder renovarse
 //       y hay que publicar una build con una pública nueva.
 //
-//   baioss-license issue --machine <CÓDIGO-DE-EQUIPO> --private <CLAVE-PRIVADA-BASE64>
-//       Emite una licencia PERPETUA para ese equipo. El código de equipo lo da la app del cliente
-//       (ventana de Licencia). La licencia resultante solo funcionará en ESE PC.
+//   baioss-license issue --machine <CÓDIGO-DE-EQUIPO> [--channels <1-4>] --private <CLAVE-PRIVADA-BASE64>
+//       Emite una licencia PERPETUA para ese equipo con los canales PAGADOS (sin --channels: 4). El código
+//       de equipo lo da la app del cliente (ventana de Licencia). La licencia solo funcionará en ESE PC y
+//       los canales viajan FIRMADOS dentro de la clave: el cliente no puede subírselos.
 
 // La consola de Windows usa la codepage del sistema: sin esto, los acentos de los mensajes salen como signos
 // raros (el mismo problema de codificación que ya se corrigió al leer la salida de FFmpeg).
@@ -49,7 +50,7 @@ static int Issue(string[] args)
     string? priv = ValueOf(args, "--private");
     if (machine is null || priv is null)
     {
-        Console.Error.WriteLine("Faltan argumentos: --machine <CÓDIGO-DE-EQUIPO> --private <CLAVE-PRIVADA-BASE64>");
+        Console.Error.WriteLine("Faltan argumentos: --machine <CÓDIGO-DE-EQUIPO> [--channels <1-4>] --private <CLAVE-PRIVADA-BASE64>");
         return 1;
     }
 
@@ -81,14 +82,23 @@ static int Issue(string[] args)
         return 1;
     }
 
+    // Canales PAGADOS (viajan firmados dentro de la clave; el precio depende de ellos). Sin --channels: 4.
+    int channels = 4;
+    if (ValueOf(args, "--channels") is { } channelsText &&
+        (!int.TryParse(channelsText, out channels) || channels is < 1 or > 4))
+    {
+        Console.Error.WriteLine("--channels debe ser un número de 1 a 4 (los canales que el cliente pagó).");
+        return 1;
+    }
+
     var issuedOn = DateOnly.FromDateTime(DateTime.UtcNow);
-    var message = LicenseKey.BuildSignedMessage(fingerprint, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn);
+    var message = LicenseKey.BuildSignedMessage(fingerprint, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, (byte)channels);
     var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-    string key = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, signature);
+    string key = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, (byte)channels, signature);
 
     Console.WriteLine();
     Console.WriteLine($"Equipo   : {Base32Crockford.Group(Base32Crockford.Encode(fingerprint), 4)}");
-    Console.WriteLine($"Emitida  : {issuedOn:yyyy-MM-dd}  ·  Tipo: perpetua");
+    Console.WriteLine($"Emitida  : {issuedOn:yyyy-MM-dd}  ·  Tipo: perpetua  ·  Canales: {channels}");
     Console.WriteLine();
     Console.WriteLine("=== LICENCIA (envíala al cliente; solo funcionará en ese equipo) ===");
     Console.WriteLine(key);
@@ -109,6 +119,6 @@ static void PrintUsage()
     Console.WriteLine("  baioss-license keygen");
     Console.WriteLine("      Genera el par de claves del proveedor (una sola vez).");
     Console.WriteLine();
-    Console.WriteLine("  baioss-license issue --machine <CÓDIGO-DE-EQUIPO> --private <CLAVE-PRIVADA-BASE64>");
-    Console.WriteLine("      Emite una licencia perpetua para ese equipo.");
+    Console.WriteLine("  baioss-license issue --machine <CÓDIGO-DE-EQUIPO> [--channels <1-4>] --private <CLAVE-PRIVADA-BASE64>");
+    Console.WriteLine("      Emite una licencia perpetua para ese equipo con los canales PAGADOS (sin --channels: 4).");
 }

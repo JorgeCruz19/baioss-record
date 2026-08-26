@@ -237,8 +237,24 @@ public partial class App : System.Windows.Application
         // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner
         // false SOLO en máquinas con SAI/UPS, como pidió el operador). (Recording:FragmentedMp4.)
         bool fragmentedMp4 = builder.Configuration.GetValue("Recording:FragmentedMp4", true);
-        // El ChannelHost compone los canales y permite reasignarles la entrada en caliente.
-        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount, fragmentedMp4));
+        // El ChannelHost compone los canales y permite reasignarles la entrada en caliente. El nº de canales
+        // EFECTIVO se decide al RESOLVER este contexto: si hay licencia válida, su techo de canales —que viaja
+        // FIRMADO dentro de la clave— acota lo elegido en la instalación (lo pagado manda sobre lo elegido).
+        // En prueba, o con la licencia no verificable, se respeta lo del instalador/config: recortar canales
+        // por un fallo NUESTRO iría contra el principio de no estorbar jamás a un grabador 24/7 (fail-open).
+        s.AddSingleton(sp =>
+        {
+            int channels = channelCount;
+            var lic = sp.GetService<Baioss.Record.Application.Licensing.ILicenseService>();
+            var cur = lic?.Current;
+            if (cur is { State: Baioss.Record.Application.Licensing.LicenseState.Licensed } &&
+                cur.LicensedChannels is int paid && paid > 0 && paid < channels)
+            {
+                Serilog.Log.Information("Canales acotados por la LICENCIA: {Paid} (la instalación pedía {Chosen}).", paid, channels);
+                channels = paid;
+            }
+            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4);
+        });
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
         // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.
@@ -348,6 +364,12 @@ public partial class App : System.Windows.Application
         app.MapBaiossApi();    // REST de automatización + WebSocket de eventos
         _host = app;
 
+        // Si el instalador dejó una licencia preparada, se aplica ANTES de componer los canales: el techo de
+        // canales pagado viaja dentro de la licencia y el ChannelHost lo lee al construirse — si se aplicara
+        // después, el primer arranque tras instalar mostraría los canales del asistente y el techo real solo
+        // aparecería al reiniciar.
+        ConsumePendingLicense(app.Services);
+
         // Construye los canales (I/O de FFmpeg/NDI por canal) FUERA del hilo de UI y EN PARALELO, pre-resolviendo
         // el singleton en un hilo de fondo ANTES de StartAsync. Si no, el ChannelHost se construiría dentro de
         // app.StartAsync (al crear el scheduler) sobre el hilo de UI, congelándolo mientras las fuentes abren —una
@@ -355,9 +377,6 @@ public partial class App : System.Windows.Application
         await Task.Run(() => app.Services.GetRequiredService<ChannelHost>());
 
         await app.StartAsync();
-
-        // Si el instalador dejó una licencia preparada, se aplica ahora (una sola vez).
-        ConsumePendingLicense(app.Services);
 
         // Recovery tras un cierre ABRUPTO: cierra las sesiones que quedaron «grabando» de una ejecución
         // anterior (crash/kill) para que la BD no arrastre grabaciones colgadas. La BD ya está compuesta (la

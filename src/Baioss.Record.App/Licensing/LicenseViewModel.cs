@@ -46,7 +46,10 @@ public sealed partial class LicenseViewModel : ObservableObject
         NeedsAttention = info.NeedsAttention;
         DetailText = info.State switch
         {
-            LicenseState.Licensed => "Este equipo tiene una licencia permanente. No caduca.",
+            LicenseState.Licensed => info.LicensedChannels is int c
+                ? $"Este equipo tiene una licencia permanente de {c} canal{(c == 1 ? "" : "es")}. No caduca. " +
+                  "Para ampliar canales, pide una licencia nueva a tu proveedor."
+                : "Este equipo tiene una licencia permanente. No caduca.",
             LicenseState.Trial => "Puedes usar todas las funciones durante el periodo de prueba. "
                                 + "Cuando termine podrás seguir viendo las entradas, pero no iniciar grabaciones nuevas.",
             LicenseState.Expired => "El periodo de prueba ha terminado. Las grabaciones en curso NO se interrumpen, "

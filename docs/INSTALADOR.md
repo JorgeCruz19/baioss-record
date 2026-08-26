@@ -34,7 +34,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -SkipPublis
 2. **Acuerdo de licencia** (`installer\EULA.txt` — conviene que lo revise un abogado antes de vender)
 3. **Carpeta de destino** — por defecto `C:\Baioss\Record`
 4. **Accesos directos y arranque** — dos casillas: acceso en el escritorio e *«Iniciar Baioss Record al encender el equipo»*
-5. **Canales de grabación** — cuántos canales quiere el cliente (1 a 4; por defecto 4, y al actualizar se preselecciona lo ya instalado). La aplicación muestra exactamente esos canales.
+5. **Canales de grabación** — cuántos canales quiere el cliente (1 a 4; por defecto 4, y al actualizar se preselecciona lo ya instalado). La aplicación muestra exactamente esos canales. **Lo que elige aquí es una preferencia, no lo que compró**: al activar una licencia, los canales *pagados* (que viajan firmados dentro de la clave) acotan lo elegido — mín(elegido, licenciado). En periodo de prueba se respeta lo elegido.
 6. **Tipo de instalación**
    - **Periodo de prueba de 14 días** (opción por defecto)
    - **Ya tengo una licencia para este equipo** → aparece un campo para pegarla

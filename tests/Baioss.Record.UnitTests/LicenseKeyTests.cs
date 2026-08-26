@@ -14,13 +14,13 @@ public sealed class LicenseKeyTests
     private static readonly byte[] MachineB = { 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 };
 
     /// <summary>Emite una licencia como haría la herramienta del proveedor (con la clave PRIVADA).</summary>
-    private static (string Key, string PublicKeyBase64) Issue(byte[] fingerprint, ECDsa? signer = null)
+    private static (string Key, string PublicKeyBase64) Issue(byte[] fingerprint, ECDsa? signer = null, byte channels = 4)
     {
         var ecdsa = signer ?? ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var issuedOn = new DateOnly(2026, 8, 3);
-        var message = LicenseKey.BuildSignedMessage(fingerprint, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn);
+        var message = LicenseKey.BuildSignedMessage(fingerprint, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, channels);
         var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        string key = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, signature);
+        string key = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, channels, signature);
         string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
         if (signer is null) ecdsa.Dispose();
         return (key, pub);
@@ -81,7 +81,7 @@ public sealed class LicenseKeyTests
         var chars = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
         for (int i = 0; i < 500; i++)
         {
-            var key = new string(Enumerable.Range(0, 112).Select(_ => chars[rng.Next(chars.Length)]).ToArray());
+            var key = new string(Enumerable.Range(0, 114).Select(_ => chars[rng.Next(chars.Length)]).ToArray());
             var rejection = LicenseKey.Verify(key, MachineA, "AAAA"); // no debe lanzar
             Assert.NotEqual(LicenseRejection.None, rejection);
         }
@@ -105,7 +105,7 @@ public sealed class LicenseKeyTests
     {
         // Con huella vacía el mensaje firmado sería idéntico en TODOS los equipos: una licencia maestra universal.
         Assert.Throws<ArgumentException>(() =>
-            LicenseKey.BuildSignedMessage(Array.Empty<byte>(), LicenseKey.CurrentVersion, LicenseType.Lifetime, new DateOnly(2026, 8, 3)));
+            LicenseKey.BuildSignedMessage(Array.Empty<byte>(), LicenseKey.CurrentVersion, LicenseType.Lifetime, new DateOnly(2026, 8, 3), 4));
 
         var (key, pub) = Issue(MachineA);
         Assert.NotEqual(LicenseRejection.None, LicenseKey.Verify(key, Array.Empty<byte>(), pub));
@@ -120,9 +120,9 @@ public sealed class LicenseKeyTests
         var futureType = (LicenseType)7;
         using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var issuedOn = new DateOnly(2026, 8, 3);
-        var message = LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, futureType, issuedOn);
+        var message = LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, futureType, issuedOn, 4);
         var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        string key = LicenseKey.Encode(LicenseKey.CurrentVersion, futureType, issuedOn, signature);
+        string key = LicenseKey.Encode(LicenseKey.CurrentVersion, futureType, issuedOn, 4, signature);
         string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
 
         Assert.Equal(LicenseRejection.UnsupportedVersion, LicenseKey.Verify(key, MachineA, pub));
@@ -134,9 +134,9 @@ public sealed class LicenseKeyTests
         // La versión 0 no existe (la primera es la 1): solo puede ser una clave corrompida, aunque venga firmada.
         using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var issuedOn = new DateOnly(2026, 8, 3);
-        var message = LicenseKey.BuildSignedMessage(MachineA, 0, LicenseType.Lifetime, issuedOn);
+        var message = LicenseKey.BuildSignedMessage(MachineA, 0, LicenseType.Lifetime, issuedOn, 4);
         var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        string key = LicenseKey.Encode(0, LicenseType.Lifetime, issuedOn, signature);
+        string key = LicenseKey.Encode(0, LicenseType.Lifetime, issuedOn, 4, signature);
         string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
 
         Assert.Equal(LicenseRejection.Malformed, LicenseKey.Verify(key, MachineA, pub));
@@ -149,18 +149,57 @@ public sealed class LicenseKeyTests
         Assert.Contains('-', key);                                   // en grupos, para poder leerla
         foreach (char c in key.Replace("-", ""))
             Assert.DoesNotContain(c, "ILOU");                        // sin caracteres confundibles
-        Assert.Equal(112, key.Replace("-", "").Length);              // 70 bytes en Base32
+        Assert.Equal(114, key.Replace("-", "").Length);              // 71 bytes en Base32
     }
 
     [Fact]
-    public void DecodedPayload_KeepsTypeAndIssueDate()
+    public void DecodedPayload_KeepsTypeIssueDateAndChannels()
     {
-        var (key, _) = Issue(MachineA);
+        var (key, _) = Issue(MachineA, channels: 2);
         Assert.True(LicenseKey.TryDecode(key, out var payload));
         Assert.NotNull(payload);
         Assert.Equal(LicenseType.Lifetime, payload!.Type);
         Assert.Equal(new DateOnly(2026, 8, 3), payload.IssuedOn);
         Assert.Equal(LicenseKey.CurrentVersion, payload.Version);
+        Assert.Equal(2, payload.Channels);
+    }
+
+    // --- Canales pagados: viajan FIRMADOS dentro de la clave (el precio del producto depende de ellos) ---
+
+    [Fact]
+    public void Channels_AreSigned_UpgradingThemByHandInvalidatesTheKey()
+    {
+        // El cliente pagó 2 canales e intenta fabricarse la clave «de 4»: re-codifica la MISMA firma con el
+        // byte de canales cambiado. La firma cubre los canales, así que la clave resultante NO valida.
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var issuedOn = new DateOnly(2026, 8, 3);
+        var message = LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, 2);
+        var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
+
+        string honest = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, 2, signature);
+        string forged = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, 4, signature);
+
+        Assert.Equal(LicenseRejection.None, LicenseKey.Verify(honest, MachineA, pub));
+        Assert.NotEqual(LicenseRejection.None, LicenseKey.Verify(forged, MachineA, pub));
+    }
+
+    [Fact]
+    public void ZeroChannels_IsRefusedAtIssueTime_AndMalformedAtVerifyTime()
+    {
+        // Una licencia de cero canales no significa nada: la emisión la rechaza y, si llegara fabricada, se
+        // trata como clave corrupta.
+        Assert.Throws<ArgumentException>(() =>
+            LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, LicenseType.Lifetime, new DateOnly(2026, 8, 3), 0));
+
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var issuedOn = new DateOnly(2026, 8, 3);
+        var message = LicenseKey.BuildSignedMessage(MachineA, LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, 1);
+        var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        string forged = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, 0, signature);
+        string pub = Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo());
+
+        Assert.Equal(LicenseRejection.Malformed, LicenseKey.Verify(forged, MachineA, pub));
     }
 
     [Fact]

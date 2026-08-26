@@ -11,7 +11,9 @@ public enum LicenseType : byte
 }
 
 /// <summary>Contenido de una clave de licencia ya decodificada (sin verificar todavía).</summary>
-public sealed record LicensePayload(byte Version, LicenseType Type, DateOnly IssuedOn, byte[] Signature);
+/// <param name="Channels">Canales de grabación PAGADOS (1-255; hoy el producto vende hasta 4). Viaja DENTRO del
+/// mensaje firmado: alterarlo invalida la firma, así que la cantidad comprada no se puede editar.</param>
+public sealed record LicensePayload(byte Version, LicenseType Type, DateOnly IssuedOn, byte Channels, byte[] Signature);
 
 /// <summary>
 /// Formato de la clave de licencia y su verificación.
@@ -25,8 +27,10 @@ public sealed record LicensePayload(byte Version, LicenseType Type, DateOnly Iss
 /// la app y cualquiera podría extraerlo y fabricarse licencias. Con firma asimétrica la app solo lleva la clave
 /// PÚBLICA: sirve para verificar, no para emitir. La privada se queda en la herramienta del proveedor.</para>
 ///
-/// <para><b>Formato en el cable.</b> version(1) ‖ tipo(1) ‖ díaEmisión(4, LE) ‖ firma(64, IEEE P1363 r‖s) = 70 bytes
-/// → Base32 Crockford = 112 caracteres, mostrados en 7 grupos de 16.</para>
+/// <para><b>Formato en el cable.</b> version(1) ‖ tipo(1) ‖ díaEmisión(4, LE) ‖ canales(1) ‖ firma(64, IEEE
+/// P1363 r‖s) = 71 bytes → Base32 Crockford = 114 caracteres, mostrados en grupos de 16. Los CANALES van en la
+/// clave (y en el mensaje firmado) porque el precio del producto depende de ellos: el techo de canales que el
+/// cliente pagó no puede depender de nada editable.</para>
 /// </summary>
 public static class LicenseKey
 {
@@ -36,7 +40,7 @@ public static class LicenseKey
     /// <summary>Tamaño de la firma ECDSA P-256 en formato fijo r‖s.</summary>
     public const int SignatureLength = 64;
 
-    private const int HeaderLength = 6;                       // version + tipo + díaEmisión
+    private const int HeaderLength = 7;                       // version + tipo + díaEmisión + canales
     private const int TotalLength = HeaderLength + SignatureLength;
     private static readonly DateOnly Epoch = new(2020, 1, 1); // origen del contador de días
 
@@ -49,12 +53,15 @@ public static class LicenseKey
     /// version ‖ tipo ‖ díaEmisión. Incluir la LONGITUD de la huella evita ambigüedad (que dos combinaciones
     /// distintas de huella+cabecera produzcan la misma secuencia de bytes).
     /// </summary>
-    public static byte[] BuildSignedMessage(ReadOnlySpan<byte> fingerprint, byte version, LicenseType type, DateOnly issuedOn)
+    public static byte[] BuildSignedMessage(ReadOnlySpan<byte> fingerprint, byte version, LicenseType type, DateOnly issuedOn, byte channels)
     {
         // Guarda deliberada: con una huella VACÍA el mensaje sería idéntico en cualquier equipo, es decir, una
         // licencia MAESTRA universal. Nunca debe poder construirse, ni al emitir ni al verificar.
         if (fingerprint.Length is 0 or > 255)
             throw new ArgumentException("La huella del equipo debe medir entre 1 y 255 bytes.", nameof(fingerprint));
+        // Una licencia de CERO canales no significa nada: solo puede ser un error del emisor.
+        if (channels == 0)
+            throw new ArgumentException("La licencia debe cubrir al menos 1 canal.", nameof(channels));
 
         var msg = new byte[DomainTag.Length + 1 + fingerprint.Length + HeaderLength];
         int o = 0;
@@ -63,12 +70,13 @@ public static class LicenseKey
         fingerprint.CopyTo(msg.AsSpan(o)); o += fingerprint.Length;
         msg[o++] = version;
         msg[o++] = (byte)type;
-        BinaryPrimitives.WriteUInt32LittleEndian(msg.AsSpan(o), DaysFromEpoch(issuedOn));
+        BinaryPrimitives.WriteUInt32LittleEndian(msg.AsSpan(o), DaysFromEpoch(issuedOn)); o += 4;
+        msg[o] = channels;
         return msg;
     }
 
     /// <summary>Compone la clave legible a partir de la cabecera y la firma.</summary>
-    public static string Encode(byte version, LicenseType type, DateOnly issuedOn, ReadOnlySpan<byte> signature)
+    public static string Encode(byte version, LicenseType type, DateOnly issuedOn, byte channels, ReadOnlySpan<byte> signature)
     {
         if (signature.Length != SignatureLength)
             throw new ArgumentException($"La firma debe medir {SignatureLength} bytes (formato fijo r‖s).", nameof(signature));
@@ -77,6 +85,7 @@ public static class LicenseKey
         raw[0] = version;
         raw[1] = (byte)type;
         BinaryPrimitives.WriteUInt32LittleEndian(raw.AsSpan(2), DaysFromEpoch(issuedOn));
+        raw[6] = channels;
         signature.CopyTo(raw.AsSpan(HeaderLength));
         return Base32Crockford.Group(Base32Crockford.Encode(raw), 16);
     }
@@ -98,10 +107,11 @@ public static class LicenseKey
         // que un método «TryX» promete que no hará.
         uint day = BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(2));
         if (day > MaxDayOffset) return false;
+        if (raw[6] == 0) return false; // cero canales no existe: clave corrupta
 
         var signature = new byte[SignatureLength];
         Array.Copy(raw, HeaderLength, signature, 0, SignatureLength);
-        payload = new LicensePayload(raw[0], (LicenseType)raw[1], Epoch.AddDays((int)day), signature);
+        payload = new LicensePayload(raw[0], (LicenseType)raw[1], Epoch.AddDays((int)day), raw[6], signature);
         return true;
     }
 
@@ -135,7 +145,7 @@ public static class LicenseKey
         {
             using var ecdsa = ECDsa.Create();
             ecdsa.ImportSubjectPublicKeyInfo(spki, out _);
-            var message = BuildSignedMessage(fingerprint, payload.Version, payload.Type, payload.IssuedOn);
+            var message = BuildSignedMessage(fingerprint, payload.Version, payload.Type, payload.IssuedOn, payload.Channels);
             bool ok = ecdsa.VerifyData(message, payload.Signature, HashAlgorithmName.SHA256,
                 DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
             // Si la firma es auténtica pero NO valida aquí, lo más probable con diferencia es que la clave sea de

@@ -34,13 +34,16 @@ public enum LicenseRejection
 
 /// <summary>
 /// Estado de licencia consultable por la UI/API. <see cref="DaysRemaining"/> solo tiene sentido en
-/// <see cref="LicenseState.Trial"/> (una licencia es perpetua y no caduca).
-/// </summary>
+/// <see cref="LicenseState.Trial"/> (una licencia es perpetua y no caduca). <see cref="LicensedChannels"/>
+/// solo tiene valor en <see cref="LicenseState.Licensed"/>: es el techo de canales PAGADO (viene firmado
+/// dentro de la clave); <c>null</c> = sin techo por licencia (prueba, caducada o no verificable — recortar
+/// canales por un fallo nuestro iría contra el principio de no estorbar jamás a un grabador 24/7).</summary>
 public sealed record LicenseInfo(
     LicenseState State,
     int DaysRemaining,
     DateTimeOffset? TrialStartedAt,
-    string MachineCode)
+    string MachineCode,
+    int? LicensedChannels = null)
 {
     /// <summary>¿Se pueden iniciar grabaciones nuevas? Solo se bloquea al CADUCAR el periodo de prueba.</summary>
     public bool CanStartRecording => State is not LicenseState.Expired;
@@ -48,7 +51,9 @@ public sealed record LicenseInfo(
     /// <summary>Texto corto para la barra superior de la app.</summary>
     public string Summary => State switch
     {
-        LicenseState.Licensed => "Licencia activa",
+        LicenseState.Licensed => LicensedChannels is int c
+            ? $"Licencia activa · {c} canal{(c == 1 ? "" : "es")}"
+            : "Licencia activa",
         LicenseState.Trial => DaysRemaining == 1 ? "Prueba: último día" : $"Prueba: {DaysRemaining} días restantes",
         LicenseState.Unknown => "Licencia: no verificable",
         _ => "Periodo de prueba terminado",

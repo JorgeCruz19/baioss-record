@@ -26,13 +26,15 @@ Imprime dos claves:
 ## 2. Vender una licencia (por cada cliente)
 
 1. El cliente abre **🔑 Licencia** en la app y te envía su **código de equipo** (p. ej. `D68J-FZNH-E2JV-XY2E`).
-2. Emites la licencia:
+2. Emites la licencia con los canales que **pagó** (sin `--channels`, se emite de 4):
 
 ```bash
-dotnet run --project tools/Baioss.Record.LicenseTool -- issue --machine D68J-FZNH-E2JV-XY2E --private <TU-CLAVE-PRIVADA>
+dotnet run --project tools/Baioss.Record.LicenseTool -- issue --machine D68J-FZNH-E2JV-XY2E --channels 2 --private <TU-CLAVE-PRIVADA>
 ```
 
 3. Le envías la clave resultante. Él la pega en la misma ventana y pulsa **Activar**.
+
+**Los canales pagados viajan FIRMADOS dentro de la clave** — el precio del producto depende de ellos, así que el techo no puede vivir en nada editable. La regla: canales efectivos = *mín(lo elegido en el instalador, lo licenciado)*. Durante la **prueba** mandan los del instalador (el cliente evalúa lo que quiera ver, hasta 4); al **activar**, lo pagado acota — si eligió 4 y pagó 2, verá 2 al siguiente arranque y la pastilla dirá «Licencia activa · 2 canales». **Ampliar canales = emitir una clave nueva** para el mismo equipo con más `--channels` (se paga la diferencia, se pega la clave nueva en la ventana Licencia y se reinicia la app; sin reinstalar). Si la licencia no es verificable (fallo de E/S), NO se recorta nada: fail-open, como todo el subsistema.
 
 La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo que se firma, así que en otro ordenador la firma no valida.
 
@@ -78,9 +80,11 @@ La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo 
 
 ---
 
-## 5. Límite conocido
+## 5. Límites conocidos
 
-Clonar el disco de un equipo licenciado (imagen sin *Sysprep*) reproduce también su huella, así que la licencia valdría en el clon. **Ninguna licencia sin conexión puede evitarlo.** Mitigación práctica: lleva un registro de a qué código de equipo has emitido cada licencia; si un mismo código pide varias, es señal de aviso.
+**Clonado de disco.** Clonar el disco de un equipo licenciado (imagen sin *Sysprep*) reproduce también su huella, así que la licencia valdría en el clon. **Ninguna licencia sin conexión puede evitarlo.** Mitigación práctica: lleva un registro de a qué código de equipo has emitido cada licencia; si un mismo código pide varias, es señal de aviso.
+
+**Parcheo del binario.** Alguien con conocimientos puede descompilar la app (.NET produce C# muy legible con herramientas gratuitas), anular la verificación o cambiarse el tope de canales, y recompilar. Fuera del modelo de amenaza desde el día uno: la defensa real exigiría activación online. **PENDIENTE (decidido, sin fecha): evaluar un ofuscador de .NET** antes de una distribución amplia — no elimina el riesgo, pero sube mucho el coste de leer el código descompilado. Mientras el negocio sea de pocos clientes con trato directo, el registro de licencias emitidas es la mitigación que más rinde.
 
 ---
 

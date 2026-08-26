@@ -165,7 +165,10 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
             if (!string.IsNullOrWhiteSpace(record.LicenseKey) &&
                 LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, LicensePublicKey.ProviderPublicKeyBase64) == LicenseRejection.None)
             {
-                next = new LicenseInfo(LicenseState.Licensed, 0, record.StartedAt, MachineCode);
+                // Los canales pagados viajan FIRMADOS dentro de la clave: se releen de ella (la firma ya validó,
+                // así que el TryDecode no puede fallar aquí; el ?: es solo cinturón).
+                int? channels = LicenseKey.TryDecode(record.LicenseKey, out var payload) ? payload!.Channels : null;
+                next = new LicenseInfo(LicenseState.Licensed, 0, record.StartedAt, MachineCode, channels);
             }
             else
             {
