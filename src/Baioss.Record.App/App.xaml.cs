@@ -144,6 +144,25 @@ public partial class App : System.Windows.Application
         catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo aplicar la licencia dejada por el instalador."); }
     }
 
+    /// <summary>
+    /// Nº de canales elegido en el INSTALADOR (1-4), o <c>null</c> si no hay instalación (desarrollo/portable).
+    /// Se lee de <c>HKLM\Software\Baioss\RecordSetup</c>, que conserva la ACL por defecto de HKLM: los usuarios
+    /// la LEEN pero solo un administrador la escribe — cambiar de canales exige reinstalar, no editar archivos.
+    /// Vista de 64 bits explícita, como el resto de lecturas de registro de la app.
+    /// </summary>
+    private static int? ReadInstalledChannelCount()
+    {
+        try
+        {
+            using var baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64);
+            using var key = baseKey.OpenSubKey(@"Software\Baioss\RecordSetup");
+            // Tope 4: es lo que el producto vende hoy. Un valor corrupto o fuera de rango se acota, no revienta.
+            return key?.GetValue("Channels") is int n ? Math.Clamp(n, 1, 4) : null;
+        }
+        catch { return null; } // registro ilegible: manda la configuración embebida, la app arranca igual
+    }
+
     private async Task StartHostAsync()
     {
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
@@ -181,6 +200,18 @@ public partial class App : System.Windows.Application
             Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
 #endif
         int channelCount = Math.Clamp(builder.Configuration.GetValue("Channels:Count", 4), 1, 8);
+
+        // CANALES ELEGIDOS EN LA INSTALACIÓN: el asistente pregunta cuántos canales quiere el cliente (1-4) y
+        // lo deja en HKLM\Software\Baioss\RecordSetup — una clave que SOLO un administrador puede modificar, a
+        // diferencia de un archivo junto al exe: cambiar de canales pasa por reinstalar, no por editar nada.
+        // (Clave HERMANA de Software\Baioss\Record a propósito: esa lleva users-modify —el estado de licencia
+        // lo escribe la app sin elevación— y sus permisos se HEREDAN; anidar «Setup» ahí la dejaría editable.)
+        // Sin la clave (desarrollo/portable) manda el appsettings embebido, como siempre.
+        if (ReadInstalledChannelCount() is { } installedChannels)
+        {
+            channelCount = installedChannels;
+            Serilog.Log.Information("Canales según la instalación (HKLM): {Count}.", installedChannels);
+        }
 
         var s = builder.Services;
         // Resiliencia de los servicios de fondo: en .NET 8 una excepción que ESCAPE de un BackgroundService

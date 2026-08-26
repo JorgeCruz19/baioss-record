@@ -77,6 +77,11 @@ Name: "{commonappdata}\Baioss\Record"; Permissions: users-modify
 ; para que la app (que corre sin elevación) pueda mantenerla. NO se borra al desinstalar a propósito:
 ; desinstalar y reinstalar no debe reiniciar el periodo de prueba.
 Root: HKLM; Subkey: "Software\Baioss\Record"; Permissions: users-modify; Flags: noerror
+; Nº de CANALES elegido en el asistente (1-4). Clave HERMANA de la anterior a propósito: aquella lleva
+; users-modify (y los permisos se HEREDAN a las subclaves), mientras que esta conserva la ACL por defecto de
+; HKLM — los usuarios la leen, pero solo un administrador la cambia ⇒ cambiar de canales = reinstalar, no
+; editar un archivo. La app la lee al arrancar y muestra exactamente esos canales.
+Root: HKLM; Subkey: "Software\Baioss\RecordSetup"; ValueType: dword; ValueName: "Channels"; ValueData: "{code:SelectedChannelCount}"; Flags: noerror
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
@@ -96,6 +101,7 @@ Type: filesandordirs; Name: "{app}\logs"
 
 [Code]
 var
+  ChannelPage: TInputOptionWizardPage;
   ModePage: TInputOptionWizardPage;
   KeyPage: TInputQueryWizardPage;
   MachineCode: String;
@@ -103,10 +109,34 @@ var
 const
   ModeTrial = 0;
   ModeLicense = 1;
+  MaxChannels = 4;
+
+{ Nº de canales elegido (1-4), como texto para el ValueData dword de [Registry]. }
+function SelectedChannelCount(Param: String): String;
+begin
+  Result := IntToStr(ChannelPage.SelectedValueIndex + 1);
+end;
 
 procedure InitializeWizard;
+var
+  I, Existing: Cardinal;
 begin
-  ModePage := CreateInputOptionPage(wpSelectTasks,
+  ChannelPage := CreateInputOptionPage(wpSelectTasks,
+    'Canales de grabación',
+    'Cuántos canales quieres en este equipo',
+    'Cada canal captura y graba una entrada de vídeo independiente. La aplicación mostrará exactamente los ' +
+    'canales que elijas aquí; para cambiarlos más adelante basta con volver a ejecutar el instalador.',
+    True, False);
+  ChannelPage.Add('1 canal');
+  for I := 2 to MaxChannels do
+    ChannelPage.Add(IntToStr(I) + ' canales');
+  { En una ACTUALIZACIÓN se preselecciona lo ya instalado; en una instalación nueva, el máximo. }
+  ChannelPage.SelectedValueIndex := MaxChannels - 1;
+  if RegQueryDWordValue(HKLM, 'Software\Baioss\RecordSetup', 'Channels', Existing) then
+    if (Existing >= 1) and (Existing <= MaxChannels) then
+      ChannelPage.SelectedValueIndex := Existing - 1;
+
+  ModePage := CreateInputOptionPage(ChannelPage.ID,
     'Tipo de instalación',
     'Cómo quieres usar Baioss Record en este equipo',
     'Puedes empezar con el periodo de prueba y activar la licencia más adelante, sin reinstalar nada.',
@@ -186,6 +216,7 @@ function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoType
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 begin
   Result := MemoDirInfo + NewLine + NewLine;
+  Result := Result + 'Canales de grabación:' + NewLine + Space + SelectedChannelCount('') + NewLine + NewLine;
   if ModePage.SelectedValueIndex = ModeLicense then
     Result := Result + 'Tipo de instalación:' + NewLine + Space + 'Con licencia' + NewLine + NewLine
   else

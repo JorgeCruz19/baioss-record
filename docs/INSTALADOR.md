@@ -34,11 +34,12 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -SkipPublis
 2. **Acuerdo de licencia** (`installer\EULA.txt` — conviene que lo revise un abogado antes de vender)
 3. **Carpeta de destino** — por defecto `C:\Baioss\Record`
 4. **Accesos directos y arranque** — dos casillas: acceso en el escritorio e *«Iniciar Baioss Record al encender el equipo»*
-5. **Tipo de instalación** ← *la página propia*
+5. **Canales de grabación** — cuántos canales quiere el cliente (1 a 4; por defecto 4, y al actualizar se preselecciona lo ya instalado). La aplicación muestra exactamente esos canales.
+6. **Tipo de instalación**
    - **Periodo de prueba de 14 días** (opción por defecto)
    - **Ya tengo una licencia para este equipo** → aparece un campo para pegarla
-6. **Resumen** e instalación
-7. **Fin** — si eligió la prueba, se le muestra **el código de este equipo**, que es justo lo que necesita enviarte para que le emitas la licencia
+7. **Resumen** (incluye los canales elegidos) e instalación
+8. **Fin** — si eligió la prueba, se le muestra **el código de este equipo**, que es justo lo que necesita enviarte para que le emitas la licencia
 
 ---
 
@@ -55,6 +56,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -SkipPublis
 **Al desinstalar no se borran las grabaciones ni la base de datos.** Son material del cliente. Solo se retira el programa y sus registros.
 
 **El instalador crea una clave de registro del equipo (`HKLM\Software\Baioss\Record`) con permiso de escritura para Usuarios.** Es la tercera copia del estado de licencia/prueba, compartida por todas las cuentas del PC: sin ella, bastaba borrar el archivo de `ProgramData` y entrar con otra cuenta de Windows para reiniciar el periodo de prueba. No se borra al desinstalar a propósito — desinstalar y reinstalar no reinicia la prueba.
+
+**Los canales elegidos van en `HKLM\Software\Baioss\RecordSetup` (clave HERMANA de la anterior, a propósito).** El número de canales no vive en un archivo junto al exe (el operador podría subírselo editándolo) sino en una clave que conserva la ACL por defecto de HKLM: los usuarios la leen y solo un administrador la cambia — es decir, **cambiar de canales = volver a ejecutar el instalador**. No puede anidarse dentro de `Software\Baioss\Record` porque esa clave concede `users-modify` y los permisos del registro se heredan a las subclaves. Sin la clave (desarrollo/portable), la app usa el número incrustado en el binario, como siempre. Si se reduce el número de canales, los datos de los canales sobrantes (grabaciones, programaciones) no se borran: quedan inactivos hasta que se vuelva a instalar con más canales.
 
 **No se empaquetan datos de desarrollo.** La carpeta `publish\` es también la que se usa para probar en local, así que el instalador excluye expresamente `data\`, `logs\` y `recordings\`; sin eso, la base de datos de pruebas y los registros del desarrollador acabarían en el equipo del cliente.
 
