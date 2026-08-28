@@ -81,6 +81,19 @@ public sealed partial class LicenseViewModel : ObservableObject
         var result = _license.Activate(LicenseKeyInput);
         Message = result.Message;
         MessageIsError = !result.Success;
-        if (result.Success) LicenseKeyInput = "";
+        if (!result.Success) return;
+        LicenseKeyInput = "";
+
+        // Los canales comprados se componen AL ARRANCAR (mín(instalador, licenciados)): se avisa y se
+        // reinicia la app con el apagado ORDENADO de siempre — si hay grabaciones en curso, se finalizan
+        // correctamente antes de cerrar; jamás se mata el proceso a lo bruto.
+        var info = _license.Current;
+        string channels = info.LicensedChannels is int c ? $" de {c} canal{(c == 1 ? "" : "es")}" : "";
+        MessageBox.Show(
+            $"Licencia activada{channels}. Gracias.\n\n" +
+            "La aplicación se reiniciará ahora para aplicar los canales de tu licencia. " +
+            "Si hay alguna grabación en curso, se finalizará correctamente antes de cerrar.",
+            "Licencia activada", MessageBoxButton.OK, MessageBoxImage.Information);
+        (System.Windows.Application.Current as App)?.RestartToApplyLicenseAsync();
     }
 }

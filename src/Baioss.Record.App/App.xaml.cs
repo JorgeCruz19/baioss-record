@@ -528,6 +528,41 @@ public partial class App : System.Windows.Application
     /// algún <c>await</c>/hilo colgado (que, si no, mantendría el proceso vivo bloqueando el mutex → «ya está en
     /// ejecución» al reabrir). El Job Object mata los FFmpeg hijos al morir el proceso. (Cierre robusto.)
     /// </summary>
+    /// <summary>
+    /// Cierre ORDENADO + relanzamiento automático. Lo pide la ventana de Licencia tras ACTIVAR: el nº de
+    /// canales efectivo se compone AL ARRANCAR (mín(instalador, licenciados)), así que los canales comprados
+    /// solo aparecen en un arranque nuevo. «Forzoso» significa SIN diálogo de confirmación — nunca matar el
+    /// proceso a lo bruto: es el mismo apagado acotado del cierre normal, que FINALIZA las grabaciones en
+    /// curso (moov) antes de salir.
+    /// </summary>
+    public async void RestartToApplyLicenseAsync()
+    {
+        if (_shuttingDown || _shutdownComplete) return; // ya hay un cierre en marcha
+        _shuttingDown = true;                            // los intentos de cerrar la ventana ya no re-entran
+        if (MainWindow is { } w) w.Title = "Baioss Record — reiniciando para aplicar la licencia…";
+        try { await ShutdownHostAsync().WaitAsync(ShutdownTimeout); }
+        catch (TimeoutException) { Serilog.Log.Warning("Reinicio por licencia: el apagado ordenado excedió {T:0} s; se fuerza la salida.", ShutdownTimeout.TotalSeconds); }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Reinicio por licencia: error en el apagado ordenado; se fuerza la salida."); }
+
+        // Como ForceExit, pero RELANZANDO antes de salir. Orden importante: primero se libera el mutex de
+        // instancia única para que la instancia nueva no choque con la guarda de «ya está en ejecución».
+        // (El proceso nuevo NO muere con nosotros: en el Job Object anti-huérfanos solo se asocian los FFmpeg.)
+        try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
+        try { _instanceMutex?.Dispose(); } catch { /* noop */ }
+        _instanceMutex = null;
+        try
+        {
+            if (Environment.ProcessPath is { } exe)
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
+                    UseShellExecute = true,
+                });
+        }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo relanzar la aplicación tras activar la licencia; puede abrirse a mano."); }
+        Environment.Exit(0);
+    }
+
     private void ForceExit()
     {
         try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
