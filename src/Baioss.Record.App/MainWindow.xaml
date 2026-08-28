@@ -88,8 +88,11 @@
         </Border>
 
         <!-- Un panel por canal, SIEMPRE en una sola fila (UniformGrid Rows="1"): N canales → N columnas.
-             Con más canales cada panel se hace más estrecho, pero el preview conserva toda la altura. -->
-        <ItemsControl ItemsSource="{Binding Channels}">
+             Con más canales cada panel se hace más estrecho, pero el preview conserva toda la altura.
+             MaxWidth (720 px por canal, calculado en el VM): con 1-2 canales, sin tope, cada panel se
+             estiraba a TODO el ancho y el preview quedaba desproporcionado; con el tope la tira queda
+             centrada (Stretch + MaxWidth centra) y con 3-4 canales el tope no llega a morder. -->
+        <ItemsControl ItemsSource="{Binding Channels}" MaxWidth="{Binding ChannelStripMaxWidth}">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                     <UniformGrid Rows="1"/>

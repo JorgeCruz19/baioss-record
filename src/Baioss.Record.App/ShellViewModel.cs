@@ -45,6 +45,11 @@ public sealed partial class ShellViewModel : ObservableObject
     /// <summary>Subtítulo de la barra superior, según el nº real de canales creados (1 canal / N canales).</summary>
     public string ChannelsSubtitle => $"· grabación broadcast de {Channels.Count} canal{(Channels.Count == 1 ? "" : "es")}";
 
+    /// <summary>Tope de ancho de la tira de canales (720 px por canal). Con 1-2 canales, sin tope, cada panel
+    /// se estiraba a TODO el ancho de la ventana y el preview quedaba gigante; con él, la tira queda centrada
+    /// y proporcionada. Con 3-4 canales en un monitor normal el tope no llega a morder (se reparte como antes).</summary>
+    public double ChannelStripMaxWidth => 720.0 * Math.Max(1, Channels.Count);
+
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
         IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, ILicenseService? license = null)
