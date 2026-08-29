@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuración de OFUSCACIÓN de Baioss Record (Obfuscar, open source).
+
+  QUÉ se ofusca y QUÉ NO, y por qué:
+    * SOLO tres ensamblados: Application (licenciamiento), Infrastructure (persistencia de la licencia y
+      huella del equipo) y Engine.FFmpeg. Es donde vive la lógica que interesa proteger.
+    * NO se ofuscan Baioss.Record.App (WPF) ni Baioss.Record.Domain: WPF resuelve los enlaces del XAML POR
+      NOMBRE y EF Core mapea las entidades del Domain POR NOMBRE; renombrarlos rompería la app en silencio.
+
+  Ajustes (ver las <Var> de abajo):
+    * HideStrings = true → CIFRA las cadenas. Es la medida de más valor: sin ella, buscar "license"/"trial" o
+      la clave pública Base64 en el DLL las encuentra al instante; con ella, no aparecen en claro.
+    * KeepPublicApi = true → NO se renombra lo público: las clases de licencia son public para cruzar
+      ensamblados (las usan App y Api), así que renombrarlas rompería esos enlaces. Se renombra lo privado/interno.
+    * RenameProperties = false → las propiedades conservan su nombre: EF, System.Text.Json (cuerpos de la API) y
+      los enlaces del XAML dependen de ellos. El cifrado de cadenas y el renombrado de métodos/campos privados
+      siguen aplicando.
+
+  NOTA: el renombrado de internos es CONSISTENTE entre estos tres ensamblados (Obfuscar actualiza las
+  referencias cruzadas de InternalsVisibleTo entre Engine.FFmpeg e Infrastructure al procesarlos juntos).
+-->
+<Obfuscator>
+  <!-- Rutas RELATIVAS a la raíz del repo: el script lo invoca siempre desde allí. -->
+  <Var name="InPath" value="publish" />
+  <Var name="OutPath" value="publish\_obfuscated" />
+
+  <!-- No renombrar la API pública (enlaces entre ensamblados) ni las propiedades (EF/JSON/XAML por nombre). -->
+  <Var name="KeepPublicApi" value="true" />
+  <Var name="HidePrivateApi" value="true" />
+  <Var name="RenameProperties" value="false" />
+  <Var name="RenameEvents" value="false" />
+  <Var name="RenameFields" value="true" />
+
+  <!-- Cifrado de cadenas: la protección de más valor real contra el crackeo casual. -->
+  <Var name="HideStrings" value="true" />
+
+  <!-- Optimizaciones seguras. -->
+  <Var name="ReuseNames" value="true" />
+  <Var name="OptimizeMethods" value="true" />
+  <Var name="SuppressIldasm" value="true" />
+
+  <Module file="publish\Baioss.Record.Application.dll" />
+  <Module file="publish\Baioss.Record.Infrastructure.dll" />
+  <Module file="publish\Baioss.Record.Engine.FFmpeg.dll" />
+</Obfuscator>

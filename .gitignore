@@ -24,3 +24,7 @@ tools/ffmpeg/
 
 # Instaladores generados (pesan ~140 MB): son artefactos de distribución, no fuente.
 /dist/
+
+# Subproductos de la ofuscación (scripts/obfuscate.ps1)
+/publish/_obfuscated/
+Mapping.txt

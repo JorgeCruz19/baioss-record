@@ -60,8 +60,10 @@ Name: "startupicon"; Description: "Iniciar {#AppName} al encender el equipo"; Gr
 ; que se usa para probar en desarrollo, así que sin estos «Excludes» el instalador se
 ; llevaría la base de datos de pruebas, los registros y las grabaciones del desarrollador
 ; hasta el equipo del cliente (que además arrancaría con canales y sesiones ajenos).
+; «_obfuscated\*» y «Mapping.txt» son subproductos de la ofuscación (scripts\obfuscate.ps1): la carpeta
+; intermedia con los DLL ya copiados a su sitio, y el mapa nombre-original→ofuscado, que NUNCA debe distribuirse.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; \
-    Excludes: "data\*,logs\*,recordings\*,*.log,*.db,*.db-shm,*.db-wal"; \
+    Excludes: "data\*,logs\*,recordings\*,_obfuscated\*,Mapping.txt,*.log,*.db,*.db-shm,*.db-wal"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]

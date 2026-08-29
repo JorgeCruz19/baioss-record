@@ -26,6 +26,12 @@ Si solo estás retocando el instalador y no el programa, reutiliza la publicaci�
 powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -SkipPublish -Version 1.0.1
 ```
 
+**Para la build que vas a VENDER, añade `-Obfuscate`** (cifra las cadenas y renombra los internos de la lógica sensible, licenciamiento incluido; ver `docs\LICENCIAMIENTO.md` §6):
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -Obfuscate
+```
+
 ---
 
 ## Qué ve el cliente

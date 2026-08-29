@@ -27,6 +27,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipPublish,
+    [switch]$Obfuscate,
     [string]$Version = '1.0.0'
 )
 
@@ -65,8 +66,20 @@ if ($SkipPublish) {
     Write-Host 'Publicación: se reutiliza la existente (-SkipPublish).' -ForegroundColor Yellow
 } else {
     Write-Host 'Publicando la aplicación...' -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot 'publish.ps1')
+    # Con -Obfuscate se publica SIN ReadyToRun: el R2R precompila el IL a nativo y la ofuscación posterior
+    # (que reescribe el IL) produciría un ensamblado mixto que Obfuscar no puede guardar. R2R solo acelera
+    # el primer arranque, irrelevante en un grabador que se lanza una vez.
+    if ($Obfuscate) { & (Join-Path $PSScriptRoot 'publish.ps1') -NoReadyToRun }
+    else            { & (Join-Path $PSScriptRoot 'publish.ps1') }
     if ($LASTEXITCODE -ne 0) { Write-Error 'Falló la publicación de la aplicación.' }
+}
+
+# --- 1b) Ofuscación (opt-in) ---
+# Cifra las cadenas y renombra los internos de los ensamblados con lógica sensible (licenciamiento incluido).
+# Sube la barrera contra el crackeo casual; NO lo hace imposible (fuera del modelo de amenaza, ver docs).
+if ($Obfuscate) {
+    & (Join-Path $PSScriptRoot 'obfuscate.ps1')
+    if ($LASTEXITCODE -ne 0) { Write-Error 'Falló la ofuscación.' }
 }
 
 # Aviso útil: sin los binarios de FFmpeg el producto instalado arrancaría en modo simulado.

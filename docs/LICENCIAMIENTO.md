@@ -84,7 +84,22 @@ La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo 
 
 **Clonado de disco.** Clonar el disco de un equipo licenciado (imagen sin *Sysprep*) reproduce también su huella, así que la licencia valdría en el clon. **Ninguna licencia sin conexión puede evitarlo.** Mitigación práctica: lleva un registro de a qué código de equipo has emitido cada licencia; si un mismo código pide varias, es señal de aviso.
 
-**Parcheo del binario.** Alguien con conocimientos puede descompilar la app (.NET produce C# muy legible con herramientas gratuitas), anular la verificación o cambiarse el tope de canales, y recompilar. Fuera del modelo de amenaza desde el día uno: la defensa real exigiría activación online. **PENDIENTE (decidido, sin fecha): evaluar un ofuscador de .NET** antes de una distribución amplia — no elimina el riesgo, pero sube mucho el coste de leer el código descompilado. Mientras el negocio sea de pocos clientes con trato directo, el registro de licencias emitidas es la mitigación que más rinde.
+**Parcheo del binario.** Alguien con conocimientos puede descompilar la app (.NET produce C# muy legible con herramientas gratuitas), anular la verificación o cambiarse el tope de canales, y recompilar. Fuera del modelo de amenaza desde el día uno: la defensa real exigiría activación online. La build que se distribuye va **ofuscada** (ver abajo), lo que sube mucho el coste de leer el código descompilado, pero no lo hace imposible. Mientras el negocio sea de pocos clientes con trato directo, el registro de licencias emitidas es la mitigación que más rinde.
+
+## 6. Ofuscación de la build distribuible
+
+El instalador de venta se genera con la opción de **ofuscación** activada:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -Obfuscate
+```
+
+Qué hace (Obfuscar, open source, como *dotnet tool* local — se restaura solo con `dotnet tool restore`):
+
+- **Cifra las cadenas** de los ensamblados con lógica sensible. Es la medida de más valor: sin ella, buscar `license`, `trial` o la clave pública Base64 en el DLL las encuentra al instante; con ella, no aparecen en claro. El propio script lo **verifica** (falla ruidosamente si el separador de dominio de la licencia sigue visible).
+- **Renombra** métodos y campos privados/internos a nombres sin sentido.
+
+Qué **no** se ofusca, y por qué: solo se procesan `Application`, `Infrastructure` y `Engine.FFmpeg`. La app WPF (`Baioss.Record.App`) y el `Domain` quedan intactos porque WPF resuelve los enlaces del XAML **por nombre** y EF Core mapea las entidades **por nombre**; renombrarlos rompería el producto. Por el mismo motivo se **conserva la API pública** (las clases de licencia son `public` para cruzar ensamblados) y **no se renombran las propiedades** (las usan EF, el JSON de la API y los enlaces del XAML). La build ofuscada se publica **sin ReadyToRun** (el código nativo precompilado chocaría con el IL reescrito; solo se pierde algo de velocidad en el primer arranque). Config en `build\obfuscar.xml`; el paso lo ejecuta `scripts\obfuscate.ps1`. Sin `-Obfuscate`, el flujo normal de desarrollo no ofusca nada.
 
 ---
 
