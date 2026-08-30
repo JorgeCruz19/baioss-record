@@ -87,6 +87,18 @@
 
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="2,6,0,0"
                            Text="Al aplicar, el canal se reconstruye en caliente (suelta la fuente anterior y abre la nueva). Nota: un dispositivo en vivo no se puede abrir por dos procesos a la vez; grabar y previsualizar la misma entrada física a la vez requerirá un único proceso de captura (pendiente)."/>
+
+                <!-- ATRIBUCIÓN NDI — OBLIGATORIA por la licencia del SDK de NDI, que exige (a) el enlace a
+                     ndi.video «en un lugar cercano a donde NDI se usa o se selecciona dentro del producto»
+                     —esta ventana es donde se elige NDI como entrada— y (b) la mención de marca registrada.
+                     No quitar sin leer docs\TERCEROS.md. -->
+                <TextBlock TextWrapping="Wrap" FontSize="11" Margin="2,10,0,0"
+                           Foreground="{StaticResource TextSecondaryBrush}">
+                    <Run Text="NDI® es una marca registrada de Vizrt NDI AB."/>
+                    <Hyperlink NavigateUri="https://ndi.video/" RequestNavigate="OpenLink_RequestNavigate">
+                        <Run Text="https://ndi.video/"/>
+                    </Hyperlink>
+                </TextBlock>
             </StackPanel>
         </ScrollViewer>
     </DockPanel>

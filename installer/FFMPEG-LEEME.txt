@@ -1,0 +1,66 @@
+BAIOSS RECORD — FALTA INSTALAR FFMPEG (paso obligatorio, se hace una sola vez)
+================================================================================
+
+Baioss Record usa FFmpeg como motor de captura y grabación. Por motivos de licencia de ese
+componente, no podemos incluirlo dentro del instalador: tienes que descargarlo tú y dejarlo
+en ESTA carpeta. Es un momento y no hay que instalar nada.
+
+MIENTRAS FALTE, el programa abre y puedes configurarlo, pero NO GRABA (arranca en modo de
+demostración y te avisa al abrirse).
+
+
+QUÉ TIENES QUE HACER
+--------------------------------------------------------------------------------
+
+1. Descarga una compilación de FFmpeg para Windows de 64 bits.
+
+   Las fuentes habituales son la página oficial de FFmpeg (https://ffmpeg.org/download.html),
+   que enlaza las compilaciones para Windows mantenidas por terceros.
+
+   IMPORTANTE si vas a capturar con tarjetas Blackmagic DeckLink: necesitas una compilación
+   que incluya soporte "decklink". No todas lo traen. Puedes comprobarlo con el paso 4.
+
+2. Descomprime lo que descargues. Dentro (normalmente en una carpeta "bin") encontrarás:
+
+       ffmpeg.exe
+       ffprobe.exe
+
+3. Copia ESOS DOS ARCHIVOS a esta misma carpeta, junto a este LÉEME:
+
+       ...\Baioss\Record\tools\ffmpeg\
+
+   No hace falta nada más: ni instalarlo, ni tocar variables del sistema, ni reiniciar Windows.
+
+4. (Opcional, recomendado) Comprueba que la compilación sirve. Abre esta carpeta, escribe "cmd"
+   en la barra de direcciones del Explorador y pulsa Intro; luego ejecuta:
+
+       ffmpeg.exe -hide_banner -version
+
+   Y si usas DeckLink, además:
+
+       ffmpeg.exe -hide_banner -f decklink -list_devices 1 -i dummy
+
+   Si esto último lista tus tarjetas, la compilación es la correcta.
+
+5. Abre Baioss Record. Si los archivos están bien copiados, ya no aparecerá el aviso y podrás
+   grabar con normalidad.
+
+
+PROBLEMAS FRECUENTES
+--------------------------------------------------------------------------------
+
+· "Copié los archivos pero sigue avisando."
+  Comprueba que están en ESTA carpeta (no dentro de otra subcarpeta "bin") y que se llaman
+  exactamente ffmpeg.exe y ffprobe.exe. Cierra el programa del todo y vuelve a abrirlo.
+
+· "Windows no me deja copiar aquí."
+  La instalación concede permiso de escritura a los usuarios sobre esta carpeta. Si aun así se
+  queja, copia los archivos como administrador (clic derecho en el Explorador > Ejecutar como
+  administrador) o pide ayuda a tu proveedor.
+
+· "Falta ffprobe.exe."
+  Los dos archivos son necesarios: ffmpeg.exe graba y ffprobe.exe verifica que las grabaciones
+  hayan quedado correctas al cerrarlas.
+
+
+Ante cualquier duda, ponte en contacto con tu proveedor de Baioss.

@@ -18,6 +18,29 @@ Está diseñado para funcionar **24 horas al día, los 7 días de la semana** si
 
 ---
 
+## 1.1. Primer arranque: instalar FFmpeg (una sola vez)
+
+Baioss Record usa **FFmpeg** como motor de grabación. Por motivos de licencia de ese componente no viene dentro
+del instalador: hay que descargarlo y dejarlo en su carpeta. Es un momento y **solo se hace una vez**.
+
+1. Descarga una compilación de FFmpeg para **Windows de 64 bits** (la página oficial, <https://ffmpeg.org/download.html>,
+   enlaza las compilaciones mantenidas para Windows). Si vas a capturar con tarjetas **Blackmagic DeckLink**,
+   asegúrate de que la compilación incluya soporte «decklink»: no todas lo traen.
+2. Descomprime el archivo y busca dentro (normalmente en una carpeta `bin`) **`ffmpeg.exe`** y **`ffprobe.exe`**.
+3. Copia esos **dos** archivos a la carpeta `tools\ffmpeg\` de la instalación (por defecto
+   `C:\Baioss\Record\tools\ffmpeg\`). Ahí encontrarás también un archivo `FFMPEG-LEEME.txt` con estos mismos pasos.
+4. Abre Baioss Record.
+
+**¿Cómo sé si falta?** Al abrir el programa aparece un aviso que lo dice y muestra la carpeta exacta. Mientras
+falte, el programa funciona en **modo de demostración**: se ve todo y puedes configurarlo, pero **no graba**.
+
+## 1.2. Nota sobre NDI®
+
+Baioss Record puede grabar fuentes **NDI®**. NDI® es una marca registrada de Vizrt NDI AB; puedes obtener más
+información y sus herramientas en <https://ndi.video/>. Baioss Record no es un producto de Vizrt NDI AB.
+
+---
+
 ## 2. La pantalla principal
 
 Al abrir el programa ves una fila con **un panel por cada canal**. Arriba del todo está la **barra de título** con el nombre "BAIOSS RECORD" y, a la derecha, los botones para abrir las distintas configuraciones.

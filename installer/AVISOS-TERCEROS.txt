@@ -1,0 +1,56 @@
+BAIOSS RECORD — AVISOS SOBRE COMPONENTES DE TERCEROS
+================================================================================
+
+Baioss Record utiliza los siguientes componentes de terceros. Este archivo recoge sus
+atribuciones y avisos de licencia.
+
+
+NDI®
+--------------------------------------------------------------------------------
+
+NDI® es una marca registrada de Vizrt NDI AB.
+
+Más información sobre NDI, y descarga de sus herramientas y actualizaciones:
+https://ndi.video/
+
+Baioss Record no es un producto de Vizrt NDI AB, ni está patrocinado ni respaldado por
+Vizrt NDI AB; la marca NDI® se utiliza únicamente para indicar compatibilidad.
+
+Este producto incluye la librería de ejecución de NDI. Las licencias de los componentes de
+terceros que dicha librería utiliza están en el archivo:
+
+    Processing.NDI.Lib.Licenses.txt
+
+que se distribuye junto al ejecutable de Baioss Record.
+
+
+FFMPEG
+--------------------------------------------------------------------------------
+
+Baioss Record utiliza FFmpeg como motor de captura y grabación, pero NO lo incluye: es el
+usuario quien descarga e instala los binarios en la carpeta tools\ffmpeg\ (ver el archivo
+FFMPEG-LEEME.txt de esa carpeta).
+
+FFmpeg es un proyecto independiente, con sus propios términos de licencia según la
+compilación que se emplee. Consulta https://ffmpeg.org/ y el archivo de licencia que
+acompañe a la compilación que instales.
+
+
+BLACKMAGIC DESIGN
+--------------------------------------------------------------------------------
+
+DeckLink es una marca de Blackmagic Design Pty. Ltd. Baioss Record no es un producto de
+Blackmagic Design ni está patrocinado por dicha empresa; la marca se utiliza únicamente
+para indicar compatibilidad con sus tarjetas de captura.
+
+
+COMPONENTES DE .NET Y PAQUETES NUGET
+--------------------------------------------------------------------------------
+
+Este producto se ejecuta sobre .NET (Microsoft Corporation) e incorpora bibliotecas de
+código abierto distribuidas bajo licencias permisivas (MIT / Apache 2.0), entre ellas
+Entity Framework Core, Serilog, CommunityToolkit.Mvvm y Microsoft.Data.Sqlite.
+
+
+================================================================================
+Para cualquier consulta sobre licencias, ponte en contacto con tu proveedor de Baioss.

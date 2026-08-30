@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Herramienta del PROVEEDOR (no se distribuye con el producto ni forma parte del .slnx).
+    Genera el par de claves de firma y emite licencias para un código de equipo concreto.
+    La clave PRIVADA vive solo aquí: la app únicamente lleva la pública, así que aunque se
+    descompile no permite fabricar licencias.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AssemblyName>baioss-license</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Baioss.Record.Application\Baioss.Record.Application.csproj" />
+  </ItemGroup>
+
+</Project>

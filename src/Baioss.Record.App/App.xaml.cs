@@ -61,6 +61,12 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         WireGlobalExceptionHandlers();
 
+        // Modo de servicio para el INSTALADOR: «--machine-code <archivo>» escribe el código de este equipo en el
+        // archivo indicado y sale. El asistente lo usa para MOSTRAR el código en la página de licencia, sin
+        // duplicar el cálculo de la huella (que debe ser idéntico bit a bit al de la app). Se resuelve ANTES del
+        // mutex de instancia única: es una consulta de un segundo y debe funcionar aunque la app ya esté abierta.
+        if (TryHandleMachineCodeRequest(e.Args)) { Shutdown(0); return; }
+
         // Instancia única: una 2ª instancia chocaría al enlazar el puerto 5005 (Kestrel) y al abrir la BD.
         // Mejor avisar y salir limpio que cerrar el proceso con un error opaco. (Auditoría A2/#5.)
         _instanceMutex = new Mutex(initiallyOwned: true, @"Local\Baioss.Record.App.SingleInstance", out bool isFirst);
@@ -85,6 +91,78 @@ public partial class App : System.Windows.Application
         }
     }
 
+    /// <summary>
+    /// «--machine-code &lt;archivo&gt;»: escribe el código de equipo y termina. Lo invoca el instalador para poder
+    /// enseñárselo al cliente en el asistente. Devuelve true si la app debe salir sin abrir la interfaz.
+    /// </summary>
+    private static bool TryHandleMachineCodeRequest(string[] args)
+    {
+        int i = Array.FindIndex(args, a => string.Equals(a, "--machine-code", StringComparison.OrdinalIgnoreCase));
+        if (i < 0) return false;
+        try
+        {
+            var fingerprint = new Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint(
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint>.Instance);
+            if (i + 1 < args.Length) File.WriteAllText(args[i + 1], fingerprint.Code);
+        }
+        catch { /* el instalador simplemente no mostrará el código; no es motivo para fallar la instalación */ }
+        return true;
+    }
+
+    /// <summary>
+    /// Recoge la licencia que el INSTALADOR dejó preparada («pending-license.txt») y la activa en el primer
+    /// arranque. El instalador no puede escribir directamente el estado de licencia porque va firmado con una
+    /// clave derivada de la huella del equipo; deja la clave en claro y es la app quien la valida y la guarda.
+    /// Best-effort: si la clave no fuera válida, el archivo se retira igualmente y la app queda en periodo de
+    /// prueba (el operador puede activarla luego desde la ventana de Licencia).
+    /// </summary>
+    private static void ConsumePendingLicense(IServiceProvider services)
+    {
+        var pending = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Baioss", "Record", "pending-license.txt");
+        try
+        {
+            if (!File.Exists(pending)) return;
+            var key = File.ReadAllText(pending).Trim();
+            var license = services.GetService<Baioss.Record.Application.Licensing.ILicenseService>();
+            if (license is not null && !string.IsNullOrWhiteSpace(key))
+            {
+                var result = license.Activate(key);
+                if (result.Success) Serilog.Log.Information("Licencia aplicada desde la instalación.");
+                else if (result.Rejection == Baioss.Record.Application.Licensing.LicenseRejection.None)
+                {
+                    // Clave VÁLIDA que no se pudo GUARDAR (permisos): se CONSERVA el archivo para reintentar en
+                    // el próximo arranque — borrarlo aquí destruiría la única copia de la clave del cliente.
+                    Serilog.Log.Warning("La licencia de la instalación es válida pero no se pudo guardar; se reintentará al próximo arranque. {Message}", result.Message);
+                    return;
+                }
+                else Serilog.Log.Warning("La licencia indicada en la instalación no es válida: {Message}", result.Message);
+            }
+            File.Delete(pending); // clave inválida o ya aplicada: no se reintenta en cada arranque
+        }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo aplicar la licencia dejada por el instalador."); }
+    }
+
+    /// <summary>
+    /// Nº de canales elegido en el INSTALADOR (1-4), o <c>null</c> si no hay instalación (desarrollo/portable).
+    /// Se lee de <c>HKLM\Software\Baioss\RecordSetup</c>, que conserva la ACL por defecto de HKLM: los usuarios
+    /// la LEEN pero solo un administrador la escribe — cambiar de canales exige reinstalar, no editar archivos.
+    /// Vista de 64 bits explícita, como el resto de lecturas de registro de la app.
+    /// </summary>
+    private static int? ReadInstalledChannelCount()
+    {
+        try
+        {
+            using var baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64);
+            using var key = baseKey.OpenSubKey(@"Software\Baioss\RecordSetup");
+            // Tope 4: es lo que el producto vende hoy. Un valor corrupto o fuera de rango se acota, no revienta.
+            return key?.GetValue("Channels") is int n ? Math.Clamp(n, 1, 4) : null;
+        }
+        catch { return null; } // registro ilegible: manda la configuración embebida, la app arranca igual
+    }
+
     private async Task StartHostAsync()
     {
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
@@ -99,6 +177,7 @@ public partial class App : System.Windows.Application
 
         // Selección de encoder (una sola vez): GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264).
         var (real, codec, encoderNotes) = await ProbeEngineAsync(ffmpegDir, clipPath);
+
         var gpuEncoders = real && codec == VideoCodec.H264Nvenc; // NVENC utilizable → ofrecer códecs GPU en la UI
 
         // El host es una WebApplication (Kestrel) que además levanta la UI y los servicios de fondo:
@@ -122,6 +201,18 @@ public partial class App : System.Windows.Application
             Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
 #endif
         int channelCount = Math.Clamp(builder.Configuration.GetValue("Channels:Count", 4), 1, 8);
+
+        // CANALES ELEGIDOS EN LA INSTALACIÓN: el asistente pregunta cuántos canales quiere el cliente (1-4) y
+        // lo deja en HKLM\Software\Baioss\RecordSetup — una clave que SOLO un administrador puede modificar, a
+        // diferencia de un archivo junto al exe: cambiar de canales pasa por reinstalar, no por editar nada.
+        // (Clave HERMANA de Software\Baioss\Record a propósito: esa lleva users-modify —el estado de licencia
+        // lo escribe la app sin elevación— y sus permisos se HEREDAN; anidar «Setup» ahí la dejaría editable.)
+        // Sin la clave (desarrollo/portable) manda el appsettings embebido, como siempre.
+        if (ReadInstalledChannelCount() is { } installedChannels)
+        {
+            channelCount = installedChannels;
+            Serilog.Log.Information("Canales según la instalación (HKLM): {Count}.", installedChannels);
+        }
 
         var s = builder.Services;
         // Resiliencia de los servicios de fondo: en .NET 8 una excepción que ESCAPE de un BackgroundService
@@ -147,8 +238,24 @@ public partial class App : System.Windows.Application
         // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner
         // false SOLO en máquinas con SAI/UPS, como pidió el operador). (Recording:FragmentedMp4.)
         bool fragmentedMp4 = builder.Configuration.GetValue("Recording:FragmentedMp4", true);
-        // El ChannelHost compone los canales y permite reasignarles la entrada en caliente.
-        s.AddSingleton(new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channelCount, fragmentedMp4));
+        // El ChannelHost compone los canales y permite reasignarles la entrada en caliente. El nº de canales
+        // EFECTIVO se decide al RESOLVER este contexto: si hay licencia válida, su techo de canales —que viaja
+        // FIRMADO dentro de la clave— acota lo elegido en la instalación (lo pagado manda sobre lo elegido).
+        // En prueba, o con la licencia no verificable, se respeta lo del instalador/config: recortar canales
+        // por un fallo NUESTRO iría contra el principio de no estorbar jamás a un grabador 24/7 (fail-open).
+        s.AddSingleton(sp =>
+        {
+            int channels = channelCount;
+            var lic = sp.GetService<Baioss.Record.Application.Licensing.ILicenseService>();
+            var cur = lic?.Current;
+            if (cur is { State: Baioss.Record.Application.Licensing.LicenseState.Licensed } &&
+                cur.LicensedChannels is int paid && paid > 0 && paid < channels)
+            {
+                Serilog.Log.Information("Canales acotados por la LICENCIA: {Paid} (la instalación pedía {Chosen}).", paid, channels);
+                channels = paid;
+            }
+            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4);
+        });
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
         // Scheduler de grabación automática (BackgroundService): dispara start/stop por hora/calendario.
@@ -223,6 +330,31 @@ public partial class App : System.Windows.Application
         s.AddHostedService(sp => new Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor(
             sp.GetRequiredService<IChannelManager>(),
             sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Diagnostics.ChannelHealthMonitor>>()));
+        // --- Licenciamiento: prueba de 14 días + licencia PERPETUA atada a este equipo. ---
+        // REGLA DURA: nada de esto puede impedir que la app ARRANQUE ni que grabe por un fallo propio. Por eso la
+        // huella y el servicio se construyen dentro de try/catch y, si algo falla, sencillamente NO se registra la
+        // compuerta: el canal la recibe como null y graba sin restricción (fail-open). Un impago cuesta dinero;
+        // dejar sin grabar a una emisora por un bug nuestro cuesta mucho más.
+        try
+        {
+            s.AddSingleton<Baioss.Record.Application.Licensing.IMachineFingerprint>(sp =>
+                new Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint(
+                    sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Licensing.WindowsMachineFingerprint>>()));
+            s.AddSingleton(sp => new Baioss.Record.Infrastructure.Licensing.LicenseStore(
+                sp.GetRequiredService<Baioss.Record.Application.Licensing.IMachineFingerprint>(),
+                sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Licensing.LicenseStore>>()));
+            s.AddSingleton<Baioss.Record.Infrastructure.Licensing.LicenseService>();
+            s.AddSingleton<Baioss.Record.Application.Licensing.ILicenseService>(sp =>
+                sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+            s.AddSingleton<Baioss.Record.Application.Licensing.ILicenseGate>(sp =>
+                sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+            s.AddHostedService(sp => sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Licenciamiento: no se pudo componer el subsistema; la app funcionará SIN restricciones.");
+        }
+
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 
@@ -232,6 +364,12 @@ public partial class App : System.Windows.Application
         app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });   // necesario para el endpoint /ws/events
         app.MapBaiossApi();    // REST de automatización + WebSocket de eventos
         _host = app;
+
+        // Si el instalador dejó una licencia preparada, se aplica ANTES de componer los canales: el techo de
+        // canales pagado viaja dentro de la licencia y el ChannelHost lo lee al construirse — si se aplicara
+        // después, el primer arranque tras instalar mostraría los canales del asistente y el techo real solo
+        // aparecería al reiniciar.
+        ConsumePendingLicense(app.Services);
 
         // Construye los canales (I/O de FFmpeg/NDI por canal) FUERA del hilo de UI y EN PARALELO, pre-resolviendo
         // el singleton en un hilo de fondo ANTES de StartAsync. Si no, el ChannelHost se construiría dentro de
@@ -292,6 +430,13 @@ public partial class App : System.Windows.Application
         var mainWindow = app.Services.GetRequiredService<MainWindow>();
         mainWindow.Closing += OnMainWindowClosing; // finaliza las grabaciones ANTES de cerrar la app (N2)
         mainWindow.Show();
+
+        // FFmpeg NO viaja en el instalador (su licencia no permite redistribuirlo: ver docs\FFMPEG.md), así que
+        // el caso «falta» es NORMAL en un equipo recién instalado, no una anomalía rara. Sin él la app abre pero
+        // NO graba, y caer a modo demostración EN SILENCIO le haría creer al cliente que el producto está roto.
+        // Va AQUÍ, y no junto al sondeo del motor: allí el aviso caía en un Serilog todavía sin configurar y en
+        // un hilo que no siempre es STA (MessageBox lo exige), así que no se veía ni quedaba registrado.
+        if (!real) WarnFfmpegMissing(root, mainWindow);
     }
 
     /// <summary>Canales que están grabando ahora mismo (estado autoritativo del motor, no de la UI), para
@@ -391,6 +536,41 @@ public partial class App : System.Windows.Application
     /// algún <c>await</c>/hilo colgado (que, si no, mantendría el proceso vivo bloqueando el mutex → «ya está en
     /// ejecución» al reabrir). El Job Object mata los FFmpeg hijos al morir el proceso. (Cierre robusto.)
     /// </summary>
+    /// <summary>
+    /// Cierre ORDENADO + relanzamiento automático. Lo pide la ventana de Licencia tras ACTIVAR: el nº de
+    /// canales efectivo se compone AL ARRANCAR (mín(instalador, licenciados)), así que los canales comprados
+    /// solo aparecen en un arranque nuevo. «Forzoso» significa SIN diálogo de confirmación — nunca matar el
+    /// proceso a lo bruto: es el mismo apagado acotado del cierre normal, que FINALIZA las grabaciones en
+    /// curso (moov) antes de salir.
+    /// </summary>
+    public async void RestartToApplyLicenseAsync()
+    {
+        if (_shuttingDown || _shutdownComplete) return; // ya hay un cierre en marcha
+        _shuttingDown = true;                            // los intentos de cerrar la ventana ya no re-entran
+        if (MainWindow is { } w) w.Title = "Baioss Record — reiniciando para aplicar la licencia…";
+        try { await ShutdownHostAsync().WaitAsync(ShutdownTimeout); }
+        catch (TimeoutException) { Serilog.Log.Warning("Reinicio por licencia: el apagado ordenado excedió {T:0} s; se fuerza la salida.", ShutdownTimeout.TotalSeconds); }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Reinicio por licencia: error en el apagado ordenado; se fuerza la salida."); }
+
+        // Como ForceExit, pero RELANZANDO antes de salir. Orden importante: primero se libera el mutex de
+        // instancia única para que la instancia nueva no choque con la guarda de «ya está en ejecución».
+        // (El proceso nuevo NO muere con nosotros: en el Job Object anti-huérfanos solo se asocian los FFmpeg.)
+        try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
+        try { _instanceMutex?.Dispose(); } catch { /* noop */ }
+        _instanceMutex = null;
+        try
+        {
+            if (Environment.ProcessPath is { } exe)
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
+                    UseShellExecute = true,
+                });
+        }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo relanzar la aplicación tras activar la licencia; puede abrirse a mano."); }
+        Environment.Exit(0);
+    }
+
     private void ForceExit()
     {
         try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
@@ -424,6 +604,33 @@ public partial class App : System.Windows.Application
     /// Determina si se puede grabar de verdad y con qué encoder (cascada NVENC → QSV → AMF → CPU);
     /// <c>Notes</c> lleva el motivo por el que se descartó cada GPU, para registrarlo al arrancar.
     /// </summary>
+    /// <summary>
+    /// Avisa de que FALTA FFmpeg (o no es utilizable) y explica exactamente qué hacer. El binario no se
+    /// distribuye con el producto —su licencia no lo permite—, lo aporta el cliente; ver docs\FFMPEG.md y el
+    /// archivo FFMPEG-LEEME.txt que el instalador deja en la propia carpeta de destino.
+    /// </summary>
+    private static void WarnFfmpegMissing(string root, Window owner)
+    {
+        var dir = Path.Combine(root, "tools", "ffmpeg");
+        Serilog.Log.Warning("FFmpeg no está disponible en «{Dir}»: la aplicación abre en modo DEMOSTRACIÓN y NO grabará.", dir);
+
+        // En el hilo de UI y sin bloquear el arranque (BeginInvoke): el aviso aparece SOBRE la ventana ya
+        // visible, en vez de retrasar su apertura.
+        owner.Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                MessageBox.Show(owner,
+                    "Falta FFmpeg, que es el motor de grabación.\n\n" +
+                    "Baioss Record funciona en modo de demostración y NO podrá grabar hasta que lo instales.\n\n" +
+                    "Copia «ffmpeg.exe» y «ffprobe.exe» en esta carpeta:\n" + dir + "\n\n" +
+                    "Tienes las instrucciones en el archivo FFMPEG-LEEME.txt de esa misma carpeta.",
+                    "Baioss Record — falta FFmpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo mostrar el aviso de FFmpeg ausente."); }
+        });
+    }
+
     private static async Task<(bool Real, VideoCodec Codec, IReadOnlyList<string> Notes)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
     {
         var notes = new List<string>();
