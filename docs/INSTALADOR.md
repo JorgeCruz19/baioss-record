@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -Obfuscate
    - **Periodo de prueba de 14 días** (opción por defecto)
    - **Ya tengo una licencia para este equipo** → aparece un campo para pegarla
 7. **Resumen** (incluye los canales elegidos) e instalación
-8. **Fin** — si eligió la prueba, se le muestra **el código de este equipo**, que es justo lo que necesita enviarte para que le emitas la licencia
+8. **Fin** — se le indica que **falta copiar FFmpeg** (con la ruta exacta) y, si eligió la prueba, **el código de este equipo**, que es lo que necesita enviarte para que le emitas la licencia. Una casilla marcada le abre la carpeta de FFmpeg en el Explorador
 
 ---
 
@@ -64,6 +64,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -Obfuscate
 **El instalador crea una clave de registro del equipo (`HKLM\Software\Baioss\Record`) con permiso de escritura para Usuarios.** Es la tercera copia del estado de licencia/prueba, compartida por todas las cuentas del PC: sin ella, bastaba borrar el archivo de `ProgramData` y entrar con otra cuenta de Windows para reiniciar el periodo de prueba. No se borra al desinstalar a propósito — desinstalar y reinstalar no reinicia la prueba.
 
 **Los canales elegidos van en `HKLM\Software\Baioss\RecordSetup` (clave HERMANA de la anterior, a propósito).** El número de canales no vive en un archivo junto al exe (el operador podría subírselo editándolo) sino en una clave que conserva la ACL por defecto de HKLM: los usuarios la leen y solo un administrador la cambia — es decir, **cambiar de canales = volver a ejecutar el instalador**. No puede anidarse dentro de `Software\Baioss\Record` porque esa clave concede `users-modify` y los permisos del registro se heredan a las subclaves. Sin la clave (desarrollo/portable), la app usa el número incrustado en el binario, como siempre. Si se reduce el número de canales, los datos de los canales sobrantes (grabaciones, programaciones) no se borran: quedan inactivos hasta que se vuelva a instalar con más canales.
+
+**FFmpeg NO se empaqueta.** Su licencia no permite redistribuirlo (es un build *nonfree*, ver `FFMPEG.md`): el instalador crea `tools\ffmpeg\` con permiso de escritura y un `FFMPEG-LEEME.txt`, y es el cliente quien copia ahí `ffmpeg.exe` y `ffprobe.exe`. Por eso el instalador pesa ~62 MB en vez de ~135 MB. Mientras falte, la aplicación abre en modo de demostración y **avisa con un diálogo** en cada arranque.
 
 **No se empaquetan datos de desarrollo.** La carpeta `publish\` es también la que se usa para probar en local, así que el instalador excluye expresamente `data\`, `logs\` y `recordings\`; sin eso, la base de datos de pruebas y los registros del desarrollador acabarían en el equipo del cliente.
 

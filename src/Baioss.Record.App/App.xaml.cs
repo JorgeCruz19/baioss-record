@@ -177,6 +177,7 @@ public partial class App : System.Windows.Application
 
         // Selección de encoder (una sola vez): GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264).
         var (real, codec, encoderNotes) = await ProbeEngineAsync(ffmpegDir, clipPath);
+
         var gpuEncoders = real && codec == VideoCodec.H264Nvenc; // NVENC utilizable → ofrecer códecs GPU en la UI
 
         // El host es una WebApplication (Kestrel) que además levanta la UI y los servicios de fondo:
@@ -429,6 +430,13 @@ public partial class App : System.Windows.Application
         var mainWindow = app.Services.GetRequiredService<MainWindow>();
         mainWindow.Closing += OnMainWindowClosing; // finaliza las grabaciones ANTES de cerrar la app (N2)
         mainWindow.Show();
+
+        // FFmpeg NO viaja en el instalador (su licencia no permite redistribuirlo: ver docs\FFMPEG.md), así que
+        // el caso «falta» es NORMAL en un equipo recién instalado, no una anomalía rara. Sin él la app abre pero
+        // NO graba, y caer a modo demostración EN SILENCIO le haría creer al cliente que el producto está roto.
+        // Va AQUÍ, y no junto al sondeo del motor: allí el aviso caía en un Serilog todavía sin configurar y en
+        // un hilo que no siempre es STA (MessageBox lo exige), así que no se veía ni quedaba registrado.
+        if (!real) WarnFfmpegMissing(root, mainWindow);
     }
 
     /// <summary>Canales que están grabando ahora mismo (estado autoritativo del motor, no de la UI), para
@@ -596,6 +604,33 @@ public partial class App : System.Windows.Application
     /// Determina si se puede grabar de verdad y con qué encoder (cascada NVENC → QSV → AMF → CPU);
     /// <c>Notes</c> lleva el motivo por el que se descartó cada GPU, para registrarlo al arrancar.
     /// </summary>
+    /// <summary>
+    /// Avisa de que FALTA FFmpeg (o no es utilizable) y explica exactamente qué hacer. El binario no se
+    /// distribuye con el producto —su licencia no lo permite—, lo aporta el cliente; ver docs\FFMPEG.md y el
+    /// archivo FFMPEG-LEEME.txt que el instalador deja en la propia carpeta de destino.
+    /// </summary>
+    private static void WarnFfmpegMissing(string root, Window owner)
+    {
+        var dir = Path.Combine(root, "tools", "ffmpeg");
+        Serilog.Log.Warning("FFmpeg no está disponible en «{Dir}»: la aplicación abre en modo DEMOSTRACIÓN y NO grabará.", dir);
+
+        // En el hilo de UI y sin bloquear el arranque (BeginInvoke): el aviso aparece SOBRE la ventana ya
+        // visible, en vez de retrasar su apertura.
+        owner.Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                MessageBox.Show(owner,
+                    "Falta FFmpeg, que es el motor de grabación.\n\n" +
+                    "Baioss Record funciona en modo de demostración y NO podrá grabar hasta que lo instales.\n\n" +
+                    "Copia «ffmpeg.exe» y «ffprobe.exe» en esta carpeta:\n" + dir + "\n\n" +
+                    "Tienes las instrucciones en el archivo FFMPEG-LEEME.txt de esa misma carpeta.",
+                    "Baioss Record — falta FFmpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo mostrar el aviso de FFmpeg ausente."); }
+        });
+    }
+
     private static async Task<(bool Real, VideoCodec Codec, IReadOnlyList<string> Notes)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
     {
         var notes = new List<string>();

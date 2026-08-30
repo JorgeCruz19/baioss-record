@@ -11,7 +11,21 @@ build de venta, manual de usuario y las auditorías de grabación 24/7 y de lice
 
 ## 🔴 Bloqueantes
 
-### 1. El FFmpeg que se empaqueta NO se puede redistribuir
+### 1. ~~El FFmpeg que se empaqueta NO se puede redistribuir~~ ✅ RESUELTO (2026-08-29)
+
+**Decisión tomada: la opción A — no se empaqueta; lo aporta el cliente.** Implementado y verificado:
+el instalador excluye `tools\ffmpeg\*` y en su lugar crea la carpeta (con permiso de escritura para el
+usuario) con un `FFMPEG-LEEME.txt`; la última pantalla del asistente lo indica y ofrece abrir esa carpeta;
+y la aplicación avisa con un cuadro de diálogo, indicando la ruta exacta, mientras falte. El instalador bajó
+de 135 MB a **62 MB**. Detalle completo en `FFMPEG.md`.
+
+*Queda como mejora futura opcional* (no bloquea): evaluar un build GPL limpio + captura DeckLink por
+DirectShow para volver a entregar un paquete «todo incluido». El razonamiento original se conserva abajo.
+
+<details>
+<summary>Análisis original del bloqueante</summary>
+
+#### El FFmpeg que se empaqueta NO se puede redistribuir
 
 **El problema.** El binario que viaja en `tools\ffmpeg\` lo dice en su propio archivo de licencia:
 
@@ -37,6 +51,8 @@ problema por su cuenta.
 
 **Recomendación:** A para no bloquear la primera venta, evaluando B en paralelo. Decidir esto **antes** de la
 primera factura, porque condiciona qué es capaz de hacer el producto que entregas.
+
+</details>
 
 ### 2. El runtime de NDI también se redistribuye
 
@@ -112,7 +128,7 @@ A día de hoy `main` está en `7fe9ddb`: **sin** instalador, licenciamiento, can
 
 ## Orden recomendado
 
-1. Decidir la vía de **FFmpeg** (condiciona el producto entero).
+1. ~~Decidir la vía de **FFmpeg**~~ ✅ hecho: lo aporta el cliente (ver arriba y `FFMPEG.md`).
 2. **Abogado**: EULA + datos de empresa + revisión de los términos de terceros (FFmpeg/NDI/Blackmagic).
 3. **Clave privada** a buen recaudo y registro de licencias abierto.
 4. Fusionar `feat/instalador` a `main` y **validar en VM limpia**.

@@ -90,16 +90,21 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
 
     private void Initialize()
     {
-        if (!_ctx.Real || _ctx.FfmpegDir is null || _ctx.ClipPath is null) { BuildSimulated(); return; }
-
-        // La base de datos es un prerequisito GLOBAL: si no se puede preparar, no hay persistencia → todo simulado.
-        try { _sp.EnsureBaiossDatabaseCreated(); }
+        // La base de datos se prepara SIEMPRE, también en modo simulado: los servicios de fondo (el scheduler
+        // la consulta cada segundo, la retención, el historial) corren igual sin FFmpeg. Antes se creaba DESPUÉS
+        // de decidir el modo, así que un equipo recién instalado —que arranca en simulado hasta que el cliente
+        // copia FFmpeg, ver docs\FFMPEG.md— inundaba el registro con «no such table: ScheduledJobs» unas 3 veces
+        // por segundo (1,3 MB de log en 4 minutos, y creciendo mientras la app siguiera abierta).
+        bool dbReady;
+        try { _sp.EnsureBaiossDatabaseCreated(); dbReady = true; }
         catch (Exception ex)
         {
+            // Prerequisito GLOBAL: si no se puede preparar, no hay persistencia → todo simulado.
             Serilog.Log.Error(ex, "No se pudo preparar la base de datos; se usan canales simulados.");
-            BuildSimulated();
-            return;
+            dbReady = false;
         }
+
+        if (!dbReady || !_ctx.Real || _ctx.FfmpegDir is null || _ctx.ClipPath is null) { BuildSimulated(); return; }
 
         // Cada canal se compone de forma INDEPENDIENTE (principio de diseño: la caída de uno nunca afecta a
         // los demás) y EN PARALELO. Antes se construían EN SERIE con I/O bloqueante (.GetAwaiter().GetResult()):

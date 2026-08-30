@@ -62,15 +62,27 @@ Name: "startupicon"; Description: "Iniciar {#AppName} al encender el equipo"; Gr
 ; hasta el equipo del cliente (que además arrancaría con canales y sesiones ajenos).
 ; «_obfuscated\*» y «Mapping.txt» son subproductos de la ofuscación (scripts\obfuscate.ps1): la carpeta
 ; intermedia con los DLL ya copiados a su sitio, y el mapa nombre-original→ofuscado, que NUNCA debe distribuirse.
+;
+; «tools\ffmpeg\*» se EXCLUYE a propósito: los binarios de FFmpeg que se usan en desarrollo son un build
+; «nonfree» (lleva --enable-nonfree por el soporte DeckLink, y libfdk-aac) y su propia licencia dice que NO es
+; legalmente redistribuible. Lo descarga e instala el CLIENTE en su equipo —usarlo él es legal; distribuirlo
+; nosotros no—. La carpeta se crea vacía con un LÉEME que explica exactamente qué bajar y dónde ponerlo.
+; (Ver docs\CHECKLIST-VENTA.md y docs\FFMPEG.md.)
 Source: "{#SourceDir}\*"; DestDir: "{app}"; \
-    Excludes: "data\*,logs\*,recordings\*,_obfuscated\*,Mapping.txt,*.log,*.db,*.db-shm,*.db-wal"; \
+    Excludes: "data\*,logs\*,recordings\*,_obfuscated\*,Mapping.txt,tools\ffmpeg\*,*.log,*.db,*.db-shm,*.db-wal"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Instrucciones para el cliente, EN la carpeta donde tiene que dejar los binarios.
+Source: "FFMPEG-LEEME.txt"; DestDir: "{app}\tools\ffmpeg"; Flags: ignoreversion
 
 [Dirs]
 ; Permiso de ESCRITURA para los usuarios: la app guarda aquí su base de datos, los
 ; registros y (si no se cambia) las grabaciones. Sin esto no arrancaría bien.
 Name: "{app}"; Permissions: users-modify
 Name: "{commonappdata}\Baioss\Record"; Permissions: users-modify
+; El cliente deja aquí ffmpeg.exe y ffprobe.exe (ver FFMPEG-LEEME.txt): necesita poder ESCRIBIR en la carpeta
+; sin ser administrador, o no podrá copiarlos.
+Name: "{app}\tools\ffmpeg"; Permissions: users-modify
 
 [Registry]
 ; TERCERA copia del estado de licencia/prueba, COMPARTIDA por todos los usuarios del equipo. Las otras dos
@@ -95,7 +107,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 Name: "{commonstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: startupicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName} ahora"; Flags: nowait postinstall skipifsilent
+; Abrir la carpeta de FFmpeg va PRIMERO y marcado: sin esos dos binarios el programa no graba, así que es el
+; paso que el cliente debe hacer antes que ninguna otra cosa.
+Filename: "{app}\tools\ffmpeg"; Description: "Abrir la carpeta donde copiar FFmpeg (necesario para grabar)"; \
+    Flags: shellexec nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "Abrir {#AppName} ahora"; Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallDelete]
 ; Solo lo que genera el programa al ejecutarse; NUNCA las grabaciones ni la base de datos.
@@ -228,14 +244,25 @@ begin
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
+var
+  Msg: String;
 begin
-  { Al terminar, en modo prueba se muestra el código de equipo: es justo lo que el cliente
-    necesita enviar para que le emitan su licencia. }
-  if (CurPageID = wpFinished) and (ModePage.SelectedValueIndex = ModeTrial) and (MachineCode <> '') then
-    WizardForm.FinishedLabel.Caption :=
-      'La instalación ha terminado.' + #13#10#13#10 +
-      'Tienes 14 días de prueba con todas las funciones.' + #13#10#13#10 +
-      'El código de este equipo es:' + #13#10 + MachineCode + #13#10#13#10 +
-      'Envíaselo a tu proveedor para recibir la licencia permanente. También puedes verlo en ' +
-      'cualquier momento desde el botón Licencia del programa.';
+  if CurPageID <> wpFinished then Exit;
+
+  { PASO OBLIGATORIO primero: sin FFmpeg el programa abre pero NO graba. Se explica aquí, se deja un LÉEME en
+    la propia carpeta y además la casilla de la página anterior la abre en el Explorador. }
+  Msg := 'La instalación ha terminado.' + #13#10#13#10 +
+         'FALTA UN PASO para poder grabar: copia «ffmpeg.exe» y «ffprobe.exe» en' + #13#10 +
+         ExpandConstant('{app}\tools\ffmpeg') + #13#10 +
+         'Encontrarás las instrucciones en el archivo FFMPEG-LEEME.txt de esa misma carpeta.';
+
+  { En modo prueba se añade el código de equipo: es justo lo que el cliente necesita enviar para que le
+    emitan su licencia. }
+  if (ModePage.SelectedValueIndex = ModeTrial) and (MachineCode <> '') then
+    Msg := Msg + #13#10#13#10 +
+           'Tienes 14 días de prueba con todas las funciones. El código de este equipo es:' + #13#10 +
+           MachineCode + #13#10 +
+           'Envíaselo a tu proveedor para recibir la licencia permanente (también está en el botón Licencia).';
+
+  WizardForm.FinishedLabel.Caption := Msg;
 end;

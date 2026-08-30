@@ -82,10 +82,10 @@ if ($Obfuscate) {
     if ($LASTEXITCODE -ne 0) { Write-Error 'Falló la ofuscación.' }
 }
 
-# Aviso útil: sin los binarios de FFmpeg el producto instalado arrancaría en modo simulado.
-if (-not (Test-Path (Join-Path $publishDir 'tools\ffmpeg\ffmpeg.exe'))) {
-    Write-Warning 'No hay ffmpeg.exe en publish\tools\ffmpeg: el instalador se generará, pero el producto instalado NO grabaría (modo simulado).'
-}
+# FFmpeg NO se empaqueta: su licencia no permite redistribuirlo (ver docs\FFMPEG.md). El instalador crea la
+# carpeta con un LÉEME y lo aporta el CLIENTE. Se recuerda aquí para que no parezca un olvido al revisar el
+# paquete generado.
+Write-Host 'FFmpeg: NO se empaqueta (no es redistribuible); el instalador deja tools\ffmpeg\FFMPEG-LEEME.txt.' -ForegroundColor Yellow
 
 # --- 2) Compilar el instalador ---
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
