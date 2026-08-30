@@ -75,6 +75,10 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; \
 ; Instrucciones para el cliente, EN la carpeta donde tiene que dejar los binarios.
 Source: "FFMPEG-LEEME.txt"; DestDir: "{app}\tools\ffmpeg"; Flags: ignoreversion
 
+; Atribuciones de terceros (NDI®, FFmpeg, Blackmagic…). La licencia del SDK de NDI exige la mención de marca
+; registrada y el enlace a ndi.video; varias licencias de los paquetes usados exigen conservar sus avisos.
+Source: "AVISOS-TERCEROS.txt"; DestDir: "{app}"; Flags: ignoreversion
+
 [Dirs]
 ; Permiso de ESCRITURA para los usuarios: la app guarda aquí su base de datos, los
 ; registros y (si no se cambia) las grabaciones. Sin esto no arrancaría bien.

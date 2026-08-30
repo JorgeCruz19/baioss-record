@@ -54,21 +54,30 @@ primera factura, porque condiciona qué es capaz de hacer el producto que entreg
 
 </details>
 
-### 2. El runtime de NDI también se redistribuye
+### 2. ~~El runtime de NDI también se redistribuye~~ ✅ REQUISITOS CUMPLIDOS (2026-08-30) — *falta validación del abogado*
 
-`Processing.NDI.Lib.x64.dll` (~18 MB) viaja en el paquete. El propio `.csproj` ya lo advierte: redistribuirlo
-exige aceptar y cumplir la licencia de NewTek/Vizrt (atribución de la marca NDI® y, según la versión del SDK,
-registrar el producto). Hay que leer el EULA de la versión concreta del SDK que se usa y cumplirlo. Mucho
-menos grave que lo de FFmpeg, pero es deuda legal igual.
+Leídos los términos reales (`NDI SDK License Agreement.pdf` y el manual del SDK, ambos en la instalación del
+SDK): **distribuir la librería SÍ está permitido** (manual §4.2) si el EULA cubre los requisitos del EULA de
+NDI y la aplicación cumple los de la sección *License*. Todo eso está ya implementado:
 
-**De paso:** el paquete no lleva **ningún** aviso de licencias de terceros. Conviene un `AVISOS-TERCEROS.txt`
-junto al ejecutable (FFmpeg y sus dependencias, NDI, y los paquetes NuGet), que además es obligación expresa
-de varias de esas licencias.
+- Atribución de marca y **enlace a `ndi.video` en la ventana 🎛 Entradas** (donde se selecciona NDI), en el
+  manual, en el EULA y en `AVISOS-TERCEROS.txt`.
+- `Processing.NDI.Lib.Licenses.txt` se distribuye junto al ejecutable (manual §22).
+- **`AVISOS-TERCEROS.txt`** nuevo en la carpeta del programa (NDI, FFmpeg, Blackmagic, .NET/NuGet).
+- **EULA §7.2** con las obligaciones que la licencia de NDI (§3.d) exige trasladar al contrato.
+
+Desglose completo, y lo que queda en tus manos (validación del abogado, mantener el SDK al día, avisar a
+Vizrt de la aplicación comercial —opcional—), en **`TERCEROS.md`**.
 
 ### 3. EULA revisado por un abogado, con los datos reales de la empresa
 
 `installer\EULA.txt` es una **base de trabajo** y lo dice en una nota al final: faltan razón social, domicilio
 y jurisdicción. Vender con texto legal de plantilla es riesgo puro.
+
+Puntos concretos que conviene señalarle al abogado: la **cláusula 7.2 (NDI)**, que no es opcional —la exige la
+licencia del SDK de NDI, ver `TERCEROS.md`—; la **7.3**, sobre licencias de patentes de los formatos de
+compresión (AAC/H.264/H.265), que puede tener implicaciones según mercado y volumen; y la cláusula 3, que
+promete reemisión de licencia en caso de avería del equipo (comprueba que encaja con tu operativa).
 
 ### 4. Custodia de la clave privada y registro de licencias emitidas
 

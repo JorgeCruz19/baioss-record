@@ -34,6 +34,11 @@ del instalador: hay que descargarlo y dejarlo en su carpeta. Es un momento y **s
 **¿Cómo sé si falta?** Al abrir el programa aparece un aviso que lo dice y muestra la carpeta exacta. Mientras
 falte, el programa funciona en **modo de demostración**: se ve todo y puedes configurarlo, pero **no graba**.
 
+## 1.2. Nota sobre NDI®
+
+Baioss Record puede grabar fuentes **NDI®**. NDI® es una marca registrada de Vizrt NDI AB; puedes obtener más
+información y sus herramientas en <https://ndi.video/>. Baioss Record no es un producto de Vizrt NDI AB.
+
 ---
 
 ## 2. La pantalla principal

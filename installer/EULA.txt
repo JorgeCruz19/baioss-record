@@ -36,9 +36,36 @@ aceptas las condiciones siguientes.
    verificar sus grabaciones y de mantener copias de seguridad del material crítico.
 
 7. COMPONENTES DE TERCEROS
-   El programa incorpora FFmpeg, distribuido bajo su propia licencia (LGPL/GPL según
-   la compilación empleada), cuyos términos acompañan al producto. Si se utiliza
-   captura NDI, se aplican además los términos de NDI (NewTek/Vizrt).
+   Las atribuciones y avisos de licencia de los componentes de terceros figuran en el
+   archivo AVISOS-TERCEROS.txt que acompaña al programa.
+
+   7.1. FFmpeg. El programa utiliza FFmpeg como motor de grabación, pero NO lo
+        incluye: el cliente lo descarga e instala por su cuenta, sujeto a los términos
+        de la compilación que elija.
+
+   7.2. NDI®. NDI® es una marca registrada de Vizrt NDI AB. El programa incorpora la
+        librería de ejecución de NDI. Respecto de dicha librería, y de cualquier otro
+        componente del SDK de NDI incluido en el programa, el cliente se obliga a:
+
+        a) No modificarlos, en todo ni en parte.
+        b) No realizar ingeniería inversa, descompilación ni desensamblado de dichos
+           componentes ni de los protocolos que utilizan, ni intentarlo.
+        c) No eludir las limitaciones técnicas que incorporen.
+        d) No suprimir, ocultar ni alterar los avisos o etiquetas de propiedad que
+           contengan.
+        e) Cumplir la normativa de control de exportaciones de los Estados Unidos,
+           absteniéndose de exportar o reexportar el programa en contravención de ella.
+
+        Vizrt NDI AB y sus licenciantes no otorgan garantía alguna sobre dichos
+        componentes y, en la medida en que lo permita la ley aplicable, no responderán
+        de daños directos, indirectos, incidentales ni consecuentes derivados del uso
+        del programa. Baioss Record no es un producto de Vizrt NDI AB ni está
+        patrocinado por dicha empresa. Los derechos de autor del SDK de NDI y de su
+        librería de ejecución corresponden a sus titulares.
+
+   7.3. Formatos de compresión. La utilización de determinados formatos (por ejemplo
+        AAC, H.264 o H.265) puede estar sujeta a licencias de patentes de terceros,
+        cuya obtención corresponde a quien explote el producto.
 
 8. LEGISLACIÓN APLICABLE
    Este contrato se rige por la legislación del país donde Baioss tenga su domicilio
@@ -52,4 +79,9 @@ NOTA PARA EL EDITOR DE ESTE ARCHIVO: este texto es una BASE de trabajo, no un
 documento revisado por un abogado. Antes de vender el producto conviene que lo
 revise un profesional y que se sustituyan los datos de la empresa (razón social,
 domicilio y jurisdicción).
+
+La cláusula 7.2 NO es opcional ni decorativa: la licencia del SDK de NDI (apartado
+3.d) EXIGE que el contrato bajo el que se distribuya el producto contenga esas
+obligaciones, por incluirse la librería de ejecución de NDI. No la elimines ni la
+recortes sin sustituirla por otra equivalente; ver docs\TERCEROS.md.
 --------------------------------------------------------------------------------

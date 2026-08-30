@@ -101,11 +101,16 @@
     <_NdiRuntimeDir Condition="'$(NDI_RUNTIME_DIR_V6)' != ''">$(NDI_RUNTIME_DIR_V6)</_NdiRuntimeDir>
     <_NdiRuntimeDir Condition="'$(_NdiRuntimeDir)' == '' and '$(NDI_RUNTIME_DIR_V5)' != ''">$(NDI_RUNTIME_DIR_V5)</_NdiRuntimeDir>
     <_NdiDll>$(_NdiRuntimeDir)\Processing.NDI.Lib.x64.dll</_NdiDll>
+    <!-- Licencias de los terceros que usa la propia librería NDI. El manual del SDK (§22, «3rd party rights»)
+         obliga a incluir ESTE archivo junto al binario si se distribuyen las DLL de NDI. -->
+    <_NdiLicenses>$(_NdiRuntimeDir)\Processing.NDI.Lib.Licenses.txt</_NdiLicenses>
   </PropertyGroup>
 
   <Target Name="CopyNdiRuntimeToBuild" AfterTargets="Build">
     <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')"
           SourceFiles="$(_NdiDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiLicenses)')"
+          SourceFiles="$(_NdiLicenses)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Message Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')" Importance="high"
              Text="NDI: runtime nativo copiado a $(OutDir)" />
     <Warning Condition="'$(_NdiRuntimeDir)' == ''"
@@ -115,6 +120,8 @@
   <Target Name="CopyNdiRuntimeToPublish" AfterTargets="Publish">
     <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')"
           SourceFiles="$(_NdiDll)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiLicenses)')"
+          SourceFiles="$(_NdiLicenses)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
     <Message Condition="'$(_NdiRuntimeDir)' != '' and Exists('$(_NdiDll)')" Importance="high"
              Text="NDI: runtime nativo empaquetado en $(PublishDir)" />
   </Target>
