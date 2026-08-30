@@ -69,7 +69,12 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1 -Obfuscate
 
 ---
 
-## Antes de vender: firma digital
+## Antes de vender
+
+> **Lee primero `CHECKLIST-VENTA.md`**: recoge TODO lo que falta para poder cobrar por el producto, incluido un
+> bloqueante legal importante (el FFmpeg que se empaqueta hoy **no es redistribuible**).
+
+### Firma digital
 
 El instalador **no está firmado**. Sin firma, Windows SmartScreen mostrará al cliente una advertencia de «editor desconocido», que en una venta profesional resta mucha confianza.
 

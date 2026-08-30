@@ -4,6 +4,9 @@ Periodo de prueba de **14 días** y licencia **perpetua atada a un equipo**. Tod
 
 ---
 
+> Para lo que falta antes de la primera venta (custodia de la clave privada, registro de licencias emitidas,
+> EULA, firma digital y un bloqueante legal con FFmpeg), ver **`CHECKLIST-VENTA.md`**.
+
 ## 1. Puesta en marcha (una sola vez, tú como proveedor)
 
 Genera tu par de claves:
