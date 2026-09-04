@@ -2,6 +2,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Application.Licensing;
+using Baioss.Record.App.Localization;
 
 namespace Baioss.Record.App.Licensing;
 
@@ -47,14 +48,11 @@ public sealed partial class LicenseViewModel : ObservableObject
         DetailText = info.State switch
         {
             LicenseState.Licensed => info.LicensedChannels is int c
-                ? $"Este equipo tiene una licencia permanente de {c} canal{(c == 1 ? "" : "es")}. No caduca. " +
-                  "Para ampliar canales, pide una licencia nueva a tu proveedor."
-                : "Este equipo tiene una licencia permanente. No caduca.",
-            LicenseState.Trial => "Puedes usar todas las funciones durante el periodo de prueba. "
-                                + "Cuando termine podrás seguir viendo las entradas, pero no iniciar grabaciones nuevas.",
-            LicenseState.Expired => "El periodo de prueba ha terminado. Las grabaciones en curso NO se interrumpen, "
-                                  + "pero no se pueden iniciar nuevas hasta activar la licencia.",
-            _ => "No se pudo comprobar el estado de la licencia. La grabación sigue disponible; revisa el registro de la aplicación.",
+                ? Loc.Plural("Lic_Detail_LicensedChannels_One", "Lic_Detail_LicensedChannels_Many", c)
+                : Loc.T("Lic_Detail_Licensed"),
+            LicenseState.Trial => Loc.T("Lic_Detail_Trial"),
+            LicenseState.Expired => Loc.T("Lic_Detail_Expired"),
+            _ => Loc.T("Lic_Detail_Unknown"),
         };
     }
 
@@ -64,13 +62,13 @@ public sealed partial class LicenseViewModel : ObservableObject
         try
         {
             Clipboard.SetText(MachineCode);
-            Message = "Código de equipo copiado. Envíaselo a tu proveedor para recibir la licencia.";
+            Message = Loc.T("Lic_Msg_Copied");
             MessageIsError = false;
         }
         catch
         {
             // El portapapeles puede estar tomado por otra app: no es motivo para romper nada.
-            Message = "No se pudo copiar automáticamente; selecciona el código y cópialo a mano.";
+            Message = Loc.T("Lic_Msg_CopyFailed");
             MessageIsError = true;
         }
     }
@@ -88,12 +86,10 @@ public sealed partial class LicenseViewModel : ObservableObject
         // reinicia la app con el apagado ORDENADO de siempre — si hay grabaciones en curso, se finalizan
         // correctamente antes de cerrar; jamás se mata el proceso a lo bruto.
         var info = _license.Current;
-        string channels = info.LicensedChannels is int c ? $" de {c} canal{(c == 1 ? "" : "es")}" : "";
+        string channels = info.LicensedChannels is int c ? Loc.Plural("Lic_Restart_Channels_One", "Lic_Restart_Channels_Many", c) : "";
         MessageBox.Show(
-            $"Licencia activada{channels}. Gracias.\n\n" +
-            "La aplicación se reiniciará ahora para aplicar los canales de tu licencia. " +
-            "Si hay alguna grabación en curso, se finalizará correctamente antes de cerrar.",
-            "Licencia activada", MessageBoxButton.OK, MessageBoxImage.Information);
+            Loc.F("Lic_Restart_Body", channels),
+            Loc.T("Lic_Restart_Title"), MessageBoxButton.OK, MessageBoxImage.Information);
         (System.Windows.Application.Current as App)?.RestartToApplyLicenseAsync();
     }
 }

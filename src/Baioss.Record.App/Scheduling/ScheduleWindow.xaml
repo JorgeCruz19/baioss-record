@@ -1,25 +1,26 @@
 <Window x:Class="Baioss.Record.App.Scheduling.ScheduleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Programación de grabaciones" Height="720" Width="1280"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T Sch_Title}" Height="720" Width="1280"
         Icon="/Assets/icon.ico"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <DockPanel>
         <!-- Cabecera -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="🔄 Actualizar" VerticalAlignment="Center"
+                <Button DockPanel.Dock="Right" Content="{loc:T Sch_Refresh}" VerticalAlignment="Center"
                         Command="{Binding RefreshCommand}" Style="{StaticResource TransportButton}"/>
-                <Button DockPanel.Dock="Right" Content="⬇ Exportar" VerticalAlignment="Center" Margin="0,0,8,0"
+                <Button DockPanel.Dock="Right" Content="{loc:T Sch_Export}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Command="{Binding ExportCommand}" Style="{StaticResource TransportButton}"
-                        ToolTip="Exporta toda la programación a CSV (Excel) o JSON (copia de seguridad)."/>
-                <Button DockPanel.Dock="Right" Content="⬆ Importar" VerticalAlignment="Center" Margin="0,0,8,0"
+                        ToolTip="{loc:T Sch_ExportTooltip}"/>
+                <Button DockPanel.Dock="Right" Content="{loc:T Sch_Import}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Command="{Binding ImportCommand}" Style="{StaticResource TransportButton}"
-                        ToolTip="Importa una programación desde un archivo JSON exportado (añade las tareas)."/>
+                        ToolTip="{loc:T Sch_ImportTooltip}"/>
                 <StackPanel>
-                    <TextBlock Text="PROGRAMACIÓN DE GRABACIONES" FontSize="14" FontWeight="Bold"
+                    <TextBlock Text="{loc:T Sch_Header}" FontSize="14" FontWeight="Bold"
                                Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <TextBlock Text="Graba automáticamente a la hora indicada, una vez o de forma recurrente. Usa el perfil activo del canal."
+                    <TextBlock Text="{loc:T Sch_Subtitle}"
                                FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
                 </StackPanel>
             </DockPanel>
@@ -29,8 +30,8 @@
         <Border DockPanel.Dock="Top" Background="#0E1118" Padding="16,10"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,0,1">
             <StackPanel>
-                <TextBlock Text="HOY" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Text="No hay grabaciones programadas para hoy." FontSize="11" Margin="0,6,0,0"
+                <TextBlock Text="{loc:T Sch_Today}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Text="{loc:T Sch_TodayEmpty}" FontSize="11" Margin="0,6,0,0"
                            Foreground="{StaticResource TextSecondaryBrush}"
                            Visibility="{Binding NoTodayRecordings, Converter={StaticResource BoolToVis}}"/>
                 <ScrollViewer MaxHeight="118" VerticalScrollBarVisibility="Auto" Margin="0,6,0,0">
@@ -88,18 +89,18 @@
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                        <TextBlock Text="CANAL" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_Channel}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <ComboBox Height="28" ItemsSource="{Binding Channels}" SelectedItem="{Binding SelectedChannel}"/>
                     </StackPanel>
 
                     <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                        <TextBlock Text="REPETICIÓN" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_Repeat}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <ComboBox Height="28" ItemsSource="{Binding Recurrences}" SelectedItem="{Binding SelectedRecurrence}"/>
                     </StackPanel>
 
                     <StackPanel Grid.Column="2" Width="160"
                                 Visibility="{Binding IsOnce, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="FECHA" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_Date}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <DatePicker Height="28" SelectedDate="{Binding SelectedDate}" VerticalContentAlignment="Center"/>
                     </StackPanel>
                 </Grid>
@@ -107,7 +108,7 @@
                 <!-- Hora de INICIO y de FIN (hh:mm:ss) con selectores nativos; la duración se deriva sola -->
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                     <StackPanel Margin="0,0,28,0">
-                        <TextBlock Text="HORA INICIO (hh:mm:ss)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_StartTime}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <StackPanel Orientation="Horizontal">
                             <ComboBox Width="54" Height="28" ItemsSource="{Binding Hours}" SelectedItem="{Binding StartHour}"/>
                             <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
@@ -118,7 +119,7 @@
                     </StackPanel>
 
                     <StackPanel>
-                        <TextBlock Text="HORA FIN (hh:mm:ss)" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_EndTime}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <StackPanel Orientation="Horizontal">
                             <ComboBox Width="54" Height="28" ItemsSource="{Binding Hours}" SelectedItem="{Binding EndHour}"/>
                             <TextBlock Text=":" VerticalAlignment="Center" Margin="4,0" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
@@ -132,25 +133,25 @@
                 <!-- Días de la semana (solo repetición semanal) -->
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0"
                             Visibility="{Binding IsWeekly, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="DÍAS" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"
+                    <TextBlock Text="{loc:T Sch_Days}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}"
                                VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <CheckBox Content="L" IsChecked="{Binding Mon}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="M" IsChecked="{Binding Tue}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="X" IsChecked="{Binding Wed}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="J" IsChecked="{Binding Thu}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="V" IsChecked="{Binding Fri}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="S" IsChecked="{Binding Sat}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <CheckBox Content="D" IsChecked="{Binding Sun}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Mon}" IsChecked="{Binding Mon}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Tue}" IsChecked="{Binding Tue}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Wed}" IsChecked="{Binding Wed}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Thu}" IsChecked="{Binding Thu}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Fri}" IsChecked="{Binding Fri}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Sat}" IsChecked="{Binding Sat}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <CheckBox Content="{loc:T Sch_Day_Sun}" IsChecked="{Binding Sun}" Margin="0,0,10,0" Foreground="{StaticResource TextPrimaryBrush}"/>
                 </StackPanel>
 
                 <!-- Segmentación: propia de esta grabación programada (cada archivo es recuperable) -->
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0" VerticalAlignment="Center">
-                    <CheckBox Content="Segmentar cada" IsChecked="{Binding SegmentEnabled}"
+                    <CheckBox Content="{loc:T Sch_SegmentEvery}" IsChecked="{Binding SegmentEnabled}"
                               Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
                     <TextBox Width="48" Height="26" Margin="6,0" Text="{Binding SegmentMinutes}"
                              VerticalContentAlignment="Center" HorizontalContentAlignment="Center" FontSize="12"
                              IsEnabled="{Binding SegmentEnabled}"/>
-                    <TextBlock Text="min  (cada archivo queda completo; si se corrompe uno, no pierdes toda la grabación)"
+                    <TextBlock Text="{loc:T Sch_SegmentHint}"
                                VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11"/>
                 </StackPanel>
 
@@ -164,12 +165,12 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                        <TextBlock Text="TÍTULO" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                        <TextBlock Text="{loc:T Sch_Title_Col}" FontSize="9" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                         <TextBox Height="28" Text="{Binding Title}" VerticalContentAlignment="Center" Padding="6,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
                         <!-- «Cancelar» solo aparece mientras se edita una tarea existente. -->
-                        <Button Content="Cancelar" Command="{Binding CancelEditCommand}"
+                        <Button Content="{loc:T Common_Cancel}" Command="{Binding CancelEditCommand}"
                                 Style="{StaticResource TransportButton}" Height="28" MinWidth="92" Padding="14,0" Margin="0,0,8,0"
                                 Visibility="{Binding IsEditing, Converter={StaticResource BoolToVis}}"/>
                         <!-- «＋ Programar» al crear; «💾 Guardar cambios» al editar. -->
@@ -211,12 +212,12 @@
                                 </StackPanel>
 
                                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="10,0,16,0">
-                                    <TextBlock Text="PRÓXIMA" FontSize="8" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="{loc:T Sch_Next}" FontSize="8" Foreground="{StaticResource TextSecondaryBrush}"/>
                                     <TextBlock Text="{Binding NextRunText}" FontSize="12" FontWeight="Bold"
                                                Foreground="{StaticResource AccentBrush}"/>
                                 </StackPanel>
 
-                                <Button Grid.Column="3" Content="Editar" Margin="0,0,8,0"
+                                <Button Grid.Column="3" Content="{loc:T Common_Edit}" Margin="0,0,8,0"
                                         Height="28" MinWidth="80" Padding="14,0" Style="{StaticResource TransportButton}"
                                         Command="{Binding DataContext.EditCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                         CommandParameter="{Binding}"/>
@@ -224,7 +225,7 @@
                                         Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource TransportButton}"
                                         Command="{Binding DataContext.ToggleEnabledCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                         CommandParameter="{Binding}"/>
-                                <Button Grid.Column="5" Content="Eliminar"
+                                <Button Grid.Column="5" Content="{loc:T Common_Delete}"
                                         Height="28" MinWidth="92" Padding="14,0" Style="{StaticResource StopButton}"
                                         Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                         CommandParameter="{Binding}"/>

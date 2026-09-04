@@ -1,22 +1,44 @@
 <Window x:Class="Baioss.Record.App.GeneralSettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Configuración general" Width="680" SizeToContent="Height"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T Cfg_Title}" Width="680" SizeToContent="Height"
         WindowStyle="ToolWindow" ResizeMode="NoResize"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <DockPanel>
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
             <StackPanel>
-                <TextBlock Text="CONFIGURACIÓN GENERAL" FontSize="14" FontWeight="Bold"
+                <TextBlock Text="{loc:T Cfg_Header}" FontSize="14" FontWeight="Bold"
                            Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBlock Text="Carpeta de destino y carta de ajuste por canal. El formato y la codificación se eligen en «⚙ Presets de grabación»."
+                <TextBlock Text="{loc:T Cfg_Subtitle}"
                            FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,10">
-            <Button Content="Cerrar" Click="Close_Click" HorizontalAlignment="Right"
+            <Button Content="{loc:T Common_Close}" Click="Close_Click" HorizontalAlignment="Right"
                     Height="32" MinWidth="100" Padding="20,0" Style="{StaticResource TransportButton}"/>
+        </Border>
+
+        <!-- IDIOMA: se enlaza al singleton Loc, no al ViewModel de la ventana, porque el idioma es global a la
+             aplicación. Al marcar una opción, TODA la interfaz cambia al instante (los enlaces {loc:T …} se
+             reevalúan) y la elección queda recordada para los próximos arranques. -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="14,12" Margin="16,12,16,0">
+            <StackPanel>
+                <TextBlock Text="{loc:T Cfg_Language}" FontSize="10" FontWeight="Bold"
+                           Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton GroupName="Lang" Content="{loc:T Cfg_Language_Spanish}" Margin="0,0,20,0"
+                                 Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"
+                                 IsChecked="{Binding IsSpanish, Source={x:Static loc:Loc.Instance}}"/>
+                    <RadioButton GroupName="Lang" Content="{loc:T Cfg_Language_English}"
+                                 Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"
+                                 IsChecked="{Binding IsEnglish, Source={x:Static loc:Loc.Instance}}"/>
+                </StackPanel>
+                <TextBlock Text="{loc:T Cfg_Language_Hint}" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                           Foreground="{StaticResource TextSecondaryBrush}"/>
+            </StackPanel>
         </Border>
 
         <ItemsControl ItemsSource="{Binding Channels}" Margin="16,12">
@@ -31,14 +53,14 @@
                                         <TextBlock Text="{Binding Key}" FontSize="15" FontWeight="Bold"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
-                                    <TextBlock Text="Canal" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"
+                                    <TextBlock Text="{loc:T Common_Channel}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"
                                                Foreground="{StaticResource TextPrimaryBrush}"/>
                                 </StackPanel>
                                 <TextBlock Text="{Binding ProfileText}" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"
                                            Foreground="{StaticResource AccentBrush}" TextTrimming="CharacterEllipsis"/>
                             </Grid>
 
-                            <TextBlock Text="CARPETA DE DESTINO" FontSize="10" FontWeight="Bold"
+                            <TextBlock Text="{loc:T Cfg_OutputFolder}" FontSize="10" FontWeight="Bold"
                                        Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,4"/>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -47,12 +69,12 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0" Text="{Binding OutputDirectory}" IsReadOnly="True" Height="30"
                                          VerticalContentAlignment="Center" Padding="8,0" FontSize="12"/>
-                                <Button Grid.Column="1" Content="Examinar…" Command="{Binding BrowseOutputCommand}"
+                                <Button Grid.Column="1" Content="{loc:T Common_Browse}" Command="{Binding BrowseOutputCommand}"
                                         IsEnabled="{Binding CanConfigure}" Style="{StaticResource TransportButton}"
                                         Height="30" Padding="16,0" Margin="8,0,0,0"/>
                             </Grid>
 
-                            <CheckBox Content="Carta de ajuste al perder señal (sigue grabando barras)" Margin="0,12,0,0"
+                            <CheckBox Content="{loc:T Cfg_SlateOnSignalLoss}" Margin="0,12,0,0"
                                       IsEnabled="{Binding CanConfigure}" IsChecked="{Binding SlateOnSignalLoss}"
                                       Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
                         </StackPanel>

@@ -1,19 +1,20 @@
 <Window x:Class="Baioss.Record.App.Inputs.InputsManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Entradas de los canales" Height="720" Width="1280"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T In_Title}" Height="720" Width="1280"
         Icon="/Assets/icon.ico"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <DockPanel>
         <!-- Cabecera + Detectar -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="🔍 Detectar dispositivos" VerticalAlignment="Center"
+                <Button DockPanel.Dock="Right" Content="{loc:T In_Detect}" VerticalAlignment="Center"
                         Command="{Binding DetectCommand}" IsEnabled="{Binding CanRebind}" Style="{StaticResource TransportButton}"/>
                 <StackPanel>
-                    <TextBlock Text="ENTRADAS DE LOS CANALES" FontSize="14" FontWeight="Bold"
+                    <TextBlock Text="{loc:T In_Header}" FontSize="14" FontWeight="Bold"
                                Foreground="{StaticResource TextPrimaryBrush}"/>
-                    <TextBlock Text="Asigna una tarjeta DeckLink (SDI) o una cámara/capturadora DirectShow a cada canal."
+                    <TextBlock Text="{loc:T In_Subtitle}"
                                FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"/>
                 </StackPanel>
             </DockPanel>
@@ -48,7 +49,7 @@
                                     </Border>
 
                                     <StackPanel Grid.Column="1" Margin="12,0,8,0" VerticalAlignment="Center">
-                                        <TextBlock Text="ENTRADA DE VÍDEO" FontSize="9"
+                                        <TextBlock Text="{loc:T In_VideoInput}" FontSize="9"
                                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                                         <ComboBox Height="28" ItemsSource="{Binding Devices}"
                                                   SelectedItem="{Binding SelectedDevice}"/>
@@ -58,14 +59,14 @@
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="2" Margin="0,0,8,0" VerticalAlignment="Center">
-                                        <TextBlock Text="AUDIO (DirectShow)" FontSize="9"
+                                        <TextBlock Text="{loc:T In_Audio}" FontSize="9"
                                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                                         <ComboBox Height="28" ItemsSource="{Binding AudioDevices}"
                                                   SelectedItem="{Binding SelectedAudio}" IsEnabled="{Binding AudioEnabled}"/>
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="3" Margin="0,0,10,0" VerticalAlignment="Center">
-                                        <TextBlock Text="MODO / FORMATO (DeckLink)" FontSize="9"
+                                        <TextBlock Text="{loc:T In_Format}" FontSize="9"
                                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
                                         <!-- Sin DisplayMemberPath: DeviceFormat.ToString() da la etiqueta legible
                                              tanto en la lista como en la caja seleccionada (el estilo del combo
@@ -75,7 +76,7 @@
                                     </StackPanel>
 
                                     <!-- Padding propio (no el 14,9 heredado): con Height=28 ese padding recortaba el texto. -->
-                                    <Button Grid.Column="4" Content="Aplicar" Command="{Binding ApplyCommand}"
+                                    <Button Grid.Column="4" Content="{loc:T Common_Apply}" Command="{Binding ApplyCommand}"
                                             IsEnabled="{Binding DataContext.CanApply, RelativeSource={RelativeSource AncestorType=Window}}"
                                             Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
                                             Height="28" MinWidth="92" Padding="18,0"/>
@@ -86,7 +87,7 @@
                 </ItemsControl>
 
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="2,6,0,0"
-                           Text="Al aplicar, el canal se reconstruye en caliente (suelta la fuente anterior y abre la nueva). Nota: un dispositivo en vivo no se puede abrir por dos procesos a la vez; grabar y previsualizar la misma entrada física a la vez requerirá un único proceso de captura (pendiente)."/>
+                           Text="{loc:T In_Footer}"/>
 
                 <!-- ATRIBUCIÓN NDI — OBLIGATORIA por la licencia del SDK de NDI, que exige (a) el enlace a
                      ndi.video «en un lugar cercano a donde NDI se usa o se selecciona dentro del producto»
@@ -94,7 +95,7 @@
                      No quitar sin leer docs\TERCEROS.md. -->
                 <TextBlock TextWrapping="Wrap" FontSize="11" Margin="2,10,0,0"
                            Foreground="{StaticResource TextSecondaryBrush}">
-                    <Run Text="NDI® es una marca registrada de Vizrt NDI AB."/>
+                    <Run Text="{loc:T In_NdiTrademark}"/>
                     <Hyperlink NavigateUri="https://ndi.video/" RequestNavigate="OpenLink_RequestNavigate">
                         <Run Text="https://ndi.video/"/>
                     </Hyperlink>

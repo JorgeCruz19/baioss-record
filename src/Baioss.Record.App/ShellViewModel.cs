@@ -16,6 +16,7 @@ using Baioss.Record.App.Preview;
 using Baioss.Record.App.Presets;
 using Baioss.Record.App.Recordings;
 using Baioss.Record.App.Scheduling;
+using Baioss.Record.App.Localization;
 using Baioss.Record.App.Storage;
 
 namespace Baioss.Record.App;
@@ -43,7 +44,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public ObservableCollection<ChannelViewModel> Channels { get; }
 
     /// <summary>Subtítulo de la barra superior, según el nº real de canales creados (1 canal / N canales).</summary>
-    public string ChannelsSubtitle => $"· grabación broadcast de {Channels.Count} canal{(Channels.Count == 1 ? "" : "es")}";
+    public string ChannelsSubtitle => Loc.Plural("Main_Subtitle_One", "Main_Subtitle_Many", Channels.Count);
 
     /// <summary>Tope de ancho de la tira de canales (720 px por canal). Con 1-2 canales, sin tope, cada panel
     /// se estiraba a TODO el ancho de la ventana y el preview quedaba gigante; con él, la tira queda centrada
@@ -83,6 +84,10 @@ public sealed partial class ShellViewModel : ObservableObject
         // Indicador de licencia (prueba/caducada): visible solo cuando hay algo que atender.
         if (_license is not null) { ApplyLicense(_license.Current); _license.Changed += OnLicenseChanged; }
 
+        // Cambio de idioma: los enlaces {loc:T …} del XAML se refrescan solos, pero los textos que se componen
+        // AQUÍ (subtítulo, pastillas de almacenamiento y licencia, tabla de HOY) hay que recomponerlos.
+        Baioss.Record.Application.Localization.Localizer.LanguageChanged += OnLanguageChanged;
+
         // Refresco periódico de la tabla «HOY» (hora de las filas, altas/bajas de tareas, cambio de día).
         _todayTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _todayTimer.Tick += (_, _) => RefreshTodayTasks();
@@ -94,6 +99,16 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly SemaphoreSlim _refreshing = new(1, 1);
 
     private Task SkipScheduledAsync(Guid channelId) => _scheduler.SkipCurrentAsync(channelId);
+
+    /// <summary>Cambió el idioma: recompone los textos que se arman en esta clase.</summary>
+    private void OnLanguageChanged(object? sender, EventArgs e)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(ChannelsSubtitle));
+            ApplyStorage(_storageStatus.Current);
+            if (_license is not null) ApplyLicense(_license.Current);
+            RefreshTodayTasks();
+        });
 
     /// <summary>Persiste la carpeta de destino que el operador elige en «Configuración general», para que
     /// SOBREVIVA a reinicios (antes solo vivía en memoria y volvía al default en cada arranque).</summary>
@@ -147,8 +162,8 @@ public sealed partial class ShellViewModel : ObservableObject
                 string emptyText = rows.Count > 0
                     ? ""
                     : nextSlot is { } np
-                        ? $"Hoy no hay. Próxima: {np.ToLocalTime().ToString("ddd dd/MM · HH:mm", es)} · {nextJob!.Title}"
-                        : "Sin grabaciones programadas hoy";
+                        ? Loc.F("Ch_TodayNext", np.ToLocalTime().ToString("ddd dd/MM · HH:mm", es), nextJob!.Title)
+                        : Loc.T("Ch_TodayEmpty");
                 vm.SetTodayTasks(rows.OrderBy(r => r.Slot).Select(r => r.Row).ToList(), emptyText);
             }
         }
@@ -174,7 +189,7 @@ public sealed partial class ShellViewModel : ObservableObject
     /// <summary>Muestra la franja roja de alerta (crítico/emergencia).</summary>
     [ObservableProperty] private bool _showStorageBanner;
     [ObservableProperty] private string _storageBannerText = "";
-    [ObservableProperty] private string _storageTooltip = "Almacenamiento del volumen de grabación";
+    [ObservableProperty] private string _storageTooltip = "";
 
     /// <summary>El coordinador publica el estado en un hilo de fondo (sondeo cada 15 s): marshalar al hilo de UI.</summary>
     private void OnStorageChanged(object? sender, StorageSnapshot s)
@@ -188,7 +203,7 @@ public sealed partial class ShellViewModel : ObservableObject
             StorageHealth = StorageHealth.Unknown;
             ShowStorageBanner = false;
             StorageBannerText = "";
-            StorageTooltip = "Almacenamiento de los discos de grabación (midiendo…)";
+            StorageTooltip = Loc.T("Main_Storage_Measuring");
             return;
         }
         StorageHealth = s.Health;
@@ -197,28 +212,29 @@ public sealed partial class ShellViewModel : ObservableObject
         bool multi = s.VolumeCount > 1;
         StorageText = multi
             ? $"{s.WorstLabel} {StorageFormat.Bytes(s.FreeBytes)} · {s.UsedPercent:0}%"
-            : $"{StorageFormat.Bytes(s.FreeBytes)} libres · {s.UsedPercent:0}%";
+            : Loc.F("Main_Storage_FreeUsed", StorageFormat.Bytes(s.FreeBytes), s.UsedPercent.ToString("0"));
 
         if (multi && s.Volumes is { Count: > 0 })
         {
-            var lines = s.Volumes.Select(v =>
-                $"{v.Label}: {StorageFormat.Bytes(v.FreeBytes)} libres de {StorageFormat.Bytes(v.TotalBytes)} ({v.UsedPercent:0.#}% ocupado)");
-            StorageTooltip = $"Discos de grabación (peor primero · {s.VolumeCount} discos):\n" + string.Join("\n", lines);
+            var lines = s.Volumes.Select(v => Loc.F("Main_Storage_VolumeLine",
+                v.Label, StorageFormat.Bytes(v.FreeBytes), StorageFormat.Bytes(v.TotalBytes), v.UsedPercent.ToString("0.#")));
+            StorageTooltip = Loc.F("Main_Storage_TooltipMulti", s.VolumeCount) + "\n" + string.Join("\n", lines);
         }
         else
         {
-            StorageTooltip = $"Volumen de grabación: {StorageFormat.Bytes(s.FreeBytes)} libres de {StorageFormat.Bytes(s.TotalBytes)} ({s.UsedPercent:0.#}% ocupado)";
+            StorageTooltip = Loc.F("Main_Storage_TooltipSingle",
+                StorageFormat.Bytes(s.FreeBytes), StorageFormat.Bytes(s.TotalBytes), s.UsedPercent.ToString("0.#"));
         }
 
         ShowStorageBanner = s.Health is StorageHealth.Critical or StorageHealth.Emergency;
         StorageBannerText = s.Health switch
         {
             StorageHealth.Emergency => multi
-                ? $"⚠  ALMACENAMIENTO EN EMERGENCIA en {s.WorstLabel}  —  libera espacio para seguir grabando en ese disco"
-                : "⚠  ALMACENAMIENTO EN EMERGENCIA  —  libera espacio para seguir grabando con normalidad",
+                ? Loc.F("Main_Banner_Emergency_Multi", s.WorstLabel)
+                : Loc.T("Main_Banner_Emergency"),
             StorageHealth.Critical => multi
-                ? $"⚠  Almacenamiento crítico en {s.WorstLabel}  —  queda muy poco espacio en ese disco"
-                : "⚠  Almacenamiento crítico  —  queda muy poco espacio en el volumen de grabación",
+                ? Loc.F("Main_Banner_Critical_Multi", s.WorstLabel)
+                : Loc.T("Main_StorageBanner_Critical"),
             _ => "",
         };
     }

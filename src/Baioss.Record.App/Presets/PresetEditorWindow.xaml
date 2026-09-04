@@ -1,7 +1,8 @@
 <Window x:Class="Baioss.Record.App.Presets.PresetEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Editar preset" Height="680" Width="920"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T PreEd_Title}" Height="680" Width="920"
         Background="#10131A" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Window.Resources>
         <Style TargetType="TextBlock">
@@ -16,13 +17,13 @@
 
     <Border Padding="18">
         <DockPanel>
-            <TextBlock DockPanel.Dock="Top" Text="Configuración del preset" FontSize="16"
+            <TextBlock DockPanel.Dock="Top" Text="{loc:T PreEd_Header}" FontSize="16"
                        Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,12"/>
 
             <!-- Botonera -->
             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-                <Button Content="Aceptar" Width="110" Click="Ok" Style="{StaticResource StartButton}"/>
-                <Button Content="Cancelar" Width="110" Click="Cancel" Style="{StaticResource TransportButton}" Margin="8,0,0,0"/>
+                <Button Content="{loc:T Common_Accept}" Width="110" Click="Ok" Style="{StaticResource StartButton}"/>
+                <Button Content="{loc:T Common_Cancel}" Width="110" Click="Cancel" Style="{StaticResource TransportButton}" Margin="8,0,0,0"/>
             </StackPanel>
 
             <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -37,56 +38,56 @@
                         <RowDefinition/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Nombre"/>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="{loc:T PreEd_Name}"/>
                     <TextBox  Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding Preset.Name}"/>
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Descripción"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="{loc:T PreEd_Description}"/>
                     <TextBox  Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding Preset.Description}"/>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Categoría"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="{loc:T PreEd_Category}"/>
                     <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding CategoryValues}" SelectedItem="{Binding Preset.Category}"/>
-                    <TextBlock Grid.Row="2" Grid.Column="2" Text="Solo audio"/>
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="{loc:T PreEd_AudioOnly}"/>
                     <CheckBox Grid.Row="2" Grid.Column="3" IsChecked="{Binding Preset.AudioOnly}" VerticalAlignment="Center"
                               Foreground="{StaticResource TextPrimaryBrush}"/>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Contenedor"/>
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="{loc:T PreEd_Container}"/>
                     <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding ContainerValues}" SelectedItem="{Binding Preset.Container}"/>
-                    <TextBlock Grid.Row="3" Grid.Column="2" Text="Códec video"/>
+                    <TextBlock Grid.Row="3" Grid.Column="2" Text="{loc:T PreEd_VideoCodec}"/>
                     <ComboBox Grid.Row="3" Grid.Column="3" ItemsSource="{Binding VideoCodecValues}" SelectedItem="{Binding Preset.VideoCodec}"/>
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Ancho (0=nativo)"/>
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="{loc:T PreEd_Width}"/>
                     <TextBox  Grid.Row="4" Grid.Column="1" Text="{Binding WidthValue}"/>
-                    <TextBlock Grid.Row="4" Grid.Column="2" Text="Alto (0=nativo)"/>
+                    <TextBlock Grid.Row="4" Grid.Column="2" Text="{loc:T PreEd_Height}"/>
                     <TextBox  Grid.Row="4" Grid.Column="3" Text="{Binding HeightValue}"/>
 
-                    <TextBlock Grid.Row="5" Grid.Column="0" Text="FPS (0=fuente)"/>
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="{loc:T PreEd_Fps}"/>
                     <TextBox  Grid.Row="5" Grid.Column="1" Text="{Binding FrameRateValue}"/>
-                    <TextBlock Grid.Row="5" Grid.Column="2" Text="GOP"/>
+                    <TextBlock Grid.Row="5" Grid.Column="2" Text="{loc:T PreEd_Gop}"/>
                     <TextBox  Grid.Row="5" Grid.Column="3" Text="{Binding GopValue}"/>
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Bitrate (Mbps)"/>
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="{loc:T PreEd_Bitrate}"/>
                     <TextBox  Grid.Row="6" Grid.Column="1" Text="{Binding VideoBitrateValue}"/>
-                    <TextBlock Grid.Row="6" Grid.Column="2" Text="Max bitrate (Mbps)"/>
+                    <TextBlock Grid.Row="6" Grid.Column="2" Text="{loc:T PreEd_MaxBitrate}"/>
                     <TextBox  Grid.Row="6" Grid.Column="3" Text="{Binding MaxBitrateValue}"/>
 
-                    <TextBlock Grid.Row="7" Grid.Column="0" Text="Pixel format"/>
+                    <TextBlock Grid.Row="7" Grid.Column="0" Text="{loc:T PreEd_PixelFormat}"/>
                     <ComboBox Grid.Row="7" Grid.Column="1" ItemsSource="{Binding PixelFormatValues}" SelectedItem="{Binding Preset.PixelFormat}"/>
-                    <TextBlock Grid.Row="7" Grid.Column="2" Text="Escaneo"/>
+                    <TextBlock Grid.Row="7" Grid.Column="2" Text="{loc:T PreEd_Scan}"/>
                     <ComboBox Grid.Row="7" Grid.Column="3" ItemsSource="{Binding ScanTypeValues}" SelectedItem="{Binding Preset.ScanType}"/>
 
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Control de tasa"/>
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="{loc:T PreEd_RateControl}"/>
                     <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding RateControlValues}" SelectedItem="{Binding Preset.RateControl}"/>
-                    <TextBlock Grid.Row="8" Grid.Column="2" Text="Calidad (CRF/CQ)"/>
+                    <TextBlock Grid.Row="8" Grid.Column="2" Text="{loc:T PreEd_Quality}"/>
                     <TextBox  Grid.Row="8" Grid.Column="3" Text="{Binding Preset.Quality}"/>
 
-                    <TextBlock Grid.Row="9" Grid.Column="0" Text="Códec audio"/>
+                    <TextBlock Grid.Row="9" Grid.Column="0" Text="{loc:T PreEd_AudioCodec}"/>
                     <ComboBox Grid.Row="9" Grid.Column="1" ItemsSource="{Binding AudioCodecValues}" SelectedItem="{Binding Preset.AudioCodec}"/>
-                    <TextBlock Grid.Row="9" Grid.Column="2" Text="Canales"/>
+                    <TextBlock Grid.Row="9" Grid.Column="2" Text="{loc:T PreEd_AudioChannels}"/>
                     <ComboBox Grid.Row="9" Grid.Column="3" ItemsSource="{Binding AudioLayoutValues}" SelectedItem="{Binding Preset.AudioLayout}"/>
 
-                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Perfil intra"/>
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="{loc:T PreEd_IntraProfile}"/>
                     <ComboBox Grid.Row="10" Grid.Column="1" ItemsSource="{Binding EncoderProfileValues}" SelectedItem="{Binding Preset.EncoderProfile}"/>
-                    <TextBlock Grid.Row="10" Grid.Column="2" Grid.ColumnSpan="2" Text="(solo ProRes / DNxHR)"/>
+                    <TextBlock Grid.Row="10" Grid.Column="2" Grid.ColumnSpan="2" Text="{loc:T PreEd_IntraHint}"/>
                 </Grid>
             </ScrollViewer>
         </DockPanel>

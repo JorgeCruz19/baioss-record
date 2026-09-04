@@ -48,15 +48,17 @@ public sealed record LicenseInfo(
     /// <summary>¿Se pueden iniciar grabaciones nuevas? Solo se bloquea al CADUCAR el periodo de prueba.</summary>
     public bool CanStartRecording => State is not LicenseState.Expired;
 
-    /// <summary>Texto corto para la barra superior de la app.</summary>
+    /// <summary>Texto corto para la barra superior de la app, en el idioma vigente.</summary>
     public string Summary => State switch
     {
         LicenseState.Licensed => LicensedChannels is int c
-            ? $"Licencia activa · {c} canal{(c == 1 ? "" : "es")}"
-            : "Licencia activa",
-        LicenseState.Trial => DaysRemaining == 1 ? "Prueba: último día" : $"Prueba: {DaysRemaining} días restantes",
-        LicenseState.Unknown => "Licencia: no verificable",
-        _ => "Periodo de prueba terminado",
+            ? Localization.Localizer.Plural("Lic_Summary_LicensedChannels_One", "Lic_Summary_LicensedChannels_Many", c)
+            : Localization.Localizer.T("Lic_Summary_Licensed"),
+        LicenseState.Trial => DaysRemaining == 1
+            ? Localization.Localizer.T("Lic_Summary_TrialLastDay")
+            : Localization.Localizer.F("Lic_Summary_TrialDays", DaysRemaining),
+        LicenseState.Unknown => Localization.Localizer.T("Lic_Summary_Unknown"),
+        _ => Localization.Localizer.T("Lic_Summary_Expired"),
     };
 
     /// <summary>¿Conviene avisar al operador de forma visible? (últimos días de prueba, caducada o no verificable).</summary>

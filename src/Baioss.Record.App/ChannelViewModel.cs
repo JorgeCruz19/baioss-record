@@ -9,6 +9,7 @@ using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Infrastructure.Preview;
+using Baioss.Record.App.Localization;
 
 namespace Baioss.Record.App;
 
@@ -49,6 +50,10 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         _recTimer.Start();
 
         _engine.StatusChanged += OnStatusChanged;
+        // Al cambiar de idioma hay que RECOMPONER los textos que se arman en código (señal, audio, nombre del
+        // canal…): los enlaces {loc:T …} del XAML se refrescan solos, pero estos no. Se re-aplica el último
+        // estado conocido, que es exactamente de donde salen.
+        Baioss.Record.Application.Localization.Localizer.LanguageChanged += OnLanguageChanged;
         if (Preview is not null) Preview.AudioPeaksUpdated += OnPreviewAudio;
         Sync(engine.Status);
     }
@@ -73,9 +78,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     /// <summary>Nombre descriptivo para la cabecera del panel, derivado del Key (A/B).</summary>
     public string DisplayName => Key switch
     {
-        "A" => "Canal Principal",
-        "B" => "Canal Secundario",
-        _ => $"Canal {Key}",
+        "A" => Loc.T("Ch_Name_A"),
+        "B" => Loc.T("Ch_Name_B"),
+        _ => Loc.F("Ch_Name_Other", Key),
     };
 
     private double _peakHoldL = -60, _peakHoldR = -60;
@@ -156,7 +161,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void BrowseOutput()
     {
-        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Carpeta de destino de las grabaciones" };
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = Loc.T("Ch_OutputFolderDialog") };
         if (Directory.Exists(OutputDirectory)) dialog.InitialDirectory = OutputDirectory;
         if (dialog.ShowDialog() == true) OutputDirectory = dialog.FolderName;
     }
@@ -196,13 +201,13 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         var p = _config.Profile;
         if (p.AudioOnly)
         {
-            ProfileText = $"Solo audio · {p.AudioCodec} · {p.Container}";
+            ProfileText = Loc.F("Ch_Profile_AudioOnly", p.AudioCodec, p.Container);
             return;
         }
         string rate = p.RateControl == RateControlMode.ConstantQuality
             ? $"CRF {p.Quality}"
             : p.VideoBitrate.ToString();
-        string res = p.TargetResolution?.ToString() ?? "nativa";
+        string res = p.TargetResolution?.ToString() ?? Loc.T("Ch_NativeResolution");
         ProfileText = $"{p.VideoCodec} · {rate} · {res} · {p.Container}";
     }
 
@@ -239,7 +244,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
             // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).
             // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
-            var dialog = new RecordingNameWindow(Key, $"Grabación {DateTime.Now:dd-MM-yyyy}")
+            var dialog = new RecordingNameWindow(Key, Loc.F("Ch_DefaultRecordingName", DateTime.Now.ToString("dd-MM-yyyy")))
             {
                 Owner = System.Windows.Application.Current?.MainWindow,
             };
@@ -320,6 +325,15 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private void OnStatusChanged(object? sender, ChannelStatus status)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => Sync(status));
 
+    /// <summary>Cambió el idioma: se recomponen los textos derivados del estado (señal, audio, nombre…).</summary>
+    private void OnLanguageChanged(object? sender, System.EventArgs e)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            OnPropertyChanged(nameof(DisplayName)); // es una propiedad calculada, no [ObservableProperty]
+            InitFromProfile();                      // ProfileText («Solo audio · …»)
+            Sync(_engine.Status);                   // el resto de textos salen del estado
+        });
+
     private void OnPreviewAudio(object? sender, (double Left, double Right) lr)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ApplyAudio(lr.Left, lr.Right));
 
@@ -340,9 +354,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         IsLocked = status.Signal.State == SignalState.Locked;
         SignalText = status.Signal.State switch
         {
-            SignalState.Locked => "SEÑAL OK",
-            SignalState.Unstable => "INESTABLE",
-            _ => "SIN SEÑAL"
+            SignalState.Locked => Loc.T("Ch_Signal_Ok"),
+            SignalState.Unstable => Loc.T("Ch_Signal_Unstable"),
+            _ => Loc.T("Ch_Signal_None")
         };
         // Preferimos la etiqueta legible del modo (DeckLink: "1920×1080 · 59.94i"); si no, resolución·fps.
         FormatText = status.Signal.FormatLabel
@@ -354,7 +368,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Resumen de audio bajo el preview: «N canales · PCM» con señal y audio; si no, «Sin audio».
         AudioFormatText = status.Signal is { HasAudio: true, AudioLayout: { } layout }
             ? $"{ChannelCountText(layout)} · PCM"
-            : "Sin audio";
+            : Loc.T("Ch_NoAudio");
 
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;
 
@@ -385,7 +399,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // preview; el slate (sin señal pero grabando barras) se resalta aparte.
         var alarms = status.Alarms ?? Array.Empty<ChannelAlarm>();
         HasAlarms = alarms.Count > 0;
-        AlarmsText = HasAlarms ? string.Join("   •   ", alarms.Select(a => a.Message)) : "";
+        // Se traduce desde el TIPO de alarma, no se usa a.Message: ese texto lo compone la capa de
+        // infraestructura (en español, para el registro y la API) y aquí hay que hablar el idioma del operador.
+        AlarmsText = HasAlarms ? string.Join("   •   ", alarms.Select(a => AlarmText(a))) : "";
         IsSlate = alarms.Any(a => a.Type == AlarmType.Slate);
 
         // Disco: tiempo restante estimado durante la grabación; colores por severidad.
@@ -424,13 +440,37 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private static double Norm(double db) => Math.Clamp((db + 60) / 60.0, 0, 1);
     private static string Fmt(double db) => db <= -60 ? "-∞" : $"{db:0.0}";
 
+    /// <summary>
+    /// Texto de una alarma en el idioma del operador, derivado de su TIPO. Si apareciera un tipo que este
+    /// catálogo aún no cubre, se cae al mensaje que trae la propia alarma (mejor en español que en blanco).
+    /// </summary>
+    private static string AlarmText(ChannelAlarm alarm)
+    {
+        string key = alarm.Type switch
+        {
+            AlarmType.SignalLoss => "Alarm_SignalLoss",
+            AlarmType.VideoBlack => "Alarm_VideoBlack",
+            AlarmType.VideoFreeze => "Alarm_VideoFreeze",
+            AlarmType.AudioSilence => "Alarm_AudioSilence",
+            AlarmType.DiskLow => "Alarm_DiskLow",
+            AlarmType.DiskCritical => "Alarm_DiskCritical",
+            AlarmType.DiskEmergency => "Alarm_DiskEmergency",
+            AlarmType.Slate => "Alarm_Slate",
+            AlarmType.EncoderFallback => "Alarm_EncoderFallback",
+            AlarmType.FramesDropped => "Alarm_FramesDropped",
+            AlarmType.RecordingUnverified => "Alarm_RecordingUnverified",
+            _ => "",
+        };
+        return key.Length == 0 ? alarm.Message : Loc.T(key);
+    }
+
     /// <summary>Nº de canales de audio legible según el layout (para «N canales · PCM»).</summary>
     private static string ChannelCountText(AudioLayout layout) => layout switch
     {
-        AudioLayout.Mono => "1 canal",
-        AudioLayout.Stereo => "2 canales",
-        AudioLayout.Surround51 => "6 canales",
-        AudioLayout.Surround71 => "8 canales",
+        AudioLayout.Mono => Loc.T("Ch_Audio_Mono"),
+        AudioLayout.Stereo => Loc.T("Ch_Audio_Stereo"),
+        AudioLayout.Surround51 => Loc.T("Ch_Audio_51"),
+        AudioLayout.Surround71 => Loc.T("Ch_Audio_71"),
         _ => "—",
     };
 
@@ -443,13 +483,14 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             string t = r.TotalHours >= 1 ? $"{(int)r.TotalHours} h {r.Minutes:00} min" : $"{r.Minutes} min";
             return $"{free} · ~{t}";
         }
-        return $"{free} libres";
+        return Loc.F("Ch_DiskFree", free);
     }
 
     public void Dispose()
     {
         _recTimer.Stop();
         _engine.StatusChanged -= OnStatusChanged;
+        Baioss.Record.Application.Localization.Localizer.LanguageChanged -= OnLanguageChanged;
         if (Preview is not null) Preview.AudioPeaksUpdated -= OnPreviewAudio;
     }
 }

@@ -56,7 +56,7 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
     // --- ILicenseGate: lectura de campo, sin E/S, sin excepciones posibles ---
     public bool ShouldBlockNewRecordings => _current.State is LicenseState.Expired;
     public string? BlockReason => ShouldBlockNewRecordings
-        ? $"El periodo de prueba ha terminado. Activa la licencia para volver a grabar (código de equipo: {MachineCode})."
+        ? Application.Localization.Localizer.F("Lic_Blocked", MachineCode)
         : null;
 
     public LicenseActivationResult Activate(string licenseKey)
@@ -84,19 +84,18 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
                 // licencia pendiente del instalador usa esa distinción para reintentar en el próximo arranque).
                 _log.LogError("Licencias: la clave es válida pero NO se pudo guardar en ninguna ubicación (¿permisos de «{Path}»?).", _store.FilePath);
                 return new LicenseActivationResult(false, LicenseRejection.None,
-                    "La licencia es válida, pero no se pudo guardar en este equipo. " +
-                    $"Revisa los permisos de «{_store.FilePath}» y vuelve a intentarlo.");
+                    Application.Localization.Localizer.F("Lic_Msg_NotSaved", _store.FilePath));
             }
 
             _log.LogInformation("Licencia ACTIVADA para el equipo {Code}.", MachineCode);
-            return new LicenseActivationResult(true, LicenseRejection.None, "Licencia activada. Gracias.");
+            return new LicenseActivationResult(true, LicenseRejection.None, Application.Localization.Localizer.T("Lic_Msg_Activated"));
         }
         catch (Exception ex)
         {
             // Ni el botón «Activar» ni el endpoint HTTP pueden reventar por una clave rara.
             _log.LogError(ex, "Licencias: fallo inesperado al activar.");
             return new LicenseActivationResult(false, LicenseRejection.Malformed,
-                "No se pudo activar la licencia. Revisa que esté copiada completa.");
+                Application.Localization.Localizer.T("Lic_Msg_ActivateFailed"));
         }
     }
 
@@ -206,9 +205,9 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
 
     private static string MessageFor(LicenseRejection rejection) => rejection switch
     {
-        LicenseRejection.Malformed => "La licencia no tiene un formato válido. Cópiala completa, tal como te la enviaron.",
-        LicenseRejection.OtherMachine => "Esta licencia no es válida para este equipo. Comprueba que el código de equipo coincide con el que enviaste.",
-        LicenseRejection.UnsupportedVersion => "Esta licencia requiere una versión más reciente de Baioss Record.",
-        _ => "La licencia no es válida.",
+        LicenseRejection.Malformed => Application.Localization.Localizer.T("Lic_Msg_Malformed"),
+        LicenseRejection.OtherMachine => Application.Localization.Localizer.T("Lic_Msg_OtherMachine"),
+        LicenseRejection.UnsupportedVersion => Application.Localization.Localizer.T("Lic_Msg_UnsupportedVersion"),
+        _ => Application.Localization.Localizer.T("Lic_Msg_Invalid"),
     };
 }

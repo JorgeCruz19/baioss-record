@@ -72,7 +72,7 @@ public partial class App : System.Windows.Application
         _instanceMutex = new Mutex(initiallyOwned: true, @"Local\Baioss.Record.App.SingleInstance", out bool isFirst);
         if (!isFirst)
         {
-            MessageBox.Show("Baioss Record ya está en ejecución.", "Baioss Record",
+            MessageBox.Show(Localization.Loc.T("Dlg_AlreadyRunning"), "Baioss Record",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown(0);
             return;
@@ -85,7 +85,7 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             Serilog.Log.Fatal(ex, "Fallo de arranque de Baioss Record.");
-            MessageBox.Show($"No se pudo iniciar Baioss Record:\n{ex.Message}", "Baioss Record",
+            MessageBox.Show(Localization.Loc.F("Dlg_StartFailed", ex.Message), "Baioss Record",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
@@ -168,6 +168,11 @@ public partial class App : System.Windows.Application
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
         // ejecutable; ancla datos/grabaciones/logs con independencia del working directory.
         var root = FindUpwards("tools") is { } toolsDir ? Path.GetDirectoryName(toolsDir)! : Directory.GetCurrentDirectory();
+
+        // IDIOMA, lo PRIMERO: cualquier texto que se componga a partir de aquí (avisos de arranque incluidos)
+        // debe salir ya en el idioma correcto. Manda la elección guardada del operador; si no la hay, el idioma
+        // de Windows. (Ver Localization\Loc.cs.)
+        Localization.Loc.Instance.Initialize(Path.Combine(root, "data", "language.json"));
         var ffmpegDir = FindUpwards(Path.Combine("tools", "ffmpeg", "ffmpeg.exe")) is { } ffmpegExe
             ? Path.GetDirectoryName(ffmpegExe)
             : null;
@@ -513,16 +518,15 @@ public partial class App : System.Windows.Application
         e.Cancel = true; // tomamos el control; solo se cierra si el operador CONFIRMA
         var confirm = recording.Count > 0
             ? MessageBox.Show(
-                $"Hay {recording.Count} grabación(es) en curso (canal {string.Join(", ", recording)}).\n\n" +
-                "¿Detenerlas y salir? Se finalizarán los archivos correctamente antes de cerrar.",
-                "Cerrar Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Warning)
+                Localization.Loc.F("Dlg_Close_Recording", recording.Count, string.Join(", ", recording)),
+                Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, MessageBoxImage.Warning)
             : MessageBox.Show(
-                "¿Seguro que quieres cerrar Baioss Record?",
-                "Cerrar Baioss Record", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                Localization.Loc.T("Dlg_Close_Question"),
+                Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return; // no cerrar (e.Cancel sigue en true)
 
         _shuttingDown = true;
-        if (sender is Window w) w.Title = "Baioss Record — cerrando…";
+        if (sender is Window w) w.Title = Localization.Loc.T("Dlg_Closing_Title");
         // Apagado ACOTADO: si se atasca (FFmpeg colgado, servicio que no cancela) NO colgamos el cierre —
         // ForceExit fuerza la salida igualmente para que el proceso nunca quede vivo.
         try { await ShutdownHostAsync().WaitAsync(ShutdownTimeout); }
@@ -547,7 +551,7 @@ public partial class App : System.Windows.Application
     {
         if (_shuttingDown || _shutdownComplete) return; // ya hay un cierre en marcha
         _shuttingDown = true;                            // los intentos de cerrar la ventana ya no re-entran
-        if (MainWindow is { } w) w.Title = "Baioss Record — reiniciando para aplicar la licencia…";
+        if (MainWindow is { } w) w.Title = Localization.Loc.T("Dlg_Restarting_Title");
         try { await ShutdownHostAsync().WaitAsync(ShutdownTimeout); }
         catch (TimeoutException) { Serilog.Log.Warning("Reinicio por licencia: el apagado ordenado excedió {T:0} s; se fuerza la salida.", ShutdownTimeout.TotalSeconds); }
         catch (Exception ex) { Serilog.Log.Error(ex, "Reinicio por licencia: error en el apagado ordenado; se fuerza la salida."); }
@@ -621,11 +625,8 @@ public partial class App : System.Windows.Application
             try
             {
                 MessageBox.Show(owner,
-                    "Falta FFmpeg, que es el motor de grabación.\n\n" +
-                    "Baioss Record funciona en modo de demostración y NO podrá grabar hasta que lo instales.\n\n" +
-                    "Copia «ffmpeg.exe» y «ffprobe.exe» en esta carpeta:\n" + dir + "\n\n" +
-                    "Tienes las instrucciones en el archivo FFMPEG-LEEME.txt de esa misma carpeta.",
-                    "Baioss Record — falta FFmpeg", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    Localization.Loc.F("Dlg_Ffmpeg_Body", dir),
+                    Localization.Loc.T("Dlg_Ffmpeg_Title"), MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo mostrar el aviso de FFmpeg ausente."); }
         });

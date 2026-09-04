@@ -1,7 +1,8 @@
 <Window x:Class="Baioss.Record.App.Recordings.RecordingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Grabaciones" Width="1180" Height="640" MinWidth="900" MinHeight="420"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T Rec_Title}" Width="1180" Height="640" MinWidth="900" MinHeight="420"
         Icon="/Assets/icon.ico"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <Window.Resources>
@@ -17,8 +18,8 @@
         <!-- Cabecera -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
             <StackPanel>
-                <TextBlock Text="GRABACIONES" FontSize="14" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBlock Text="Historial de grabaciones. Marca las importantes como «Protegida» o «Importante» para EXCLUIRLAS de la limpieza automática."
+                <TextBlock Text="{loc:T Rec_Header}" FontSize="14" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                <TextBlock Text="{loc:T Rec_Subtitle}"
                            FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
         </Border>
@@ -31,7 +32,7 @@
                               VerticalAlignment="Center"/>
                     <ComboBox Width="170" Height="30" Margin="8,0,0,0" ItemsSource="{Binding Channels}" SelectedItem="{Binding SelectedChannel}"
                               VerticalAlignment="Center"/>
-                    <Button Content="↻ Actualizar" Command="{Binding RefreshCommand}" Style="{StaticResource TransportButton}"
+                    <Button Content="{loc:T Rec_Refresh}" Command="{Binding RefreshCommand}" Style="{StaticResource TransportButton}"
                             Height="30" Margin="8,0,0,0" Padding="14,0"/>
                 </StackPanel>
                 <TextBlock Text="{Binding Summary}" HorizontalAlignment="Right" VerticalAlignment="Center"
@@ -41,7 +42,7 @@
 
         <!-- Pie -->
         <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,10">
-            <Button Content="Cerrar" Click="Close_Click" HorizontalAlignment="Right"
+            <Button Content="{loc:T Common_Close}" Click="Close_Click" HorizontalAlignment="Right"
                     Height="32" MinWidth="100" Padding="20,0" Style="{StaticResource TransportButton}"/>
         </Border>
 
@@ -59,20 +60,20 @@
                     <ColumnDefinition Width="112"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="CANAL"     FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="1" Text="NOMBRE"    FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="2" Text="FECHA"     FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="3" Text="HORA"      FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="4" Text="DURACIÓN"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="5" Text="TAMAÑO"    FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="6" Text="OPERADOR"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="7" Text="PROTECCIÓN" FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
-                <TextBlock Grid.Column="8" Text="ACCIONES"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Right"/>
+                <TextBlock Grid.Column="0" Text="{loc:T Rec_Channel}"     FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="1" Text="{loc:T Rec_Name}"    FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="2" Text="{loc:T Rec_Date}"     FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="3" Text="{loc:T Rec_Time}"      FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="4" Text="{loc:T Rec_Duration}"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="5" Text="{loc:T Rec_Size}"    FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="6" Text="{loc:T Rec_Operator}"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="7" Text="{loc:T Rec_Protection}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <TextBlock Grid.Column="8" Text="{loc:T Rec_Actions}"  FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Right"/>
             </Grid>
         </Border>
 
         <!-- Mensaje vacío -->
-        <TextBlock DockPanel.Dock="Top" Text="No hay grabaciones en el rango seleccionado."
+        <TextBlock DockPanel.Dock="Top" Text="{loc:T Rec_Empty}"
                    Foreground="{StaticResource TextSecondaryBrush}" FontSize="13" Margin="18,24,0,0"
                    Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVis}}"/>
 
@@ -130,16 +131,16 @@
 
                                 <!-- Acciones -->
                                 <StackPanel Grid.Column="8" Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Button Content="🔒 Proteger" Style="{StaticResource RowButton}" ToolTip="Excluir siempre de la limpieza automática"
+                                    <Button Content="{loc:T Rec_Protect}" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_Tip_Protect}"
                                             Command="{Binding DataContext.ProtectCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                             CommandParameter="{Binding}"/>
-                                    <Button Content="★ Importante" Style="{StaticResource RowButton}" ToolTip="Marcar como importante (también se excluye de la limpieza)"
+                                    <Button Content="{loc:T Rec_Important}" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_Tip_Important}"
                                             Command="{Binding DataContext.MarkImportantCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                             CommandParameter="{Binding}"/>
-                                    <Button Content="○ Normal" Style="{StaticResource RowButton}" ToolTip="Quitar la protección (vuelve a entrar en la limpieza automática)"
+                                    <Button Content="{loc:T Rec_Normal}" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_Tip_Normal}"
                                             Command="{Binding DataContext.UnprotectCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                             CommandParameter="{Binding}"/>
-                                    <Button Content="📂" Style="{StaticResource RowButton}" ToolTip="Abrir la carpeta de la grabación"
+                                    <Button Content="📂" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_OpenFolder}"
                                             Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                             CommandParameter="{Binding}"/>
                                 </StackPanel>
