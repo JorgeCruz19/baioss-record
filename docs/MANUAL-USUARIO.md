@@ -34,7 +34,19 @@ del instalador: hay que descargarlo y dejarlo en su carpeta. Es un momento y **s
 **¿Cómo sé si falta?** Al abrir el programa aparece un aviso que lo dice y muestra la carpeta exacta. Mientras
 falte, el programa funciona en **modo de demostración**: se ve todo y puedes configurarlo, pero **no graba**.
 
-## 1.2. Nota sobre NDI®
+## 1.2. Idioma de la aplicación
+
+Baioss Record habla **español e inglés**. La primera vez elige solo el idioma de **Windows** (si tu Windows está
+en cualquier variante de español, arranca en español; en cualquier otro caso, en inglés).
+
+Puedes cambiarlo cuando quieras en **🛠 Configuración → IDIOMA**. El cambio se aplica **al instante**, sin cerrar
+el programa ni interrumpir ninguna grabación, y se recuerda para los próximos arranques.
+
+> Los archivos de registro (`logs\`) se mantienen siempre en español: están pensados para el soporte técnico.
+
+---
+
+## 1.3. Nota sobre NDI®
 
 Baioss Record puede grabar fuentes **NDI®**. NDI® es una marca registrada de Vizrt NDI AB; puedes obtener más
 información y sus herramientas en <https://ndi.video/>. Baioss Record no es un producto de Vizrt NDI AB.

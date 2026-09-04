@@ -13,8 +13,8 @@ public partial class ChannelScheduleWindow : Window
     public ChannelScheduleWindow(string channelKey, IReadOnlyList<TodayTaskRow> rows)
     {
         InitializeComponent();
-        HeaderText = $"PROGRAMACIÓN DE HOY · CANAL {channelKey}";
-        Title = $"Programación de hoy · Canal {channelKey}";
+        HeaderText = Localization.Loc.F("Sch_Ch_HeaderToday", channelKey);
+        Title = Localization.Loc.F("Sch_Ch_WindowTitle", channelKey);
         Rows = rows;
         HasRows = rows.Count > 0;
         NoRows = rows.Count == 0;

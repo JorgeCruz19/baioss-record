@@ -1,3 +1,4 @@
+using Baioss.Record.App.Localization;
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
@@ -146,8 +147,8 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         foreach (var c in channels) Channels.Add(new ChannelInputRow(c.Key, c.ChannelId, c.InputText, this));
 
         StatusMessage = canRebind
-            ? "Pulsa «Detectar» para buscar tarjetas DeckLink y cámaras/capturadoras DirectShow."
-            : "Modo simulado (sin FFmpeg): la asignación de entradas no está disponible.";
+            ? Loc.T("In_Msg_PressDetect")
+            : Loc.T("In_Msg_Simulated");
     }
 
     private void SeedFileOption()
@@ -202,11 +203,11 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             // Aviso si hay tarjetas DeckLink pero ninguna expuso sus modos: el desplegable quedaría solo
             // con «Automático». Causa típica: la tarjeta ya está abierta por la captura del canal.
             string modesHint = decklinks > 0 && decklinkWithModes == 0
-                ? " · DeckLink: no se detectaron modos (cierra cualquier captura que use la tarjeta y reintenta; revisa logs)."
+                ? Loc.T("In_Msg_NoModes")
                 : "";
             StatusMessage = cards == 0
-                ? "No se detectaron tarjetas ni cámaras. (¿Drivers DeckLink instalados? ¿cámara conectada?)"
-                : $"{cards} entrada(s) de vídeo y {AudioDevices.Count - 1} de audio detectadas." + modesHint;
+                ? Loc.T("In_Msg_NothingFound")
+                : Loc.F("In_Msg_Found", cards, AudioDevices.Count - 1) + modesHint;
         }
         catch (Exception ex)
         {
@@ -218,10 +219,10 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     internal async Task ApplyRowAsync(ChannelInputRow row)
     {
         if (!CanRebind) { StatusMessage = "No disponible en modo simulado."; return; }
-        if (row.SelectedDevice is null) { StatusMessage = $"Canal {row.Key}: elige una entrada de vídeo."; return; }
+        if (row.SelectedDevice is null) { StatusMessage = Loc.F("In_Msg_PickVideo", row.Key); return; }
 
         IsBusy = true;
-        StatusMessage = $"Aplicando «{row.SelectedDevice.Label}» al Canal {row.Key}…";
+        StatusMessage = Loc.F("In_Msg_Applying", row.SelectedDevice.Label, row.Key);
         try
         {
             var def = row.SelectedDevice.ToInputSource(row.SelectedAudio, row.SelectedFormat);

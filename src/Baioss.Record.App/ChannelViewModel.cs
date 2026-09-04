@@ -225,7 +225,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         {
             // Pre-vuelo fallido (perfil inválido, carpeta de destino no escribible, …): avisa al operador
             // sin tumbar la app ni dejar una sesión a medias (la validación corre antes de crear nada).
-            System.Windows.MessageBox.Show(ex.Message, "No se pudo iniciar la grabación",
+            System.Windows.MessageBox.Show(ex.Message, Loc.T("Ch_Err_StartTitle"),
                 System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
         }
     }
@@ -255,7 +255,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         {
             // Simétrico con StartAsync: un fallo al detener/renombrar (I/O, BD, renombrado) NO debe quedar solo en
             // el log —el handler global lo tragaría— sin que el operador se entere. (Auditoría N26.)
-            System.Windows.MessageBox.Show(ex.Message, "No se pudo detener/renombrar la grabación",
+            System.Windows.MessageBox.Show(ex.Message, Loc.T("Ch_Err_StopTitle"),
                 System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
         }
     }

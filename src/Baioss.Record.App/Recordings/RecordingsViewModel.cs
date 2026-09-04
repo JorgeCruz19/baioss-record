@@ -1,3 +1,4 @@
+using Baioss.Record.App.Localization;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
@@ -56,10 +57,10 @@ public sealed partial class RecordingsViewModel : ObservableObject
 
         Ranges = new ObservableCollection<RangeOption>
         {
-            new("Últimos 7 días", 7),
-            new("Últimos 30 días", 30),
-            new("Últimos 90 días", 90),
-            new("Último año", 365),
+            new(Loc.T("Rec_Range_7"), 7),
+            new(Loc.T("Rec_Range_30"), 30),
+            new(Loc.T("Rec_Range_90"), 90),
+            new(Loc.T("Rec_Range_365"), 365),
         };
         Channels = new ObservableCollection<ChannelOption> { new("Todos los canales", null) };
         foreach (var kv in channelKeys.OrderBy(k => k.Value, StringComparer.Ordinal))
@@ -125,7 +126,7 @@ public sealed partial class RecordingsViewModel : ObservableObject
     private void UpdateSummary()
     {
         int prot = Recordings.Count(r => !r.IsNormal);
-        Summary = $"{Recordings.Count} grabación(es) · {StorageFormat.Bytes(_lastTotalBytes)} · {prot} protegida(s)";
+        Summary = Loc.F(Recordings.Count == 1 ? "Rec_Summary_One" : "Rec_Summary_Many", Recordings.Count, StorageFormat.Bytes(_lastTotalBytes), prot);
     }
 
     [RelayCommand] private Task Protect(RecordingRow? row) => SetProtectionAsync(row, RecordingProtection.Protected);
@@ -143,9 +144,9 @@ public sealed partial class RecordingsViewModel : ObservableObject
                 row.Protection = level;   // la fila es observable → el chip se actualiza al instante
                 UpdateSummary();          // refresca el contador de protegidas
             }
-            else Summary = "La grabación ya no existe (¿la borró la limpieza?). Actualiza la lista.";
+            else Summary = Loc.T("Rec_Msg_Gone");
         }
-        catch (Exception ex) { Summary = $"No se pudo cambiar la protección: {ex.Message}"; }
+        catch (Exception ex) { Summary = Loc.F("Rec_Msg_ProtectionFailed", ex.Message); }
     }
 
     /// <summary>Abre en el Explorador la carpeta que contiene la grabación (si se conoce y existe).</summary>

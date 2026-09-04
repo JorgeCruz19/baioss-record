@@ -7,6 +7,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Scheduling;
+using Baioss.Record.App.Localization;
 
 namespace Baioss.Record.App.Scheduling;
 
@@ -15,7 +16,7 @@ public sealed class ScheduleChannelOption
 {
     public required string Key { get; init; }
     public required Guid ChannelId { get; init; }
-    public override string ToString() => $"Canal {Key}";
+    public override string ToString() => Loc.F("Sch_ChannelLabel", Key);
 }
 
 /// <summary>Opción de repetición para el combo (envuelve el enum con etiqueta legible).</summary>
@@ -36,7 +37,7 @@ public sealed partial class ScheduledJobRow : ObservableObject
     public required bool Enabled { get; init; }
 
     public string Title => Job.Title;
-    public string EnabledText => Enabled ? "Pausar" : "Reanudar";
+    public string EnabledText => Enabled ? Loc.T("Sch_Pause") : Loc.T("Sch_Resume");
 }
 
 /// <summary>Una grabación PROGRAMADA que ocurre HOY (con su estado según la hora actual).</summary>
@@ -68,9 +69,9 @@ public sealed partial class ScheduleViewModel : ObservableObject
     public IReadOnlyList<ScheduleChannelOption> Channels { get; }
     public IReadOnlyList<RecurrenceOption> Recurrences { get; } = new[]
     {
-        new RecurrenceOption { Kind = RecurrenceKind.Once,   Label = "Una vez" },
-        new RecurrenceOption { Kind = RecurrenceKind.Daily,  Label = "Cada día" },
-        new RecurrenceOption { Kind = RecurrenceKind.Weekly, Label = "Días de la semana" },
+        new RecurrenceOption { Kind = RecurrenceKind.Once,   Label = Loc.T("Sch_Rec_Once") },
+        new RecurrenceOption { Kind = RecurrenceKind.Daily,  Label = Loc.T("Sch_Rec_Daily") },
+        new RecurrenceOption { Kind = RecurrenceKind.Weekly, Label = Loc.T("Sch_Rec_Weekly") },
     };
 
     [ObservableProperty] private ScheduleChannelOption? _selectedChannel;
@@ -81,7 +82,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(FormHint))]
     private RecurrenceOption? _selectedRecurrence;
 
-    [ObservableProperty] private string _title = "Grabación programada";
+    [ObservableProperty] private string _title = "";
 
     /// <summary>Fecha de la grabación (solo «Una vez»); se elige con el DatePicker nativo.</summary>
     [ObservableProperty] private DateTime? _selectedDate;
@@ -107,8 +108,8 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private Guid? _editingJobId;
 
     public bool IsEditing => EditingJobId is not null;
-    public string SaveButtonText => IsEditing ? "💾 Guardar cambios" : "＋ Programar";
-    public string FormTitle => IsEditing ? "EDITAR PROGRAMACIÓN" : "NUEVA PROGRAMACIÓN";
+    public string SaveButtonText => IsEditing ? Loc.T("Sch_SaveChanges") : Loc.T("Sch_Add");
+    public string FormTitle => IsEditing ? Loc.T("Sch_Form_Edit") : Loc.T("Sch_Form_New");
 
     /// <summary>Opciones «00»..«23» (horas) y «00»..«59» (minutos/segundos) para los selectores hh:mm:ss.</summary>
     public IReadOnlyList<string> Hours { get; } = Enumerable.Range(0, 24).Select(i => i.ToString("00")).ToArray();
@@ -123,10 +124,10 @@ public sealed partial class ScheduleViewModel : ObservableObject
             var start = StartTimeOfDay;
             var end = EndTimeOfDay;
             var dur = DurationFromStartEnd(start, end);
-            if (dur > TimeSpan.Zero) notes.Add($"⏱ Duración: {DescribeDuration(dur)}.");
-            if (end < start) notes.Add("⏭ La hora de fin es anterior a la de inicio: termina al día siguiente.");
+            if (dur > TimeSpan.Zero) notes.Add(Loc.F("Sch_Note_Duration", DescribeDuration(dur)));
+            if (end < start) notes.Add(Loc.T("Sch_Note_EndsNextDay"));
             if (SegmentEnabled && SegmentMinutes > 0 && dur > TimeSpan.Zero && TimeSpan.FromMinutes(SegmentMinutes) >= dur)
-                notes.Add("⚠ Los segmentos son ≥ que la grabación: será un solo archivo.");
+                notes.Add(Loc.T("Sch_Note_SegmentsTooBig"));
             return string.Join("     ", notes);
         }
     }
@@ -186,7 +187,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
 
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
-            Title = "Exportar programación de grabaciones",
+            Title = Loc.T("Sch_Dlg_ExportTitle"),
             Filter = "CSV para Excel (*.csv)|*.csv|JSON copia de seguridad (*.json)|*.json",
             FileName = $"programacion_{_clock.UtcNow.ToLocalTime():yyyy-MM-dd}.csv",
             DefaultExt = ".csv",
@@ -201,11 +202,11 @@ public sealed partial class ScheduleViewModel : ObservableObject
             bool json = System.IO.Path.GetExtension(dlg.FileName).Equals(".json", StringComparison.OrdinalIgnoreCase);
             var content = json ? ScheduleExporter.ToJson(jobs, KeyOf, now) : ScheduleExporter.ToCsv(jobs, KeyOf, now);
             await System.IO.File.WriteAllTextAsync(dlg.FileName, content); // UTF-8 sin BOM; el CSV ya incluye su BOM
-            StatusMessage = $"Programación exportada ({jobs.Count}) a «{dlg.FileName}».";
+            StatusMessage = Loc.F("Sch_Msg_Exported", jobs.Count, dlg.FileName);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"No se pudo exportar la programación: {ex.Message}";
+            StatusMessage = Loc.F("Sch_Msg_ExportFailed", ex.Message);
         }
     }
 
@@ -216,8 +217,8 @@ public sealed partial class ScheduleViewModel : ObservableObject
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Importar programación de grabaciones",
-            Filter = "JSON de programación (*.json)|*.json|Todos los archivos (*.*)|*.*",
+            Title = Loc.T("Sch_Dlg_ImportTitle"),
+            Filter = Loc.T("Sch_Dlg_JsonFilter"),
             CheckFileExists = true,
         };
         if (dlg.ShowDialog() != true) return;
@@ -230,7 +231,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         if (result.Jobs.Count == 0)
         {
             StatusMessage = result.Errors.Count > 0
-                ? "No se importó nada: " + result.Errors[0]
+                ? Loc.T("Sch_Msg_ImportedNothing") + result.Errors[0]
                 : "El archivo no contiene programaciones.";
             return;
         }
@@ -251,9 +252,9 @@ public sealed partial class ScheduleViewModel : ObservableObject
 
         var notes = new List<string>();
         if (skippedChannel > 0) notes.Add($"{skippedChannel} de un canal inexistente");
-        if (skippedDup > 0) notes.Add($"{skippedDup} con título ya existente");
+        if (skippedDup > 0) notes.Add(Loc.F("Sch_Msg_SkippedDup", skippedDup));
         if (result.Errors.Count > 0) notes.Add($"{result.Errors.Count} entrada(s) con errores");
-        StatusMessage = $"Importadas {added} programación(es)" + (notes.Count > 0 ? " · omitidas: " + string.Join(", ", notes) : "") + ".";
+        StatusMessage = Loc.F("Sch_Msg_Imported", added) + (notes.Count > 0 ? Loc.T("Sch_Msg_Skipped") + string.Join(", ", notes) : "") + ".";
         await RefreshAsync();
     }
 
@@ -278,8 +279,8 @@ public sealed partial class ScheduleViewModel : ObservableObject
         }
         BuildToday(all, now);
         StatusMessage = Jobs.Count == 0
-            ? "No hay grabaciones programadas. Crea una abajo."
-            : $"{Jobs.Count} programación(es). El scheduler corre mientras la app esté abierta.";
+            ? Loc.T("Sch_Msg_NoJobs")
+            : Loc.F("Sch_Msg_Count", Jobs.Count);
     }
 
     /// <summary>Lista las grabaciones (habilitadas) que ocurren HOY, ordenadas por hora, con su estado.</summary>
@@ -316,10 +317,10 @@ public sealed partial class ScheduleViewModel : ObservableObject
 
     private static (string Status, Brush Brush) TodayStatus(ScheduledJob job, DateTimeOffset slot, DateTimeOffset? end, DateTimeOffset now)
     {
-        if (job.SkippedOccurrence is { } sk && sk == slot) return ("Saltada", SaltadaBrush);
-        if (now < slot) return ("Programada", ProgramadaBrush);
-        if (end is { } e && now >= e) return ("Grabada", GrabadaBrush);
-        return ("En curso", EnCursoBrush); // entre el inicio y el fin (o sin duración, ya iniciada)
+        if (job.SkippedOccurrence is { } sk && sk == slot) return (Loc.T("Sch_St_Skipped"), SaltadaBrush);
+        if (now < slot) return (Loc.T("Sch_St_Scheduled"), ProgramadaBrush);
+        if (end is { } e && now >= e) return (Loc.T("Sch_St_Recorded"), GrabadaBrush);
+        return (Loc.T("Sch_St_Running"), EnCursoBrush); // entre el inicio y el fin (o sin duración, ya iniciada)
     }
 
     private static readonly Brush ProgramadaBrush = Frozen("#8A92A0");
@@ -337,7 +338,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private async Task Save()
     {
         if (SelectedChannel is null) { StatusMessage = "Elige un canal."; return; }
-        if (SelectedRecurrence is null) { StatusMessage = "Elige el tipo de repetición."; return; }
+        if (SelectedRecurrence is null) { StatusMessage = Loc.T("Sch_Err_PickRecurrence"); return; }
 
         // Hora de inicio/fin (hh:mm:ss). La duración (auto-stop) es fin − inicio: fin == inicio no es válido
         // y fin < inicio se interpreta como cruce de medianoche (la grabación termina al día siguiente).
@@ -363,7 +364,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
             if (Fri) weekdays |= Weekdays.Friday;
             if (Sat) weekdays |= Weekdays.Saturday;
             if (Sun) weekdays |= Weekdays.Sunday;
-            if (weekdays == Weekdays.None) { StatusMessage = "Elige al menos un día de la semana."; return; }
+            if (weekdays == Weekdays.None) { StatusMessage = Loc.T("Sch_Err_PickWeekday"); return; }
         }
 
         DateTimeOffset runAt;
@@ -372,7 +373,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
             if (SelectedDate is not { } d) { StatusMessage = "Elige una fecha."; return; }
             var wall = new DateTime(d.Year, d.Month, d.Day, start.Hours, start.Minutes, start.Seconds, DateTimeKind.Unspecified);
             runAt = new DateTimeOffset(wall, tz.GetUtcOffset(wall)); // offset del DST vigente ESE día
-            if (runAt <= now) { StatusMessage = "Esa fecha/hora ya pasó; elige una futura."; return; }
+            if (runAt <= now) { StatusMessage = Loc.T("Sch_Err_PastDate"); return; }
         }
         else
         {
@@ -386,7 +387,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
             Id = EditingJobId ?? Guid.NewGuid(),   // al editar conserva el mismo Id (es la misma tarea)
             ChannelId = SelectedChannel.ChannelId,
             Action = ScheduledAction.StartRecording,
-            Title = string.IsNullOrWhiteSpace(Title) ? "Grabación programada" : Title.Trim(),
+            Title = string.IsNullOrWhiteSpace(Title) ? Loc.T("Sch_DefaultTitle") : Title.Trim(),
             RunAt = runAt,
             Recurrence = kind,
             Weekdays = weekdays,
@@ -398,7 +399,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         // (1) La duración no puede alcanzar la siguiente ocurrencia (si no, esa se perdería en silencio).
         if (!ScheduleValidator.DurationFitsInterval(job))
         {
-            StatusMessage = $"La duración ({DescribeDuration(duration)}) alcanza la siguiente ocurrencia ({DescribeInterval(ScheduleValidator.RecurrenceInterval(job))}). Redúcela o cambia la repetición.";
+            StatusMessage = Loc.F("Sch_Err_DurationOverlaps", DescribeDuration(duration), DescribeInterval(ScheduleValidator.RecurrenceInterval(job)));
             return;
         }
 
@@ -411,7 +412,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         // nombran por título; dos iguales se confundirían). Sin mayúsculas; al editar no choca consigo misma.
         if (existing.Any(e => e.Id != job.Id && string.Equals(e.Title?.Trim(), job.Title, StringComparison.OrdinalIgnoreCase)))
         {
-            StatusMessage = $"Ya existe una grabación programada llamada «{job.Title}». Elige otro nombre.";
+            StatusMessage = Loc.F("Sch_Err_DuplicateTitle", job.Title);
             return;
         }
 
@@ -419,7 +420,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         var clash = existing.FirstOrDefault(e => e.Enabled && ScheduleValidator.Overlaps(job, e, now));
         if (clash is not null)
         {
-            StatusMessage = $"Choca con «{clash.Title}» en el Canal {SelectedChannel.Key}. Ajusta la hora o la duración.";
+            StatusMessage = Loc.F("Sch_Err_Clash", clash.Title, SelectedChannel.Key);
             return;
         }
 
@@ -429,10 +430,10 @@ public sealed partial class ScheduleViewModel : ObservableObject
 
         // Avisos suaves (no bloquean el guardado).
         var notes = new List<string>();
-        if (SegmentEnabled && TimeSpan.FromMinutes(SegmentMinutes) >= duration) notes.Add("los segmentos son ≥ que la grabación (un solo archivo)");
-        if (ScheduleValidator.SpansToNextDay(job)) notes.Add($"termina al día siguiente a las {(job.RunAt + job.Duration!.Value).ToLocalTime():HH:mm}");
-        StatusMessage = $"{(wasEditing ? "Actualizada" : "Programada")} «{job.Title}» en Canal {SelectedChannel.Key}."
-                        + (notes.Count > 0 ? "  Aviso: " + string.Join("; ", notes) + "." : "");
+        if (SegmentEnabled && TimeSpan.FromMinutes(SegmentMinutes) >= duration) notes.Add(Loc.T("Sch_Note_SegmentsSingleFile"));
+        if (ScheduleValidator.SpansToNextDay(job)) notes.Add(Loc.F("Sch_Note_EndsNextDayAt", (job.RunAt + job.Duration!.Value).ToLocalTime().ToString("HH:mm")));
+        StatusMessage = Loc.F("Sch_Msg_Saved", Loc.T(wasEditing ? "Sch_Saved_Updated" : "Sch_Saved_Scheduled"), job.Title, SelectedChannel.Key)
+                        + (notes.Count > 0 ? Loc.T("Sch_Notice") + string.Join("; ", notes) + "." : "");
         if (wasEditing) { EditingJobId = null; ResetForm(); }   // sale del modo edición y limpia el formulario
         await RefreshAsync();
     }
@@ -467,7 +468,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
         SegmentEnabled = j.SegmentMinutes is > 0;
         SegmentMinutes = j.SegmentMinutes is { } m && m > 0 ? m : 10;
 
-        StatusMessage = $"Editando «{j.Title}». Cambia lo necesario y pulsa «Guardar cambios».";
+        StatusMessage = Loc.F("Sch_Msg_Editing", j.Title);
     }
 
     /// <summary>Cancela la edición en curso y limpia el formulario.</summary>
@@ -476,13 +477,13 @@ public sealed partial class ScheduleViewModel : ObservableObject
     {
         EditingJobId = null;
         ResetForm();
-        StatusMessage = "Edición cancelada.";
+        StatusMessage = Loc.T("Sch_Msg_EditCancelled");
     }
 
     /// <summary>Devuelve el formulario a sus valores por defecto.</summary>
     private void ResetForm()
     {
-        Title = "Grabación programada";
+        Title = Loc.T("Sch_DefaultTitle");
         SelectedChannel = Channels.FirstOrDefault();
         SelectedRecurrence = Recurrences[0];
         SelectedDate = _clock.UtcNow.ToLocalTime().Date;
@@ -494,9 +495,9 @@ public sealed partial class ScheduleViewModel : ObservableObject
 
     private static string DescribeInterval(TimeSpan? iv)
         => iv is not { } t ? "—"
-           : (int)t.TotalDays == 1 ? "cada día"
-           : t.TotalDays >= 1 ? $"cada {(int)t.TotalDays} días"
-           : $"cada {(int)t.TotalHours} h";
+           : (int)t.TotalDays == 1 ? Loc.T("Sch_Interval_Daily")
+           : t.TotalDays >= 1 ? Loc.F("Sch_Interval_Days", (int)t.TotalDays)
+           : Loc.F("Sch_Interval_Hours", (int)t.TotalHours);
 
     [RelayCommand]
     private async Task Delete(ScheduledJobRow? row)
@@ -517,24 +518,24 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private static string DescribeWhen(ScheduledJob j)
     {
         string time = j.RunAt.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
-        string dur = j.Duration is { } d ? $" · {(int)d.TotalMinutes} min" : "";
-        string seg = j.SegmentMinutes is { } sm && sm > 0 ? $" · segmentos {sm} min" : "";
+        string dur = j.Duration is { } d ? Loc.F("Sch_Desc_Minutes", (int)d.TotalMinutes) : "";
+        string seg = j.SegmentMinutes is { } sm && sm > 0 ? Loc.F("Sch_Desc_Segments", sm) : "";
         string head = j.Recurrence switch
         {
-            RecurrenceKind.Once => $"Una vez · {j.RunAt.ToLocalTime().ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} {time}",
-            RecurrenceKind.Daily => $"Cada día · {time}",
-            RecurrenceKind.Weekly => $"{DescribeDays(j.Weekdays)} · {time}",
+            RecurrenceKind.Once => Loc.F("Sch_Desc_Once", j.RunAt.ToLocalTime().ToString("dd/MM/yyyy", CultureInfo.InvariantCulture), time),
+            RecurrenceKind.Daily => Loc.F("Sch_Desc_Daily", time),
+            RecurrenceKind.Weekly => Loc.F("Sch_Desc_Weekly", DescribeDays(j.Weekdays), time),
             _ => time,
         };
         string spans = ScheduleValidator.SpansToNextDay(j)
-            ? $" · termina {(j.RunAt + j.Duration!.Value).ToLocalTime():HH:mm} del día sig."
+            ? Loc.F("Sch_Desc_EndsNextDay", (j.RunAt + j.Duration!.Value).ToLocalTime().ToString("HH:mm"))
             : "";
         return head + dur + seg + spans;
     }
 
     private static string DescribeDays(Weekdays w)
     {
-        if (w == Weekdays.EveryDay) return "Todos los días";
+        if (w == Weekdays.EveryDay) return Loc.T("Sch_EveryDay");
         var parts = new List<string>();
         if (w.HasFlag(Weekdays.Monday)) parts.Add("L");
         if (w.HasFlag(Weekdays.Tuesday)) parts.Add("M");

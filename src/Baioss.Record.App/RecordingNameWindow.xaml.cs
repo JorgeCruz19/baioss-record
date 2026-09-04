@@ -15,8 +15,8 @@ public partial class RecordingNameWindow : Window
     public RecordingNameWindow(string channelKey, string suggested)
     {
         InitializeComponent();
-        Title = $"Guardar grabación — Canal {channelKey}";
-        SubtitleText.Text = $"Canal {channelKey} · ponle nombre para guardarla";
+        Title = Localization.Loc.F("RecName_WindowTitle", channelKey);
+        SubtitleText.Text = Localization.Loc.F("RecName_Subtitle", channelKey);
         NameBox.Text = suggested;
         // Pre-selecciona el texto sugerido para que el operador pueda sobrescribirlo escribiendo directamente.
         Loaded += (_, _) => { NameBox.Focus(); NameBox.SelectAll(); };

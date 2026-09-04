@@ -1,3 +1,4 @@
+using Baioss.Record.App.Localization;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -73,7 +74,7 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
         if (ArchiveInsteadOfDelete && string.IsNullOrWhiteSpace(ArchivePath))
         {
             StatusIsError = true;
-            StatusMessage = "⚠ Indica una carpeta de archivado, o desmarca «Archivar en otra carpeta».";
+            StatusMessage = Loc.T("Sto_Msg_NeedArchiveFolder");
             return;
         }
 
@@ -102,7 +103,7 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
             || clean.Action != s.Action;
         StatusIsError = false;
         StatusMessage = adjusted
-            ? "✔ Guardado. Algunos valores se ajustaron al rango válido (aviso ≤ crítico ≤ emergencia · mín. 5 min · % 0–100)."
-            : "✔ Ajustes guardados y aplicados (los servicios los usarán en su próximo ciclo).";
+            ? Loc.T("Sto_Msg_SavedAdjusted")
+            : Loc.T("Sto_Msg_Saved");
     }
 }

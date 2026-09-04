@@ -1,3 +1,4 @@
+using Baioss.Record.App.Localization;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
@@ -54,8 +55,8 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
 
         Categories = new ObservableCollection<CategoryFilter>(new[]
         {
-            new CategoryFilter("Todos", null),
-            new CategoryFilter("★ Favoritos", null, true),
+            new CategoryFilter(Loc.T("Pre_Cat_All"), null),
+            new CategoryFilter(Loc.T("Pre_Cat_Favorites"), null, true),
             new CategoryFilter("MPEG-2", PresetCategory.Mpeg2),
             new CategoryFilter("H.264", PresetCategory.H264),
             new CategoryFilter("H.265 / HEVC", PresetCategory.H265),
@@ -93,27 +94,32 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
 
     private static string BuildDetail(EncodingPreset p)
     {
-        string res = p is { Width: { } w, Height: { } h } ? $"{w}×{h}" : "nativa";
-        string fps = p.FrameRateNum > 0 ? (p.FrameRateNum / (double)p.FrameRateDen).ToString("0.###") : "fuente";
-        string max = p.MaxBitrateMbps > 0 ? $" (máx {p.MaxBitrateMbps:0.#})" : "";
+        string res = p is { Width: { } w, Height: { } h } ? $"{w}×{h}" : Loc.T("Pre_Native");
+        string fps = p.FrameRateNum > 0 ? (p.FrameRateNum / (double)p.FrameRateDen).ToString("0.###") : Loc.T("Pre_SourceFps");
+        string max = p.MaxBitrateMbps > 0 ? Loc.F("Pre_Max", p.MaxBitrateMbps.ToString("0.#")) : "";
         string vbr = p.AudioOnly ? "—" : $"{p.VideoBitrateMbps:0.#} Mbps{max}";
+
+        // Las etiquetas se RELLENAN a un ancho fijo en vez de escribir los espacios a mano: traducidas cambian
+        // de longitud y, con espacios fijos, la columna de valores quedaba desalineada en inglés.
+        static string Row(string labelKey, string value) => Loc.T(labelKey).PadRight(15) + value;
+
         return string.Join('\n', new[]
         {
-            $"Contenedor:    {p.Container}",
-            $"Solo audio:    {(p.AudioOnly ? "sí" : "no")}",
-            $"Códec video:   {(p.AudioOnly ? "—" : p.VideoCodec.ToString())}",
-            $"Resolución:    {(p.AudioOnly ? "—" : res)}",
-            $"FPS:           {(p.AudioOnly ? "—" : fps)}",
-            $"Bitrate:       {vbr}",
-            $"GOP:           {(p.AudioOnly ? "—" : p.GopSize.ToString())}",
-            $"Pixel format:  {(p.AudioOnly ? "—" : p.PixelFormat.ToString())}",
-            $"Escaneo:       {(p.AudioOnly ? "—" : p.ScanType.ToString())}",
-            $"Control tasa:  {(p.AudioOnly ? "—" : p.RateControl.ToString())}",
-            "— Audio —",
-            $"Códec:         {p.AudioCodec}",
-            $"Canales:       {p.AudioLayout} ({p.AudioChannels} ch)",
-            $"Sample rate:   {p.AudioSampleRate} Hz",
-            $"Bitrate audio: {p.AudioBitrateKbps} kbps",
+            Row("Pre_Lbl_Container", p.Container.ToString()),
+            Row("Pre_Lbl_AudioOnly", p.AudioOnly ? Loc.T("Pre_Yes") : Loc.T("Pre_No")),
+            Row("Pre_Lbl_VideoCodec", p.AudioOnly ? "—" : p.VideoCodec.ToString()),
+            Row("Pre_Lbl_Resolution", p.AudioOnly ? "—" : res),
+            Row("Pre_Lbl_Fps", p.AudioOnly ? "—" : fps),
+            Row("Pre_Lbl_Bitrate", vbr),
+            Row("Pre_Lbl_Gop", p.AudioOnly ? "—" : p.GopSize.ToString()),
+            Row("Pre_Lbl_PixelFormat", p.AudioOnly ? "—" : p.PixelFormat.ToString()),
+            Row("Pre_Lbl_Scan", p.AudioOnly ? "—" : p.ScanType.ToString()),
+            Row("Pre_Lbl_RateControl", p.AudioOnly ? "—" : p.RateControl.ToString()),
+            Loc.T("Pre_Lbl_AudioSection"),
+            Row("Pre_Lbl_AudioCodec", p.AudioCodec.ToString()),
+            Row("Pre_Lbl_AudioChannels", $"{p.AudioLayout} ({p.AudioChannels} ch)"),
+            Row("Pre_Lbl_SampleRate", $"{p.AudioSampleRate} Hz"),
+            Row("Pre_Lbl_AudioBitrate", $"{p.AudioBitrateKbps} kbps"),
         });
     }
 
@@ -173,7 +179,7 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
     private void Delete()
     {
         if (SelectedPreset is not { IsBuiltIn: false } preset) return;
-        if (MessageBox.Show($"¿Eliminar el preset '{preset.Name}'?", "Confirmar",
+        if (MessageBox.Show(Loc.F("Pre_Confirm_Delete", preset.Name), Loc.T("Pre_Confirm_Title"),
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
             _store.Delete(preset.Id);
     }
@@ -213,7 +219,7 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
         var target = _resolveChannel?.Invoke(TargetChannel!.ChannelId) ?? TargetChannel!;
         if (target is not { IsConfigurable: true, IsRecording: false })
         {
-            StatusMessage = $"El Canal {target.Key} no admite aplicar el preset ahora (¿grabando o no configurable?).";
+            StatusMessage = Loc.F("Pre_Msg_CannotApply", target.Key);
             return;
         }
         target.ApplyPreset(SelectedPreset!);
