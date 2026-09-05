@@ -16,19 +16,19 @@ License»*. Esas dos condiciones se traducen en lo siguiente.
 | Obligación (fuente) | Dónde se cumple |
 |---|---|
 | Enlace a `https://ndi.video/` **cerca de donde NDI se usa o se selecciona** en el producto (SDK Doc., §License) | Ventana **🎛 Entradas**, pie: texto de marca + enlace pulsable |
-| Enlace a `https://ndi.video/` en **la documentación** | `MANUAL-USUARIO.md` (§1.2) y este archivo |
-| Mención *«NDI® es una marca registrada de Vizrt NDI AB»* en la **primera aparición** de la marca en cada documento y allí donde se den atribuciones | Ventana de Entradas, `AVISOS-TERCEROS.txt`, `EULA.txt` §7.2, `MANUAL-USUARIO.md` |
+| Enlace a `https://ndi.video/` en **la documentación** | `MANUAL-USUARIO.md` y `USER-MANUAL.md` (§1.3) y este archivo |
+| Mención *«NDI® es una marca registrada de Vizrt NDI AB»* en la **primera aparición** de la marca en cada documento y allí donde se den atribuciones | Ventana de Entradas, `AVISOS-TERCEROS.txt` + `THIRD-PARTY-NOTICES.txt`, `EULA.txt` / `EULA-EN.txt` §7.2, y los dos manuales |
 | Incluir `Processing.NDI.Lib.Licenses.txt` junto al binario (SDK Doc., §22 *3rd party rights*) | Lo copia el `.csproj` desde el NDI Runtime instalado, junto al `.exe` |
 | No instalar las DLL de NDI en el *system path*, sino en la carpeta de la aplicación (SDK Doc., §License) | Van junto al ejecutable; el instalador no toca el PATH |
 | No distribuir las **herramientas** NDI (solo enlazarlas) | No se distribuyen |
-| Que el contrato de distribución prohíba modificar, hacer ingeniería inversa, eludir limitaciones técnicas y suprimir avisos; que incluya descargo de garantía y de responsabilidad a favor de NDI y sus licenciantes; y cumplimiento de control de exportaciones de EE. UU. (Licencia SDK, §3.d) | `EULA.txt` §7.2 |
-| No sugerir patrocinio ni afiliación de NDI (Licencia SDK, §4.f) | Declarado expresamente en `AVISOS-TERCEROS.txt` y en el EULA |
+| Que el contrato de distribución prohíba modificar, hacer ingeniería inversa, eludir limitaciones técnicas y suprimir avisos; que incluya descargo de garantía y de responsabilidad a favor de NDI y sus licenciantes; y cumplimiento de control de exportaciones de EE. UU. (Licencia SDK, §3.d) | `EULA.txt` §7.2 y `EULA-EN.txt` §7.2 (las dos versiones del contrato) |
+| No sugerir patrocinio ni afiliación de NDI (Licencia SDK, §4.f) | Declarado expresamente en los avisos de terceros (los dos idiomas) y en el EULA |
 
 ### Lo que queda en tus manos (no puedo hacerlo yo)
 
 1. **Aceptar la licencia del SDK** — ya lo hiciste al instalarlo y usarlo; conviene que conserves copia del
    PDF (`NDI SDK License Agreement.pdf`) con la versión del SDK que empleas.
-2. **Validación del abogado** de la cláusula 7.2 del EULA (redactada, pendiente de revisión).
+2. **Validación del abogado** de la cláusula 7.2 del EULA (redactada, pendiente de revisión) **en sus dos versiones**, `EULA.txt` y `EULA-EN.txt`.
 3. **Mantener la librería actualizada.** La licencia (§2.b) pide que el producto incorpore *«la última
    versión del SDK disponible»* en el momento de distribuir. Hoy se usa **NDI 6**. Conviene revisarlo en
    cada versión que publiques.

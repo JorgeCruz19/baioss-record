@@ -1,8 +1,10 @@
-BAIOSS RECORD — AVISOS SOBRE COMPONENTES DE TERCEROS
+﻿BAIOSS RECORD — AVISOS SOBRE COMPONENTES DE TERCEROS
 ================================================================================
 
 Baioss Record utiliza los siguientes componentes de terceros. Este archivo recoge sus
 atribuciones y avisos de licencia.
+
+(Hay una versión en inglés de este mismo archivo en THIRD-PARTY-NOTICES.txt.)
 
 
 NDI®

@@ -1,4 +1,4 @@
-BAIOSS RECORD — FALTA INSTALAR FFMPEG (paso obligatorio, se hace una sola vez)
+﻿BAIOSS RECORD — FALTA INSTALAR FFMPEG (paso obligatorio, se hace una sola vez)
 ================================================================================
 
 Baioss Record usa FFmpeg como motor de captura y grabación. Por motivos de licencia de ese
@@ -7,6 +7,8 @@ en ESTA carpeta. Es un momento y no hay que instalar nada.
 
 MIENTRAS FALTE, el programa abre y puedes configurarlo, pero NO GRABA (arranca en modo de
 demostración y te avisa al abrirse).
+
+(There is an English version of this file in FFMPEG-README.txt, in this same folder.)
 
 
 QUÉ TIENES QUE HACER

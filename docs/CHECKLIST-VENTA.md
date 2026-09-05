@@ -15,7 +15,7 @@ build de venta, manual de usuario y las auditorías de grabación 24/7 y de lice
 
 **Decisión tomada: la opción A — no se empaqueta; lo aporta el cliente.** Implementado y verificado:
 el instalador excluye `tools\ffmpeg\*` y en su lugar crea la carpeta (con permiso de escritura para el
-usuario) con un `FFMPEG-LEEME.txt`; la última pantalla del asistente lo indica y ofrece abrir esa carpeta;
+usuario) con un `FFMPEG-LEEME.txt` y su gemelo `FFMPEG-README.txt`; la última pantalla del asistente lo indica y ofrece abrir esa carpeta;
 y la aplicación avisa con un cuadro de diálogo, indicando la ruta exacta, mientras falte. El instalador bajó
 de 135 MB a **62 MB**. Detalle completo en `FFMPEG.md`.
 
@@ -63,7 +63,7 @@ NDI y la aplicación cumple los de la sección *License*. Todo eso está ya impl
 - Atribución de marca y **enlace a `ndi.video` en la ventana 🎛 Entradas** (donde se selecciona NDI), en el
   manual, en el EULA y en `AVISOS-TERCEROS.txt`.
 - `Processing.NDI.Lib.Licenses.txt` se distribuye junto al ejecutable (manual §22).
-- **`AVISOS-TERCEROS.txt`** nuevo en la carpeta del programa (NDI, FFmpeg, Blackmagic, .NET/NuGet).
+- **`AVISOS-TERCEROS.txt`** nuevo en la carpeta del programa (NDI, FFmpeg, Blackmagic, .NET/NuGet), con su versión en inglés `THIRD-PARTY-NOTICES.txt` al lado.
 - **EULA §7.2** con las obligaciones que la licencia de NDI (§3.d) exige trasladar al contrato.
 
 Desglose completo, y lo que queda en tus manos (validación del abogado, mantener el SDK al día, avisar a
@@ -74,10 +74,16 @@ Vizrt de la aplicación comercial —opcional—), en **`TERCEROS.md`**.
 `installer\EULA.txt` es una **base de trabajo** y lo dice en una nota al final: faltan razón social, domicilio
 y jurisdicción. Vender con texto legal de plantilla es riesgo puro.
 
-Puntos concretos que conviene señalarle al abogado: la **cláusula 7.2 (NDI)**, que no es opcional —la exige la
+**Son DOS documentos**: `installer\EULA.txt` (español) y `installer\EULA-EN.txt` (inglés), y el asistente
+muestra el que corresponda al idioma elegido. El abogado tiene que revisar **los dos**, no solo uno.
+
+Puntos concretos que conviene señalarle: la **cláusula 7.2 (NDI)**, que no es opcional —la exige la
 licencia del SDK de NDI, ver `TERCEROS.md`—; la **7.3**, sobre licencias de patentes de los formatos de
-compresión (AAC/H.264/H.265), que puede tener implicaciones según mercado y volumen; y la cláusula 3, que
-promete reemisión de licencia en caso de avería del equipo (comprueba que encaja con tu operativa).
+compresión (AAC/H.264/H.265), que puede tener implicaciones según mercado y volumen; la cláusula 3, que
+promete reemisión de licencia en caso de avería del equipo (comprueba que encaja con tu operativa); y la
+**cláusula 9**, que hoy dice que en caso de discrepancia prevalece la versión española — en algunas
+jurisdicciones no se puede vincular a un consumidor con un contrato en un idioma que no habla, así que es una
+decisión suya, no técnica.
 
 ### 4. Custodia de la clave privada y registro de licencias emitidas
 

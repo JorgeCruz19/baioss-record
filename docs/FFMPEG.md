@@ -3,7 +3,7 @@
 ## La decisión
 
 **Baioss Record NO empaqueta FFmpeg.** El instalador crea la carpeta `tools\ffmpeg\` con un archivo
-`FFMPEG-LEEME.txt`, y es el **cliente** quien descarga los binarios y los deja ahí.
+`FFMPEG-LEEME.txt` / `FFMPEG-README.txt`, y es el **cliente** quien descarga los binarios y los deja ahí.
 
 **El motivo es legal, no técnico.** El build de FFmpeg que se usa en desarrollo está compilado con
 `--enable-gpl` **junto a** `--enable-nonfree --enable-libfdk-aac --enable-decklink`, y su propio archivo de
@@ -23,7 +23,7 @@ es perfectamente legal, y es lo que hace todo el mundo que usa FFmpeg con tarjet
 
 1. **Al terminar la instalación**, la última pantalla del asistente le dice que falta ese paso, con la ruta
    exacta, y una casilla marcada abre esa carpeta en el Explorador.
-2. **En la carpeta** encuentra `FFMPEG-LEEME.txt`: qué descargar, dónde dejarlo y cómo comprobar que la
+2. **En la carpeta** encuentra `FFMPEG-LEEME.txt` (o `FFMPEG-README.txt` en inglés): qué descargar, dónde dejarlo y cómo comprobar que la
    compilación sirve (incluido el comando que lista las tarjetas DeckLink).
 3. **Si abre el programa sin haberlo hecho**, aparece un aviso claro —con la ruta— explicando que arranca en
    modo de demostración y que no grabará hasta instalarlo. El aviso se repite en cada arranque mientras falte;

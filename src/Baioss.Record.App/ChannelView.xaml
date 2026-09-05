@@ -157,7 +157,7 @@
                         </StackPanel>
                         <StackPanel Visibility="{Binding NotRecording, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="{loc:T Ch_State}" Style="{StaticResource StatLabel}"/>
-                            <TextBlock Text="{Binding RecordingState}" Style="{StaticResource StatValue}"/>
+                            <TextBlock Text="{Binding RecordingStateText}" Style="{StaticResource StatValue}"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -251,10 +251,10 @@
                                        Foreground="White">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
-                                        <Setter Property="Text" Value="Inactivo"/>
+                                        <Setter Property="Text" Value="{loc:T State_Idle}"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsRecording}" Value="True">
-                                                <Setter Property="Text" Value="Grabando"/>
+                                                <Setter Property="Text" Value="{loc:T State_Recording}"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>

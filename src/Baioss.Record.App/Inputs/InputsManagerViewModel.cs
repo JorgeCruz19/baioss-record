@@ -168,7 +168,7 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     {
         if (!CanRebind) return;
         IsBusy = true;
-        StatusMessage = "Detectando dispositivos…";
+        StatusMessage = Loc.T("In_Msg_Detecting");
         try
         {
             VideoDevices.Clear();
@@ -211,14 +211,14 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error al detectar: {ex.Message}";
+            StatusMessage = Loc.F("In_Msg_DetectError", ex.Message);
         }
         finally { IsBusy = false; }
     }
 
     internal async Task ApplyRowAsync(ChannelInputRow row)
     {
-        if (!CanRebind) { StatusMessage = "No disponible en modo simulado."; return; }
+        if (!CanRebind) { StatusMessage = Loc.T("In_Msg_NotAvailableSimulated"); return; }
         if (row.SelectedDevice is null) { StatusMessage = Loc.F("In_Msg_PickVideo", row.Key); return; }
 
         IsBusy = true;
@@ -229,11 +229,11 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             await _apply(row.ChannelId, def);
             row.CurrentInput = row.SelectedDevice.Label; // refleja de inmediato la entrada ahora activa
             var mode = row.FormatEnabled && row.SelectedFormat is { Code.Length: > 0 } ? $" · {row.SelectedFormat.Description}" : "";
-            StatusMessage = $"Canal {row.Key} → {row.SelectedDevice.Label}{mode}.";
+            StatusMessage = Loc.F("In_Msg_Applied", row.Key, row.SelectedDevice.Label, mode);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error al aplicar en Canal {row.Key}: {ex.Message}";
+            StatusMessage = Loc.F("In_Msg_ApplyError", row.Key, ex.Message);
         }
         finally { IsBusy = false; }
     }

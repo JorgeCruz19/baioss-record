@@ -1,4 +1,4 @@
-CONTRATO DE LICENCIA DE USO — BAIOSS RECORD
+﻿CONTRATO DE LICENCIA DE USO — BAIOSS RECORD
 
 IMPORTANTE: lee este contrato antes de instalar. Al instalar y usar Baioss Record
 aceptas las condiciones siguientes.
@@ -72,6 +72,10 @@ aceptas las condiciones siguientes.
    social, sin perjuicio de los derechos que la normativa de consumo reconozca al
    cliente.
 
+9. IDIOMA
+   Este documento se entrega también en inglés (EULA-EN.txt). En caso de discrepancia
+   entre ambas versiones prevalece la española.
+
 Para soporte o para adquirir licencias, ponte en contacto con tu proveedor de Baioss.
 
 --------------------------------------------------------------------------------
@@ -79,6 +83,12 @@ NOTA PARA EL EDITOR DE ESTE ARCHIVO: este texto es una BASE de trabajo, no un
 documento revisado por un abogado. Antes de vender el producto conviene que lo
 revise un profesional y que se sustituyan los datos de la empresa (razón social,
 domicilio y jurisdicción).
+
+Hay una traducción al inglés en EULA-EN.txt, que es la que muestra el instalador
+cuando va en ese idioma: LAS DOS VERSIONES HAY QUE MANTENERLAS A LA PAR. Si cambias
+una cláusula aquí, cámbiala allí. La cláusula 9 (cuál prevalece) es decisión del
+abogado: en algunas jurisdicciones no se puede vincular a un consumidor con una
+versión en un idioma que no habla.
 
 La cláusula 7.2 NO es opcional ni decorativa: la licencia del SDK de NDI (apartado
 3.d) EXIGE que el contrato bajo el que se distribuya el producto contenga esas

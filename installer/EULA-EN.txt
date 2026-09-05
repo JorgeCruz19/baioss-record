@@ -1,0 +1,98 @@
+﻿END USER LICENSE AGREEMENT — BAIOSS RECORD
+
+IMPORTANT: read this agreement before installing. By installing and using Baioss
+Record you accept the terms set out below.
+
+1. LICENSE
+   Baioss grants the customer a non-exclusive, non-transferable right to use Baioss
+   Record on ONE (1) computer per license purchased. The license is perpetual: it
+   does not expire.
+
+2. TRIAL PERIOD
+   The program may be used for FOURTEEN (14) days with all of its features without
+   purchasing a license. Once that period ends, no new recordings can be started
+   until a license is activated. Recordings already made remain the property of the
+   customer and stay accessible.
+
+3. BINDING TO THE COMPUTER
+   Each license is bound to the computer it is issued for and will not work on any
+   other. Should the computer be replaced or fail, the customer may request that the
+   license be re-issued for the new computer.
+
+4. RESTRICTIONS
+   The program may not be resold, rented, sublicensed or redistributed, nor
+   decompiled or reverse engineered, except to the extent expressly permitted by
+   applicable law.
+
+5. OWNERSHIP OF RECORDED MATERIAL
+   Recordings produced with the program are the exclusive property of the customer.
+   Baioss does not access them and claims no right whatsoever over them. The program
+   works offline and does not send any material to any server.
+
+6. WARRANTY AND LIABILITY
+   The program is provided "as is". To the extent permitted by applicable law, Baioss
+   shall not be liable for loss of material, loss of profit or indirect damages
+   arising from the use of the program. The customer is responsible for verifying
+   their recordings and for keeping backups of critical material.
+
+7. THIRD-PARTY COMPONENTS
+   The attributions and license notices of the third-party components are set out in
+   the THIRD-PARTY-NOTICES.txt file that accompanies the program.
+
+   7.1. FFmpeg. The program uses FFmpeg as its recording engine but does NOT include
+        it: the customer downloads and installs it themselves, subject to the terms
+        of the build they choose.
+
+   7.2. NDI®. NDI® is a registered trademark of Vizrt NDI AB. The program
+        incorporates the NDI runtime library. With respect to that library, and to
+        any other component of the NDI SDK included in the program, the customer
+        undertakes to:
+
+        a) Not modify them, in whole or in part.
+        b) Not reverse engineer, decompile or disassemble those components or the
+           protocols they use, nor attempt to do so.
+        c) Not circumvent any technical limitations they incorporate.
+        d) Not remove, obscure or alter any proprietary notices or labels they
+           contain.
+        e) Comply with United States export control regulations, refraining from
+           exporting or re-exporting the program in contravention of them.
+
+        Vizrt NDI AB and its licensors give no warranty of any kind regarding those
+        components and, to the extent permitted by applicable law, shall not be
+        liable for direct, indirect, incidental or consequential damages arising from
+        the use of the program. Baioss Record is not a product of Vizrt NDI AB and is
+        not sponsored by that company. Copyright in the NDI SDK and its runtime
+        library belongs to their respective owners.
+
+   7.3. Compression formats. The use of certain formats (for example AAC, H.264 or
+        H.265) may be subject to third-party patent licenses, which must be obtained
+        by whoever commercially exploits the product.
+
+8. GOVERNING LAW
+   This agreement is governed by the law of the country in which Baioss has its
+   registered office, without prejudice to any rights granted to the customer under
+   consumer protection legislation.
+
+9. LANGUAGE
+   This document is an English translation of the Spanish original (EULA.txt, also
+   supplied with the program). In the event of any discrepancy between the two
+   versions, the Spanish version shall prevail.
+
+For support or to purchase licenses, please contact your Baioss supplier.
+
+--------------------------------------------------------------------------------
+NOTE FOR WHOEVER EDITS THIS FILE: this text is a working BASIS, not a document
+reviewed by a lawyer, and it is a translation of EULA.txt — the two files must be
+kept in step. Before selling the product, have a professional review BOTH versions
+and replace the company details (registered name, address and jurisdiction).
+
+Clause 9 (which version prevails) is a decision for that lawyer: in some
+jurisdictions a consumer cannot be bound by a version in a language they do not
+speak. It is left here stating that the Spanish version prevails only so that the
+question is not forgotten.
+
+Clause 7.2 is neither optional nor decorative: the NDI SDK license (section 3.d)
+REQUIRES the agreement under which the product is distributed to contain those
+obligations, because the NDI runtime library is included. Do not remove or trim it
+without replacing it with an equivalent; see docs\TERCEROS.md.
+--------------------------------------------------------------------------------

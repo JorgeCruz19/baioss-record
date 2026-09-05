@@ -13,6 +13,7 @@ using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.App.Demo;
+using Baioss.Record.App.Localization;
 using Baioss.Record.App.Preview;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure;
@@ -202,11 +203,13 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     /// </summary>
     public async Task RebindAsync(Guid channelId, InputSource newDef, CancellationToken ct = default)
     {
-        if (!CanRebind) throw new InvalidOperationException("La reasignación de entrada no está disponible (modo simulado).");
+        // Estos tres mensajes van TRADUCIDOS: no son diagnóstico interno, la ventana de Entradas los muestra
+        // tal cual al operador (`ex.Message` en su barra de estado). Lo que sí queda en español es el registro.
+        if (!CanRebind) throw new InvalidOperationException(Loc.T("Rebind_Err_Simulated"));
         if (!_keys.TryGetValue(channelId, out var key)) throw new KeyNotFoundException($"Canal {channelId} no registrado.");
         if (_engines.TryGetValue(channelId, out var current) &&
             current.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
-            throw new InvalidOperationException("Detén la grabación antes de cambiar la entrada del canal.");
+            throw new InvalidOperationException(Loc.T("Rebind_Err_Recording"));
 
         // Serializa las reasignaciones (una a la vez): la comprobación de exclusividad y el intercambio de motor
         // deben ser ATÓMICOS frente a otro rebind concurrente. (Auditoría N8.)
@@ -218,8 +221,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             foreach (var (otherId, otherDef) in _sources)
                 if (otherId != channelId && DeviceExclusivity.Conflicts(newDef, otherDef))
                     throw new InvalidOperationException(
-                        $"«{newDef.Name}» ya está asignada al Canal {_keys.GetValueOrDefault(otherId, "?")}. " +
-                        "Un dispositivo de captura no admite dos canales a la vez.");
+                        Loc.F("Rebind_Err_Busy", newDef.Name, _keys.GetValueOrDefault(otherId, "?")));
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(RebindTimeout);
@@ -234,7 +236,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
                     key, newDef.Name, RebindTimeout.TotalSeconds);
                 await RestoreChannelAsync(channelId, key).ConfigureAwait(false);
                 throw new TimeoutException(
-                    $"La entrada «{newDef.Name}» no respondió en {RebindTimeout.TotalSeconds:0} s; se restauró la entrada anterior del Canal {key}.");
+                    Loc.F("Rebind_Err_Timeout", newDef.Name, RebindTimeout.TotalSeconds.ToString("0"), key));
             }
             catch (Exception ex)
             {

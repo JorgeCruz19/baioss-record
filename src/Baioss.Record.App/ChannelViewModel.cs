@@ -90,9 +90,26 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _recTimer;
     private DateTimeOffset? _recStartUtc;
 
-    [ObservableProperty] private RecordingState _recordingState;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RecordingStateText))]
+    private RecordingState _recordingState;
+
+    /// <summary>
+    /// El estado de grabación EN PALABRAS y traducido. Se enlaza esto y no <see cref="RecordingState"/>:
+    /// enlazar el enum directamente hace que WPF pinte su <c>ToString()</c> —«Idle», «Recording»—, que es el
+    /// nombre del símbolo en C# y no se traduce en ningún idioma.
+    /// </summary>
+    public string RecordingStateText => RecordingState switch
+    {
+        RecordingState.Starting  => Loc.T("State_Starting"),
+        RecordingState.Recording => Loc.T("State_Recording"),
+        RecordingState.Paused    => Loc.T("State_Paused"),
+        RecordingState.Stopping  => Loc.T("State_Stopping"),
+        _                        => Loc.T("State_Idle"),
+    };
     [ObservableProperty] private SignalState _signalState;
-    [ObservableProperty] private string _signalText = "SIN SEÑAL";
+    // El valor inicial se traduce igual que el resto: se ve durante el instante previo al primer estado del motor.
+    [ObservableProperty] private string _signalText = Loc.T("Ch_Signal_None");
     [ObservableProperty] private string _formatText = "—";
     /// <summary>Nombre de la ENTRADA (fuente) asignada al canal, para mostrarla en el preview.</summary>
     [ObservableProperty] private string _inputText = "—";
@@ -329,9 +346,10 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     private void OnLanguageChanged(object? sender, System.EventArgs e)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            OnPropertyChanged(nameof(DisplayName)); // es una propiedad calculada, no [ObservableProperty]
-            InitFromProfile();                      // ProfileText («Solo audio · …»)
-            Sync(_engine.Status);                   // el resto de textos salen del estado
+            OnPropertyChanged(nameof(DisplayName));        // es una propiedad calculada, no [ObservableProperty]
+            OnPropertyChanged(nameof(RecordingStateText)); // ídem; Sync no la refresca si el estado no cambió
+            InitFromProfile();                             // ProfileText («Solo audio · …»)
+            Sync(_engine.Status);                          // el resto de textos salen del estado
         });
 
     private void OnPreviewAudio(object? sender, (double Left, double Right) lr)

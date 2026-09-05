@@ -142,6 +142,17 @@ public static class Strings
         ["In_Msg_Found"] = "{0} entrada(s) de vídeo y {1} de audio detectadas.",
         ["In_Msg_PickVideo"] = "Canal {0}: elige una entrada de vídeo.",
         ["In_Msg_Applying"] = "Aplicando «{0}» al Canal {1}…",
+        ["In_Msg_Detecting"] = "Detectando dispositivos…",
+        ["In_Msg_DetectError"] = "Error al detectar: {0}",
+        ["In_Msg_NotAvailableSimulated"] = "No disponible en modo de demostración.",
+        ["In_Msg_Applied"] = "Canal {0} → {1}{2}.",
+        ["In_Msg_ApplyError"] = "Error al aplicar en Canal {0}: {1}",
+
+        // --- Reasignación de entrada (mensajes que acaban en la ventana de Entradas) ---
+        ["Rebind_Err_Simulated"] = "La reasignación de entrada no está disponible (modo de demostración).",
+        ["Rebind_Err_Recording"] = "Detén la grabación antes de cambiar la entrada del canal.",
+        ["Rebind_Err_Busy"] = "«{0}» ya está asignada al Canal {1}. Un dispositivo de captura no admite dos canales a la vez.",
+        ["Rebind_Err_Timeout"] = "La entrada «{0}» no respondió en {1} s; se restauró la entrada anterior del Canal {2}.",
 
         // --- Licencia ---
         ["Lic_Title"] = "Licencia",
@@ -538,6 +549,17 @@ public static class Strings
         ["In_Msg_Found"] = "{0} video input(s) and {1} audio input(s) detected.",
         ["In_Msg_PickVideo"] = "Channel {0}: choose a video input.",
         ["In_Msg_Applying"] = "Applying «{0}» to Channel {1}…",
+        ["In_Msg_Detecting"] = "Detecting devices…",
+        ["In_Msg_DetectError"] = "Detection failed: {0}",
+        ["In_Msg_NotAvailableSimulated"] = "Not available in demonstration mode.",
+        ["In_Msg_Applied"] = "Channel {0} → {1}{2}.",
+        ["In_Msg_ApplyError"] = "Could not apply to Channel {0}: {1}",
+
+        // --- Input rebinding (messages that end up in the Inputs window) ---
+        ["Rebind_Err_Simulated"] = "Changing the input is not available (demonstration mode).",
+        ["Rebind_Err_Recording"] = "Stop the recording before changing the channel's input.",
+        ["Rebind_Err_Busy"] = "«{0}» is already assigned to Channel {1}. A capture device cannot serve two channels at once.",
+        ["Rebind_Err_Timeout"] = "The input «{0}» did not respond within {1} s; Channel {2} was restored to its previous input.",
 
         // --- License ---
         ["Lic_Title"] = "License",
@@ -804,6 +826,6 @@ public static class Strings
         ["Dlg_AlreadyRunning"] = "Baioss Record is already running.",
         ["Dlg_StartFailed"] = "Baioss Record could not start:\n{0}",
         ["Dlg_Ffmpeg_Title"] = "Baioss Record — FFmpeg is missing",
-        ["Dlg_Ffmpeg_Body"] = "FFmpeg is missing; it is the recording engine.\n\nBaioss Record runs in demonstration mode and will NOT be able to record until you install it.\n\nCopy «ffmpeg.exe» and «ffprobe.exe» into this folder:\n{0}\n\nInstructions are in the FFMPEG-LEEME.txt file in that same folder.",
+        ["Dlg_Ffmpeg_Body"] = "FFmpeg is missing; it is the recording engine.\n\nBaioss Record runs in demonstration mode and will NOT be able to record until you install it.\n\nCopy ffmpeg.exe and ffprobe.exe into this folder:\n{0}\n\nInstructions are in the FFMPEG-README.txt file in that same folder.",
     };
 }

@@ -1,6 +1,8 @@
 # Manual de usuario — Baioss Record
 
 > Guía práctica para operar Baioss Record. Está escrita en lenguaje sencillo, pensada para el día a día del operador. No necesitas saber nada técnico para usar el programa.
+>
+> *(Hay una versión en inglés en `USER-MANUAL.md`; las dos se mantienen a la par.)*
 
 ---
 
