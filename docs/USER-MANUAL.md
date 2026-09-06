@@ -253,7 +253,36 @@ This is the list of **everything you have recorded**. It is for looking things u
 
 ---
 
-## 9. Useful concepts (a plain glossary)
+## 9. The activity log — the 📋 Activity button
+
+This is the **machine's memory**: what was recorded, who recorded it, how, why each recording ended… and also
+what **never** got recorded. It is there to answer questions after the fact, like *"why did last night's
+recording cut out at 3?"* or *"the 20:00 schedule left no file, what happened?"*.
+
+**Each row tells you** the date and time, a **level** (grey for routine, amber for warnings, red for errors),
+the **event** in plain words, the channel, the operator and the detail. For example:
+
+| Event | Detail |
+|---|---|
+| Recording started | Manual · Jorge |
+| Recording started | Scheduled «News 20:00» · 21-07-2026_News |
+| Recording ended | Stopped, the disk was running out · 1 h 12 min · 3 files · 22.4 GB |
+| Could not start | «News» · The destination folder is not writable |
+| Schedule skipped | «News» · The channel was already recording |
+
+**The filters at the top** narrow things down by period, channel, type (*Everything*, *Recordings only*,
+*Problems only*) and level. To review a whole night, the practical one is **Problems only**: it leaves just
+what went wrong.
+
+**⬇ Export** saves *what you are looking at* to a CSV file, with the filters applied. It opens in Excel and is
+what you would hand to a client or keep on file.
+
+> It is **read only**: nothing is deleted or changed here. Entries are kept for **30 days** and the oldest ones
+> retire on their own; that has nothing to do with your recordings, which are managed in 🗄 Storage.
+
+---
+
+## 10. Useful concepts (a plain glossary)
 
 - **Channel:** an independent recorder (A, B, C…). Each one has its own source, format and folder.
 - **Input / source:** where the video comes from (SDI card, camera, NDI…).
@@ -275,7 +304,7 @@ The program warns you with a banner over the preview when it detects:
 
 ---
 
-## 10. Tips and frequently asked questions
+## 11. Tips and frequently asked questions
 
 **How do I start recording a channel from scratch?**
 1. **🎛 Inputs** → assign the source to the channel and press Apply.

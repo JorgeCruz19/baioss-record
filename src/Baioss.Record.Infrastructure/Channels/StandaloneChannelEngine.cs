@@ -441,7 +441,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
                     bytes = _completedSessionSegments.Sum(s => s.SizeBytes);
                 }
                 await _bus.PublishAsync(
-                    new RecordingStopped(ChannelId, _session.Id, _session.Duration, reason, files, bytes), ct);
+                    new RecordingStopped(ChannelId, _session.Id, _session.Duration, reason, files, bytes, _session.Operator), ct);
             }
         }
 

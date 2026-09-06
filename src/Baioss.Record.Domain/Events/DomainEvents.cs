@@ -24,10 +24,12 @@ public sealed record RecordingStarted(
     Guid? ScheduledJobId = null, string? ScheduledJobTitle = null, string? RecordingName = null) : DomainEventBase;
 
 /// <summary>Terminó una grabación. <paramref name="Reason"/> es lo que responde a «¿por qué se cortó?»:
-/// parada del operador, fin de la franja programada, disco lleno, cierre de la aplicación…</summary>
+/// parada del operador, fin de la franja programada, disco lleno, cierre de la aplicación…
+/// <paramref name="Operator"/> se repite aquí (ya va en el inicio) para que la entrada de fin se lea SOLA:
+/// en una tabla de auditoría, «de quién era esta grabación» no debería exigir buscar su pareja.</summary>
 public sealed record RecordingStopped(
     Guid ChannelId, Guid SessionId, TimeSpan Duration, RecordingStopReason Reason,
-    int Files = 0, long TotalBytes = 0) : DomainEventBase;
+    int Files = 0, long TotalBytes = 0, string? Operator = null) : DomainEventBase;
 
 /// <summary>Una grabación NO llegó a arrancar (pre-vuelo, dispositivo, licencia…). Sin esto, un hueco en la
 /// programación no deja ni rastro en la auditoría: solo faltaría el archivo.</summary>

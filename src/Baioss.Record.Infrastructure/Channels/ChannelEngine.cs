@@ -129,7 +129,8 @@ public sealed class ChannelEngine : IChannelEngine
             _session.State = RecordingState.Idle;
             _session.StopReason = reason;
             await _sessions.UpdateAsync(_session, ct);
-            await _bus.PublishAsync(new RecordingStopped(_channel.Id, _session.Id, _session.Duration, reason), ct);
+            await _bus.PublishAsync(new RecordingStopped(
+                _channel.Id, _session.Id, _session.Duration, reason, Operator: _session.Operator), ct);
         }
         RaiseStatus();
     }

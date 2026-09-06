@@ -19,6 +19,8 @@
                             Command="{Binding OpenStorageSettingsCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="{loc:T Main_Btn_Recordings}" Margin="8,0,0,0"
                             Command="{Binding OpenRecordingsCommand}" Style="{StaticResource TransportButton}"/>
+                    <Button Content="{loc:T Main_Btn_Audit}" Margin="8,0,0,0"
+                            Command="{Binding OpenAuditCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="{loc:T Main_Btn_Inputs}" Margin="8,0,0,0"
                             Command="{Binding OpenInputsCommand}" Style="{StaticResource TransportButton}"/>
                     <Button Content="{loc:T Main_Btn_Schedule}" Margin="8,0,0,0"

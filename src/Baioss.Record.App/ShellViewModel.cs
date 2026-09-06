@@ -14,6 +14,7 @@ using Baioss.Record.Application.Storage;
 using Baioss.Record.App.Inputs;
 using Baioss.Record.App.Preview;
 using Baioss.Record.App.Presets;
+using Baioss.Record.App.Audit;
 using Baioss.Record.App.Recordings;
 using Baioss.Record.App.Scheduling;
 using Baioss.Record.App.Localization;
@@ -36,6 +37,7 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly ISchedulerService _scheduler;
     private readonly IClock _clock;
     private readonly IRecordingSessionRepository _sessions;
+    private readonly IEventLogRepository _events;
     private readonly IStorageStatusProvider _storageStatus;
     private readonly IStorageSettingsStore _storageSettings;
     // Opcional a propósito: si el subsistema de licencias no se pudo componer, la app funciona igual (sin restricciones).
@@ -53,7 +55,8 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
-        IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, ILicenseService? license = null)
+        IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, IEventLogRepository events,
+        ILicenseService? license = null)
     {
         _host = host;
         _previews = previews;
@@ -62,6 +65,7 @@ public sealed partial class ShellViewModel : ObservableObject
         _scheduler = scheduler;
         _clock = clock;
         _sessions = sessions;
+        _events = events;
         _storageStatus = storageStatus;
         _storageSettings = storageSettings;
         _license = license;
@@ -304,6 +308,19 @@ public sealed partial class ShellViewModel : ObservableObject
         var window = new RecordingsWindow
         {
             DataContext = viewModel,
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.Show();
+    }
+
+    [RelayCommand]
+    private void OpenAudit()
+    {
+        // Mismo snapshot ChannelId→Key que el historial: para etiquetar el canal de cada suceso y poblar el filtro.
+        var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key);
+        var window = new AuditWindow
+        {
+            DataContext = new AuditViewModel(_events, _clock, channelKeys),
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();

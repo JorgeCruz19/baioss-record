@@ -32,7 +32,7 @@ public sealed record ChannelOption(string Label, Guid? ChannelId)
 /// limpieza automática (Fase 1: cualquier valor ≠ Normal la excluye de la retención). Solo lectura + marcado;
 /// NO borra (el borrado es de la retención automática, opt-in). (Gestión de almacenamiento — Fase 4a.)
 /// </summary>
-public sealed partial class RecordingsViewModel : ObservableObject
+public sealed partial class RecordingsViewModel : ObservableObject, IDisposable
 {
     private readonly IRecordingSessionRepository _sessions;
     private readonly IClock _clock;
@@ -55,24 +55,62 @@ public sealed partial class RecordingsViewModel : ObservableObject
         _clock = clock;
         _channelKeys = channelKeys;
 
-        Ranges = new ObservableCollection<RangeOption>
-        {
-            new(Loc.T("Rec_Range_7"), 7),
-            new(Loc.T("Rec_Range_30"), 30),
-            new(Loc.T("Rec_Range_90"), 90),
-            new(Loc.T("Rec_Range_365"), 365),
-        };
-        Channels = new ObservableCollection<ChannelOption> { new("Todos los canales", null) };
-        foreach (var kv in channelKeys.OrderBy(k => k.Value, StringComparer.Ordinal))
-            Channels.Add(new ChannelOption($"Canal {kv.Value}", kv.Key));
+        Ranges = new ObservableCollection<RangeOption>();
+        Channels = new ObservableCollection<ChannelOption>();
+        BuildOptions();
 
         _selectedRange = Ranges[1];   // 30 días por defecto
         _selectedChannel = Channels[0];
+
+        // Las etiquetas de los filtros y los textos de cada fila se componen AQUÍ, no con enlaces {loc:T}:
+        // un cambio de idioma no los tocaría y la ventana quedaría a medias.
+        Baioss.Record.Application.Localization.Localizer.LanguageChanged += OnLanguageChanged;
+
         _ = LoadAsync();
     }
 
-    partial void OnSelectedRangeChanged(RangeOption value) => _ = LoadAsync();
-    partial void OnSelectedChannelChanged(ChannelOption value) => _ = LoadAsync();
+    /// <summary>(Re)construye las etiquetas de los filtros en el idioma vigente.</summary>
+    private void BuildOptions()
+    {
+        Ranges.Clear();
+        Ranges.Add(new RangeOption(Loc.T("Rec_Range_7"), 7));
+        Ranges.Add(new RangeOption(Loc.T("Rec_Range_30"), 30));
+        Ranges.Add(new RangeOption(Loc.T("Rec_Range_90"), 90));
+        Ranges.Add(new RangeOption(Loc.T("Rec_Range_365"), 365));
+
+        Channels.Clear();
+        Channels.Add(new ChannelOption(Loc.T("Rec_Filter_AllChannels"), null));
+        foreach (var kv in _channelKeys.OrderBy(k => k.Value, StringComparer.Ordinal))
+            Channels.Add(new ChannelOption(Loc.F("Rec_Filter_Channel", kv.Value), kv.Key));
+    }
+
+    /// <summary>Rehace los filtros conservando lo elegido y recarga la lista (los textos de cada fila se
+    /// componen al construirla).</summary>
+    private void OnLanguageChanged(object? sender, EventArgs e)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            _reselecting = true;
+            try
+            {
+                int days = SelectedRange?.Days ?? 30;
+                Guid? channel = SelectedChannel?.ChannelId;
+                BuildOptions();
+                SelectedRange = Ranges.FirstOrDefault(r => r.Days == days) ?? Ranges[1];
+                SelectedChannel = Channels.FirstOrDefault(c => c.ChannelId == channel) ?? Channels[0];
+            }
+            finally { _reselecting = false; }
+            _ = LoadAsync();
+        });
+
+    /// <summary>Evita que la re-selección de filtros tras cambiar de idioma dispare recargas de más.</summary>
+    private bool _reselecting;
+
+    /// <summary>Suelta la suscripción al idioma (el <c>Localizer</c> es estático y viviría más que la ventana).
+    /// La llama la ventana al cerrarse.</summary>
+    public void Dispose() => Baioss.Record.Application.Localization.Localizer.LanguageChanged -= OnLanguageChanged;
+
+    partial void OnSelectedRangeChanged(RangeOption value) { if (!_reselecting) _ = LoadAsync(); }
+    partial void OnSelectedChannelChanged(ChannelOption value) { if (!_reselecting) _ = LoadAsync(); }
 
     [RelayCommand]
     private Task Refresh() => LoadAsync();

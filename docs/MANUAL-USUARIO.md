@@ -253,7 +253,35 @@ Es la lista de **todo lo que has grabado**. Sirve para consultar, proteger y loc
 
 ---
 
-## 9. Conceptos útiles (glosario sencillo)
+## 9. El registro de actividad — botón 📋 Actividad
+
+Es la **memoria del equipo**: qué se grabó, quién lo grabó, cómo, por qué terminó cada grabación… y también lo
+que **no** llegó a grabarse. Sirve para responder después a preguntas del tipo *«¿por qué se cortó lo de anoche
+a las 3?»* o *«la programación de las 20:00 no dejó archivo, ¿qué pasó?»*.
+
+**Cada fila te dice** la fecha y la hora, un **nivel** (gris para lo normal, ámbar para los avisos, rojo para
+los errores), el **suceso** en palabras, el canal, el operador y el detalle. Por ejemplo:
+
+| Suceso | Detalle |
+|---|---|
+| Grabación iniciada | Manual · Jorge |
+| Grabación iniciada | Programada «Noticias 20:00» · 21-07-2026_Noticias |
+| Grabación terminada | Detenida por falta de disco · 1 h 12 min · 3 archivos · 22,4 GB |
+| No se pudo iniciar | «Noticias» · La carpeta de destino no admite escritura |
+| Programación omitida | «Noticias» · El canal ya estaba grabando |
+
+**Los filtros de arriba** acotan por periodo, canal, tipo (*Todo*, *Solo grabaciones*, *Solo incidencias*) y
+nivel. Para revisar una noche entera, lo práctico es **Solo incidencias**: deja únicamente lo que se torció.
+
+**⬇ Exportar** guarda en un archivo CSV *lo que estás viendo*, con los filtros puestos. Se abre con Excel y
+sirve para entregarlo a un cliente o archivarlo.
+
+> Es **solo lectura**: aquí no se borra ni se cambia nada. Las entradas se conservan **30 días** y las más
+> antiguas se van retirando solas; eso no afecta a las grabaciones, que se gestionan en 🗄 Almacenamiento.
+
+---
+
+## 10. Conceptos útiles (glosario sencillo)
 
 - **Canal:** una grabadora independiente (A, B, C…). Cada una tiene su fuente, su formato y su carpeta.
 - **Entrada / fuente:** de dónde viene el vídeo (tarjeta SDI, cámara, NDI…).
@@ -275,7 +303,7 @@ El programa te avisa con un cartel sobre la vista previa cuando detecta:
 
 ---
 
-## 10. Consejos y preguntas frecuentes
+## 11. Consejos y preguntas frecuentes
 
 **¿Cómo empiezo a grabar un canal desde cero?**
 1. **🎛 Entradas** → asigna la fuente al canal y pulsa Aplicar.

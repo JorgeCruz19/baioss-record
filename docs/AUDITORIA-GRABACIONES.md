@@ -73,7 +73,20 @@ Las mismas tres cosas se guardan en la propia sesión (tabla `Sessions`: `Trigge
 **secuencia de lo que pasó** (incluidos los intentos fallidos); `Sessions` es el **estado final de cada
 grabación**, para cruzarlo con el archivo.
 
-## Consultar la auditoría
+## Consultarla desde la aplicación
+
+Botón **📋 Actividad** de la ventana principal. Muestra la tabla en palabras —no el volcado técnico— con:
+
+- **Filtros**: ventana temporal, canal, tipo (*Todo* / *Solo grabaciones* / *Solo incidencias*) y nivel mínimo.
+- **Un chip de nivel por fila**: gris lo rutinario, ámbar los avisos, rojo los errores. Es lo que permite
+  barrer una noche entera de un vistazo y quedarse solo con lo que se torció.
+- **⬇ Exportar**: guarda en CSV *lo que se está viendo*, con los filtros aplicados (separador «;» y BOM, así
+  que Excel lo abre directamente y con los acentos bien).
+
+Es **solo lectura**: no se edita ni se borra nada desde ahí. Una auditoría que la propia aplicación puede
+modificar no vale como auditoría; de la poda por antigüedad se encarga el escritor.
+
+## Consultarla por API
 
 ```bash
 curl "http://127.0.0.1:5005/api/v1/events?days=7"
@@ -127,10 +140,15 @@ se sabe de ellas: no se inventa un dato que nadie registró.
 **Lo que NO es esto.** Los registros de `logs\` (Serilog) son otra cosa: diagnóstico técnico para soporte, en
 español, con detalle de procesos y errores. La auditoría es la traza de negocio, consultable y estable.
 
+**El texto de la ventana se compone en C#, no con enlaces `{loc:T}`**, así que al cambiar de idioma hay que
+rehacerlo a mano: el ViewModel se suscribe a `Localizer.LanguageChanged`, reconstruye las etiquetas de los
+filtros (conservando lo elegido) y recarga las filas. Sin eso la ventana quedaba a medias —cabeceras en un
+idioma y filtros y filas en el otro—. Ver `LOCALIZACION.md`, «Dónde se esconde el texto sin traducir».
+
 ## Pendiente
 
-- **No hay ventana en la aplicación.** Hoy la auditoría se consulta por API o por SQL. Una pantalla de
-  «Registro de actividad» con filtros —al estilo de 🗂 Grabaciones— sería el siguiente paso natural.
-- **Exportar** la auditoría (CSV/JSON) para entregarla a un cliente o a un seguro.
+- **Exportar a PDF/JSON** además de CSV, si algún cliente lo pide en un formato concreto.
+- **Firmar o encadenar** las entradas (hash de la anterior) si alguna vez hace falta demostrar que el registro
+  no se ha manipulado. Hoy es una tabla SQLite: quien tenga acceso al equipo puede editarla por fuera.
 - La **API sigue sin autenticación** (solo escucha en loopback): mientras siga así, la auditoría es
   consultable por cualquier proceso local. Ver `AUDITORIA-24x7.md` (A10).

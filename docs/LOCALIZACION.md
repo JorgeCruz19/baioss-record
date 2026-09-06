@@ -54,6 +54,12 @@ sitios se saltan el catálogo sin que nada chille, y los tres han mordido ya:
   no, pero ahí nunca va texto de usuario.)
 - **Los valores iniciales de un `[ObservableProperty]`** y las **excepciones cuyo `Message` acaba en pantalla**
   (las de `ChannelHost.RebindAsync` se muestran tal cual en la barra de estado de Entradas).
+- **Las listas que llena un ViewModel una sola vez** —las etiquetas de un desplegable de filtros, las filas de
+  una tabla compuestas en código—: se construyen en el constructor y un cambio de idioma no las toca, así que
+  la ventana queda a medias (cabeceras traducidas, filtros y filas no). El ViewModel tiene que suscribirse a
+  `Localizer.LanguageChanged`, **rehacer las listas conservando lo elegido** y recargar; y soltar la
+  suscripción al cerrarse (el `Localizer` es estático y retendría el ViewModel). Así lo hacen las ventanas
+  «📋 Actividad» y «🗂 Grabaciones».
 
 Un barrido útil antes de dar por buena una pantalla: buscar en los `.cs` de la capa App literales con acentos
 o `¿¡` fuera de comentarios y de llamadas a `Serilog`; lo que quede es texto de usuario sin traducir.

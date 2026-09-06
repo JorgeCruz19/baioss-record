@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Baioss.Record.Domain;
+using Baioss.Record.App.Localization;
 
 namespace Baioss.Record.App.Recordings;
 
@@ -46,9 +47,9 @@ public sealed partial class RecordingRow : ObservableObject
     /// <summary>Etiqueta legible de la protección (para el «chip» de la fila).</summary>
     public string ProtectionText => Protection switch
     {
-        RecordingProtection.Protected => "🔒 Protegida",
-        RecordingProtection.Important => "★ Importante",
-        _ => "Normal",
+        RecordingProtection.Protected => Loc.T("Rec_Prot_Protected"),
+        RecordingProtection.Important => Loc.T("Rec_Prot_Important"),
+        _ => Loc.T("Rec_Prot_Normal"),
     };
 
     public bool IsProtected => Protection == RecordingProtection.Protected;
