@@ -112,7 +112,7 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
     public Task BindSourceAsync(Guid sourceId, CancellationToken ct = default) => Task.CompletedTask;
     public Task StartPreviewAsync(CancellationToken ct = default) => Task.CompletedTask;
 
-    public Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
+    public Task StartRecordingAsync(Guid profileId, RecordingOrigin origin, string? recordingName = null, CancellationToken ct = default)
     {
         _recStartedAt = DateTimeOffset.UtcNow;
         _sessionId = Guid.NewGuid();
@@ -122,7 +122,7 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
         return Task.CompletedTask;
     }
 
-    public Task StopRecordingAsync(CancellationToken ct = default)
+    public Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default)
     {
         _state = RecordingState.Idle;
         _sessionId = null;

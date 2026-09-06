@@ -1,4 +1,5 @@
 using Baioss.Record.Domain.Events;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Infrastructure.Messaging;
 using Xunit;
@@ -14,7 +15,7 @@ public class InProcessEventBusTests
         RecordingStarted? received = null;
         using var _ = bus.Subscribe<RecordingStarted>((e, _) => { received = e; return Task.CompletedTask; });
 
-        var evt = new RecordingStarted(Guid.NewGuid(), Guid.NewGuid(), "op");
+        var evt = new RecordingStarted(Guid.NewGuid(), Guid.NewGuid(), "op", RecordingTrigger.Manual);
         await bus.PublishAsync(evt);
 
         Assert.Same(evt, received);
@@ -27,7 +28,7 @@ public class InProcessEventBusTests
         int count = 0;
         using var _ = bus.Subscribe<IDomainEvent>((_, _) => { count++; return Task.CompletedTask; });
 
-        await bus.PublishAsync(new RecordingStarted(Guid.NewGuid(), Guid.NewGuid(), null));
+        await bus.PublishAsync(new RecordingStarted(Guid.NewGuid(), Guid.NewGuid(), null, RecordingTrigger.Manual));
         await bus.PublishAsync(new SignalLost(Guid.NewGuid()));
 
         Assert.Equal(2, count);

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
@@ -60,7 +61,7 @@ public class SchedulerServiceTests
     {
         var channelId = Guid.NewGuid();
         var engine = new FakeChannelEngine(channelId, "A");
-        await engine.StartRecordingAsync(Guid.Empty, "manual"); // ya grabando manualmente
+        await engine.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual("manual")); // ya grabando manualmente
         Assert.Equal(1, engine.StartCount);
 
         var clock = new MutableClock { UtcNow = At(20, 0) };
@@ -178,8 +179,8 @@ public class SchedulerServiceTests
         await svc.TickAsync(default);                       // 20:00 → arranca la programada (sesión #1)
         Assert.Equal(1, engine.StartCount);
 
-        await engine.StopRecordingAsync();                 // el operador la detiene
-        await engine.StartRecordingAsync(Guid.Empty, "manual", "Mi Grabación"); // y arranca una manual (sesión #2)
+        await engine.StopRecordingAsync(RecordingStopReason.Operator); // el operador la detiene
+        await engine.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual("manual"), "Mi Grabación"); // y arranca una manual (sesión #2)
         Assert.Equal(2, engine.StartCount);
         Assert.Equal(1, engine.StopCount);
 
@@ -245,6 +246,52 @@ public class SchedulerServiceTests
         await svc.TickAsync(default);
         Assert.Equal(0, engine.StartCount);
         Assert.Equal(0, engine.StopCount);
+    }
+
+    // --- Auditoría: la grabación programada tiene que declarar su procedencia ---
+
+    [Fact]
+    public async Task Tick_DeclaraLaProcedenciaProgramada_ParaLaAuditoria()
+    {
+        var channelId = Guid.NewGuid();
+        var engine = new FakeChannelEngine(channelId, "A");
+        var clock = new MutableClock { UtcNow = At(20, 0) };
+        var repo = new InMemoryScheduledJobRepository();
+        var job = OnceJob(channelId, durationMin: 30);
+        job.Title = "Noticias 20:00";
+        await repo.AddAsync(job);
+        var svc = new SchedulerService(repo, new FakeChannelManager(engine), clock, NullLogger<SchedulerService>.Instance);
+
+        await svc.TickAsync(default);
+
+        // Antes, «programada» solo se distinguía porque el scheduler escribía la cadena «Programación» en el
+        // campo de operador; ahora viaja el disparador Y la tarea que la originó.
+        Assert.NotNull(engine.LastOrigin);
+        Assert.Equal(RecordingTrigger.Scheduled, engine.LastOrigin!.Trigger);
+        Assert.Equal(job.Id, engine.LastOrigin.ScheduledJobId);
+        Assert.Equal("Noticias 20:00", engine.LastOrigin.ScheduledJobTitle);
+
+        clock.UtcNow = At(20, 31);   // pasada la duración → auto-stop de la programada
+        await svc.TickAsync(default);
+
+        Assert.Equal(RecordingStopReason.ScheduledEnd, engine.LastStopReason);
+    }
+
+    [Fact]
+    public async Task SkipCurrent_SeAuditaComoSaltadaPorElOperador()
+    {
+        var channelId = Guid.NewGuid();
+        var engine = new FakeChannelEngine(channelId, "A");
+        var clock = new MutableClock { UtcNow = At(20, 0) };
+        var repo = new InMemoryScheduledJobRepository();
+        await repo.AddAsync(OnceJob(channelId, durationMin: 30));
+        var svc = new SchedulerService(repo, new FakeChannelManager(engine), clock, NullLogger<SchedulerService>.Instance);
+        await svc.TickAsync(default);
+
+        await svc.SkipCurrentAsync(channelId);
+
+        // Saltar una ocurrencia NO es lo mismo que terminarla: la auditoría lo distingue.
+        Assert.Equal(RecordingStopReason.ScheduledSkip, engine.LastStopReason);
     }
 
     // --- Dobles en memoria ---

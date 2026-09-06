@@ -1,4 +1,6 @@
 using Baioss.Record.Application.Abstractions;
+using Baioss.Record.Domain;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Channels;
 
 namespace Baioss.Record.Application.UseCases.Recording;
@@ -17,7 +19,7 @@ public sealed class StopRecordingHandler(IChannelManager channels)
 {
     public async Task<Unit> HandleAsync(StopRecordingCommand command, CancellationToken ct = default)
     {
-        await channels.Get(command.ChannelId).StopRecordingAsync(ct);
+        await channels.Get(command.ChannelId).StopRecordingAsync(RecordingStopReason.Api, ct);
         return Unit.Value;
     }
 }

@@ -33,6 +33,9 @@ erDiagram
         datetime StartedAt
         datetime EndedAt
         string Operator
+        int Trigger
+        int StopReason
+        guid ScheduledJobId FK
         string Resolution
         string FrameRate
         string StartTimecode
@@ -78,7 +81,9 @@ erDiagram
 - **Segment** — archivo físico; la secuencia ordenada por `Index` reconstruye la continuidad.
 - **ScheduledJob** — trabajo del scheduler (start/stop, cambio de perfil/fuente, CRON opcional).
 - **RetentionPolicy** — días de retención + acción (borrar/archivar).
-- **EventLogEntry** — append-only; eventos técnicos + auditoría.
+- **EventLogEntry** — append-only; eventos técnicos + auditoría. Es la traza que responde a «quién grabó qué,
+  cómo y por qué se cortó»; `RecordingSession` guarda además el resultado final de cada grabación
+  (`Trigger` / `StopReason` / `ScheduledJobId`). Ver `AUDITORIA-GRABACIONES.md`. Es la traza que responde a «quién grabó qué y por qué se cortó»: ver `AUDITORIA-GRABACIONES.md`.
 - **User** — usuario con rol (Administrador/Supervisor/Operador), contraseña como hash+salt.
 
 ## Esquema físico

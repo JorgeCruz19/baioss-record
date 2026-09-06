@@ -67,6 +67,39 @@ public enum RecordingProtection
     Protected = 2,  // protegida / no eliminar nunca
 }
 
+/// <summary>
+/// QUIÉN puso en marcha una grabación. Es el discriminante de la auditoría entre grabación manual y
+/// programada: antes solo se distinguían porque el scheduler escribía la cadena «Programación» en el campo
+/// Operator, que un usuario de Windows podría llamarse igual. Se persiste como entero: NO reordenar.
+/// </summary>
+public enum RecordingTrigger
+{
+    // Unknown = 0 a propósito, y no Manual: es el valor que reciben las grabaciones ANTERIORES a que existiera
+    // esta columna, de las que nadie registró la procedencia. Ponerlas como «Manual» sería presentar una
+    // suposición como un hecho, justo lo contrario de lo que debe hacer una auditoría.
+    Unknown = 0,
+    Manual = 1,     // el operador pulsó ● Grabar en la aplicación
+    Scheduled = 2,  // la disparó una grabación programada (🕒 Programación)
+    Api = 3,        // la pidió un sistema externo por la API REST
+}
+
+/// <summary>
+/// POR QUÉ terminó una grabación. Es lo que responde en la auditoría a «¿por qué se cortó lo de anoche?»:
+/// sin esto, un corte por disco lleno y una parada normal del operador son indistinguibles. Se persiste como
+/// entero: NO reordenar.
+/// </summary>
+public enum RecordingStopReason
+{
+    Unknown = 0,       // no se declaró motivo (no debería ocurrir; queda visible si ocurre)
+    Operator = 1,      // el operador pulsó ■ Detener
+    Api = 2,           // la detuvo un sistema externo por la API REST
+    ScheduledEnd = 3,  // se cumplió la hora de fin de la grabación programada
+    ScheduledSkip = 4, // el operador saltó ESA ocurrencia programada (⏏)
+    DiskFull = 5,      // la guarda de disco la detuvo para no corromper el archivo
+    Shutdown = 6,      // se cerró la aplicación con la grabación en curso
+    Error = 7,         // se abortó por un fallo
+}
+
 /// <summary>Contenedor de salida.</summary>
 public enum ContainerFormat
 {

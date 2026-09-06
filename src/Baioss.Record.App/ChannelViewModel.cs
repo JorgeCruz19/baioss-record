@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Infrastructure.Preview;
@@ -237,7 +238,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     {
         // Grabación MANUAL: arranca YA con un nombre temporal ({canal}_{fecha_hora}); el nombre real se
         // pide al DETENER y se renombra el archivo entonces.
-        try { await _engine.StartRecordingAsync(Guid.Empty, Environment.UserName); }
+        try { await _engine.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual(Environment.UserName)); }
         catch (Exception ex)
         {
             // Pre-vuelo fallido (perfil inválido, carpeta de destino no escribible, …): avisa al operador
@@ -256,7 +257,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         bool manual = !IsScheduledRecording && _renamer is not null;
         try
         {
-            await _engine.StopRecordingAsync();
+            await _engine.StopRecordingAsync(RecordingStopReason.Operator);
             if (!manual) return;
 
             // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).

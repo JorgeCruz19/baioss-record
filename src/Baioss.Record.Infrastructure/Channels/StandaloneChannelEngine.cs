@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.Events;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
@@ -152,7 +153,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public Task StartPreviewAsync(CancellationToken ct = default) => Task.CompletedTask;
 
-    public async Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
+    public async Task StartRecordingAsync(Guid profileId, RecordingOrigin origin, string? recordingName = null, CancellationToken ct = default)
     {
         // Serializa con Stop y con el auto-stop por disco; rechaza el doble START. (Auditoría 24/7, A5/A9/#13.)
         await _transition.WaitAsync(ct).ConfigureAwait(false);
@@ -163,12 +164,33 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             // sin renombrar. Mejor rechazar con un error claro (que la API traduce a conflicto).
             if (_engine.State is RecordingState.Recording or RecordingState.Starting)
                 throw new InvalidOperationException($"El canal {_key} ya está grabando.");
-            await StartRecordingCoreAsync(profileId, @operator, recordingName, ct).ConfigureAwait(false);
+            await StartRecordingCoreAsync(profileId, origin, recordingName, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // TODO lo que impide grabar queda auditado, no solo lo que falla a mitad: pre-vuelo, doble START,
+            // licencia, dispositivo ocupado… Sin esta traza, una grabación que no ocurrió no deja más rastro que
+            // la ausencia del archivo, y no hay forma de saber si nadie la pidió o si el sistema la rechazó.
+            await AuditStartFailureAsync(origin, ex).ConfigureAwait(false);
+            throw;
         }
         finally { _transition.Release(); }
     }
 
-    private async Task StartRecordingCoreAsync(Guid profileId, string? @operator, string? recordingName, CancellationToken ct)
+    /// <summary>Deja constancia en la auditoría de que una grabación NO llegó a arrancar, y por qué.</summary>
+    private async Task AuditStartFailureAsync(RecordingOrigin origin, Exception ex)
+    {
+        if (_bus is null) return;
+        try
+        {
+            await _bus.PublishAsync(new RecordingStartFailed(
+                ChannelId, origin.Operator, origin.Trigger, ex.Message,
+                origin.ScheduledJobId, origin.ScheduledJobTitle), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception pub) { _log?.LogError(pub, "No se pudo auditar el fallo de inicio del canal {Key}.", _key); }
+    }
+
+    private async Task StartRecordingCoreAsync(Guid profileId, RecordingOrigin origin, string? recordingName, CancellationToken ct)
     {
         lock (_renameLock) { _sessionSegments.Clear(); _pendingPersists.Clear(); }
         var profile = Profile; // el perfil elegido por el operador en la UI
@@ -186,7 +208,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             InputSourceId = _source.Definition.Id,
             StartedAt = DateTimeOffset.UtcNow,
             State = RecordingState.Recording,
-            Operator = @operator,
+            Operator = origin.Operator,
+            Trigger = origin.Trigger,
+            ScheduledJobId = origin.ScheduledJobId,
             Resolution = profile.TargetResolution ?? signal.Resolution,
             FrameRate = signal.FrameRate,
             AudioLayout = profile.AudioLayout,
@@ -221,6 +245,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             _log?.LogError(ex, "Canal {Key}: no se pudo iniciar la grabación; revirtiendo la sesión.", _key);
             session.EndedAt = DateTimeOffset.UtcNow;
             session.State = RecordingState.Error;
+            session.StopReason = RecordingStopReason.Error;
             if (_sessions is not null)
             {
                 try { await _sessions.UpdateAsync(session, ct); }
@@ -260,7 +285,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
 
         if (_bus is not null)
-            await _bus.PublishAsync(new RecordingStarted(ChannelId, session.Id, @operator), ct);
+            await _bus.PublishAsync(new RecordingStarted(
+                ChannelId, session.Id, origin.Operator, origin.Trigger,
+                origin.ScheduledJobId, origin.ScheduledJobTitle, recordingName), ct);
 
         Raise();
     }
@@ -345,7 +372,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             _log?.LogWarning("Canal {Key}: iniciando grabación sin señal bloqueada (estado {State}).", _key, _source.CurrentSignal.State);
     }
 
-    public async Task StopRecordingAsync(CancellationToken ct = default)
+    public async Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default)
     {
         // Serializa con Start y con un Stop concurrente (auto-stop por disco / scheduler / manual); idempotente
         // si ya está detenido, para no publicar RecordingStopped dos veces ni tocar _session a null repetido.
@@ -353,12 +380,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         try
         {
             if (_session is null && _engine.State is RecordingState.Idle) return; // ya detenido: no-op
-            await StopRecordingCoreAsync(ct).ConfigureAwait(false);
+            await StopRecordingCoreAsync(reason, ct).ConfigureAwait(false);
         }
         finally { _transition.Release(); }
     }
 
-    private async Task StopRecordingCoreAsync(CancellationToken ct)
+    private async Task StopRecordingCoreAsync(RecordingStopReason reason, CancellationToken ct)
     {
         if (_diskGuard is not null)
         {
@@ -396,13 +423,26 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         {
             _session.EndedAt = DateTimeOffset.UtcNow;
             _session.State = RecordingState.Idle;
+            _session.StopReason = reason;
             if (_sessions is not null)
             {
                 try { await _sessions.UpdateAsync(_session, ct); }
                 catch (Exception ex) { _log?.LogError(ex, "No se pudo actualizar la sesión {SessionId}.", _session.Id); }
             }
             if (_bus is not null)
-                await _bus.PublishAsync(new RecordingStopped(ChannelId, _session.Id, _session.Duration), ct);
+            {
+                // Nº de archivos y tamaño total: el snapshot de segmentos que se acaba de congelar arriba. Con
+                // esto la auditoría dice no solo que la grabación terminó, sino qué material dejó — que es lo
+                // que se contrasta cuando alguien reclama un programa que «no está».
+                int files; long bytes;
+                lock (_renameLock)
+                {
+                    files = _completedSessionSegments.Count;
+                    bytes = _completedSessionSegments.Sum(s => s.SizeBytes);
+                }
+                await _bus.PublishAsync(
+                    new RecordingStopped(ChannelId, _session.Id, _session.Duration, reason, files, bytes), ct);
+            }
         }
 
         _session = null;
@@ -533,7 +573,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             _log?.LogWarning("Canal {Key}: disco crítico ({Free:N0} bytes libres); deteniendo la grabación para no corromper el archivo.", _key, e.Info.FreeBytes);
             _ = Task.Run(async () =>
             {
-                try { await StopRecordingAsync(); }
+                try { await StopRecordingAsync(RecordingStopReason.DiskFull); }
                 catch (Exception ex) { _log?.LogError(ex, "Auto-stop por disco falló en el canal {Key}.", _key); }
             });
         }

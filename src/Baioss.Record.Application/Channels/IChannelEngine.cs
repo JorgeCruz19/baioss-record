@@ -1,5 +1,6 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Recording;
 
@@ -45,9 +46,18 @@ public interface IChannelEngine : IAsyncDisposable
     /// Inicia la grabación. <paramref name="recordingName"/> es el nombre base del archivo (sin extensión):
     /// el que elige el operador en una grabación manual o el derivado de la programación
     /// (<c>dd-MM-yyyy_Título</c>). <c>null</c> = nombre por defecto <c>{canal}_{fecha_hora}</c>.
+    ///
+    /// <paramref name="origin"/> es OBLIGATORIO (no tiene valor por defecto) a propósito: la auditoría necesita
+    /// saber si la grabación es manual, programada o de la API, y un parámetro opcional acabaría dejando
+    /// llamadas sin declararlo.
     /// </summary>
-    Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default);
-    Task StopRecordingAsync(CancellationToken ct = default);
+    Task StartRecordingAsync(Guid profileId, RecordingOrigin origin, string? recordingName = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Detiene la grabación en curso. <paramref name="reason"/> tampoco tiene valor por defecto: es lo que
+    /// permite distinguir después una parada normal de un corte por disco lleno o por cierre de la aplicación.
+    /// </summary>
+    Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default);
 
     /// <summary>Activa el modo continuo 24/7 con watchdog y auto-recuperación.</summary>
     Task EnableContinuousModeAsync(bool enabled, CancellationToken ct = default);

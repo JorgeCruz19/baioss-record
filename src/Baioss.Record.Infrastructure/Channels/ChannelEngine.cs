@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.Events;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
@@ -83,7 +84,7 @@ public sealed class ChannelEngine : IChannelEngine
         // El IPreviewEngine se adjunta aquí en la implementación completa (ver docs/04-flujos).
         => Task.CompletedTask;
 
-    public async Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
+    public async Task StartRecordingAsync(Guid profileId, RecordingOrigin origin, string? recordingName = null, CancellationToken ct = default)
     {
         // recordingName: lo aprovecha el motor unificado (StandaloneChannelEngine); esta variante completa
         // basada en IRecorderEngine aún no nombra por sesión (Fase 2).
@@ -100,7 +101,9 @@ public sealed class ChannelEngine : IChannelEngine
             ChannelId = _channel.Id,
             ProfileId = profileId,
             InputSourceId = _channel.InputSourceId!.Value,
-            Operator = @operator,
+            Operator = origin.Operator,
+            Trigger = origin.Trigger,
+            ScheduledJobId = origin.ScheduledJobId,
             StartedAt = DateTimeOffset.UtcNow,
             State = RecordingState.Starting,
             Resolution = _signal.Resolution,
@@ -110,11 +113,13 @@ public sealed class ChannelEngine : IChannelEngine
         await _sessions.AddAsync(_session, ct);
 
         await _recorder.StartAsync(_session, profile, _source, ct);
-        await _bus.PublishAsync(new RecordingStarted(_channel.Id, _session.Id, @operator), ct);
+        await _bus.PublishAsync(new RecordingStarted(
+            _channel.Id, _session.Id, origin.Operator, origin.Trigger,
+            origin.ScheduledJobId, origin.ScheduledJobTitle, recordingName), ct);
         RaiseStatus();
     }
 
-    public async Task StopRecordingAsync(CancellationToken ct = default)
+    public async Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default)
     {
         await _recorder.StopAsync(ct);
         if (_session is not null)
@@ -122,8 +127,9 @@ public sealed class ChannelEngine : IChannelEngine
             _session.EndedAt = DateTimeOffset.UtcNow;
             _session.EndTimecode = _signal.Timecode;
             _session.State = RecordingState.Idle;
+            _session.StopReason = reason;
             await _sessions.UpdateAsync(_session, ct);
-            await _bus.PublishAsync(new RecordingStopped(_channel.Id, _session.Id, _session.Duration), ct);
+            await _bus.PublishAsync(new RecordingStopped(_channel.Id, _session.Id, _session.Duration, reason), ct);
         }
         RaiseStatus();
     }

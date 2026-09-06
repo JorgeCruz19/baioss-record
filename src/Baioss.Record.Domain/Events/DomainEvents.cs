@@ -13,9 +13,36 @@ public abstract record DomainEventBase : IDomainEvent
     public DateTimeOffset OccurredAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
-// --- Eventos de grabación ---
-public sealed record RecordingStarted(Guid ChannelId, Guid SessionId, string? Operator) : DomainEventBase;
-public sealed record RecordingStopped(Guid ChannelId, Guid SessionId, TimeSpan Duration) : DomainEventBase;
+// --- Eventos de grabación (la traza de auditoría del par manual / programada) ---
+// El texto del registro de auditoría es el ToString() del record, así que cada propiedad que se añada aquí
+// aparece automáticamente en la tabla EventLog. De ahí que lleven el CONTEXTO completo y no solo los ids.
+
+/// <summary>Arrancó una grabación. <paramref name="Trigger"/> distingue manual de programada y de API;
+/// <paramref name="ScheduledJobTitle"/> permite rastrear el archivo hasta la tarea que lo generó.</summary>
+public sealed record RecordingStarted(
+    Guid ChannelId, Guid SessionId, string? Operator, RecordingTrigger Trigger,
+    Guid? ScheduledJobId = null, string? ScheduledJobTitle = null, string? RecordingName = null) : DomainEventBase;
+
+/// <summary>Terminó una grabación. <paramref name="Reason"/> es lo que responde a «¿por qué se cortó?»:
+/// parada del operador, fin de la franja programada, disco lleno, cierre de la aplicación…</summary>
+public sealed record RecordingStopped(
+    Guid ChannelId, Guid SessionId, TimeSpan Duration, RecordingStopReason Reason,
+    int Files = 0, long TotalBytes = 0) : DomainEventBase;
+
+/// <summary>Una grabación NO llegó a arrancar (pre-vuelo, dispositivo, licencia…). Sin esto, un hueco en la
+/// programación no deja ni rastro en la auditoría: solo faltaría el archivo.</summary>
+public sealed record RecordingStartFailed(
+    Guid ChannelId, string? Operator, RecordingTrigger Trigger, string Reason,
+    Guid? ScheduledJobId = null, string? ScheduledJobTitle = null) : DomainEventBase;
+
+/// <summary>El scheduler OMITIÓ una ocurrencia programada (el canal ya grababa, el canal no existe…). Es la
+/// otra mitad del hueco: la grabación no se intentó siquiera.</summary>
+public sealed record ScheduledRecordingSkipped(
+    Guid ChannelId, Guid ScheduledJobId, string? ScheduledJobTitle, DateTimeOffset Occurrence, string Reason) : DomainEventBase;
+
+/// <summary>Al arrancar se cerraron sesiones que habían quedado «grabando» de una ejecución anterior (corte de
+/// luz, cierre abrupto). Deja constancia de que hubo una interrupción no controlada.</summary>
+public sealed record OrphanSessionsClosed(int Count) : DomainEventBase;
 public sealed record RecordingPaused(Guid ChannelId, Guid SessionId) : DomainEventBase;
 public sealed record RecordingResumed(Guid ChannelId, Guid SessionId) : DomainEventBase;
 public sealed record SegmentCompleted(Guid SessionId, int Index, string FilePath, long SizeBytes) : DomainEventBase;

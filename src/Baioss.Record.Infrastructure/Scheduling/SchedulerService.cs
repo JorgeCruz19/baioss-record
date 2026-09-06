@@ -5,6 +5,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.Events;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Licensing;
@@ -66,12 +68,31 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
     private void RaiseActiveChanged() => ActiveChanged?.Invoke(this, EventArgs.Empty);
 
-    public SchedulerService(IScheduledJobRepository repo, IChannelManager channels, IClock clock, ILogger<SchedulerService> log)
+    public SchedulerService(IScheduledJobRepository repo, IChannelManager channels, IClock clock,
+        ILogger<SchedulerService> log, IEventBus? bus = null)
     {
         _repo = repo;
         _channels = channels;
         _clock = clock;
         _log = log;
+        _bus = bus;
+    }
+
+    /// <summary>Bus de eventos para la AUDITORÍA de la programación (opcional: los tests construyen el
+    /// servicio sin él). Lo que se publica aquí es lo que NO llega a ser una grabación —una ocurrencia
+    /// omitida—, que de otro modo no dejaría rastro alguno.</summary>
+    private readonly IEventBus? _bus;
+
+    /// <summary>Deja constancia de una ocurrencia programada que no se llegó a grabar, y por qué.</summary>
+    private async Task AuditSkipAsync(ScheduledJob job, DateTimeOffset occ, string reason)
+    {
+        if (_bus is null) return;
+        try
+        {
+            await _bus.PublishAsync(new ScheduledRecordingSkipped(job.ChannelId, job.Id, job.Title, occ, reason))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.LogError(ex, "Scheduler: no se pudo auditar la omisión de «{Title}».", job.Title); }
     }
 
     // --- ISchedulerService: CRUD que usan la UI y la API ---
@@ -199,7 +220,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             {
                 try
                 {
-                    await ch.StopRecordingAsync(ct).ConfigureAwait(false);
+                    await ch.StopRecordingAsync(RecordingStopReason.ScheduledEnd, ct).ConfigureAwait(false);
                     // La segmentación es propia de la grabación programada: se retira al terminar.
                     if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
                     _log.LogInformation("Scheduler: fin de grabación programada en canal {Channel}.", info.ChannelId);
@@ -244,6 +265,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         if (!_channels.TryGet(job.ChannelId, out var ch) || ch is null)
         {
             _log.LogWarning("Scheduler: canal {Channel} no disponible para «{Title}».", job.ChannelId, job.Title);
+            await AuditSkipAsync(job, occ, "El canal no está disponible.").ConfigureAwait(false);
             return;
         }
 
@@ -251,7 +273,12 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         if (ch.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
         {
             if (_warnedBusy.TryAdd(job.Id, 0))
+            {
                 _log.LogWarning("Scheduler: «{Title}» saltada; el canal {Channel} ya está grabando.", job.Title, job.ChannelId);
+                // Se audita UNA vez por franja (igual que el aviso del registro): el tick corre cada segundo y
+                // repetirlo llenaría la auditoría de filas idénticas sin aportar nada.
+                await AuditSkipAsync(job, occ, "El canal ya estaba grabando.").ConfigureAwait(false);
+            }
             return;
         }
         _warnedBusy.TryRemove(job.Id, out _);
@@ -262,7 +289,8 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
         try
         {
-            await ch.StartRecordingAsync(job.ProfileId ?? Guid.Empty, "Programación", ScheduledName(job, occ), ct).ConfigureAwait(false);
+            await ch.StartRecordingAsync(job.ProfileId ?? Guid.Empty,
+                RecordingOrigin.Scheduled(job.Id, job.Title), ScheduledName(job, occ), ct).ConfigureAwait(false);
             _startFailures.TryRemove(job.Id, out _); // N22: arrancó → limpia el contador de fallos de esta franja
             job.LastRunAt = occ;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
@@ -319,7 +347,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         if (_channels.TryGet(job.ChannelId, out var ch) && ch is not null &&
             ch.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
         {
-            try { await ch.StopRecordingAsync(ct).ConfigureAwait(false); }
+            try { await ch.StopRecordingAsync(RecordingStopReason.ScheduledEnd, ct).ConfigureAwait(false); }
             catch (Exception ex) { _log.LogError(ex, "Scheduler: error al detener «{Title}».", job.Title); }
         }
         job.LastRunAt = occ;
@@ -356,7 +384,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         // Detén la grabación ya y retira su segmentación.
         if (_channels.TryGet(channelId, out var ch) && ch is not null)
         {
-            try { await ch.StopRecordingAsync(ct).ConfigureAwait(false); }
+            try { await ch.StopRecordingAsync(RecordingStopReason.ScheduledSkip, ct).ConfigureAwait(false); }
             catch (Exception ex) { _log.LogError(ex, "Scheduler: error al saltar la grabación del canal {Channel}.", channelId); }
             if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
         }

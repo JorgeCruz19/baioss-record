@@ -130,6 +130,17 @@ public static class DependencyInjection
         // reinicios; NULL = usar la carpeta por defecto). Mismo upgrade idempotente que Protection. (Carpeta destino.)
         if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Channels", "OutputDirectory"))
             db.Database.ExecuteSqlRaw("ALTER TABLE \"Channels\" ADD COLUMN \"OutputDirectory\" TEXT NULL;");
+        // AUDITORÍA de grabaciones: cómo se puso en marcha cada una (manual / programada / API), por qué
+        // terminó, y qué tarea programada la disparó. Antes solo se guardaba una cadena libre en Operator, en la
+        // que el programador escribía «Programación»: no era un dato fiable para auditar. Mismo upgrade
+        // idempotente. Las filas ANTERIORES quedan con Trigger y StopReason a 0 = Unknown en ambos casos, que es
+        // exactamente lo que se sabe de ellas: no se inventa un dato que nadie registró.
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "Trigger"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"Trigger\" INTEGER NOT NULL DEFAULT 0;");
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "StopReason"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"StopReason\" INTEGER NOT NULL DEFAULT 0;");
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "ScheduledJobId"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"ScheduledJobId\" TEXT NULL;");
     }
 
     /// <summary>¿Existe la columna en la tabla SQLite? (<c>PRAGMA table_info</c>). Para upgrades idempotentes de esquema.</summary>

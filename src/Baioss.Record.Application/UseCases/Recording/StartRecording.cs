@@ -1,4 +1,5 @@
 using Baioss.Record.Application.Abstractions;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Channels;
 
 namespace Baioss.Record.Application.UseCases.Recording;
@@ -15,7 +16,9 @@ public sealed class StartRecordingHandler(IChannelManager channels)
     public async Task<StartRecordingResult> HandleAsync(StartRecordingCommand command, CancellationToken ct = default)
     {
         var channel = channels.Get(command.ChannelId);
-        await channel.StartRecordingAsync(command.ProfileId, command.Operator, ct: ct);
+        // Origen API: la grabación no la pidió nadie delante del equipo sino un sistema externo. Queda así en
+        // la auditoría, distinguible de una manual aunque el llamador declare un nombre de operador.
+        await channel.StartRecordingAsync(command.ProfileId, RecordingOrigin.Api(command.Operator), ct: ct);
         return new StartRecordingResult(channel.Status.SessionId
             ?? throw new InvalidOperationException("El canal no devolvió una sesión activa."));
     }

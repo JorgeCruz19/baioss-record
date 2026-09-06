@@ -21,6 +21,19 @@ public sealed class RecordingSession
     /// <summary>Operador que inició la sesión (auditoría).</summary>
     public string? Operator { get; set; }
 
+    /// <summary>Cómo se puso en marcha: a mano, por la programación o por la API. Es el discriminante fiable
+    /// entre grabación manual y programada (<see cref="Operator"/> es solo una etiqueta).
+    /// <see cref="RecordingTrigger.Unknown"/> en las grabaciones anteriores a esta columna. (Auditoría.)</summary>
+    public RecordingTrigger Trigger { get; set; } = RecordingTrigger.Unknown;
+
+    /// <summary>Por qué terminó. <see cref="RecordingStopReason.Unknown"/> mientras sigue en curso, y también
+    /// en las sesiones anteriores a que existiera esta columna. (Auditoría.)</summary>
+    public RecordingStopReason StopReason { get; set; } = RecordingStopReason.Unknown;
+
+    /// <summary>Tarea programada que la disparó, si <see cref="Trigger"/> es
+    /// <see cref="RecordingTrigger.Scheduled"/>. Permite rastrear un archivo hasta su programación. (Auditoría.)</summary>
+    public Guid? ScheduledJobId { get; set; }
+
     /// <summary>Protección frente a la limpieza automática: cualquier valor ≠ None EXCLUYE la sesión de la
     /// retención (nunca se borra ni archiva automáticamente). Lo marca el operador. (Gestión de almacenamiento.)</summary>
     public RecordingProtection Protection { get; set; } = RecordingProtection.None;

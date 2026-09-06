@@ -8,6 +8,7 @@ using Baioss.Record.Application.Storage;
 using Baioss.Record.Application.UseCases.Queries;
 using Baioss.Record.Application.UseCases.Recording;
 using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.Events;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -80,6 +81,48 @@ public static class ApiEndpoints
                 DurationSeconds = (int)s.Duration.TotalSeconds,
                 s.TotalBytes, Files = s.Segments.Count,
                 Protection = s.Protection.ToString(), s.Operator,
+                // Auditoría: cómo se puso en marcha (Manual/Scheduled/Api), por qué terminó y, si fue
+                // programada, qué tarea la disparó.
+                Trigger = s.Trigger.ToString(), StopReason = s.StopReason.ToString(), s.ScheduledJobId,
+            }));
+        });
+
+        // AUDITORÍA: el registro de eventos del equipo (inicios y paradas de grabación con su motivo, fallos
+        // de arranque, ocurrencias programadas omitidas, pérdidas de señal, disco…). Es la traza que responde a
+        // «quién grabó qué, cuándo y por qué se cortó». Solo lectura: las entradas las escribe el sistema.
+        //   days      ventana hacia atrás (por defecto 7)
+        //   channel   filtra por canal
+        //   category  nombre del evento (RecordingStarted, RecordingStopped, RecordingStartFailed…)
+        //   severity  Info | Warning | Error | Critical  (devuelve esa severidad Y las superiores)
+        //   take      máximo de entradas (por defecto 500, tope 5000)
+        api.MapGet("/events", async (int? days, Guid? channel, string? category, string? severity, int? take,
+            [FromServices] IEventLogRepository events, CancellationToken ct) =>
+        {
+            EventSeverity? min = null;
+            if (!string.IsNullOrWhiteSpace(severity))
+            {
+                if (!Enum.TryParse<EventSeverity>(severity, ignoreCase: true, out var parsed))
+                    return Results.BadRequest(new { error = "Severidad inválida. Usa Info, Warning, Error o Critical." });
+                min = parsed;
+            }
+
+            var to = DateTimeOffset.UtcNow;
+            var from = to - TimeSpan.FromDays(days is > 0 ? days.Value : 7);
+            // Se pide de más al repositorio porque los filtros de categoría/severidad se aplican aquí: si se
+            // pidiera justo «take», filtrar después devolvería menos de lo pedido teniendo más disponible.
+            bool filtering = min is not null || !string.IsNullOrWhiteSpace(category);
+            int limit = Math.Clamp(take is > 0 ? take.Value : 500, 1, 5000);
+            var list = await events.QueryAsync(channel, from, to, filtering ? Math.Min(limit * 10, 20_000) : limit, ct);
+
+            IEnumerable<EventLogEntry> filtered = list;
+            if (min is { } sev) filtered = filtered.Where(e => e.Severity >= sev);
+            if (!string.IsNullOrWhiteSpace(category))
+                filtered = filtered.Where(e => string.Equals(e.Category, category, StringComparison.OrdinalIgnoreCase));
+
+            return Results.Ok(filtered.Take(limit).Select(e => new
+            {
+                e.Id, e.Timestamp, Severity = e.Severity.ToString(), e.Category,
+                e.ChannelId, e.Operator, e.Message, e.PayloadJson,
             }));
         });
 

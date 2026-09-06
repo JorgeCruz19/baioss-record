@@ -395,7 +395,13 @@ public partial class App : System.Windows.Application
                 int closed = await app.Services.GetRequiredService<IRecordingSessionRepository>()
                     .CloseOrphanedAsync(DateTimeOffset.UtcNow);
                 if (closed > 0)
+                {
                     Serilog.Log.Warning("Recovery: {Count} sesión(es) huérfana(s) de un cierre previo cerradas como error.", closed);
+                    // A la auditoría también: que hubo una interrupción no controlada (corte de luz, cuelgue)
+                    // es justo lo que se busca al revisar por qué falta material de una noche.
+                    await app.Services.GetRequiredService<IEventBus>()
+                        .PublishAsync(new Baioss.Record.Domain.Events.OrphanSessionsClosed(closed));
+                }
             }
             catch (Exception ex) { Serilog.Log.Error(ex, "Recovery de sesiones huérfanas falló."); }
 
@@ -485,7 +491,7 @@ public partial class App : System.Windows.Application
                 .Where(c => c.Status.RecordingState is RecordingState.Recording or RecordingState.Paused or RecordingState.Starting)
                 .Select(async c =>
                 {
-                    try { await c.StopRecordingAsync().ConfigureAwait(false); }
+                    try { await c.StopRecordingAsync(RecordingStopReason.Shutdown).ConfigureAwait(false); }
                     catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al detener el canal {Ch}.", c.ChannelId); }
                 })).ConfigureAwait(false);
         }

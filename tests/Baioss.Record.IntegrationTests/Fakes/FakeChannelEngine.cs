@@ -1,5 +1,6 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Recording;
@@ -45,9 +46,15 @@ internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
 
     public string? LastRecordingName { get; private set; }
 
-    public Task StartRecordingAsync(Guid profileId, string? @operator, string? recordingName = null, CancellationToken ct = default)
+    /// <summary>Procedencia declarada en el último arranque y motivo del último paro: lo que la auditoría
+    /// debe registrar. Los tests comprueban aquí que cada llamante declara lo suyo.</summary>
+    public RecordingOrigin? LastOrigin { get; private set; }
+    public RecordingStopReason? LastStopReason { get; private set; }
+
+    public Task StartRecordingAsync(Guid profileId, RecordingOrigin origin, string? recordingName = null, CancellationToken ct = default)
     {
         StartAttempts++;
+        LastOrigin = origin;
         if (FailStarts) throw new InvalidOperationException("fallo simulado de arranque");
         Started = true;
         StartCount++;
@@ -57,9 +64,10 @@ internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
         return Task.CompletedTask;
     }
 
-    public Task StopRecordingAsync(CancellationToken ct = default)
+    public Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default)
     {
         Stopped = true;
+        LastStopReason = reason;
         StopCount++;
         _sessionId = null;
         StatusChanged?.Invoke(this, Status);

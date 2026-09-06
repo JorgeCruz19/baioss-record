@@ -16,6 +16,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | GET | `/inputs` | Fuentes disponibles / descubiertas | Operador |
 | GET | `/storage?volume=D:\` | Espacio, tiempo restante, consumo por canal | Operador |
 | GET | `/recordings?channel=&from=&to=` | Historial de grabaciones (paginado) | Supervisor |
+| GET | `/events?days=&channel=&category=&severity=&take=` | Registro de auditoría (ver `AUDITORIA-GRABACIONES.md`) | Supervisor |
 | POST | `/schedule` | Crea trabajo programado | Supervisor |
 
 Ejemplo:
