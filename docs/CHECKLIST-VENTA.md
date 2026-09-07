@@ -108,12 +108,20 @@ Sin firma, SmartScreen recibe al cliente con «editor desconocido» en la primer
 certificado de firma de código **OV** o **EV** (el EV además evita el periodo inicial de reputación). Se firma
 tanto el `.exe` de la aplicación como el instalador; el comando está en `INSTALADOR.md`.
 
-### 6. Lo vendible vive en ramas, no en `main`
+### 6. ~~Lo vendible vive en ramas, no en `main`~~ ✅ FUSIONADO — *queda una rama por validar*
 
-A día de hoy `main` está en `7fe9ddb`: **sin** instalador, licenciamiento, canales ni ofuscación. Pendiente:
+Ya no es cierto: **`main` contiene el producto vendible completo**. Se fusionó en `87a9d94` («Integra en main
+el producto vendible: instalador, licenciamiento y cumplimiento legal»), y encima llegaron después la
+localización es/en, la auditoría de grabaciones con su ventana «📋 Actividad» y el endurecimiento del vigilante
+ante un disco que no responde. Instalador por pasos, licenciamiento offline, selección de canales, ofuscación
+de la build de venta y cumplimiento legal (NDI/FFmpeg/EULA): todo en `main`.
 
-- `feat/instalador` → 9 commits por delante de `main` (instalador + licenciamiento + canales + ofuscación).
-- `fix/decklink-dispositivo-persistente` → 2 commits (no fusionar hasta validar con la tarjeta real).
+Queda **una sola rama sin fusionar, a propósito**:
+
+- `fix/decklink-dispositivo-persistente` → 2 commits propios, pero **20 por detrás de `main`** (su base es el
+  antiguo HEAD `7fe9ddb`). No se fusiona hasta validarla con la tarjeta real (ver 🟡). Al estar tan desfasada,
+  **hay que actualizarla/rebasearla contra `main` antes de fusionar** —toca `App.xaml.cs` y `ChannelHost.cs`,
+  que han cambiado mucho—; conviene hacerlo con calma y no el día que se tenga el hardware delante.
 
 ---
 
@@ -185,9 +193,10 @@ aparece la alarma **«El disco de destino no responde»**. Comandos en `INCIDENT
 ## Orden recomendado
 
 1. ~~Decidir la vía de **FFmpeg**~~ ✅ hecho: lo aporta el cliente (ver arriba y `FFMPEG.md`).
-2. **Abogado**: EULA + datos de empresa + revisión de los términos de terceros (FFmpeg/NDI/Blackmagic).
-3. **Clave privada** a buen recaudo y registro de licencias abierto.
-4. Fusionar `feat/instalador` a `main` y **validar en VM limpia**.
-5. **Certificado** de firma de código y firmar la build.
-6. Validación DeckLink con tarjeta real → fusionar esa rama si pasa.
-7. Soak 24/7 de la build final.
+2. ~~Fusionar lo vendible a `main`~~ ✅ hecho (`87a9d94` y posteriores).
+3. **Abogado**: EULA + datos de empresa + revisión de los términos de terceros (FFmpeg/NDI/Blackmagic).
+4. **Clave privada** a buen recaudo y registro de licencias abierto.
+5. **Validar en VM limpia** con la build ofuscada (instalación, canales, licencia pendiente, reinstalar encima).
+6. **Certificado** de firma de código y firmar la build.
+7. Actualizar `fix/decklink-dispositivo-persistente` contra `main` → validación DeckLink con tarjeta real → fusionar si pasa.
+8. Soak 24/7 de la build final.
