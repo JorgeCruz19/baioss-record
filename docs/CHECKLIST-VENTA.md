@@ -1,7 +1,7 @@
 # Checklist para vender Baioss Record
 
 Lo que falta para poder cobrar por el producto, ordenado por lo que **impide vender** y lo que no.
-Revisión: 2026-08-29.
+Revisión: 2026-09-06.
 
 **Ya está hecho:** licenciamiento offline (prueba de 14 días + licencia perpetua atada al equipo, con los
 canales pagados firmados dentro de la clave), instalador por pasos con elección de canales, ofuscación de la
@@ -126,6 +126,47 @@ A día de hoy `main` está en `7fe9ddb`: **sin** instalador, licenciamiento, can
   entera: clave HKLM de canales, código de equipo en la pantalla final, licencia pendiente aplicada al primer
   arranque, y reinstalar encima respetando base de datos, grabaciones y licencia.
 - **Soak 24/7** de varios días con la build final en la máquina de producción.
+
+---
+
+## 💽 Almacenamiento recomendado (hardware del equipo del cliente)
+
+Esto no bloquea la venta, pero **condiciona que el producto cumpla lo que promete** (grabar varias horas 24/7
+sin cortes), así que conviene entregarlo como recomendación —o requisito— con cada equipo. El incidente
+2026-09-06 (un segmento de 22 min perdido en una grabación de 8 h) fue de disco, no de software: el disco de
+destino dejó de aceptar escrituras ~110 s. El software ya se endureció para sobrevivir a eso (espera en vez de
+cortar, ver `INCIDENTE-2026-09-06.md`), pero la causa era hardware/operativa y se evita así:
+
+**La regla de oro:** el disco donde se graba es **solo para grabar**. Cualquier disco —incluido un SSD NVMe— se
+ahoga si se le lee un archivo grande a la vez que se escribe; en un HDD el efecto es brutal (el cabezal salta
+entre lectura y escritura y el caudal se desploma). En el incidente, la lectura era un vídeo que se estaba
+**reproduciendo desde el disco de grabación por escritorio remoto** durante la grabación.
+
+**Discos, de mejor a suficiente:**
+
+| Opción | Para qué | Nota |
+|---|---|---|
+| **SSD** (grabar) + **HDD grande** (archivar) | Lo ideal en 24/7 multicanal | El SSD absorbe lectura y escritura simultáneas sin despeinarse; al cerrarse cada archivo se copia al HDD. Dimensionar: ~18 Mbps ≈ **8 GB/hora por canal** (8 h × 2 canales ≈ 130 GB/día) |
+| **HDD de vídeo-vigilancia** (WD **Purple**, Seagate **SkyHawk**) | Si se sigue en HDD | Firmware pensado para **escritura continua de varios flujos 24/7** (ATA streaming); es su caso de uso exacto. Mejor que un NAS/desktop para esto |
+| HDD **NAS CMR** (WD Red Plus, Seagate IronWolf) | Sirve | Buenos discos; con la regla de oro y los ajustes de abajo, aguantan. **Evitar SMR** (pausas de reorganización). No mezclar grabación con lectura |
+
+**Un disco por canal** siempre que se pueda: repartir los flujos es más holgado que juntarlos en un spindle.
+
+**Ajustes del sistema en el equipo de grabación (gratis, hacerlos en la puesta en marcha):**
+
+- **Excluir las carpetas de grabación de Windows Defender** (protección en tiempo real → exclusiones): inspeccionar
+  cada archivo de 4 GB al cerrarse es E/S que compite con la grabación.
+- **Desactivar la optimización/desfragmentación programada** de los discos de grabación.
+- **Búsqueda de Windows** fuera del modo «Mejorado» (indexa todas las unidades y procesa cada grabación nueva).
+- **No dejar procesos que lean/copien/respalden las carpetas de grabación en caliente** (agentes de copia o
+  sincronización tipo Febooti/OneDrive, análisis programados de fabricante tipo Dell SupportAssist, instantáneas
+  VSS del volumen de grabación). Para sacar material fuera, hacerlo desde otro disco o con la grabación parada.
+- **Minimizar los agentes de escritorio remoto**: uno basta. Y **revisar el material grabado desde otro disco o
+  equipo**, nunca reproduciéndolo desde el disco que graba.
+
+**Verificación recomendada antes de dar por bueno un equipo:** una grabación de prueba de varias horas mientras
+se registra la latencia de disco (`Get-Counter '\PhysicalDisk(*)\Avg. Disk sec/Write'`), y confirmar que no
+aparece la alarma **«El disco de destino no responde»**. Comandos en `INCIDENTE-2026-09-06.md`.
 
 ---
 
