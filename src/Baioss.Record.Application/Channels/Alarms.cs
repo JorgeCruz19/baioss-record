@@ -25,13 +25,17 @@ public enum AlarmType
     RecordingUnverified,
     /// <summary>Almacenamiento en EMERGENCIA (disco casi lleno, p. ej. ≥ 95% ocupado): hay que liberar espacio ya. (Fase 3.)</summary>
     DiskEmergency,
+    /// <summary>El disco de destino NO RESPONDE (no acepta escrituras): la grabación espera sin cortar y reanuda
+    /// sola cuando el disco vuelve. Si dura, hay que mirar el disco (cable, USB, SMR, antivirus). Incidente 2026-09-06.</summary>
+    DiskStalled,
 }
 
 /// <summary>Una alarma activa de un canal, con desde cuándo está activa y un mensaje legible.</summary>
 public sealed record ChannelAlarm(AlarmType Type, string Message, DateTimeOffset Since)
 {
     /// <summary>True para alarmas que exigen acción inmediata del operador (rojas).</summary>
-    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.DiskEmergency or AlarmType.RecordingUnverified;
+    public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.DiskEmergency
+        or AlarmType.RecordingUnverified or AlarmType.DiskStalled;
 }
 
 /// <summary>

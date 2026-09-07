@@ -49,6 +49,11 @@ public static class AuditText
                 "SegmentCompleted" => Segment(j),
                 "StorageLow" => StorageLow(j),
                 "StorageEmergencyEntered" or "StorageEmergencyCleared" => StorageEmergency(j),
+                "RecordingInterrupted" => Interrupted(j),
+                "RecordingFileUnverified" => Unverified(j),
+                "StorageStalled" => Localizer.F("Audit_DiskStall_Detail", Str(j, "Volume") ?? "?"),
+                "StorageStallCleared" => Localizer.F("Audit_DiskStallCleared_Detail", Str(j, "Volume") ?? "?",
+                    Duration(j, "Duration") ?? Str(j, "Duration") ?? "?"),
                 _ => null,
             };
             if (detail is not null) return detail;
@@ -124,6 +129,29 @@ public static class AuditText
             parts.Add(Localizer.F("Audit_Disk_Used", pct.GetDouble().ToString("0.#", CultureInfo.CurrentCulture)));
         parts.Add(Localizer.F("Audit_Disk_Free", Bytes(Long(j, "FreeBytes"))));
         return string.Join(" · ", parts);
+    }
+
+    /// <summary>«Proceso terminado a la fuerza (watchdog o externo) · la grabación siguió en una pieza nueva».
+    /// El código −1 es un proceso matado; cualquier otro, FFmpeg saliendo por su cuenta.</summary>
+    private static string Interrupted(JsonElement j)
+    {
+        int code = Int(j, "ExitCode");
+        var how = code == -1
+            ? Localizer.T("Audit_Interrupted_Killed")
+            : Localizer.F("Audit_Interrupted_Exited", code);
+        return $"{how} · {Localizer.T("Audit_Interrupted_Resumed")}";
+    }
+
+    /// <summary>«06-09-2026_TEST_9.mp4 · 2,7 GB · sin índice, no se puede reproducir».</summary>
+    private static string Unverified(JsonElement j)
+    {
+        var path = Str(j, "FilePath");
+        var name = string.IsNullOrEmpty(path) ? "" : System.IO.Path.GetFileName(path!);
+        long bytes = Long(j, "SizeBytes");
+        var parts = new List<string>(3) { name };
+        if (bytes > 0) parts.Add(Bytes(bytes));
+        parts.Add(Localizer.T("Audit_Unverified_Detail"));
+        return string.Join(" · ", parts.Where(p => p.Length > 0));
     }
 
     private static string Segment(JsonElement j)

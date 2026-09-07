@@ -269,6 +269,13 @@ the **event** in plain words, the channel, the operator and the detail. For exam
 | Recording ended | Stopped, the disk was running out · 1 h 12 min · 3 files · 22.4 GB |
 | Could not start | «News» · The destination folder is not writable |
 | Schedule skipped | «News» · The channel was already recording |
+| Recording interrupted | The recording process was forcibly terminated · carried on in a new piece |
+| Damaged file | 21-07-2026_News_9.mp4 · 2.7 GB · no index: cannot be played as is |
+
+The last two go together: if the recording process dies halfway through a file, the program **keeps recording
+in a new file** (numbered next in sequence) and tells you that the cut file cannot be played as it is. That
+file is not empty — the video is inside — but it is missing its index; ask your supplier about recovering it.
+It is also what the **"Unverified recording"** alarm on the channel panel means.
 
 **The filters at the top** narrow things down by period, channel, type (*Everything*, *Recordings only*,
 *Problems only*) and level. To review a whole night, the practical one is **Problems only**: it leaves just
@@ -301,6 +308,7 @@ The program warns you with a banner over the preview when it detects:
 - **Audio silence:** there is no sound.
 - **Test pattern:** the warning screen is being recorded because the signal was lost.
 - **Disk:** there is little space left.
+- **Disk not responding:** the destination disk has stopped accepting writes. The recording **waits without cutting** and resumes on its own when the disk comes back; if it lasts more than a few seconds, check that disk (cable, USB, antivirus).
 
 ---
 

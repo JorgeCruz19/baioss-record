@@ -37,6 +37,19 @@ public sealed record RecordingStartFailed(
     Guid ChannelId, string? Operator, RecordingTrigger Trigger, string Reason,
     Guid? ScheduledJobId = null, string? ScheduledJobTitle = null) : DomainEventBase;
 
+/// <summary>
+/// El proceso de grabación MURIÓ a mitad (caída, kill del watchdog, la entrada falló) y el motor siguió en una
+/// pieza nueva. Es el suceso que explica un archivo cortado y un hueco de segundos en la grabación: sin él, la
+/// auditoría solo mostraba «archivo cerrado» y «archivo cerrado», como si nada hubiera pasado.
+/// <paramref name="ExitCode"/> es el código con el que salió FFmpeg (−1 = matado); <paramref name="Reason"/> lo que
+/// se sabe del motivo (lo que dijo el watchdog o la última línea de error de FFmpeg).
+/// </summary>
+public sealed record RecordingInterrupted(Guid ChannelId, Guid SessionId, int ExitCode, string Reason) : DomainEventBase;
+
+/// <summary>Un archivo recién cerrado NO pasó la verificación (sin pistas ni duración legibles): grabación dañada
+/// o incompleta. Se emite además de la alarma en pantalla para que quede constancia de QUÉ archivo y de cuánto.</summary>
+public sealed record RecordingFileUnverified(Guid ChannelId, Guid SessionId, string FilePath, long SizeBytes) : DomainEventBase;
+
 /// <summary>El scheduler OMITIÓ una ocurrencia programada (el canal ya grababa, el canal no existe…). Es la
 /// otra mitad del hueco: la grabación no se intentó siquiera.</summary>
 public sealed record ScheduledRecordingSkipped(
@@ -74,3 +87,11 @@ public sealed record RetentionSkipped(Guid ChannelId, Guid SessionId, string Rea
 public sealed record StorageEmergencyEntered(string Volume, long FreeBytes, long TotalBytes, double UsedPercent) : DomainEventBase;
 /// <summary>El volumen de grabación SALIÓ de la emergencia de espacio (bajó del umbral, con histéresis). (Fase 3b.)</summary>
 public sealed record StorageEmergencyCleared(string Volume, long FreeBytes, long TotalBytes, double UsedPercent) : DomainEventBase;
+
+/// <summary>El disco de destino de un canal DEJÓ DE RESPONDER (no acepta escrituras) mientras grababa. La
+/// grabación espera sin cortar. Es la causa raíz real detrás de un «archivo cortado»: el disco, no FFmpeg.
+/// Incidente 2026-09-06.</summary>
+public sealed record StorageStalled(Guid ChannelId, string Volume) : DomainEventBase;
+
+/// <summary>El disco de destino volvió a responder tras <paramref name="Duration"/> sin aceptar escrituras.</summary>
+public sealed record StorageStallCleared(Guid ChannelId, string Volume, TimeSpan Duration) : DomainEventBase;

@@ -269,6 +269,13 @@ los errores), el **suceso** en palabras, el canal, el operador y el detalle. Por
 | Grabación terminada | Detenida por falta de disco · 1 h 12 min · 3 archivos · 22,4 GB |
 | No se pudo iniciar | «Noticias» · La carpeta de destino no admite escritura |
 | Programación omitida | «Noticias» · El canal ya estaba grabando |
+| Grabación interrumpida | El proceso de grabación fue terminado a la fuerza · siguió en una pieza nueva |
+| Archivo dañado | 21-07-2026_Noticias_9.mp4 · 2,7 GB · sin índice: no se puede reproducir tal cual |
+
+Las dos últimas van juntas: si el proceso que graba se cae a mitad de un archivo, el programa **sigue grabando
+en un archivo nuevo** (numerado a continuación) y te avisa de que el archivo cortado no se puede reproducir tal
+cual. Ese archivo no está vacío —el vídeo está dentro— pero le falta el índice; consulta a tu proveedor para
+recuperarlo. Es también lo que significa la alarma **«Grabación sin verificar»** en el panel del canal.
 
 **Los filtros de arriba** acotan por periodo, canal, tipo (*Todo*, *Solo grabaciones*, *Solo incidencias*) y
 nivel. Para revisar una noche entera, lo práctico es **Solo incidencias**: deja únicamente lo que se torció.
@@ -300,6 +307,7 @@ El programa te avisa con un cartel sobre la vista previa cuando detecta:
 - **Silencio:** no hay sonido.
 - **Carta de ajuste:** se está grabando la pantalla de aviso por pérdida de señal.
 - **Disco:** queda poco espacio.
+- **El disco no responde:** el disco de destino ha dejado de aceptar escrituras. La grabación **espera sin cortar** y reanuda sola cuando el disco vuelve; si dura más de unos segundos, revisa ese disco (cable, USB, antivirus).
 
 ---
 

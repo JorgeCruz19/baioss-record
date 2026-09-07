@@ -163,7 +163,11 @@ public sealed class EventLogWriter : BackgroundService
             Severity = e switch
             {
                 StorageEmergencyEntered => EventSeverity.Critical, // disco casi lleno: exige acción inmediata (Fase 3b)
-                EncoderFailed or RecordingStartFailed => EventSeverity.Error,
+                StorageStalled => EventSeverity.Critical,          // el disco no responde: la grabación está en vilo
+                // Un archivo dañado es un ERROR: hay material que no se va a poder reproducir.
+                EncoderFailed or RecordingStartFailed or RecordingFileUnverified => EventSeverity.Error,
+                // El proceso murió pero la grabación siguió en una pieza nueva: aviso, para que destaque.
+                RecordingInterrupted => EventSeverity.Warning,
                 // Una grabación que se corta sola NO es rutina: se marca como aviso para que destaque entre las
                 // paradas normales al revisar la auditoría de una noche.
                 RecordingStopped { Reason: RecordingStopReason.DiskFull or RecordingStopReason.Error } => EventSeverity.Warning,

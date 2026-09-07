@@ -31,10 +31,16 @@ y una **copia estructurada en JSON** (`PayloadJson`) para explotarla con herrami
 | `RecordingStartFailed` | No llegó a arrancar | El motivo (pre-vuelo, dispositivo, licencia…) |
 | `ScheduledRecordingSkipped` | El programador omitió una ocurrencia | Por qué (el canal ya grababa, el canal no está disponible) |
 | `SegmentCompleted` | Se cerró cada trozo | La ruta y el tamaño de cada archivo |
+| `RecordingInterrupted` | El proceso de grabación murió a mitad y siguió en una pieza nueva | El código de salida de FFmpeg (−1 = matado por el vigilante o desde fuera) y el motivo conocido |
+| `RecordingFileUnverified` | Un archivo recién cerrado no se puede reproducir | Qué archivo y cuánto ocupa; el segmento queda marcado como dañado en el historial |
 | `OrphanSessionsClosed` | Al arrancar | Que la ejecución anterior terminó de forma no controlada (corte de luz, cuelgue) |
+| `StorageStalled` / `StorageStallCleared` | El disco de destino dejó de aceptar escrituras / volvió | Qué volumen y cuánto duró. La grabación espera sin cortar (es la causa raíz real del 6/9/2026) |
 
-Los dos últimos de la tabla son los que evitan el agujero clásico: **una grabación que no ocurre no deja
-archivo, y sin estas entradas tampoco dejaría ninguna otra huella**.
+`RecordingStartFailed` y `ScheduledRecordingSkipped` evitan el agujero clásico: **una grabación que no ocurre
+no deja archivo, y sin estas entradas tampoco dejaría ninguna otra huella**. `RecordingInterrupted` y
+`RecordingFileUnverified` cubren el otro caso real —la grabación del 6/9/2026 que perdió un segmento de 22
+minutos—: antes, la auditoría mostraba «archivo cerrado», «archivo cerrado», como si nada hubiera pasado, y
+la única pista estaba en el registro técnico. Ver `INCIDENTE-2026-09-06.md`.
 
 ### Cómo se puso en marcha (`Trigger`)
 

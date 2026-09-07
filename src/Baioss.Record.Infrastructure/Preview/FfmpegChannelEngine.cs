@@ -150,6 +150,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// <summary>Transición de alarma del canal (negro/congelado/silencio/slate): tipo y si pasa a activa.</summary>
     public event EventHandler<(AlarmType Type, bool Active)>? AlarmChanged;
 
+    /// <summary>El proceso de grabación murió a mitad y se va a recuperar en una pieza nueva: código de salida
+    /// de FFmpeg y lo que se sabe del motivo. Para la AUDITORÍA: es lo que explica un archivo cortado.</summary>
+    public event EventHandler<(int ExitCode, string Reason)>? RecordingInterrupted;
+
+    /// <summary>Un archivo recién cerrado no pasó la verificación (sin pistas/duración legibles): ruta y tamaño.
+    /// Para la AUDITORÍA, además de la alarma en pantalla.</summary>
+    public event EventHandler<(string FilePath, long SizeBytes)>? FileUnverified;
+
     /// <summary>True mientras el canal rellena con carta de ajuste por pérdida de señal.</summary>
     public bool IsSlate => _slate;
 
@@ -390,6 +398,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // El proceso entrante puede llevar un códec distinto (degradado): su capacidad de abrir el
         // codificador se re-evalúa con SU propio stderr, no con el del proceso saliente.
         _encoderOpenError = false;
+        // La alarma de disco colgado pertenecía al supervisor saliente; el entrante la volverá a levantar si procede.
+        RaiseAlarm(AlarmType.DiskStalled, false);
 
         // Modo archivo único: el proceso que se acaba de cerrar dejó su archivo finalizado en disco →
         // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
@@ -466,7 +476,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // #55: sonda para que el watchdog detecte un archivo que NO crece aunque FFmpeg reporte progreso
             // (encoder colgado / escritura muerta). Solo en grabación; negativo si está pausado (no evaluable).
             RecordedBytesProbe = recording ? () => _state == RecordingState.Paused ? -1L : CurrentSessionBytes() : (Func<long>?)null,
+            // Sonda del DISCO de destino: cuando el archivo no crece, distingue «FFmpeg no escribe» (se mata y se
+            // sigue en pieza nueva) de «el disco no acepta escrituras» (se espera con alarma; matar dejaría el
+            // archivo sin índice y no arreglaría nada). Incidente 2026-09-06.
+            VolumeProbe = recording ? () => Baioss.Record.Engine.FFmpeg.VolumeProbe.IsResponsiveAsync(dir, TimeSpan.FromSeconds(5)) : null,
         };
+        _supervisor.VolumeStalled += (_, stalled) => RaiseAlarm(AlarmType.DiskStalled, stalled);
         _supervisor.ProgressLine += OnProgress;
         _supervisor.LogLine += OnLog;
         _supervisor.Crashed += OnRecordingProcessDied;
@@ -725,6 +740,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 _log.LogError("Canal {Key}: {File} NO pasó la verificación (sin pistas/duración válidas): posible grabación dañada.",
                     _channelKey, path);
                 RaiseAlarm(AlarmType.RecordingUnverified, true);
+                long size = 0;
+                try { size = new FileInfo(path).Length; } catch { /* solo informativo */ }
+                FileUnverified?.Invoke(this, (path, size));
             }
         }
         catch (Exception ex) { _log.LogWarning(ex, "Canal {Key}: no se pudo verificar {File}.", _channelKey, path); }
@@ -771,6 +789,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         _recovering = true;
         _log.LogWarning("Canal {Key}: el proceso de grabación murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).", _channelKey, exitCode);
+        // A la auditoría: es el suceso que explica un archivo cortado y un hueco de segundos. −1 es el código con
+        // el que sale un proceso MATADO (watchdog por estancamiento, o alguien desde fuera); cualquier otro es
+        // FFmpeg saliendo por su cuenta (la entrada falló, el codificador, un error de escritura…).
+        RecordingInterrupted?.Invoke(this, (exitCode, exitCode == -1
+            ? "proceso terminado a la fuerza (watchdog por estancamiento, o desde fuera)"
+            : $"FFmpeg salió con código {exitCode}"));
         _ = Task.Run(() => RecoverRecordingAsync(exitCode));
     }
 

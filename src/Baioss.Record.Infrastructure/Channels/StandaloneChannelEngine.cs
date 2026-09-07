@@ -115,6 +115,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _engine.AudioPeaksUpdated += OnAudioLevels;
         _engine.SegmentClosed += OnSegmentClosed;
         _engine.AlarmChanged += OnEngineAlarm;
+        _engine.RecordingInterrupted += OnRecordingInterrupted;
+        _engine.FileUnverified += OnFileUnverified;
         _source.SignalChanged += (_, _) => Raise();
 
         // Arranca la vigilancia de señal (publica lock/pérdida/silencio en el bus).
@@ -516,6 +518,68 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             IDomainEvent evt = e.Active ? new SignalLost(ChannelId) : new RecordingRecovered(ChannelId, s.Id, 1);
             _ = _bus.PublishAsync(evt);
         }
+
+        // El disco de destino dejó de responder / volvió: a la auditoría, con el volumen y cuánto duró. Es la
+        // causa raíz que hay que poder leer después detrás de un archivo cortado o de un hueco. (2026-09-06.)
+        if (e.Type == AlarmType.DiskStalled)
+        {
+            var volume = SafeVolumeLabel(_engine.OutputRoot);
+            if (e.Active) { _diskStallSince = DateTimeOffset.UtcNow; _ = _bus?.PublishAsync(new StorageStalled(ChannelId, volume)); }
+            else
+            {
+                var since = _diskStallSince ?? DateTimeOffset.UtcNow;
+                _diskStallSince = null;
+                _ = _bus?.PublishAsync(new StorageStallCleared(ChannelId, volume, DateTimeOffset.UtcNow - since));
+            }
+        }
+    }
+
+    private DateTimeOffset? _diskStallSince;
+
+    private static string SafeVolumeLabel(string? path)
+    {
+        try { return string.IsNullOrEmpty(path) ? "?" : (Path.GetPathRoot(path) ?? path); }
+        catch { return path ?? "?"; }
+    }
+
+    /// <summary>El proceso de grabación murió a mitad: a la auditoría, con el código y el motivo. Es el suceso
+    /// que explica después un archivo cortado y un hueco de segundos en la grabación.</summary>
+    private void OnRecordingInterrupted(object? sender, (int ExitCode, string Reason) e)
+    {
+        if (_bus is null || _session is not { } s) return;
+        _ = _bus.PublishAsync(new RecordingInterrupted(ChannelId, s.Id, e.ExitCode, e.Reason));
+    }
+
+    /// <summary>Un archivo recién cerrado no pasó la verificación: a la auditoría (qué archivo, cuánto), y el
+    /// segmento queda marcado como <see cref="SegmentStatus.Corrupt"/> en la BD para que el historial no lo
+    /// presente como una pieza sana.</summary>
+    private void OnFileUnverified(object? sender, (string FilePath, long SizeBytes) e)
+    {
+        if (_session is { } s && _bus is not null)
+            _ = _bus.PublishAsync(new RecordingFileUnverified(ChannelId, s.Id, e.FilePath, e.SizeBytes));
+        _ = MarkSegmentCorruptAsync(e.FilePath);
+    }
+
+    private async Task MarkSegmentCorruptAsync(string path)
+    {
+        if (_segments is null) return;
+        Segment? segment; Task[] persists;
+        lock (_renameLock)
+        {
+            segment = _sessionSegments.FirstOrDefault(x => string.Equals(x.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                   ?? _completedSessionSegments.FirstOrDefault(x => string.Equals(x.FilePath, path, StringComparison.OrdinalIgnoreCase));
+            persists = _pendingPersists.ToArray();
+        }
+        if (segment is null) return;
+        try
+        {
+            // La verificación corre en paralelo a la persistencia del segmento: hay que esperar a que la fila
+            // exista antes de actualizarla (si no, el UPDATE no encontraría nada que tocar).
+            try { await Task.WhenAll(persists).ConfigureAwait(false); } catch { /* cada persist ya registró su error */ }
+            segment.Status = SegmentStatus.Corrupt;
+            await _segments.UpdateAsync(segment).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log?.LogError(ex, "No se pudo marcar como dañado el segmento {FilePath}.", path); }
     }
 
     private void SetAlarm(AlarmType type, bool active)
@@ -542,6 +606,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         AlarmType.EncoderFallback => "Codificador por GPU no disponible — grabando con codificador alternativo",
         AlarmType.FramesDropped => "Frames perdidos — el equipo no da abasto (CPU/GPU/disco)",
         AlarmType.RecordingUnverified => "Grabación sin verificar — el archivo podría estar dañado",
+        AlarmType.DiskStalled => "El disco de destino no responde — la grabación espera sin cortar",
         _ => t.ToString(),
     };
 
@@ -610,6 +675,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public async ValueTask DisposeAsync()
     {
+        _engine.RecordingInterrupted -= OnRecordingInterrupted;
+        _engine.FileUnverified -= OnFileUnverified;
         if (_diskGuard is not null) await _diskGuard.DisposeAsync();
         if (_signalMonitor is not null) await _signalMonitor.DisposeAsync();
         await _engine.DisposeAsync();

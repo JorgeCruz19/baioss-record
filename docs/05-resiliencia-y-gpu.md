@@ -39,6 +39,13 @@ El diseño asume que **fallar es normal**. Cada modo de fallo tiene una defensa 
 
 - `RunWithRestartAsync` — relanza el proceso ante salida inesperada con backoff `min(30s, 0.5s·2^n)`.
 - `WatchdogAsync` — si `now - lastProgress > StallTimeout`, mata el árbol de procesos para forzar respawn.
+- **Antes de matar, en grabación, pregunta al DISCO** (`VolumeProbe`: escritura *write-through* de prueba en la
+  carpeta de destino, con tiempo máximo). «FFmpeg no escribe» y «el disco no acepta escrituras» se ven igual
+  desde fuera —el archivo no crece, el progreso se para— pero exigen reacciones opuestas: a un FFmpeg colgado se
+  le mata y se sigue en pieza nueva; a un disco colgado se le **espera** (alarma `DiskStalled`, auditoría
+  `StorageStalled`/`StorageStallCleared`), porque matar a FFmpeg no arregla el disco, la «q» no puede completarse
+  (cerrar el archivo exige escribir) y el kill deja el MP4 sin índice. Mientras el disco no responde, los relojes
+  de progreso y de crecimiento no acumulan. Incidente 2026-09-06 (`INCIDENTE-2026-09-06.md`).
 
 `MaxRestarts = int.MaxValue` en modo 24/7 (reintento indefinido); en modo manual se acota y
 se eleva el fallo al operador.

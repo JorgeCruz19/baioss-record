@@ -36,6 +36,29 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     public Func<long>? RecordedBytesProbe { get; init; }
     /// <summary>Margen sin crecimiento del archivo antes de considerar la grabación estancada. (Auditoría #55.)</summary>
     public TimeSpan FileStallTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Sonda de la CARPETA DE DESTINO: devuelve <c>true</c> si el volumen acepta una escritura ahora mismo, <c>false</c>
+    /// si no responde. Cuando se define (solo grabación), un estancamiento NO lleva a matar FFmpeg si el que no
+    /// responde es el DISCO: matarlo no arregla el disco y, con MP4 estándar, cuesta el archivo entero (queda sin
+    /// índice). Se espera con alarma y FFmpeg reanuda solo cuando el disco vuelve. Incidente 2026-09-06: un disco
+    /// que se quedó ~2 min sin aceptar escrituras; el otro canal, que no fue matado, no perdió nada.
+    /// </summary>
+    public Func<Task<bool>>? VolumeProbe { get; init; }
+
+    /// <summary>Transición del volumen de destino: <c>true</c> = dejó de responder (se espera sin matar);
+    /// <c>false</c> = volvió a responder.</summary>
+    public event EventHandler<bool>? VolumeStalled;
+
+    private Task<bool>? _probeInFlight;   // una sola sonda pendiente: en un disco colgado tardaría minutos
+    private StallArbiter _arbiter = new(null);
+
+    /// <summary>Reinicia los relojes de estancamiento (progreso y crecimiento del archivo) en <paramref name="now"/>.</summary>
+    private void ResetStallClocks(DateTimeOffset now)
+    {
+        _lastProgress = now;
+        _growth?.Reset(now);
+    }
     /// <summary>Espera máxima al cierre ordenado (flush/cierre del contenedor) antes de forzar el cierre.</summary>
     public TimeSpan GracefulTimeout { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>
@@ -76,6 +99,8 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _growth = RecordedBytesProbe is not null ? new FileGrowthTracker(DateTimeOffset.UtcNow) : null; // #55
+        // La sonda del disco solo tiene sentido en grabación (hay archivo); sin ella, todo estancamiento es de FFmpeg.
+        _arbiter = new StallArbiter(FinalizeOnStop && VolumeProbe is not null ? IsVolumeResponsiveAsync : null);
         _runLoop = RunWithRestartAsync(arguments, _cts.Token);
         _ = WatchdogAsync(arguments, _cts.Token);
         return Task.CompletedTask;
@@ -210,11 +235,37 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
                 if (FinalizeOnStop && _growth is { } g && RecordedBytesProbe is { } probe)
                     fileStalled = g.IsStalled(SafeProbe(probe), now, FileStallTimeout);
 
-                if (!progressStalled && !fileStalled) continue;
-
                 string reason = progressStalled
                     ? $"sin progreso por {StallTimeout}"
                     : $"el archivo no crece desde hace {FileStallTimeout} (FFmpeg reporta progreso pero no escribe)";
+
+                // ANTES de matar: ¿es FFmpeg el que no escribe, o es el DISCO el que no acepta escrituras? Los dos
+                // se ven igual desde aquí, pero la respuesta correcta es opuesta: a un FFmpeg colgado se le mata y se
+                // sigue en una pieza nueva; a un disco colgado se le ESPERA — matar a FFmpeg no arregla el disco, la
+                // «q» tampoco puede completarse (cerrar el archivo exige escribir) y el kill deja el archivo sin
+                // índice. La decisión vive en StallArbiter (probado aparte). Incidente 2026-09-06.
+                var verdict = await _arbiter.DecideAsync(progressStalled, fileStalled).ConfigureAwait(false);
+                switch (verdict)
+                {
+                    case StallVerdict.Healthy:
+                        continue;
+                    case StallVerdict.VolumeStalled:
+                        _log.LogError("Watchdog: {Reason}, pero el DISCO de destino no responde: se espera sin matar a FFmpeg (matarlo dejaría el archivo sin índice y no arreglaría el disco).", reason);
+                        VolumeStalled?.Invoke(this, true);
+                        ResetStallClocks(now); // el tiempo con el disco colgado no cuenta contra FFmpeg
+                        continue;
+                    case StallVerdict.StillStalled:
+                        ResetStallClocks(now);
+                        continue;
+                    case StallVerdict.VolumeResumed:
+                        _log.LogInformation("Watchdog: el disco de destino volvió a responder; FFmpeg tiene una ventana nueva para reanudar.");
+                        VolumeStalled?.Invoke(this, false);
+                        ResetStallClocks(now); // ventana entera antes de juzgar si FFmpeg reanudó
+                        continue;
+                    case StallVerdict.KillProcess:
+                        break; // el colgado es FFmpeg: sigue abajo
+                }
+
                 if (FinalizeOnStop)
                 {
                     // Grabación: intenta un cierre ORDENADO (q) para que FFmpeg finalice el contenedor (moov) —
@@ -263,6 +314,25 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     private static long SafeProbe(Func<long> probe)
     {
         try { return probe(); } catch { return -1; }
+    }
+
+    /// <summary>
+    /// Pregunta al volumen de destino si acepta escrituras. Con el disco colgado, la sonda se queda bloqueada
+    /// en el sistema (puede ser minutos): por eso se mantiene UNA sola en vuelo y, mientras no termine, se
+    /// responde «no responde» sin lanzar otra. La sonda en sí decide su propio tiempo máximo.
+    /// </summary>
+    private async Task<bool> IsVolumeResponsiveAsync()
+    {
+        var probe = _probeInFlight;
+        if (probe is null || probe.IsCompleted)
+        {
+            try { probe = _probeInFlight = VolumeProbe!(); }
+            catch { return false; }
+        }
+        // Un tick del watchdog no debe esperar más de unos segundos a la sonda.
+        var done = await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(6))).ConfigureAwait(false);
+        if (done != probe) return false;
+        try { return await probe.ConfigureAwait(false); } catch { return false; }
     }
 
     /// <summary>Cierre ordenado: envía 'q' por stdin para flush/finalizar contenedores.</summary>

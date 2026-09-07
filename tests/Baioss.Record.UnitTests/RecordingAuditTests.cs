@@ -99,6 +99,43 @@ public class RecordingAuditTests
     }
 
     [Fact]
+    public void Una_Grabacion_Interrumpida_A_Mitad_Deja_Rastro_Como_Aviso()
+    {
+        // Es el suceso que explica un archivo cortado y un hueco de segundos: sin él, la auditoría mostraba
+        // «archivo cerrado» y «archivo cerrado» como si nada hubiera pasado.
+        var entry = EventLogWriter.ToEntry(new RecordingInterrupted(Channel, Session, -1,
+            "proceso terminado a la fuerza (watchdog por estancamiento, o desde fuera)"));
+
+        Assert.Equal(EventSeverity.Warning, entry.Severity);
+        Assert.Equal("RecordingInterrupted", entry.Category);
+        Assert.Contains("-1", entry.Message);
+        Assert.Equal(Channel, entry.ChannelId);
+    }
+
+    [Fact]
+    public void Un_Archivo_Que_No_Pasa_La_Verificacion_Se_Audita_Como_Error()
+    {
+        var entry = EventLogWriter.ToEntry(new RecordingFileUnverified(
+            Channel, Session, @"D:\rec\06-09-2026_TEST SUNDAY_9.mp4", 2_924_741_632));
+
+        Assert.Equal(EventSeverity.Error, entry.Severity);
+        Assert.Contains("TEST SUNDAY_9.mp4", entry.Message);
+    }
+
+    [Fact]
+    public void Un_Disco_Que_No_Responde_Es_Critico_Y_Su_Vuelta_Informativa()
+    {
+        // Es la causa raíz real detrás de un archivo cortado (2026-09-06): el disco, no FFmpeg.
+        var stalled = EventLogWriter.ToEntry(new StorageStalled(Channel, @"D:\"));
+        var cleared = EventLogWriter.ToEntry(new StorageStallCleared(Channel, @"D:\", TimeSpan.FromSeconds(110)));
+
+        Assert.Equal(EventSeverity.Critical, stalled.Severity);
+        Assert.Equal(EventSeverity.Info, cleared.Severity);
+        Assert.Equal(Channel, stalled.ChannelId);
+        Assert.Contains(@"D:\", stalled.Message);
+    }
+
+    [Fact]
     public void Un_Cierre_Abrupto_Anterior_Se_Audita()
     {
         var entry = EventLogWriter.ToEntry(new OrphanSessionsClosed(2));

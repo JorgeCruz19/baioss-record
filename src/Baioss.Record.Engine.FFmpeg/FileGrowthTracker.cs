@@ -18,6 +18,10 @@ internal sealed class FileGrowthTracker
     /// Registra la medida de bytes actual y devuelve <c>true</c> si el archivo lleva SIN crecer más de
     /// <paramref name="timeout"/> (estancado). <paramref name="currentBytes"/> &lt; 0 = no evaluable → reinicia el reloj.
     /// </summary>
+    /// <summary>Reinicia el reloj sin olvidar la última medida: el disco estuvo colgado y no debe contarse ese
+    /// tiempo contra FFmpeg. La próxima evaluación parte de <paramref name="now"/>.</summary>
+    public void Reset(DateTimeOffset now) => _lastGrowthUtc = now;
+
     public bool IsStalled(long currentBytes, DateTimeOffset now, TimeSpan timeout)
     {
         if (currentBytes < 0) { _lastGrowthUtc = now; return false; }                 // no evaluable (pausa / sin sonda)

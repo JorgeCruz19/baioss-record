@@ -88,6 +88,39 @@ public class AuditTextTests : IDisposable
     }
 
     [Fact]
+    public void Una_Interrupcion_Distingue_Proceso_Matado_De_Salida_Propia()
+    {
+        var matado = AuditText.Detail("RecordingInterrupted", """{"ExitCode":-1,"Reason":"x"}""", "x");
+        var salio = AuditText.Detail("RecordingInterrupted", """{"ExitCode":1,"Reason":"x"}""", "x");
+
+        Assert.Contains("terminado a la fuerza", matado);
+        Assert.Contains("salió por su cuenta (código 1)", salio);
+        Assert.Contains("siguió en una pieza nueva", matado);
+    }
+
+    [Fact]
+    public void Un_Archivo_Danado_Muestra_Nombre_Tamano_Y_Que_No_Se_Reproduce()
+    {
+        var payload = """{"FilePath":"D:\\rec\\06-09-2026_TEST SUNDAY_9.mp4","SizeBytes":2924741632}""";
+        var detail = AuditText.Detail("RecordingFileUnverified", payload, "x");
+
+        Assert.StartsWith("06-09-2026_TEST SUNDAY_9.mp4", detail);
+        Assert.Contains("2.7 GB", detail.Replace(',', '.'));
+        Assert.Contains("no se puede reproducir", detail);
+    }
+
+    [Fact]
+    public void Un_Disco_Colgado_Se_Lee_Con_Su_Volumen_Y_Cuanto_Duro()
+    {
+        var stalled = AuditText.Detail("StorageStalled", """{"Volume":"D:\\"}""", "x");
+        var cleared = AuditText.Detail("StorageStallCleared", """{"Volume":"D:\\","Duration":"00:01:50"}""", "x");
+
+        Assert.Contains(@"D:\ no acepta escrituras", stalled);
+        Assert.Contains("espera sin cortar", stalled);
+        Assert.Contains(@"D:\ volvió a responder tras 1 min 50 s", cleared);
+    }
+
+    [Fact]
     public void Sin_Payload_Se_Limpia_El_Mensaje_Tecnico()
     {
         // Los eventos de los que no se conoce la forma (o cuyo JSON no se pudo guardar) no deben salir como el
