@@ -101,6 +101,9 @@ public sealed class FfmpegArgumentBuilder
         // 2) Entrada (cada ICaptureSource aporta sus flags de protocolo).
         args.AddRange(source.BuildInputArguments());
 
+        // 2b) Audio multicanal: si la fuente entrega más de un estéreo, los canales se ELIGEN con pan (ver AudioRoutingFilter).
+        string? audioFilter = AudioRoutingFilter(source, profile);
+
         // 3) Filtros: si hay proxy, burn-in, un tamaño elegido (escalado) o salida entrelazada.
         bool gpu = FfmpegCodecMap.IsGpuEncoder(profile.VideoCodec);
         bool hasProxy = profile.Proxy is not null;
@@ -121,9 +124,9 @@ public sealed class FfmpegArgumentBuilder
         args.Add("-map"); args.Add(mainVideo);
         args.Add("-map"); args.Add("0:a?");
 
-        // 5) Encoders.
+        // 5) Encoders. Con pan, el nº de canales lo fija el filtro (no -ac).
         args.AddRange(VideoEncoderArgs(profile));
-        args.AddRange(AudioEncoderArgs(profile));
+        args.AddRange(AudioEncoderArgs(profile, channelCount: audioFilter is null));
 
         // 5b) Opciones de salida de video: frecuencia de cuadro y orden de campo (escaneo).
         if (profile.OutputFrameRate is { } fr)
@@ -145,19 +148,21 @@ public sealed class FfmpegArgumentBuilder
 
         if (hasStreams)
         {
+            if (audioFilter is not null) { args.Add("-af"); args.Add(audioFilter); }
             args.Add("-f"); args.Add("tee");
             args.Add(BuildTeeTarget(profile, recMux, recExt, hasSegmentation));
         }
         else if (hasSegmentation)
         {
+            if (audioFilter is not null) { args.Add("-af"); args.Add(audioFilter); }
             args.AddRange(BuildSegmentOutput(profile, recMux, recExt));
         }
         else
         {
             // Salida directa a un único archivo.
             OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
-            // Medición de loudness/true-peak para los medidores VU (se emite por stderr).
-            args.Add("-af"); args.Add("ebur128=peak=true");
+            // Medición de loudness/true-peak para los medidores VU (se emite por stderr), tras elegir los canales.
+            args.Add("-af"); args.Add(audioFilter is null ? "ebur128=peak=true" : $"{audioFilter},ebur128=peak=true");
             args.AddRange(RobustMovFlags(profile.Container));
             args.Add("-f"); args.Add(recMux);
             args.Add("-y"); args.Add(OutputFilePath);
@@ -204,6 +209,14 @@ public sealed class FfmpegArgumentBuilder
         // De qué entrada FFmpeg sale el audio: 0:a junto al vídeo (dshow/decklink/archivo) o 1:a en una
         // entrada aparte (NDI sirve vídeo y audio por sockets separados). Lo decide la fuente.
         string audioMap = $"{source.AudioInputIndex}:a:0?";
+        // Audio multicanal (DeckLink con 8/16 canales, NDI multicanal): los canales a grabar se ELIGEN con pan dentro
+        // del grafo (un flujo por pista según el modo del perfil) y se reparten con asplit a medidores y grabación.
+        // Los medidores miden TODOS los canales capturados (ebur128 da un true-peak por canal) y el detector de
+        // silencio vigila el primer par elegido. Con 2 canales, la tubería de siempre.
+        var routes = hasAudio ? AudioRoutes(source, profile) : null;
+        string meterChain = routes is null
+            ? (_analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true")
+            : MeterChain(source, _analyze);
 
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
@@ -253,6 +266,15 @@ public sealed class FfmpegArgumentBuilder
             filter.Append(CultureInfo.InvariantCulture, $"[0:v]{previewChain}[pv]");
         }
 
+        if (routes is not null)
+        {
+            // Rama de audio: selección de canales y, de ahí, medidores (y las pistas de grabación si procede). Los
+            // medidores van DENTRO del grafo: un stream que sale de filter_complex no admite un -af aparte.
+            filter.Append(';');
+            filter.Append(AudioGraph(string.Create(CultureInfo.InvariantCulture, $"[{source.AudioInputIndex}:a:0]"),
+                recording ? routes : null, meterChain, "arec"));
+        }
+
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
         // Salida A — preview BGRA por TCP (lo lee la app y lo sube a la textura/bitmap).
@@ -263,10 +285,15 @@ public sealed class FfmpegArgumentBuilder
         // Salida B — medidores VU: ebur128 sobre el audio de entrada, descartado a null. Solo si la
         // fuente declara audio: sin pista, este output quedaría sin streams y FFmpeg abortaría todo
         // (preview incluido). Un dispositivo solo-vídeo simplemente no alimenta medidores.
-        if (hasAudio)
+        if (routes is not null)
+        {
+            args.Add("-map"); args.Add("[amout]");
+            args.Add("-f"); args.Add("null"); args.Add("-");
+        }
+        else if (hasAudio)
         {
             args.Add("-map"); args.Add(audioMap);
-            args.Add("-af"); args.Add(_analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true");
+            args.Add("-af"); args.Add(meterChain);
             args.Add("-f"); args.Add("null"); args.Add("-");
         }
 
@@ -275,17 +302,22 @@ public sealed class FfmpegArgumentBuilder
         {
             var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
 
+            // Con selección de canales, la grabación toma las ramas [arecN] del grafo (una por pista, ya con los
+            // canales elegidos); si no, el audio crudo de la entrada.
+            var recAudio = routes is not null ? RouteLabels(routes, "arec") : new[] { audioMap };
             if (profile.AudioOnly)
             {
-                args.Add("-map"); args.Add(audioMap);
-                args.AddRange(AudioEncoderArgs(profile));
+                foreach (var a in recAudio) { args.Add("-map"); args.Add(a); }
+                args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
+                if (routes is not null) args.AddRange(TrackTitles(routes));
             }
             else
             {
                 args.Add("-map"); args.Add(recLabel);
-                if (hasAudio) { args.Add("-map"); args.Add(audioMap); }
+                if (hasAudio) foreach (var a in recAudio) { args.Add("-map"); args.Add(a); }
                 args.AddRange(VideoEncoderArgs(profile));
-                if (hasAudio) args.AddRange(AudioEncoderArgs(profile));
+                if (hasAudio) args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
+                if (hasAudio && routes is not null) args.AddRange(TrackTitles(routes));
                 if (profile.OutputFrameRate is { } fr)
                 {
                     args.Add("-r");
@@ -429,12 +461,19 @@ public sealed class FfmpegArgumentBuilder
         string size = string.Create(CultureInfo.InvariantCulture, $"{res.Width}x{res.Height}");
         string r = string.Create(CultureInfo.InvariantCulture, $"{rate.Numerator}/{rate.Denominator}");
 
+        // Con una fuente multicanal, el silencio tiene TANTOS canales como la fuente y pasa por los MISMOS pans que la
+        // grabación normal: así las piezas de la carta de ajuste llevan exactamente las mismas pistas que las reales.
+        var routes = _source is not null ? AudioRoutes(_source, profile) : null;
+        string silence = routes is null
+            ? "stereo"
+            : string.Create(CultureInfo.InvariantCulture, $"{_source!.AudioChannelCount}c");
+
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         // Entradas generadas: barras de ajuste (0:v) + silencio (1:a), con base de tiempo continua.
         args.Add("-f"); args.Add("lavfi");
         args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"smptebars=size={size}:rate={r}"));
         args.Add("-f"); args.Add("lavfi");
-        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"anullsrc=channel_layout=stereo:sample_rate={profile.AudioSampleRate}"));
+        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"anullsrc=channel_layout={silence}:sample_rate={profile.AudioSampleRate}"));
 
         string label = "drawtext=text='SIN SEÑAL':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:" +
                        "x=(w-text_w)/2:y=h*0.12";
@@ -453,6 +492,11 @@ public sealed class FfmpegArgumentBuilder
             filter.Append(CultureInfo.InvariantCulture, $"[0:v]{label},{previewChain}[pv]");
             recLabel = "[0:v]";
         }
+        if (routes is not null)
+        {
+            filter.Append(';');
+            filter.Append(AudioGraph("[1:a]", recording ? routes : null, "ebur128=peak=true", "aslate"));
+        }
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
         // Salida A — preview de las barras.
@@ -461,8 +505,8 @@ public sealed class FfmpegArgumentBuilder
         args.Add(_previewSink);
 
         // Salida B — medidores sobre el silencio (marcará -inf; sin silencedetect para no duplicar alarma).
-        args.Add("-map"); args.Add("1:a:0");
-        args.Add("-af"); args.Add("ebur128=peak=true");
+        args.Add("-map"); args.Add(routes is null ? "1:a:0" : "[amout]");
+        if (routes is null) { args.Add("-af"); args.Add("ebur128=peak=true"); }
         args.Add("-f"); args.Add("null"); args.Add("-");
 
         // Salida C — grabación del slate (mismo encoder/segmentación que la grabación normal).
@@ -470,9 +514,10 @@ public sealed class FfmpegArgumentBuilder
         {
             var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
             args.Add("-map"); args.Add(recLabel);
-            args.Add("-map"); args.Add("1:a:0");
+            foreach (var a in routes is null ? new[] { "1:a:0" } : RouteLabels(routes, "aslate")) { args.Add("-map"); args.Add(a); }
             args.AddRange(VideoEncoderArgs(profile));
-            args.AddRange(AudioEncoderArgs(profile));
+            args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
+            if (routes is not null) args.AddRange(TrackTitles(routes));
             if (profile.OutputFrameRate is { } fr)
             {
                 args.Add("-r");
@@ -638,8 +683,10 @@ public sealed class FfmpegArgumentBuilder
         args.AddRange(source.BuildInputArguments());
         args.Add("-vn");
         args.Add("-map"); args.Add("0:a?");
-        args.AddRange(AudioEncoderArgs(profile));
-        args.Add("-af"); args.Add("ebur128=peak=true"); // niveles para los medidores VU
+        string? audioFilter = AudioRoutingFilter(source, profile);
+        args.AddRange(AudioEncoderArgs(profile, channelCount: audioFilter is null));
+        // Selección de canales (si la fuente trae más de 2) + niveles para los medidores VU.
+        args.Add("-af"); args.Add(audioFilter is null ? "ebur128=peak=true" : $"{audioFilter},ebur128=peak=true");
         args.Add("-f"); args.Add(recMux);
         args.Add("-y"); args.Add(OutputFilePath);
         return args;
@@ -676,7 +723,152 @@ public sealed class FfmpegArgumentBuilder
            ?? DefaultPixelFormat(p.VideoCodec)
            ?? "nv12";
 
-    private IEnumerable<string> AudioEncoderArgs(RecordingProfile p)
+    /// <summary>Un flujo de audio de la grabación: el <c>pan</c> que lo produce y, si lleva título de pista, cuál.</summary>
+    internal sealed record AudioRoute(string Pan, string? Title);
+
+    /// <summary>
+    /// Flujos de audio de la GRABACIÓN según el modo de pistas del perfil, o <c>null</c> si la fuente entrega 2 canales
+    /// (tubería de siempre). Se usa SOLO con más de 2 canales: ahí <c>-ac</c> no sirve, porque FFmpeg MEZCLARÍA todos los
+    /// canales de la tarjeta en la pista (el par 5-6 acabaría sonando dentro del 1-2); <c>pan</c> selecciona sin mezclar.
+    /// <list type="bullet">
+    ///   <item>Single: un pan con la distribución del perfil (estéreo del par elegido, 5.1 con los seis primeros…).</item>
+    ///   <item>PairsAsTracks: un pan estéreo por par elegido, cada uno con título «Canales 3-4».</item>
+    ///   <item>Multichannel: un pan con todos los canales elegidos; en PCM con distribución sin nombre («8c»), y con un
+    ///   códec con pérdida la mayor distribución estándar que quepa (7.1, 5.1, quad o estéreo).</item>
+    /// </list>
+    /// </summary>
+    internal static IReadOnlyList<AudioRoute>? AudioRoutes(ICaptureSource source, RecordingProfile profile)
+    {
+        int available = source.AudioChannelCount;
+        if (!AudioSelection.RequiresRouting(available)) return null;
+        var channels = AudioSelection.FromParameters(source.Definition.Parameters).ChannelIndexes(available);
+        switch (profile.AudioTracks)
+        {
+            case AudioTrackMode.PairsAsTracks:
+            {
+                var routes = new List<AudioRoute>();
+                for (int i = 0; i < channels.Count; i += 2)
+                {
+                    int a = channels[i];
+                    int b = i + 1 < channels.Count ? channels[i + 1] : a;
+                    routes.Add(new AudioRoute(
+                        string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{a}|c1=c{b}"),
+                        string.Create(CultureInfo.InvariantCulture, $"Canales {a + 1}-{b + 1}")));
+                }
+                return routes;
+            }
+            case AudioTrackMode.Multichannel:
+            {
+                bool lossy = !FfmpegCodecMap.EffectiveAudioEncoder(profile.AudioCodec, profile.Container).StartsWith("pcm", StringComparison.Ordinal);
+                return new[] { new AudioRoute(MultichannelPan(channels, lossy), null) };
+            }
+            default:
+                return new[] { new AudioRoute(PanFilter(profile.AudioLayout, channels), null) };
+        }
+    }
+
+    /// <summary>Primer flujo de audio (para las rutas de un solo stream: <see cref="Build"/> y solo-audio), o null.</summary>
+    internal static string? AudioRoutingFilter(ICaptureSource source, RecordingProfile profile)
+        => AudioRoutes(source, profile)?[0].Pan;
+
+    /// <summary>El primer par elegido de una fuente multicanal, en estéreo: lo que vigila el detector de silencio.</summary>
+    private static string MeterPan(ICaptureSource source)
+        => PanFilter(AudioLayout.Stereo, AudioSelection.FromParameters(source.Definition.Parameters).ChannelIndexes(source.AudioChannelCount));
+
+    /// <summary>
+    /// Cadena de medida de una fuente multicanal: <c>ebur128</c> ANTES de elegir nada, sobre todos los canales capturados
+    /// (un true-peak por canal → un medidor por par en la UI/API) y, si se analiza la señal, el detector de silencio
+    /// DESPUÉS del pan al primer par elegido: la alarma habla de lo que se graba, no del resto del SDI.
+    /// </summary>
+    private static string MeterChain(ICaptureSource source, bool analyze)
+        => analyze ? $"ebur128=peak=true,{MeterPan(source)},{SilenceDetect}" : "ebur128=peak=true";
+
+    /// <summary>
+    /// Pan de una sola pista con todos los canales elegidos. PCM admite cualquier recuento (distribución sin nombre
+    /// «Nc»; MOV/MXF lo escriben sin problema); un códec con pérdida (AAC, MP2…) exige una distribución estándar, así
+    /// que se toma la mayor que quepa: 7.1 (8), 5.1 (6), quad (4) o estéreo. Los canales que sobran no se graban.
+    /// </summary>
+    internal static string MultichannelPan(IReadOnlyList<int> channels, bool lossy)
+    {
+        int count = channels.Count;
+        string layout;
+        int take;
+        if (!lossy) { layout = count == 2 ? "stereo" : string.Create(CultureInfo.InvariantCulture, $"{count}c"); take = count; }
+        else if (count >= 8) { layout = "7.1"; take = 8; }
+        else if (count >= 6) { layout = "5.1"; take = 6; }
+        else if (count >= 4) { layout = "quad"; take = 4; }
+        else { layout = "stereo"; take = Math.Min(2, count); }
+        var sb = new StringBuilder("pan=").Append(layout);
+        for (int i = 0; i < take; i++) sb.Append(CultureInfo.InvariantCulture, $"|c{i}=c{channels[i]}");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Grafo de audio a partir de <paramref name="input"/> («[0:a:0]» o «[1:a]»): reparte con asplit a los medidores
+    /// (<paramref name="meterChain"/>, sobre todos los canales capturados → [amout]) y a una rama por pista
+    /// (<paramref name="label"/>1…N). Sin pistas (solo preview) va todo a los medidores.
+    /// </summary>
+    private static string AudioGraph(string input, IReadOnlyList<AudioRoute>? routes, string meterChain, string label)
+    {
+        if (routes is null || routes.Count == 0)
+            return string.Create(CultureInfo.InvariantCulture, $"{input}{meterChain}[amout]");
+        var sb = new StringBuilder();
+        sb.Append(input).Append(CultureInfo.InvariantCulture, $"asplit={routes.Count + 1}[m0]");
+        for (int i = 1; i <= routes.Count; i++) sb.Append(CultureInfo.InvariantCulture, $"[r{i}]");
+        sb.Append(CultureInfo.InvariantCulture, $";[m0]{meterChain}[amout]");
+        for (int i = 1; i <= routes.Count; i++) sb.Append(CultureInfo.InvariantCulture, $";[r{i}]{routes[i - 1].Pan}[{label}{i}]");
+        return sb.ToString();
+    }
+
+    private static IReadOnlyList<string> RouteLabels(IReadOnlyList<AudioRoute> routes, string label)
+        => Enumerable.Range(1, routes.Count).Select(i => string.Create(CultureInfo.InvariantCulture, $"[{label}{i}]")).ToList();
+
+    /// <summary>Títulos de pista (metadatos por stream de audio) para que el editor vea «Canales 3-4» y no «Audio 2».</summary>
+    private static IEnumerable<string> TrackTitles(IReadOnlyList<AudioRoute> routes)
+    {
+        for (int i = 0; i < routes.Count; i++)
+        {
+            if (routes[i].Title is not { } title) continue;
+            yield return string.Create(CultureInfo.InvariantCulture, $"-metadata:s:a:{i}");
+            yield return $"title={title}";
+        }
+    }
+
+    /// <summary>
+    /// Construye el <c>pan</c> para una distribución de salida a partir de los canales de entrada elegidos (0-based,
+    /// en orden). Mono mezcla el primer par; estéreo toma los dos primeros; 5.1/7.1 colocan los canales en orden
+    /// (L R C LFE Ls Rs [Lb Rb], el orden habitual del audio embebido). Las salidas sin canal quedan en silencio.
+    /// </summary>
+    internal static string PanFilter(AudioLayout layout, IReadOnlyList<int> channels)
+    {
+        if (channels.Count == 0) throw new ArgumentException("Hace falta al menos un canal de entrada.", nameof(channels));
+        int first = channels[0];
+        int second = channels.Count > 1 ? channels[1] : channels[0];
+        switch (layout)
+        {
+            case AudioLayout.Mono:
+                return channels.Count > 1
+                    ? string.Create(CultureInfo.InvariantCulture, $"pan=mono|c0=0.5*c{first}+0.5*c{second}")
+                    : string.Create(CultureInfo.InvariantCulture, $"pan=mono|c0=c{first}");
+            case AudioLayout.Surround51: return Multichannel("5.1", 6);
+            case AudioLayout.Surround71: return Multichannel("7.1", 8);
+            default:
+                return string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{first}|c1=c{second}");
+        }
+
+        string Multichannel(string name, int outputs)
+        {
+            var sb = new StringBuilder("pan=").Append(name);
+            for (int i = 0; i < outputs && i < channels.Count; i++)
+                sb.Append(CultureInfo.InvariantCulture, $"|c{i}=c{channels[i]}");
+            return sb.ToString();
+        }
+    }
+
+    /// <param name="p">Perfil de grabación.</param>
+    /// <param name="channelCount">Emitir <c>-ac</c> según la distribución del perfil. Falso cuando un <c>pan</c> ya
+    /// fijó los canales (repetirlo sería inocuo en estéreo, pero volvería a mezclar en mono/5.1 sobre lo elegido).</param>
+    private IEnumerable<string> AudioEncoderArgs(RecordingProfile p, bool channelCount = true)
     {
         var codec = FfmpegCodecMap.EffectiveAudioEncoder(p.AudioCodec, p.Container);
         var list = new List<string>
@@ -688,12 +880,15 @@ public sealed class FfmpegArgumentBuilder
             list.Add("-b:a");
             list.Add(p.AudioBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture));
         }
-        int channels = p.AudioLayout switch
+        if (channelCount)
         {
-            AudioLayout.Mono => 1, AudioLayout.Stereo => 2,
-            AudioLayout.Surround51 => 6, AudioLayout.Surround71 => 8, _ => 2
-        };
-        list.Add("-ac"); list.Add(channels.ToString(CultureInfo.InvariantCulture));
+            int channels = p.AudioLayout switch
+            {
+                AudioLayout.Mono => 1, AudioLayout.Stereo => 2,
+                AudioLayout.Surround51 => 6, AudioLayout.Surround71 => 8, _ => 2
+            };
+            list.Add("-ac"); list.Add(channels.ToString(CultureInfo.InvariantCulture));
+        }
         return list;
     }
 

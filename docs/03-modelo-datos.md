@@ -75,6 +75,7 @@ erDiagram
 
 - **Channel** — canal independiente (A/B/…). Mantiene fuente y perfil activos y la bandera 24/7.
 - **InputSource** — definición de entrada (tipo + URI + parámetros por protocolo).
+  Claves de Parameters que usa el audio embebido multicanal (DeckLink): `audio_channels` = 2 | 8 | 16 | auto (cuántos canales pedir a la tarjeta; auto = 16 con retroceso a 8 y 2) y `audio_pairs` = 1 | 2 | 1,2 | all (qué par(es) se graban). Sin ellas: 2 canales, par 1. NDI usa solo `audio_pairs` (los canales los cuenta el receptor al conectar).
 - **RecordingProfile** — "receta" de codificación: códecs, bitrate, GOP, contenedor, overlays,
   más sub-políticas `SegmentationPolicy`, `ProxyProfile` y lista de `StreamTarget`.
 - **RecordingSession** — lapso Start→Stop. Agrupa segmentos y concentra la metadata exportable.

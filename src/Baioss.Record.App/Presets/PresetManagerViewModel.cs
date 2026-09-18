@@ -118,6 +118,7 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
             Loc.T("Pre_Lbl_AudioSection"),
             Row("Pre_Lbl_AudioCodec", p.AudioCodec.ToString()),
             Row("Pre_Lbl_AudioChannels", $"{p.AudioLayout} ({p.AudioChannels} ch)"),
+            Row("Pre_Lbl_AudioTracks", p.AudioTracks.ToString()),
             Row("Pre_Lbl_SampleRate", $"{p.AudioSampleRate} Hz"),
             Row("Pre_Lbl_AudioBitrate", $"{p.AudioBitrateKbps} kbps"),
         });

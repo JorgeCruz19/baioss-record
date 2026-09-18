@@ -29,8 +29,8 @@ public sealed class InputDeviceOption
 
     public override string ToString() => Label;
 
-    /// <summary>Traduce la opción (audio DShow / formato DeckLink elegidos) a una <see cref="InputSource"/>.</summary>
-    public InputSource ToInputSource(string? audioDevice, DeviceFormat? format)
+    /// <summary>Traduce la opción (audio DShow / formato y audio DeckLink elegidos) a una <see cref="InputSource"/>.</summary>
+    public InputSource ToInputSource(string? audioDevice, DeviceFormat? format, AudioChannelsOption? audioChannels = null, PairOption? pair = null)
     {
         var def = new InputSource
         {
@@ -48,17 +48,42 @@ public sealed class InputDeviceOption
         {
             def.Parameters["audio"] = audioDevice!;
         }
-        else if (Type is InputType.DecklinkSdi && format is { Code.Length: > 0 })
+        else if (Type is InputType.DecklinkSdi)
         {
-            def.Parameters["format_code"] = format.Code; // modo SDI elegido (si no, autodetección)
-            // El modo elegido fija la resolución/tasa esperadas → la señal del canal las muestra en el
-            // preview (1920×1080 · 59.94i). La tasa es la codificada (correcta para timecode/encoder).
-            if (format.Resolution is { } r) def.ExpectedResolution = r;
-            if (format.FrameRate is { } f) def.ExpectedFrameRate = f;
-            def.Parameters["format_label"] = format.Description; // etiqueta legible para el preview
+            if (format is { Code.Length: > 0 })
+            {
+                def.Parameters["format_code"] = format.Code; // modo SDI elegido (si no, autodetección)
+                // El modo elegido fija la resolución/tasa esperadas → la señal del canal las muestra en el
+                // preview (1920×1080 · 59.94i). La tasa es la codificada (correcta para timecode/encoder).
+                if (format.Resolution is { } r) def.ExpectedResolution = r;
+                if (format.FrameRate is { } f) def.ExpectedFrameRate = f;
+                def.Parameters["format_label"] = format.Description; // etiqueta legible para el preview
+            }
+            // Audio embebido: cuántos canales pedir a la tarjeta («auto» = los que admita) y qué par grabar. Queda
+            // FIJO con la entrada: la tarjeta no dice qué trae la señal, y un par callado no es un par ausente.
+            bool auto = audioChannels is null || audioChannels.Value == AudioSelection.AutoValue;
+            int requested = !auto && int.TryParse(audioChannels!.Value, out var n) ? n : AudioSelection.MaxChannels;
+            new AudioSelection(requested, auto, new[] { pair?.Pair ?? 1 }, false).WriteTo(def.Parameters);
+        }
+        else if (Type is InputType.Ndi)
+        {
+            // NDI trae los canales que trae (los cuenta el receptor al conectar): solo se elige el par. Sin parámetro, par 1.
+            def.Parameters[AudioSelection.PairsKey] = (pair?.Pair ?? 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
         return def;
     }
+}
+
+/// <summary>Cuántos canales de audio pedir a la DeckLink: «auto» o un valor que admite FFmpeg (2, 8, 16).</summary>
+public sealed record AudioChannelsOption(string Label, string Value)
+{
+    public override string ToString() => Label;
+}
+
+/// <summary>Un par de canales de audio embebido (1 = canales 1-2, 2 = 3-4…), con su etiqueta legible.</summary>
+public sealed record PairOption(int Pair, string Label)
+{
+    public override string ToString() => Label;
 }
 
 /// <summary>Fila de asignación de un canal: su entrada de vídeo (+ audio DShow) y el botón Aplicar.</summary>
@@ -72,11 +97,23 @@ public sealed partial class ChannelInputRow : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AudioEnabled))]
     [NotifyPropertyChangedFor(nameof(FormatEnabled))]
+    [NotifyPropertyChangedFor(nameof(AudioSelectionEnabled))]
+    [NotifyPropertyChangedFor(nameof(PairSelectionEnabled))]
     [NotifyPropertyChangedFor(nameof(Formats))]
     private InputDeviceOption? _selectedDevice;
 
     [ObservableProperty] private string _selectedAudio = InputDeviceOption.NoAudio;
     [ObservableProperty] private DeviceFormat? _selectedFormat;
+
+    /// <summary>Canales de audio que se piden a la DeckLink («auto» por defecto) y par a grabar (1-2 por defecto).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Pairs))]
+    private AudioChannelsOption _selectedAudioChannels;
+
+    [ObservableProperty] private PairOption? _selectedPair;
+
+    /// <summary>Resultado de «Medir audio» en palabras («1-2: −8 dB · 3-4: silencio · …»), vacío hasta que se mida.</summary>
+    [ObservableProperty] private string _audioProbeText = "";
 
     /// <summary>Entrada ACTUALMENTE asignada al canal (para que el operador sepa qué está activo). Se
     /// actualiza al aplicar una nueva.</summary>
@@ -88,13 +125,19 @@ public sealed partial class ChannelInputRow : ObservableObject
         ChannelId = channelId;
         CurrentInput = currentInput;
         _owner = owner;
+        _selectedAudioChannels = owner.AudioChannelOptions[0];
+        _selectedPair = Pairs.FirstOrDefault();
     }
 
     public ObservableCollection<InputDeviceOption> Devices => _owner.VideoDevices;
     public ObservableCollection<string> AudioDevices => _owner.AudioDevices;
+    public IReadOnlyList<AudioChannelsOption> AudioChannelOptions => _owner.AudioChannelOptions;
 
     /// <summary>Modos del dispositivo seleccionado (DeckLink); "Automático" siempre disponible.</summary>
     public IReadOnlyList<DeviceFormat> Formats => SelectedDevice?.Formats ?? new[] { DeviceFormat.Auto };
+
+    /// <summary>Pares que se pueden grabar con los canales pedidos (en «auto», los 8 posibles).</summary>
+    public IReadOnlyList<PairOption> Pairs => InputsManagerViewModel.PairsFor(SelectedAudioChannels);
 
     /// <summary>El audio separado solo aplica a DirectShow (DeckLink lleva el audio embebido en el SDI).</summary>
     public bool AudioEnabled => SelectedDevice?.Type is InputType.DirectShow;
@@ -102,8 +145,29 @@ public sealed partial class ChannelInputRow : ObservableObject
     /// <summary>El selector de modo/formato SDI solo aplica a DeckLink.</summary>
     public bool FormatEnabled => SelectedDevice?.Type is InputType.DecklinkSdi;
 
+    /// <summary>Cuántos canales pedir solo aplica a DeckLink (a la tarjeta se le pide un recuento; NDI trae los que trae).</summary>
+    public bool AudioSelectionEnabled => SelectedDevice?.Type is InputType.DecklinkSdi;
+
+    /// <summary>El par a grabar aplica a DeckLink y a NDI (una fuente NDI puede traer 4, 8 o 16 canales; los cuenta el
+    /// receptor al conectar, así que aquí se ofrecen los ocho pares posibles y en vivo un par inexistente cae al 1).</summary>
+    public bool PairSelectionEnabled => SelectedDevice?.Type is InputType.DecklinkSdi or InputType.Ndi;
+
+    /// <summary>«Medir audio» sirve para DeckLink (y para el archivo demo, que permite probar el asistente sin tarjeta).</summary>
+    public bool CanProbeAudio => SelectedDevice?.Type is InputType.DecklinkSdi or InputType.File;
+
     partial void OnSelectedDeviceChanged(InputDeviceOption? value)
-        => SelectedFormat = Formats.FirstOrDefault(); // por defecto, "Automático"
+    {
+        SelectedFormat = Formats.FirstOrDefault(); // por defecto, "Automático"
+        AudioProbeText = "";                       // la medida era de la entrada anterior
+        OnPropertyChanged(nameof(CanProbeAudio));
+    }
+
+    [RelayCommand]
+    private Task DetectAudio() => _owner.ProbeAudioAsync(this);
+
+    // Al cambiar los canales pedidos cambian los pares posibles: conserva el par si sigue existiendo; si no, el 1-2.
+    partial void OnSelectedAudioChannelsChanged(AudioChannelsOption value)
+        => SelectedPair = Pairs.FirstOrDefault(p => p.Pair == (SelectedPair?.Pair ?? 1)) ?? Pairs.FirstOrDefault();
 
     [RelayCommand]
     private Task Apply() => _owner.ApplyRowAsync(this);
@@ -123,6 +187,25 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     public ObservableCollection<InputDeviceOption> VideoDevices { get; } = new();
     public ObservableCollection<string> AudioDevices { get; } = new();
     public ObservableCollection<ChannelInputRow> Channels { get; } = new();
+
+    /// <summary>Opciones de canales de audio de la DeckLink: «auto» primero, luego los valores que admite FFmpeg.</summary>
+    public IReadOnlyList<AudioChannelsOption> AudioChannelOptions { get; } = new List<AudioChannelsOption>
+    {
+        new(Loc.T("In_AudioAuto"), AudioSelection.AutoValue),
+        new(Loc.F("In_AudioNCh", 2), "2"),
+        new(Loc.F("In_AudioNCh", 8), "8"),
+        new(Loc.F("In_AudioNCh", 16), "16"),
+    };
+
+    /// <summary>Pares que caben en los canales pedidos: 2 → «1-2»; 8 → cuatro; 16 y «auto» → ocho.</summary>
+    public static IReadOnlyList<PairOption> PairsFor(AudioChannelsOption? option)
+    {
+        int channels = option is null || option.Value == AudioSelection.AutoValue || !int.TryParse(option.Value, out var n)
+            ? AudioSelection.MaxChannels : n;
+        return Enumerable.Range(1, Math.Max(1, channels / 2))
+            .Select(p => new PairOption(p, Loc.F("In_Pair", AudioSelection.PairLabel(p))))
+            .ToList();
+    }
 
     [ObservableProperty] private string _statusMessage = "";
     [ObservableProperty]
@@ -216,6 +299,61 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         finally { IsBusy = false; }
     }
 
+    /// <summary>
+    /// Asistente «Medir audio»: captura ~3 s del dispositivo elegido en la fila, enseña el pico de cada par y PROPONE
+    /// el primer par con sonido (y deja el recuento de canales que aceptó la tarjeta si se pidió «auto»). La decisión
+    /// sigue siendo del instalador: se guarda al pulsar Aplicar, no al medir. Exige la tarjeta libre.
+    /// </summary>
+    internal async Task ProbeAudioAsync(ChannelInputRow row)
+    {
+        if (!CanRebind) { StatusMessage = Loc.T("In_Msg_NotAvailableSimulated"); return; }
+        if (row.SelectedDevice is null || !row.CanProbeAudio) { StatusMessage = Loc.F("In_Msg_PickVideo", row.Key); return; }
+
+        IsBusy = true;
+        StatusMessage = Loc.F("In_Msg_ProbingAudio", row.SelectedDevice.Label);
+        try
+        {
+            int requested = row.SelectedAudioChannels.Value == AudioSelection.AutoValue ? 0 : int.Parse(row.SelectedAudioChannels.Value);
+            var probe = await _devices.MeasureAudioAsync(row.SelectedDevice.Type, row.SelectedDevice.DeviceId ?? "", requested);
+            if (probe is null)
+            {
+                row.AudioProbeText = "";
+                StatusMessage = Loc.F("In_Msg_AudioProbeNone", row.SelectedDevice.Label);
+                return;
+            }
+
+            // Un par por línea de texto: «1-2: −8 dB · 3-4: silencio · …».
+            int pairs = Math.Max(1, probe.Channels / 2);
+            row.AudioProbeText = string.Join(" · ", Enumerable.Range(1, pairs).Select(p =>
+            {
+                double peak = probe.PairPeak(p);
+                string level = peak > AudioProbe.SilenceDb ? $"{peak:0} dB" : Loc.T("In_ProbeSilence");
+                return $"{AudioSelection.PairLabel(p)}: {level}";
+            }));
+
+            // Propuesta: si se pidió «auto», el recuento que aceptó la tarjeta pasa a ser explícito (así lo que se
+            // aplica es exactamente lo medido); y el par, el primero con sonido.
+            if (row.SelectedAudioChannels.Value == AudioSelection.AutoValue)
+                row.SelectedAudioChannels = AudioChannelOptions.FirstOrDefault(o => o.Value == probe.Channels.ToString()) ?? row.SelectedAudioChannels;
+            var active = probe.ActivePairs;
+            if (active.Count > 0)
+            {
+                row.SelectedPair = row.Pairs.FirstOrDefault(p => p.Pair == active[0]) ?? row.SelectedPair;
+                StatusMessage = Loc.F("In_Msg_AudioProbe", row.Key, probe.Channels,
+                    string.Join(", ", active.Select(AudioSelection.PairLabel)), AudioSelection.PairLabel(active[0]));
+            }
+            else
+            {
+                StatusMessage = Loc.F("In_Msg_AudioProbeSilent", row.Key, probe.Channels, AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1));
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = Loc.F("In_Msg_DetectError", ex.Message);
+        }
+        finally { IsBusy = false; }
+    }
+
     internal async Task ApplyRowAsync(ChannelInputRow row)
     {
         if (!CanRebind) { StatusMessage = Loc.T("In_Msg_NotAvailableSimulated"); return; }
@@ -225,11 +363,15 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         StatusMessage = Loc.F("In_Msg_Applying", row.SelectedDevice.Label, row.Key);
         try
         {
-            var def = row.SelectedDevice.ToInputSource(row.SelectedAudio, row.SelectedFormat);
+            var def = row.SelectedDevice.ToInputSource(row.SelectedAudio, row.SelectedFormat, row.SelectedAudioChannels, row.SelectedPair);
             await _apply(row.ChannelId, def);
             row.CurrentInput = row.SelectedDevice.Label; // refleja de inmediato la entrada ahora activa
             var mode = row.FormatEnabled && row.SelectedFormat is { Code.Length: > 0 } ? $" · {row.SelectedFormat.Description}" : "";
-            StatusMessage = Loc.F("In_Msg_Applied", row.Key, row.SelectedDevice.Label, mode);
+            var audio = row.AudioSelectionEnabled
+                ? Loc.F("In_Msg_AppliedAudio", AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1), row.SelectedAudioChannels.Label)
+                : row.PairSelectionEnabled ? Loc.F("In_Msg_AppliedPair", AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1))
+                : "";
+            StatusMessage = Loc.F("In_Msg_Applied", row.Key, row.SelectedDevice.Label, mode + audio);
         }
         catch (Exception ex)
         {

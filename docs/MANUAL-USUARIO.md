@@ -83,6 +83,9 @@ Cada panel te muestra, de arriba a abajo:
   - Si algo va mal, un **aviso** en la parte de arriba (ver *Alarmas* más abajo).
 
 - **Franja de audio:** los **medidores de sonido** (izquierda "L" y derecha "R"), con su nivel en dBFS. Si el sonido satura, aparece un aviso rojo **"CLIP"**.
+  Con una entrada de 8 o 16 canales (DeckLink o NDI) aparece además un **mini medidor por cada par** («1-2», «3-4»…): el
+  par que se graba lleva un punto rojo y la etiqueta en negrita; los demás solo se miden, para ver de un vistazo qué trae
+  cada par del SDI. Los medidores grandes L/R muestran el primer par que se graba.
 
 - **Botones de grabación (transporte):**
   - **● Grabar:** empieza a grabar a mano.
@@ -126,9 +129,23 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
    - **Entrada de vídeo:** la fuente (la tarjeta o cámara).
    - **Audio (DirectShow):** el micrófono/entrada de sonido, si tu fuente lo necesita.
    - **Modo / formato (DeckLink):** la resolución y cadencia de la señal SDI (por ejemplo "1080i 59.94").
+   - **Audio de la tarjeta (DeckLink):** cuántos canales de audio embebido se le piden a la tarjeta. **Automático** pide
+     los máximos que admita (16, y si no puede, 8 o 2). Si sabes lo que trae tu señal, puedes fijar 2, 8 o 16.
+   - **Par a grabar (DeckLink y NDI):** qué par de canales del SDI va a la grabación (par 1-2, 3-4, 5-6…). Por ejemplo, si el
+     programa va en el 1-2 y el sonido internacional en el 3-4, elige el par que quieras grabar. Con NDI el programa no
+     sabe cuántos canales trae la fuente hasta conectarla: se ofrecen los ocho pares posibles y, si el elegido no existe,
+     se graba el par 1-2.
+   - **🎧 Medir audio:** si no sabes qué trae la señal, pulsa este botón con la tarjeta libre (sin ningún canal usándola):
+     el programa escucha unos segundos, te enseña el nivel de cada par («1-2: −8 dB · 3-4: silencio…») y propone el
+     primer par con sonido. La propuesta no se guarda hasta que pulses **Aplicar**.
 3. Pulsa **Aplicar**. El canal se reconecta a la nueva fuente en caliente (suelta la anterior y abre la nueva).
 
 > **Nota:** No se puede cambiar la entrada de un canal **mientras está grabando**. Detén la grabación primero.
+
+> **Sobre el audio embebido:** la tarjeta no puede saber cuántos canales trae la señal; se le pide un número y entrega
+> ese número (los que no existen llegan en silencio). Por eso la elección se hace aquí, al configurar la entrada, y no
+> cambia mientras se graba: un par que esté callado al empezar no es un par ausente, y las pistas de un archivo no
+> pueden cambiar a mitad. Debajo del monitor del canal verás qué se está grabando, por ejemplo «Par 3-4 de 8 · PCM».
 
 ---
 
@@ -149,6 +166,14 @@ Un **preset** define **cómo se graba** el vídeo: el formato del archivo, la re
 **También puedes:**
 - **＋ Nuevo / ✎ Editar / ⧉ Duplicar / 🗑 Eliminar:** crear tus propios presets a partir de los existentes.
 - **⭱ Importar / ⭳ Exportar:** llevarte tus presets a otro equipo o guardarlos como copia.
+
+**Pistas de audio (solo cuenta con entradas de 8 o 16 canales):** en el editor de un preset, el campo **Pistas de audio**
+decide cómo se guardan los pares elegidos en la entrada (ver punto 3):
+- **Single:** una sola pista con lo elegido (estéreo del par, o 5.1/7.1 con los primeros canales). Es lo de siempre.
+- **PairsAsTracks:** una pista estéreo por cada par elegido, cada una con su nombre («Canales 3-4»). Así el programa,
+  el sonido internacional o cada idioma quedan en pistas separadas, sin mezclarse.
+- **Multichannel:** todos los canales elegidos en una sola pista. Con PCM (MXF, MKV) caben hasta 16; con AAC (MP4,
+  MOV, TS) como máximo 8.
 
 > El preset solo cambia **la calidad y el formato del archivo**. La carpeta donde se guarda se configura aparte (ver punto 6).
 

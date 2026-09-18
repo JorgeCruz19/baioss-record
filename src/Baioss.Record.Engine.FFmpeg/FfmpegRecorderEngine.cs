@@ -109,16 +109,11 @@ public sealed class FfmpegRecorderEngine : IRecorderEngine
 
     private void OnLog(object? sender, string line)
     {
-        // Niveles de audio del filtro ebur128: "… FTPK: -16.6 dBFS …" (1 valor mono, 2 estéreo).
-        int ftpk = line.IndexOf("FTPK:", StringComparison.Ordinal);
-        if (ftpk >= 0)
+        // Niveles de audio del filtro ebur128: "… FTPK: -16.6 dBFS …" (1 valor mono, 2 estéreo). Este motor (ruta de
+        // un solo stream) mide tras el pan, así que siempre llegan como mucho dos valores: L/R.
+        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks)
         {
-            var toks = line[(ftpk + 5)..].TrimStart().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (toks.Length >= 1 && double.TryParse(toks[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var l))
-            {
-                double r = toks.Length >= 2 && double.TryParse(toks[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var rr) ? rr : l;
-                AudioLevelsUpdated?.Invoke(this, (l, r));
-            }
+            AudioLevelsUpdated?.Invoke(this, (peaks[0], peaks.Length > 1 ? peaks[1] : peaks[0]));
             return;
         }
 

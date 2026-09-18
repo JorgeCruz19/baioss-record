@@ -35,7 +35,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
                         <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
-                        <RowDefinition/>
+                        <RowDefinition/><RowDefinition/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="{loc:T PreEd_Name}"/>
@@ -88,6 +88,12 @@
                     <TextBlock Grid.Row="10" Grid.Column="0" Text="{loc:T PreEd_IntraProfile}"/>
                     <ComboBox Grid.Row="10" Grid.Column="1" ItemsSource="{Binding EncoderProfileValues}" SelectedItem="{Binding Preset.EncoderProfile}"/>
                     <TextBlock Grid.Row="10" Grid.Column="2" Grid.ColumnSpan="2" Text="{loc:T PreEd_IntraHint}"/>
+
+                    <!-- Audio multicanal: cómo se reparten en pistas los pares elegidos en la entrada (solo cuenta con
+                         fuentes de más de 2 canales; con estéreo da igual). -->
+                    <TextBlock Grid.Row="11" Grid.Column="0" Text="{loc:T PreEd_AudioTracks}"/>
+                    <ComboBox Grid.Row="11" Grid.Column="1" ItemsSource="{Binding AudioTrackValues}" SelectedItem="{Binding Preset.AudioTracks}"/>
+                    <TextBlock Grid.Row="11" Grid.Column="2" Grid.ColumnSpan="2" Text="{loc:T PreEd_AudioTracksHint}" TextWrapping="Wrap"/>
                 </Grid>
             </ScrollViewer>
         </DockPanel>

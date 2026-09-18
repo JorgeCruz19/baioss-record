@@ -18,12 +18,14 @@ namespace Baioss.Record.Infrastructure.Capture;
 public sealed class NdiCaptureSource : ICaptureSource
 {
     private readonly ILogger _log;
+    private readonly AudioSelection _audio;
     private NdiReceiver? _receiver;
 
     public NdiCaptureSource(InputSource definition, ILogger log)
     {
         Definition = definition;
         _log = log;
+        _audio = AudioSelection.FromParameters(definition.Parameters);
     }
 
     public InputSource Definition { get; }
@@ -32,6 +34,13 @@ public sealed class NdiCaptureSource : ICaptureSource
 
     /// <summary>NDI sirve el audio en una entrada FFmpeg aparte (la 1); el vídeo va en la 0.</summary>
     public int AudioInputIndex => 1;
+
+    /// <summary>
+    /// Canales de audio que trae la fuente NDI (los cuenta el receptor con el primer bloque; 2 hasta entonces). Con más
+    /// de 2, el builder ELIGE los pares con <c>pan</c> (parámetro <c>audio_pairs</c>; sin él, el par 1) y mide todos los
+    /// canales, igual que con DeckLink; antes un NDI de 4 u 8 canales se mezclaba entero en el estéreo con <c>-ac 2</c>.
+    /// </summary>
+    public int AudioChannelCount => _receiver?.Channels ?? 2;
 
     /// <summary>NDI reporta pérdida y recuperación de señal por sí mismo (el receptor detecta la presencia de
     /// vídeo y lo publica en <see cref="SignalChanged"/>): el motor NO debe sondear el dispositivo para NDI
@@ -76,12 +85,24 @@ public sealed class NdiCaptureSource : ICaptureSource
         // nuevo para que la UI y una futura reconstrucción del pipeline lo reflejen. (N20.)
         _receiver.FormatChanged += OnReceiverFormatChanged;
 
-        var res = new Resolution(_receiver.Width, _receiver.Height);
-        var rate = new FrameRate(_receiver.FrameRateN, _receiver.FrameRateD);
-        CurrentSignal = new SignalInfo(SignalState.Locked, res, rate,
-            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
-            FormatLabel: $"{res.Width}×{res.Height} · NDI");
+        CurrentSignal = LockedSignal();
         SignalChanged?.Invoke(this, CurrentSignal);
+    }
+
+    /// <summary>Señal presente con lo que sirve el receptor: resolución/tasa reales y los canales de audio que trae la
+    /// fuente (con más de 2, la etiqueta y los pares elegidos, para la UI/API y los medidores por par).</summary>
+    private SignalInfo LockedSignal()
+    {
+        var r = _receiver!;
+        var res = new Resolution(r.Width, r.Height);
+        var rate = new FrameRate(r.FrameRateN, r.FrameRateD);
+        int ch = r.Channels;
+        return new SignalInfo(SignalState.Locked, res, rate,
+            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
+            FormatLabel: $"{res.Width}×{res.Height} · NDI",
+            AudioChannels: ch,
+            AudioSelectionLabel: ch > 2 ? _audio.Describe(ch) : null,
+            AudioSelectedPairs: ch > 2 ? _audio.SelectedPairs(ch) : null);
     }
 
     /// <summary>Traduce la presencia de vídeo NDI a CurrentSignal + SignalChanged: el SignalMonitor publica
@@ -90,11 +111,7 @@ public sealed class NdiCaptureSource : ICaptureSource
     {
         if (present && _receiver is not null)
         {
-            var res = new Resolution(_receiver.Width, _receiver.Height);
-            var rate = new FrameRate(_receiver.FrameRateN, _receiver.FrameRateD);
-            CurrentSignal = new SignalInfo(SignalState.Locked, res, rate,
-                AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
-                FormatLabel: $"{res.Width}×{res.Height} · NDI");
+            CurrentSignal = LockedSignal();
         }
         else
         {
@@ -109,11 +126,7 @@ public sealed class NdiCaptureSource : ICaptureSource
     private void OnReceiverFormatChanged()
     {
         if (_receiver is null) return;
-        var res = new Resolution(_receiver.Width, _receiver.Height);
-        var rate = new FrameRate(_receiver.FrameRateN, _receiver.FrameRateD);
-        CurrentSignal = new SignalInfo(SignalState.Locked, res, rate,
-            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
-            FormatLabel: $"{res.Width}×{res.Height} · NDI");
+        CurrentSignal = LockedSignal();
         SignalChanged?.Invoke(this, CurrentSignal);
     }
 

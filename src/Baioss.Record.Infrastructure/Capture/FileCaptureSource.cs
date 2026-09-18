@@ -8,13 +8,19 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// Fuente de captura desde archivo (MP4/MOV/MXF/MKV/TS…). Útil para ingest de material
 /// y como fuente de prueba. Parámetros opcionales:
 ///  - <c>loop=1</c>     → reproduce en bucle (simula una fuente continua);
-///  - <c>realtime=1</c> → lee a velocidad real (<c>-re</c>), como una entrada en vivo.
+///  - <c>realtime=1</c> → lee a velocidad real (<c>-re</c>), como una entrada en vivo;
+///  - <c>audio_channels=8|16</c> → el archivo trae ese nº de canales de audio (permite probar la selección
+///    de pares multicanal sin tarjeta; «auto» no aplica a archivos y cuenta como 2).
 /// </summary>
 public sealed class FileCaptureSource(InputSource definition) : ICaptureSource
 {
+    private readonly AudioSelection _audio = AudioSelection.FromParameters(definition.Parameters);
+
     public InputSource Definition { get; } = definition;
     public SignalInfo CurrentSignal { get; private set; } = SignalInfo.None;
     public event EventHandler<SignalInfo>? SignalChanged;
+
+    public int AudioChannelCount => _audio.Auto ? 2 : _audio.RequestedChannels;
 
     public Task OpenAsync(CancellationToken ct = default)
     {
@@ -22,9 +28,12 @@ public sealed class FileCaptureSource(InputSource definition) : ICaptureSource
             throw new FileNotFoundException("Archivo de entrada no encontrado.", Definition.Uri);
 
         // En producción ffprobe poblaría resolución/fps reales; aquí basta marcar lock.
+        int channels = AudioChannelCount;
         CurrentSignal = new SignalInfo(SignalState.Locked,
             Definition.ExpectedResolution, Definition.ExpectedFrameRate,
-            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null);
+            Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null,
+            AudioChannels: channels, AudioSelectionLabel: channels > 2 ? _audio.Describe(channels) : null,
+            AudioSelectedPairs: channels > 2 ? _audio.SelectedPairs(channels) : null);
         SignalChanged?.Invoke(this, CurrentSignal);
         return Task.CompletedTask;
     }

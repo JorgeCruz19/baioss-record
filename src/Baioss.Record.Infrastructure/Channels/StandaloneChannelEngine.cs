@@ -58,7 +58,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly List<Segment> _completedSessionSegments = new();
     private readonly List<Task> _pendingPersists = new();
 
-    private double _peakL = -60, _peakR = -60;
+    /// <summary>Peak-hold por canal capturado (2 estéreo; 8/16 con audio embebido multicanal): se redimensiona con la fuente.</summary>
+    private double[] _peakHold = { -60, -60 };
     private IReadOnlyList<AudioMeter> _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
 
     // Saturación: racha de frames perdidos → alarma FramesDropped (ver DropAlarmTracker). Se reinicia en
@@ -448,7 +449,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
 
         _session = null;
-        _peakL = _peakR = -60;
+        Array.Fill(_peakHold, -60);
         Raise();
     }
 
@@ -656,15 +657,20 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         Raise();
     }
 
-    private void OnAudioLevels(object? sender, (double Left, double Right) lr)
+    private void OnAudioLevels(object? sender, IReadOnlyList<double> peaks)
     {
-        _peakL = Math.Max(lr.Left, _peakL - 1.2); // peak-hold con decaimiento
-        _peakR = Math.Max(lr.Right, _peakR - 1.2);
-        _audio = new[]
+        if (peaks.Count == 0) return;
+        // Un medidor por canal capturado, en el orden de la fuente (la UI/API los agrupan por pares y saben cuáles se
+        // graban por SignalInfo.AudioSelectedPairs). Con estéreo son los dos de siempre.
+        var hold = _peakHold;
+        if (hold.Length != peaks.Count) { hold = new double[peaks.Count]; Array.Fill(hold, -60); _peakHold = hold; }
+        var meters = new AudioMeter[peaks.Count];
+        for (int i = 0; i < meters.Length; i++)
         {
-            new AudioMeter(_peakL, lr.Left, _peakL > -1),
-            new AudioMeter(_peakR, lr.Right, _peakR > -1),
-        };
+            hold[i] = Math.Max(peaks[i], hold[i] - 1.2); // peak-hold con decaimiento
+            meters[i] = new AudioMeter(hold[i], peaks[i], hold[i] > -1);
+        }
+        _audio = meters;
         // NO se llama a Raise() aquí: la UI ya pinta los medidores VU directamente desde
         // Preview.AudioPeaksUpdated (ChannelViewModel.OnPreviewAudio). Reconstruir TODO el ChannelStatus y
         // marshalarlo al Dispatcher en CADA línea FTPK (decenas/s × N canales) saturaba el hilo de UI sin

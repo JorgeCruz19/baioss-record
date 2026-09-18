@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Preview;
+using Baioss.Record.Engine.FFmpeg;
 
 namespace Baioss.Record.Infrastructure.Preview;
 
@@ -48,10 +49,10 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
     /// <summary>0: en esta build la textura D3D11 la posee el render de presentación (ver PreviewSurface).</summary>
     public nint SharedTextureHandle => 0;
 
-    /// <summary>Niveles true-peak L/R (dBFS) del audio de la fuente EN VIVO, para medidores VU.</summary>
+    /// <summary>Niveles true-peak (dBFS) por canal del audio de la fuente EN VIVO, para medidores VU.</summary>
     /// <remarks>El metering se mide sobre la señal de entrada (la misma del preview), de forma
     /// continua e independiente de si se está grabando — el monitoreo es de la fuente, no del encoder.</remarks>
-    public event EventHandler<(double Left, double Right)>? AudioPeaksUpdated;
+    public event EventHandler<IReadOnlyList<double>>? AudioPeaksUpdated;
 
     /// <summary>Niveles de audio (contrato <see cref="IPreviewEngine"/>); se eleva junto con <see cref="AudioPeaksUpdated"/>.</summary>
     public event EventHandler<AudioLevels>? AudioLevelsUpdated;
@@ -112,18 +113,12 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
 
     private void OnStderr(string line)
     {
-        // Líneas de ebur128: "… FTPK: -16.6 -16.9 dBFS …" (1 valor mono, 2 estéreo).
-        int ftpk = line.IndexOf("FTPK:", StringComparison.Ordinal);
-        if (ftpk >= 0)
+        // Líneas de ebur128: "… FTPK: -16.6 -16.9 dBFS …" (un valor por canal: 1 mono, 2 estéreo, N multicanal).
+        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks)
         {
-            var toks = line[(ftpk + 5)..].TrimStart().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (toks.Length >= 1 && double.TryParse(toks[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var l))
-            {
-                double r = toks.Length >= 2 && double.TryParse(toks[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var rr) ? rr : l;
-                AudioPeaksUpdated?.Invoke(this, (l, r));
-                double peak = Math.Max(l, r);
-                AudioLevelsUpdated?.Invoke(this, new AudioLevels(peak, peak, peak > -1));
-            }
+            AudioPeaksUpdated?.Invoke(this, peaks);
+            double peak = peaks.Max();
+            AudioLevelsUpdated?.Invoke(this, new AudioLevels(peak, peak, peak > -1));
             return;
         }
         _log.LogTrace("preview ffmpeg: {Line}", line);

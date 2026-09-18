@@ -41,8 +41,12 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>  <!-- audio embebido (DeckLink) -->
+                                    </Grid.RowDefinitions>
 
-                                    <Border Grid.Column="0" Background="{StaticResource AccentBrush}" CornerRadius="6"
+                                    <Border Grid.Column="0" Grid.RowSpan="2" Background="{StaticResource AccentBrush}" CornerRadius="6"
                                             Width="40" Height="40" VerticalAlignment="Center">
                                         <TextBlock Text="{Binding Key}" FontSize="20" FontWeight="Bold"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -75,8 +79,32 @@
                                                   SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding FormatEnabled}"/>
                                     </StackPanel>
 
+                                    <!-- Audio embebido: cuántos canales pedir a la tarjeta (solo DeckLink) y qué par grabar
+                                         (DeckLink y NDI). DirectShow trae su audio aparte y el archivo demo es estéreo. -->
+                                    <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,8,8,0" VerticalAlignment="Center">
+                                        <TextBlock Text="{loc:T In_AudioChannels}" FontSize="9"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                                        <ComboBox Height="28" ItemsSource="{Binding AudioChannelOptions}"
+                                                  SelectedItem="{Binding SelectedAudioChannels}" IsEnabled="{Binding AudioSelectionEnabled}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="3" Margin="0,8,10,0" VerticalAlignment="Center">
+                                        <TextBlock Text="{loc:T In_AudioPair}" FontSize="9"
+                                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,3"/>
+                                        <DockPanel>
+                                            <!-- «Medir audio»: captura unos segundos y propone el primer par con sonido. -->
+                                            <Button DockPanel.Dock="Right" Content="{loc:T In_DetectAudio}" Command="{Binding DetectAudioCommand}"
+                                                    IsEnabled="{Binding CanProbeAudio}" Style="{StaticResource TransportButton}"
+                                                    Height="28" Padding="10,0" Margin="6,0,0,0"/>
+                                            <ComboBox Height="28" ItemsSource="{Binding Pairs}"
+                                                      SelectedItem="{Binding SelectedPair}" IsEnabled="{Binding PairSelectionEnabled}"/>
+                                        </DockPanel>
+                                        <!-- Resultado de la medida, par a par («1-2: −8 dB · 3-4: silencio …»). -->
+                                        <TextBlock Text="{Binding AudioProbeText}" FontSize="10" Margin="0,4,0,0"
+                                                   Foreground="{StaticResource AccentBrush}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+
                                     <!-- Padding propio (no el 14,9 heredado): con Height=28 ese padding recortaba el texto. -->
-                                    <Button Grid.Column="4" Content="{loc:T Common_Apply}" Command="{Binding ApplyCommand}"
+                                    <Button Grid.Column="4" Grid.RowSpan="2" Content="{loc:T Common_Apply}" Command="{Binding ApplyCommand}"
                                             IsEnabled="{Binding DataContext.CanApply, RelativeSource={RelativeSource AncestorType=Window}}"
                                             Style="{StaticResource StartButton}" VerticalAlignment="Bottom"
                                             Height="28" MinWidth="92" Padding="18,0"/>

@@ -493,4 +493,186 @@ public class FfmpegArgumentBuilderTests
         var joined = BuildLive(SoftwareMp4(), recording: true);
         Assert.Contains("+frag_keyframe+empty_moov+default_base_moof", joined);
     }
+
+    // --- Audio multicanal: la fuente entrega 8/16 canales y se ELIGE el par con pan (sin mezclar) ---
+
+    private static FakeCaptureSource MultichannelSource(int channels, string? pairs)
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { AudioChannelCount = channels };
+        if (pairs is not null) source.Definition.Parameters[AudioSelection.PairsKey] = pairs;
+        source.Emit(new SignalInfo(SignalState.Locked, new Resolution(1920, 1080), new FrameRate(25, 1),
+            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null, AudioChannels: channels));
+        return source;
+    }
+
+    private static string BuildLiveMultichannel(RecordingProfile profile, bool recording, int channels, string? pairs, bool analyze = false)
+        => string.Join(' ', new FfmpegArgumentBuilder()
+            .From(MultichannelSource(channels, pairs)).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001").WithSignalAnalysis(analyze)
+            .BuildLive(recording, 640, 360));
+
+    [Fact]
+    public void BuildLive_EightChannels_PairTwo_SelectsWithPanAndSplitsToMetersAndRecording()
+    {
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: "2");
+
+        // El par 3-4 (0-based c2/c3) va por pan a la grabación, dentro del grafo; los medidores miden los 8 canales.
+        Assert.Contains("[0:a:0]asplit=2[m0][r1];[m0]ebur128=peak=true[amout];[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
+        Assert.Contains("-map [amout] -f null -", joined);
+        Assert.Contains("-map [vmain] -map [arec1]", joined);
+        Assert.DoesNotContain("-ac ", joined);       // el nº de canales lo fija pan: -ac volvería a mezclar
+        Assert.DoesNotContain("0:a:0?", joined);     // no se mapea el audio crudo (8 canales) a ningún sitio
+    }
+
+    [Fact]
+    public void BuildLive_EightChannels_DefaultPair_StillSelectsFirstPairWithPan()
+        // Aunque sea el par 1-2, con 8 canales hay que elegir: -ac 2 mezclaría los ocho en el estéreo.
+        => Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1]", BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: null));
+
+    // --- Modos de pistas (fase 3): un estéreo por par, o todos los canales en una pista ---
+
+    [Fact]
+    public void BuildLive_PairsAsTracks_OneStereoStreamPerPairWithTitles()
+    {
+        var profile = SoftwareMp4();
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
+
+        Assert.Contains("[0:a:0]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined); // medidores: todos los canales
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c4|c1=c5[arec2]", joined);
+        Assert.Contains("-map [vmain] -map [arec1] -map [arec2]", joined);
+        Assert.Contains("-metadata:s:a:0 title=Canales 1-2", joined);
+        Assert.Contains("-metadata:s:a:1 title=Canales 5-6", joined);
+        Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Multichannel_Pcm_KeepsAllChosenChannelsInOneTrack()
+    {
+        // PCM de verdad solo queda en MXF/MKV (en MP4/MOV/TS la app lo promueve a AAC): ahí cualquier recuento vale.
+        var profile = DnxhrMov(EncoderProfile.DnxHrHq);
+        profile.Container = ContainerFormat.Mxf;
+        profile.AudioTracks = AudioTrackMode.Multichannel;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 16, pairs: "all");
+
+        Assert.Contains("[r1]pan=16c|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5|c6=c6|c7=c7|c8=c8|c9=c9|c10=c10|c11=c11|c12=c12|c13=c13|c14=c14|c15=c15[arec1]", joined);
+        Assert.Contains("-c:a pcm_s24le", joined);
+        Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Multichannel_Aac_CapsToTheLargestStandardLayout()
+    {
+        var profile = SoftwareMp4();                          // AAC en MP4: máximo 7.1
+        profile.AudioTracks = AudioTrackMode.Multichannel;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 16, pairs: "all");
+
+        Assert.Contains("[r1]pan=7.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5|c6=c6|c7=c7[arec1]", joined);
+        Assert.DoesNotContain("c8=c8", joined);               // los que no caben no se graban
+    }
+
+    [Theory]
+    [InlineData(4, true, "pan=quad|c0=c0|c1=c1|c2=c4|c3=c5")]
+    [InlineData(4, false, "pan=4c|c0=c0|c1=c1|c2=c4|c3=c5")]
+    [InlineData(2, false, "pan=stereo|c0=c0|c1=c1")]
+    public void MultichannelPan_ChoosesLayoutByCodecAndCount(int count, bool lossy, string expected)
+    {
+        var channels = new[] { 0, 1, 4, 5 }.Take(count).ToArray();
+        Assert.Equal(expected, FfmpegArgumentBuilder.MultichannelPan(channels, lossy));
+    }
+
+    [Fact]
+    public void BuildSlate_Multichannel_ProducesTheSameTracksAsTheLiveRecording()
+    {
+        var profile = SoftwareMp4();
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+        var joined = string.Join(' ', new FfmpegArgumentBuilder()
+            .From(MultichannelSource(8, pairs: "1,3")).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001").BuildSlate(recording: true, 640, 360));
+
+        Assert.Contains("anullsrc=channel_layout=8c", joined);                        // silencio con los canales de la fuente
+        Assert.Contains("[1:a]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined);
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[aslate1];[r2]pan=stereo|c0=c4|c1=c5[aslate2]", joined);
+        Assert.Contains("-map [vrec] -map [aslate1] -map [aslate2]", joined);          // mismas pistas que en vivo
+        Assert.Contains("-metadata:s:a:1 title=Canales 5-6", joined);
+        Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Fact]
+    public void BuildSlate_StereoSource_IsUnchanged()
+    {
+        var joined = string.Join(' ', NewLiveBuilder(SoftwareMp4()).BuildSlate(recording: true, 640, 360));
+
+        Assert.Contains("anullsrc=channel_layout=stereo", joined);
+        Assert.Contains("-map 1:a:0 -af ebur128=peak=true -f null -", joined);
+        Assert.Contains("-ac 2", joined);
+    }
+
+    [Fact]
+    public void BuildLive_TwoChannels_KeepsThePipelineAsAlways()
+    {
+        // Con una fuente estéreo no hay nada que elegir: misma tubería de siempre (y un par 2 pedido se ignora).
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 2, pairs: "2");
+
+        Assert.Contains("-map 0:a:0?", joined);
+        Assert.Contains("-ac 2", joined);
+        Assert.DoesNotContain("pan=", joined);
+        Assert.DoesNotContain("asplit", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PreviewOnly_EightChannels_MetersInsideTheGraph()
+    {
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: false, channels: 8, pairs: "2", analyze: true);
+
+        // ebur128 ANTES del pan (un true-peak por cada uno de los 8 canales → un medidor por par) y silencedetect
+        // DESPUÉS (vigila el par que se graba, no el resto del SDI).
+        Assert.Contains("[0:a:0]ebur128=peak=true,pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout]", joined);
+        Assert.Contains("-map [amout] -f null -", joined);
+        Assert.DoesNotContain("-af ", joined);      // un stream que sale del grafo no admite -af aparte
+        Assert.DoesNotContain("asplit", joined);    // sin grabación no hay que repartir
+    }
+
+    [Fact]
+    public void BuildLive_Recording_EightChannels_WithAnalysis_MetersAllChannelsAndWatchesSilenceOnTheRecordedPair()
+    {
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: "2", analyze: true);
+
+        Assert.Contains("[m0]ebur128=peak=true,pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout]", joined);
+        Assert.Contains("[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PreviewOnly_EightChannels_WithoutAnalysis_MetersTheRawStream()
+        // Sin análisis no hace falta elegir nada para medir: ebur128 sobre los 8 canales y a null.
+        => Assert.Contains("[0:a:0]ebur128=peak=true[amout]", BuildLiveMultichannel(SoftwareMp4(), recording: false, channels: 8, pairs: "2"));
+
+    [Theory]
+    [InlineData(AudioLayout.Mono, "pan=mono|c0=0.5*c2+0.5*c3")]
+    [InlineData(AudioLayout.Stereo, "pan=stereo|c0=c2|c1=c3")]
+    [InlineData(AudioLayout.Surround51, "pan=5.1|c0=c2|c1=c3")]   // solo hay dos canales elegidos: el resto en silencio
+    public void PanFilter_PlacesTheChosenPairInEachLayout(AudioLayout layout, string expected)
+        => Assert.Equal(expected, FfmpegArgumentBuilder.PanFilter(layout, new[] { 2, 3 }));
+
+    [Fact]
+    public void PanFilter_Surround_TakesChannelsInOrder()
+    {
+        Assert.Equal("pan=5.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5", FfmpegArgumentBuilder.PanFilter(AudioLayout.Surround51, Enumerable.Range(0, 8).ToArray()));
+        Assert.Equal("pan=7.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5|c6=c6|c7=c7", FfmpegArgumentBuilder.PanFilter(AudioLayout.Surround71, Enumerable.Range(0, 16).ToArray()));
+    }
+
+    [Fact]
+    public void Build_Legacy_EightChannels_SelectsWithAfPanBeforeMeters()
+    {
+        var builder = new FfmpegArgumentBuilder()
+            .From(MultichannelSource(8, pairs: "3")).Using(SoftwareMp4()).ForChannel("TST").ToDirectory("C:/out");
+
+        var joined = string.Join(' ', builder.Build());
+
+        Assert.Contains("-af pan=stereo|c0=c4|c1=c5,ebur128=peak=true", joined);
+        Assert.DoesNotContain("-ac ", joined);
+    }
 }

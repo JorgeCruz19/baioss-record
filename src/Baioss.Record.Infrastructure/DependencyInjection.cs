@@ -141,6 +141,10 @@ public static class DependencyInjection
             db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"StopReason\" INTEGER NOT NULL DEFAULT 0;");
         if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Sessions", "ScheduledJobId"))
             db.Database.ExecuteSqlRaw("ALTER TABLE \"Sessions\" ADD COLUMN \"ScheduledJobId\" TEXT NULL;");
+        // Audio multicanal (fase 3): modo de pistas del perfil. 0 = Single (una pista, como siempre) para las filas
+        // anteriores, que es exactamente lo que hacían. Mismo upgrade idempotente.
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Profiles", "AudioTracks"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Profiles\" ADD COLUMN \"AudioTracks\" INTEGER NOT NULL DEFAULT 0;");
     }
 
     /// <summary>¿Existe la columna en la tabla SQLite? (<c>PRAGMA table_info</c>). Para upgrades idempotentes de esquema.</summary>

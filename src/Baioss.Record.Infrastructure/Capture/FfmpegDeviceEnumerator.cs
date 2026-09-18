@@ -42,6 +42,59 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         return ParseDecklinkFormats(output);
     }
 
+    /// <summary>
+    /// Mide ~3 s el audio embebido de una DeckLink (o de un archivo, para pruebas) con <c>astats</c> y devuelve el pico
+    /// por canal. Con <paramref name="channels"/> = 0 pide 16 y baja a 8 y a 2 si la tarjeta responde «Cannot enable
+    /// audio input» (mismo retroceso que la captura). Devuelve <c>null</c> si no hay medida: dispositivo en uso por un
+    /// canal (DeckLink es exclusivo), sin señal, o FFmpeg no arrancó.
+    /// </summary>
+    public async Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId) || type is not (InputType.DecklinkSdi or InputType.File)) return null;
+        var candidates = channels > 0 ? new[] { channels } : new[] { 16, 8, 2 };
+        foreach (var n in candidates)
+        {
+            var args = new List<string> { "-hide_banner" };
+            if (type is InputType.DecklinkSdi)
+                args.AddRange(new[] { "-f", "decklink", "-draw_bars", "false", "-channels", n.ToString(CultureInfo.InvariantCulture) });
+            args.AddRange(new[] { "-t", ProbeSeconds, "-i", deviceId, "-vn",
+                "-af", "astats=measure_perchannel=Peak_level:measure_overall=none", "-f", "null", "-" });
+
+            var output = await RunAsync(args.ToArray(), ct).ConfigureAwait(false);
+            if (type is InputType.DecklinkSdi && output.Contains("Cannot enable audio input", StringComparison.Ordinal))
+                continue; // la tarjeta no admite tantos canales: siguiente escalón
+            var peaks = ParseAstatsPeaks(output);
+            if (peaks.Count == 0) return null;
+            return new AudioProbe(peaks.Count, peaks);
+        }
+        return null;
+    }
+
+    private const string ProbeSeconds = "3";
+
+    /// <summary>
+    /// Extrae de la salida de <c>astats</c> el pico (dBFS) de cada canal, en orden. FFmpeg imprime por canal
+    /// «Channel: N» seguido de «Peak level dB: -8.0» («-inf» = silencio absoluto).
+    /// </summary>
+    public static IReadOnlyList<double> ParseAstatsPeaks(string output)
+    {
+        var peaks = new SortedDictionary<int, double>();
+        int current = -1;
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            var ch = AstatsChannelRegex().Match(line);
+            if (ch.Success) { current = int.Parse(ch.Groups["n"].Value, CultureInfo.InvariantCulture); continue; }
+            var pk = AstatsPeakRegex().Match(line);
+            if (!pk.Success || current < 1) continue;
+            var v = pk.Groups["v"].Value;
+            peaks[current] = v.Contains("inf", StringComparison.OrdinalIgnoreCase)
+                ? double.NegativeInfinity
+                : double.Parse(v, NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+        return peaks.Values.ToList();
+    }
+
     private async Task<IReadOnlyList<InputSource>> DiscoverDshowVideoAsync(CancellationToken ct)
     {
         var output = await RunAsync(new[] { "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy" }, ct);
@@ -242,4 +295,11 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
 
     [GeneratedRegex(@"at\s+(?<num>\d+)(?:/(?<den>\d+))?\s*fps")]
     private static partial Regex RateRegex();
+
+    // astats:  "[Parsed_astats_0 @ …] Channel: 5"   /   "[Parsed_astats_0 @ …] Peak level dB: -8.001234"
+    [GeneratedRegex(@"Channel:\s*(?<n>\d+)\s*$")]
+    private static partial Regex AstatsChannelRegex();
+
+    [GeneratedRegex(@"Peak level dB:\s*(?<v>-?inf|-?[\d.]+)")]
+    private static partial Regex AstatsPeakRegex();
 }

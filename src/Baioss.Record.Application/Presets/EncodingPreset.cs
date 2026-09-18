@@ -62,6 +62,8 @@ public sealed class EncodingPreset
     // --- Audio ---
     public AudioCodec AudioCodec { get; set; } = AudioCodec.Aac;
     public AudioLayout AudioLayout { get; set; } = AudioLayout.Stereo;
+    /// <summary>Cómo se reparten en pistas los canales elegidos en la entrada (solo cuenta con fuentes de 8/16 canales).</summary>
+    public AudioTrackMode AudioTracks { get; set; } = AudioTrackMode.Single;
     public int AudioSampleRate { get; set; } = 48_000;
     public int AudioBitrateKbps { get; set; } = 256;
 
@@ -98,6 +100,7 @@ public sealed class EncodingPreset
         AudioOnly = AudioOnly,
         AudioCodec = AudioCodec,
         AudioLayout = AudioLayout,
+        AudioTracks = AudioTracks,
         AudioSampleRate = AudioSampleRate,
         AudioBitrate = Bitrate.FromKbps(AudioBitrateKbps),
     };

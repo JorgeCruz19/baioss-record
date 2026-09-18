@@ -42,3 +42,64 @@ Habría que compilar FFmpeg **sin** `fdk-aac` ni `decklink` (build GPL «limpio�
 GPL: incluir el texto de licencia y ofrecer las fuentes) y capturar las tarjetas Blackmagic por **DirectShow**,
 que la app ya soporta y que Blackmagic expone como dispositivo. Queda pendiente evaluar si por esa vía se
 conserva el control de formato y la latencia que da `-f decklink`. Ver `CHECKLIST-VENTA.md`.
+
+## Audio embebido multicanal (DeckLink con 8 o 16 canales)
+
+El demuxer `decklink` captura **solo 2 canales** si no se le pide otra cosa (`-channels`, «from 2 to 16, default 2»;
+solo admite 2, 8 y 16). Hasta la fase 1 del audio multicanal (2026-09-17) la app no pedía nada, así que una señal con
+4, 6, 10 o 16 canales embebidos perdía todo menos el par 1-2, y los presets 5.1/7.1 solo «subían» ese estéreo a más
+canales vacíos.
+
+Cómo funciona ahora (`AudioSelection`, parámetros de la entrada):
+
+- `audio_channels` = `2` | `8` | `16` | `auto`. Con `auto` se pide 16 y, si la tarjeta responde «Cannot enable audio
+  input», el motor baja a 8 y luego a 2 y reconstruye el proceso (`FfmpegChannelEngine.TryReduceAudioChannelsAsync`).
+- `audio_pairs` = `1` | `2` | `1,2` | `all` (pares 1-based: el par 2 son los canales 3-4).
+- Con más de 2 canales de fuente, el par se elige con **`pan` dentro del grafo** y se reparte con `asplit` a medidores y
+  grabación; **no se usa `-ac`**: con `-ac 2` FFmpeg mezcla los ocho canales de la tarjeta en el estéreo (medido: un tono
+  presente solo en el canal 5 aparecía en el canal izquierdo). Con 2 canales de fuente la tubería es la de siempre.
+
+```
+[0:a:0]asplit=2[m0][r1];[m0]ebur128=peak=true,pan=stereo|c0=c4|c1=c5,silencedetect=…[amout];[r1]pan=stereo|c0=c4|c1=c5[arec1]
+-map [amout] -f null -             (medidores: ebur128 mide los 8 canales; silencedetect vigila el par que se graba)
+-map [vmain] -map [arec1] -c:v …  (grabación, sin -ac)
+```
+
+Sin tarjeta se prueba con un clip de 8 canales con un tono distinto por canal (`aevalsrc … :c=7.1`) y una entrada de
+archivo con `audio_channels=8`; el par grabado se verifica con `pan=mono|c0=cN,bandpass=f=<tono>,astats`.
+
+**Asistente «Medir audio»** (`FfmpegDeviceEnumerator.MeasureAudioAsync`): abre el dispositivo unos 3 s con
+`-f decklink -channels N … -vn -af astats=measure_perchannel=Peak_level -f null -` (probando 16→8→2 si se pidió
+«auto») y parsea el pico por canal de la salida de `astats`; el gestor de entradas enseña el nivel de cada par y
+propone el primero con sonido. Exige la tarjeta libre (DeckLink es exclusiva): si un canal ya la captura, no hay medida.
+
+**Modos de pistas** (`RecordingProfile.AudioTracks`, fase 3): con una fuente de más de 2 canales, el grafo reparte el
+audio con `asplit` a los medidores (todos los canales capturados) y a una rama por pista:
+
+- `Single`: un `pan` con la distribución del perfil (estéreo del par elegido; 5.1/7.1 con los primeros seis/ocho canales elegidos).
+- `PairsAsTracks`: un `pan=stereo` por par elegido y `-metadata:s:a:N title=Canales 5-6` (en MP4 aparece como `name`).
+- `Multichannel`: un `pan` con todos los canales elegidos. Con PCM (MXF/MKV) vale cualquier recuento («8c», «16c»,
+  distribución sin nombre); con un códec con pérdida (MP4/MOV/TS promueven PCM a AAC) se toma la mayor distribución
+  estándar que quepa: 7.1, 5.1, quad o estéreo, y el resto no se graba.
+
+La carta de ajuste genera el silencio con tantos canales como la fuente (`anullsrc=channel_layout=8c`) y le aplica los
+MISMOS pans, así que sus piezas llevan exactamente las mismas pistas que las reales. Verificado: dos pistas estéreo con
+solo el par 1-2 y solo el par 5-6 (−11 dB en su tono, ≤ −56 dB en los ajenos) y una pista quad AAC con los cuatro canales.
+
+**Medidores por par (fase 4).** Con una fuente de más de 2 canales, `ebur128=peak=true` va ANTES de cualquier `pan`,
+sobre el flujo completo: su línea `FTPK:` trae un true-peak POR CANAL (probado con 8 y 16 canales, también con las
+distribuciones sin nombre `8c`/`16c` que da el demuxer decklink), así que un solo filtro alimenta un medidor por canal.
+`FfmpegMeterParser` los parsea todos (antes solo dos) y trata `-inf` —silencio digital, que .NET no parsea— como el suelo
+de −60 dBFS; antes esa línea se descartaba y los medidores se quedaban congelados en el último nivel. `silencedetect` va
+DESPUÉS del `pan` al primer par elegido: la alarma de silencio habla de lo que se graba, no del resto del SDI.
+`ChannelStatus.Audio` (API) lleva N medidores en el orden de la fuente y `SignalInfo.AudioSelectedPairs` dice qué pares
+van al archivo; la app enseña un mini medidor por par (punto rojo + negrita = se graba) junto a los L/R grandes, que
+siguen al primer par que se graba, y el cliente web una rejilla por pares con la misma marca. Verificado con un clip de 8
+canales a −3, −9, −15… −45 dBFS: los ocho valores llegan en orden por la API y en las dos interfaces.
+
+**NDI multicanal (fase 5).** `NdiCaptureSource.AudioChannelCount` es el recuento real que sirve el receptor (el `-ac N`
+de su entrada `f32le` describe el flujo crudo; no es la mezcla de salida). Con más de 2 canales el builder sigue el MISMO
+camino que con DeckLink (pan por pares, sin `-ac` de salida, medidores de todos los canales, modos de pistas, slate con
+`anullsrc=channel_layout=Nc`); antes un NDI de 4 u 8 canales se mezclaba entero en el estéreo con `-ac 2`. El par se
+elige en el gestor de entradas (`audio_pairs`; no hay `audio_channels`: NDI trae los que trae y un par inexistente cae al
+1). Sin una fuente NDI multicanal a mano no se ha verificado en vivo: la lógica es la común, probada con el clip de 8 canales.

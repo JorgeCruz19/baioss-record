@@ -83,6 +83,9 @@ Each panel shows you, from top to bottom:
   - If something goes wrong, a **warning** across the top (see *Alarms* further down).
 
 - **Audio strip:** the **sound meters** (left "L" and right "R"), with their level in dBFS. If the sound clips, a red **"CLIP"** warning appears.
+  With an 8- or 16-channel input (DeckLink or NDI) a **mini meter per pair** ("1-2", "3-4"…) also appears: the pair being
+  recorded carries a red dot and a bold label; the others are only metered, so you can see at a glance what each SDI pair
+  carries. The large L/R meters show the first recorded pair.
 
 - **Recording buttons (transport):**
   - **● Record:** starts recording by hand.
@@ -126,9 +129,24 @@ This is where you decide **which video source is connected to each channel**.
    - **Video input:** the source (the card or camera).
    - **Audio (DirectShow):** the microphone/sound input, if your source needs one.
    - **Mode / format (DeckLink):** the resolution and rate of the SDI signal (for example "1080i 59.94").
+   - **Card audio (DeckLink):** how many embedded audio channels to request from the card. **Automatic** asks for as
+     many as the card allows (16, falling back to 8 or 2). If you know what your signal carries, you can fix 2, 8 or 16.
+   - **Pair to record (DeckLink and NDI):** which pair of SDI channels goes into the recording (pair 1-2, 3-4, 5-6…). For
+     example, if the programme is on 1-2 and the international sound on 3-4, pick the pair you want recorded. With NDI
+     the program cannot know how many channels the source carries until it connects: all eight possible pairs are
+     offered and, if the chosen one does not exist, pair 1-2 is recorded.
+   - **🎧 Measure audio:** if you do not know what the signal carries, press this button while the card is free (no
+     channel using it): the program listens for a few seconds, shows the level of each pair ("1-2: −8 dB · 3-4:
+     silence…") and proposes the first pair with sound. The proposal is not saved until you press **Apply**.
 3. Press **Apply**. The channel reconnects to the new source live (it releases the previous one and opens the new one).
 
 > **Note:** a channel's input cannot be changed **while it is recording**. Stop the recording first.
+
+> **About embedded audio:** the card cannot tell how many channels the signal carries; you ask for a number and it
+> delivers that number (missing channels arrive as silence). That is why the choice is made here, when configuring the
+> input, and does not change while recording: a pair that is quiet at the start is not an absent pair, and a file's
+> tracks cannot change halfway through. Under the channel's monitor you can see what is being recorded, for example
+> "Pair 3-4 of 8 · PCM".
 
 ---
 
@@ -149,6 +167,14 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 **You can also:**
 - **＋ New / ✎ Edit / ⧉ Duplicate / 🗑 Delete:** create your own presets from the existing ones.
 - **⭱ Import / ⭳ Export:** take your presets to another machine or keep them as a backup.
+
+**Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
+how the pairs chosen on the input (see section 3) are stored:
+- **Single:** one track with the selection (the pair in stereo, or 5.1/7.1 with the first channels). This is the usual behaviour.
+- **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Canales 3-4"), so the programme, the
+  international sound or each language stay in separate tracks without mixing.
+- **Multichannel:** all chosen channels in a single track. With PCM (MXF, MKV) up to 16 fit; with AAC (MP4, MOV,
+  TS) at most 8.
 
 > The preset only changes **the quality and the file format**. The folder where recordings are saved is configured separately (see section 6).
 

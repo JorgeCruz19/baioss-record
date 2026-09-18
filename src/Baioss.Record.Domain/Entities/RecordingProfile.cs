@@ -46,6 +46,8 @@ public sealed class RecordingProfile
     // --- Audio ---
     public AudioCodec AudioCodec { get; set; } = AudioCodec.Pcm;
     public AudioLayout AudioLayout { get; set; } = AudioLayout.Stereo;
+    /// <summary>Cómo se reparten en pistas los canales elegidos en la entrada (solo cuenta con fuentes de más de 2 canales).</summary>
+    public AudioTrackMode AudioTracks { get; set; } = AudioTrackMode.Single;
     public Bitrate AudioBitrate { get; set; } = Bitrate.FromKbps(256);
     public int AudioSampleRate { get; set; } = 48_000;
 

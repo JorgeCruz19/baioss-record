@@ -109,6 +109,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _encoderOpenError;
     private volatile bool _fallbackPending;
 
+    // Retroceso de canales de audio (DeckLink con «audio_channels=auto»): la tarjeta rechazó los canales pedidos
+    // («Cannot enable audio input») → la fuente baja un escalón (16→8→2) y se reconstruye el proceso con el argv nuevo.
+    private volatile bool _audioFallbackPending;
+
     // Recuperación tras la CAÍDA del proceso de grabación (N1): el supervisor ya NO relanza el mismo argv —que
     // reabriría el archivo con -y y lo truncaría—; el motor reconstruye en una PIEZA NUEVA vía ReplaceProcessAsync,
     // con backoff exponencial acotado que se resetea tras un periodo sano. _recovering evita recuperaciones solapadas.
@@ -142,7 +146,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     public string? LastOutputFile { get; private set; }
 
     public event EventHandler<PreviewFrame>? FrameReady;
-    public event EventHandler<(double Left, double Right)>? AudioPeaksUpdated;
+    public event EventHandler<IReadOnlyList<double>>? AudioPeaksUpdated;
     public event EventHandler<RecordingState>? StateChanged;
     public event EventHandler<RecorderStats>? StatsUpdated;
     public event EventHandler<Segment>? SegmentClosed;
@@ -599,6 +603,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnLog(object? sender, string line)
     {
+        // La tarjeta no admite los canales de audio pedidos (DeckLink): baja un escalón y reconstruye. Solo tiene
+        // sentido con más de 2 canales pedidos; con 2, ese mensaje sería otro fallo (entrada de audio en uso, etc.).
+        if (!_audioFallbackPending && _source is { AudioChannelCount: > 2 } &&
+            line.Contains("Cannot enable audio input", StringComparison.Ordinal))
+        {
+            _audioFallbackPending = true;
+            _log.LogWarning("Canal {Key}: el dispositivo rechazó {N} canales de audio → {Line}", _channelKey, _source.AudioChannelCount, line);
+            _ = Task.Run(TryReduceAudioChannelsAsync);
+            return;
+        }
+
         // Fallo de APERTURA del codificador por hardware (NVENC agotado, driver/GPU ausente): degrada al
         // siguiente de la cadena (QSV→AMF→CPU) y reinicia, en lugar de dejar que el supervisor relance el
         // mismo argv en vano. Solo durante la grabación (el preview no lleva codificador de salida).
@@ -617,16 +632,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // Alarmas de análisis: negro/congelado/silencio. Cada marca de FFmpeg → transición de alarma.
         if (FfmpegDetectParser.Parse(line) is { } d) { RaiseAlarm(d.Type, d.Active); return; }
 
-        // Niveles de audio del filtro ebur128: "… FTPK: -16.6 -16.9 dBFS …" (1 mono, 2 estéreo).
-        int ftpk = line.IndexOf("FTPK:", StringComparison.Ordinal);
-        if (ftpk < 0) return;
-
-        var toks = line[(ftpk + 5)..].TrimStart().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (toks.Length >= 1 && double.TryParse(toks[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var l))
-        {
-            double r = toks.Length >= 2 && double.TryParse(toks[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var rr) ? rr : l;
-            AudioPeaksUpdated?.Invoke(this, (l, r));
-        }
+        // Niveles de audio del filtro ebur128 ("… FTPK: -16.6 -16.9 dBFS …"): un true-peak por canal capturado
+        // (2 estéreo; 8/16 con audio embebido multicanal). Los consumidores reparten por pares.
+        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks) AudioPeaksUpdated?.Invoke(this, peaks);
     }
 
     // --- Segmentación: cada archivo de segmento completo se emite como un Segment ---
@@ -783,8 +791,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     {
         if (_disposed || _slate || _slatePending || _recovering) return;
         // Un fallo de APERTURA de codificador lo resuelve el fallback de codificador (degradar el códec), que ya
-        // reinicia el proceso; no lo tratamos aquí como caída de la fuente.
-        if (_encoderOpenError || _fallbackPending) return;
+        // reinicia el proceso; no lo tratamos aquí como caída de la fuente. Ídem el retroceso de canales de audio.
+        if (_encoderOpenError || _fallbackPending || _audioFallbackPending) return;
         if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
         _recovering = true;
@@ -968,6 +976,33 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al degradar el codificador.", _channelKey); }
         finally { _fallbackPending = false; _gate.Release(); }
+    }
+
+    /// <summary>
+    /// La tarjeta rechazó los canales de audio pedidos (DeckLink: «Cannot enable audio input» al pedir 16 u 8 en un
+    /// modelo que no los admite). Con «audio_channels=auto» la fuente baja un escalón (16→8→2) y se reconstruye el
+    /// proceso con el argv nuevo, en el mismo modo (preview o grabación). Con un recuento fijo solo se registra: la
+    /// decisión es del operador (elige en el gestor de entradas un valor que la tarjeta admita).
+    /// </summary>
+    private async Task TryReduceAudioChannelsAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var src = _source;
+            if (_disposed || src is null) return;
+            int before = src.AudioChannelCount;
+            if (!src.TryReduceAudioChannels())
+            {
+                _log.LogError("Canal {Key}: el dispositivo no admite {N} canales de audio y la entrada no permite bajar; elige en «Entradas» un valor que la tarjeta admita (2 u 8).", _channelKey, before);
+                return;
+            }
+            _log.LogWarning("Canal {Key}: el dispositivo no admite {From} canales de audio; se reintenta con {To}.", _channelKey, before, src.AudioChannelCount);
+            bool recording = _state is RecordingState.Recording or RecordingState.Starting;
+            await ReplaceProcessAsync(recording, recording && _slate, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al bajar los canales de audio.", _channelKey); }
+        finally { _audioFallbackPending = false; _gate.Release(); }
     }
 
     private void StartRecoveryProbe()

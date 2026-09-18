@@ -301,20 +301,27 @@
 
                     <StackPanel Grid.Column="0">
                         <TextBlock Text="{loc:T Ch_AudioDbfs}" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                            <StackPanel Margin="0,0,14,0">
+                        <Grid Margin="0,5,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Medidores principales: el par que se graba (con una fuente estéreo, los dos canales de siempre). -->
+                            <StackPanel Grid.Column="0" Margin="0,0,14,0" VerticalAlignment="Center">
                                 <TextBlock Text="{Binding LeftPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
                                            HorizontalAlignment="Center"/>
                                 <TextBlock Text="L" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
                                            HorizontalAlignment="Center"/>
                             </StackPanel>
-                            <StackPanel Margin="0,0,16,0">
+                            <StackPanel Grid.Column="1" Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="{Binding RightPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
                                            HorizontalAlignment="Center"/>
                                 <TextBlock Text="R" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
                                            HorizontalAlignment="Center"/>
                             </StackPanel>
-                            <Grid Width="40" Height="34" VerticalAlignment="Center">
+                            <Grid Grid.Column="2" Width="40" Height="34" VerticalAlignment="Center">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="*"/>
@@ -324,7 +331,51 @@
                                 <local:VuMeter Grid.Column="1" Level="{Binding RightLevel}" Peak="{Binding RightPeak}"
                                                HorizontalAlignment="Center"/>
                             </Grid>
-                        </StackPanel>
+                            <!-- Fuente de 8/16 canales: un mini medidor L/R por cada par capturado. El par que se graba lleva
+                                 el punto rojo y la etiqueta en negrita (no solo color); el resto solo se mide. -->
+                            <ItemsControl Grid.Column="3" ItemsSource="{Binding PairMeters}" Margin="18,0,0,0"
+                                          VerticalAlignment="Center"
+                                          Visibility="{Binding HasPairMeters, Converter={StaticResource BoolToVis}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,0,10,0" ToolTip="{Binding ToolTipText}">
+                                            <Grid Height="34">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="2"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <local:VuMeter Grid.Column="0" Width="6" Level="{Binding LeftLevel}" Peak="{Binding LeftPeak}"/>
+                                                <local:VuMeter Grid.Column="2" Width="6" Level="{Binding RightLevel}" Peak="{Binding RightPeak}"/>
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,0">
+                                                <Ellipse Width="5" Height="5" Margin="0,0,3,0" VerticalAlignment="Center"
+                                                         Fill="{StaticResource RecBrush}"
+                                                         Visibility="{Binding IsRecorded, Converter={StaticResource BoolToVis}}"/>
+                                                <TextBlock Text="{Binding Label}" FontSize="9">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsRecorded}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
                     </StackPanel>
 
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">

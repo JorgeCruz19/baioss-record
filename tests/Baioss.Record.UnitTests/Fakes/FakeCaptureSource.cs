@@ -14,6 +14,13 @@ internal sealed class FakeCaptureSource : ICaptureSource
     public SignalInfo CurrentSignal { get; private set; } = SignalInfo.None;
     public event EventHandler<SignalInfo>? SignalChanged;
 
+    /// <summary>Canales de audio que «entrega» la fuente (2 por defecto; 8/16 para probar la selección multicanal).</summary>
+    public int AudioChannelCount { get; set; } = 2;
+
+    /// <summary>Veces que el motor pidió bajar los canales (la fuente falsa nunca puede).</summary>
+    public int ReduceRequests { get; private set; }
+    public bool TryReduceAudioChannels() { ReduceRequests++; return false; }
+
     public Task OpenAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task CloseAsync(CancellationToken ct = default) => Task.CompletedTask;
     public IReadOnlyList<string> BuildInputArguments() => new[] { "-i", Definition.Uri! };

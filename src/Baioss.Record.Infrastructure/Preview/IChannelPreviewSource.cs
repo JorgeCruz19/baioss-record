@@ -14,6 +14,9 @@ public interface IChannelPreviewSource
     /// <summary>Se eleva por cada frame BGRA decodificado (en un hilo de fondo; la UI marshalea).</summary>
     event EventHandler<PreviewFrame>? FrameReady;
 
-    /// <summary>Niveles true-peak L/R (dBFS) de la señal en vivo, para los medidores VU.</summary>
-    event EventHandler<(double Left, double Right)>? AudioPeaksUpdated;
+    /// <summary>
+    /// Niveles true-peak (dBFS) de la señal en vivo, para los medidores VU: un valor por canal capturado en el orden de
+    /// la fuente (1 mono, 2 estéreo, 8/16 con audio embebido multicanal). Silencio digital = -60.
+    /// </summary>
+    event EventHandler<IReadOnlyList<double>>? AudioPeaksUpdated;
 }

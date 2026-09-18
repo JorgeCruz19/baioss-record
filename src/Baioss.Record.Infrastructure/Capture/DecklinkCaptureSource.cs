@@ -11,9 +11,37 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// </summary>
 public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSource
 {
+    // Audio pedido a la tarjeta (2/8/16 o «auto») y pares elegidos, según los parámetros de la entrada.
+    private readonly AudioSelection _audio = AudioSelection.FromParameters(definition.Parameters);
+    // Canales con los que se abre AHORA: en «auto» empieza en 16 y baja si la tarjeta no puede (TryReduceAudioChannels).
+    private int _channels = AudioSelection.FromParameters(definition.Parameters).InitialChannels;
+
     public InputSource Definition { get; } = definition;
     public SignalInfo CurrentSignal { get; private set; } = SignalInfo.None;
     public event EventHandler<SignalInfo>? SignalChanged;
+
+    /// <summary>Selección de audio de esta entrada (canales pedidos y pares a grabar).</summary>
+    public AudioSelection Audio => _audio;
+
+    public int AudioChannelCount => _channels;
+
+    public bool TryReduceAudioChannels()
+    {
+        // Solo en «auto»: con un recuento fijo elegido por el operador no se toca nada (el motor registra el fallo).
+        if (!_audio.Auto) return false;
+        int next = AudioSelection.NextLower(_channels);
+        if (next == 0) return false;
+        _channels = next;
+        // La señal publicada refleja los canales reales, sin re-emitir SignalChanged (no cambió la presencia).
+        if (CurrentSignal.State == SignalState.Locked)
+            CurrentSignal = CurrentSignal with
+            {
+                AudioChannels = _channels,
+                AudioSelectionLabel = _channels > 2 ? _audio.Describe(_channels) : null,
+                AudioSelectedPairs = _channels > 2 ? _audio.SelectedPairs(_channels) : null,
+            };
+        return true;
+    }
 
     public Task OpenAsync(CancellationToken ct = default)
     {
@@ -35,7 +63,11 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         CurrentSignal = new SignalInfo(SignalState.Locked,
             Definition.ExpectedResolution, Definition.ExpectedFrameRate,
             Definition.ExpectedAudioLayout, HasAudio: true, Timecode: null, Bitrate: null,
-            FormatLabel: string.IsNullOrWhiteSpace(label) ? null : label);
+            FormatLabel: string.IsNullOrWhiteSpace(label) ? null : label,
+            AudioChannels: _channels,
+            // Solo cuando hay algo que elegir (más de un estéreo): con 2 canales la etiqueta de siempre basta.
+            AudioSelectionLabel: _channels > 2 ? _audio.Describe(_channels) : null,
+            AudioSelectedPairs: _channels > 2 ? _audio.SelectedPairs(_channels) : null);
         SignalChanged?.Invoke(this, CurrentSignal);
         return Task.CompletedTask;
     }
@@ -53,9 +85,12 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         // desactivarlo, la grabación empieza en el primer frame REAL; la pérdida de señal EN CALIENTE la sigue
         // cubriendo el watchdog del motor (negros/congelados → carta de ajuste), no estas barras crudas. (#33.)
         args.AddRange(new[] { "-draw_bars", "false" });
-        // Parámetros típicos: formato de pixel, modo de video, canales de audio.
+        // Modo de vídeo elegido (si no, autodetección).
         if (Definition.Parameters.TryGetValue("format_code", out var fmt))
             args.AddRange(new[] { "-format_code", fmt });
+        // Canales de audio que se piden a la tarjeta (2, 8 o 16: FFmpeg no admite otros valores). Sin esta opción el
+        // demuxer captura SOLO 2 —el par 1-2 del SDI— y el resto del audio embebido se pierde en silencio.
+        args.AddRange(new[] { "-channels", _channels.ToString(System.Globalization.CultureInfo.InvariantCulture) });
         args.AddRange(new[] { "-i", Definition.Uri ?? Definition.Name });
         return args;
     }

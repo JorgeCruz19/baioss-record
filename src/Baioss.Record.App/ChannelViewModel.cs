@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
@@ -85,6 +86,16 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     };
 
     private double _peakHoldL = -60, _peakHoldR = -60;
+
+    /// <summary>Pares (1-based) que se graban según la señal, y el primer canal (0-based) del par que muestran los
+    /// medidores L/R principales (el primer par elegido; 0 con una fuente estéreo).</summary>
+    private IReadOnlyList<int>? _selectedPairs;
+    private int _monitorChannel;
+
+    /// <summary>Con una fuente de 8/16 canales: un medidor compacto por par capturado (vacío con estéreo).</summary>
+    public ObservableCollection<PairMeterViewModel> PairMeters { get; } = new();
+
+    [ObservableProperty] private bool _hasPairMeters;
 
     // Cronómetro de grabación: cuenta hh:mm:ss por RELOJ DE PARED a 1 Hz, independiente del out_time de FFmpeg
     // (que llega irregular por -progress y hacía saltar el contador 2 s). Se ancla al entrar en REC.
@@ -351,12 +362,27 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(RecordingStateText)); // ídem; Sync no la refresca si el estado no cambió
             InitFromProfile();                             // ProfileText («Solo audio · …»)
             Sync(_engine.Status);                          // el resto de textos salen del estado
+            foreach (var pm in PairMeters) pm.RefreshTexts(); // tooltips de los pares
         });
 
-    private void OnPreviewAudio(object? sender, (double Left, double Right) lr)
-        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ApplyAudio(lr.Left, lr.Right));
+    private void OnPreviewAudio(object? sender, IReadOnlyList<double> peaks)
+        => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ApplyAudio(peaks));
 
-    private void ApplyAudio(double l, double r)
+    /// <summary>
+    /// Un true-peak por canal capturado. Los medidores L/R principales muestran el primer par que se graba (con una
+    /// fuente estéreo, los dos canales de siempre; con mono, el mismo valor en ambos); con 8/16 canales, además, un
+    /// mini medidor por par para ver TODO lo que entra por el SDI.
+    /// </summary>
+    private void ApplyAudio(IReadOnlyList<double> peaks)
+    {
+        if (peaks.Count == 0) return;
+        int li = Math.Min(_monitorChannel, peaks.Count - 1);
+        int ri = Math.Min(_monitorChannel + 1, peaks.Count - 1);
+        ApplyStereo(peaks[li], peaks[ri]);
+        SyncPairMeters(peaks);
+    }
+
+    private void ApplyStereo(double l, double r)
     {
         _peakHoldL = Math.Max(l, _peakHoldL - 1.2); // peak-hold con decaimiento
         _peakHoldR = Math.Max(r, _peakHoldR - 1.2);
@@ -366,11 +392,31 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         Clipping = _peakHoldL > -1 || _peakHoldR > -1;
     }
 
+    private void SyncPairMeters(IReadOnlyList<double> peaks)
+    {
+        int pairs = peaks.Count > 2 ? peaks.Count / 2 : 0;
+        if (PairMeters.Count != pairs)
+        {
+            // Cambió la fuente (estéreo ↔ multicanal, 8 ↔ 16): se rehace la fila de pares.
+            PairMeters.Clear();
+            for (int p = 1; p <= pairs; p++) PairMeters.Add(new PairMeterViewModel(p, IsPairRecorded(p)));
+            HasPairMeters = pairs > 0;
+        }
+        for (int p = 0; p < pairs; p++) PairMeters[p].Apply(peaks[p * 2], peaks[p * 2 + 1]);
+    }
+
+    private bool IsPairRecorded(int pair) => _selectedPairs is { Count: > 0 } sel ? sel.Contains(pair) : pair == 1;
+
     private void Sync(ChannelStatus status)
     {
         RecordingState = status.RecordingState;
         SignalState = status.Signal.State;
         IsLocked = status.Signal.State == SignalState.Locked;
+
+        // Qué pares van al archivo (fuente multicanal): fija el par de los medidores L/R y marca los mini medidores.
+        _selectedPairs = status.Signal.AudioSelectedPairs;
+        _monitorChannel = _selectedPairs is { Count: > 0 } sel ? (sel[0] - 1) * 2 : 0;
+        foreach (var pm in PairMeters) pm.IsRecorded = IsPairRecorded(pm.Pair);
         SignalText = status.Signal.State switch
         {
             SignalState.Locked => Loc.T("Ch_Signal_Ok"),
@@ -384,9 +430,10 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Nombre de la ENTRADA activa (fuente asignada): se muestra en el preview.
         InputText = string.IsNullOrWhiteSpace(status.InputName) ? "—" : status.InputName;
 
-        // Resumen de audio bajo el preview: «N canales · PCM» con señal y audio; si no, «Sin audio».
-        AudioFormatText = status.Signal is { HasAudio: true, AudioLayout: { } layout }
-            ? $"{ChannelCountText(layout)} · PCM"
+        // Resumen de audio bajo el preview: lo elegido si la fuente trae más de un estéreo («Par 3-4 de 8 · PCM»);
+        // si no, «N canales · PCM» con señal y audio; sin audio, «Sin audio».
+        AudioFormatText = status.Signal is { HasAudio: true } sig && (sig.AudioSelectionLabel is not null || sig.AudioLayout is not null)
+            ? $"{sig.AudioSelectionLabel ?? ChannelCountText(sig.AudioLayout!.Value)} · PCM"
             : Loc.T("Ch_NoAudio");
 
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;
@@ -456,8 +503,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         StopCommand.NotifyCanExecuteChanged();
     }
 
-    private static double Norm(double db) => Math.Clamp((db + 60) / 60.0, 0, 1);
-    private static string Fmt(double db) => db <= -60 ? "-∞" : $"{db:0.0}";
+    /// <summary>dBFS → fracción 0..1 de los medidores (-60 dBFS = 0, 0 dBFS = 1).</summary>
+    internal static double Norm(double db) => Math.Clamp((db + 60) / 60.0, 0, 1);
+    internal static string Fmt(double db) => db <= -60 ? "-∞" : $"{db:0.0}";
 
     /// <summary>
     /// Texto de una alarma en el idioma del operador, derivado de su TIPO. Si apareciera un tipo que este

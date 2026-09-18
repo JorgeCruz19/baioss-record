@@ -123,6 +123,20 @@ public enum AudioLayout
     Surround71
 }
 
+/// <summary>
+/// Cómo se reparten en PISTAS los canales de audio elegidos en la entrada (pares del SDI, ver <c>audio_pairs</c>).
+/// Es cosa del preset (la forma del archivo); qué pares llegan es cosa de la entrada. Se persiste como entero: NO reordenar.
+/// </summary>
+public enum AudioTrackMode
+{
+    /// <summary>Una pista con la distribución del preset (estéreo del par elegido, 5.1 con los primeros seis…). Lo de siempre.</summary>
+    Single = 0,
+    /// <summary>Una pista ESTÉREO por cada par elegido: programa, internacional, idiomas… separados y sin mezclar.</summary>
+    PairsAsTracks = 1,
+    /// <summary>Una sola pista con TODOS los canales elegidos (hasta 16). Pensado para PCM en MXF/MKV; con AAC (MP4/MOV/TS), máximo 8 (7.1).</summary>
+    Multichannel = 2,
+}
+
 /// <summary>Estado de máquina del motor de grabación de un canal.</summary>
 public enum RecordingState
 {

@@ -19,6 +19,7 @@ public sealed class PresetEditorViewModel
     public Array VideoCodecValues => Enum.GetValues<VideoCodec>();
     public Array AudioCodecValues => Enum.GetValues<AudioCodec>();
     public Array AudioLayoutValues => Enum.GetValues<AudioLayout>();
+    public Array AudioTrackValues => Enum.GetValues<AudioTrackMode>();
     public Array ScanTypeValues => Enum.GetValues<ScanType>();
     public Array RateControlValues => Enum.GetValues<RateControlMode>();
     public Array PixelFormatValues => Enum.GetValues<PixelFormat>();
