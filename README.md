@@ -83,13 +83,14 @@ baioss-record/
 ├─ Directory.Build.props          # Propiedades compartidas (net8.0, nullable, analyzers)
 ├─ baioss-record.slnx
 ├─ docs/                          # Documentación de diseño
-└─ src/
+├─ src/
    ├─ Baioss.Record.Domain        # Entidades, value objects, enums, eventos (sin dependencias)
    ├─ Baioss.Record.Application    # Casos de uso (CQRS) y PUERTOS (interfaces de módulos)
    ├─ Baioss.Record.Engine.FFmpeg  # Motor FFmpeg: builder de argumentos + supervisor de proceso
    ├─ Baioss.Record.Infrastructure # Persistencia (EF Core), captura, almacenamiento, orquestación
    ├─ Baioss.Record.Api            # REST + WebSocket (automatización)
    └─ Baioss.Record.App            # WPF (MVVM) — composition root + UI broadcast
+└─ web/                          # Cliente web (React + React Query + Axios + MUI) sobre la API REST
 ```
 
 La regla de dependencias apunta **siempre hacia el dominio**:
@@ -113,6 +114,9 @@ dotnet restore
 dotnet build -c Release
 dotnet run --project src/Baioss.Record.App
 ```
+
+El cliente web (`web/`: React + React Query + Axios + MUI) se levanta aparte, con la aplicación abierta:
+`cd web && npm install && npm run dev` → http://localhost:5173 (detalles en `web/README.md`).
 
 > El scaffold incluye `PackageReference` que requieren `dotnet restore` con acceso a NuGet.
 > Algunos cuerpos de método están marcados con `TODO` donde la integración con SDKs
