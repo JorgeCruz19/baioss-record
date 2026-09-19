@@ -145,6 +145,10 @@ public static class DependencyInjection
         // anteriores, que es exactamente lo que hacían. Mismo upgrade idempotente.
         if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Profiles", "AudioTracks"))
             db.Database.ExecuteSqlRaw("ALTER TABLE \"Profiles\" ADD COLUMN \"AudioTracks\" INTEGER NOT NULL DEFAULT 0;");
+        // Nombre del preset aplicado al perfil del canal (badge del panel y de la API). NULL en las filas anteriores:
+        // ahí se muestra el nombre del propio perfil. Mismo upgrade idempotente.
+        if (db.Database.IsSqlite() && !SqliteColumnExists(db, "Profiles", "PresetName"))
+            db.Database.ExecuteSqlRaw("ALTER TABLE \"Profiles\" ADD COLUMN \"PresetName\" TEXT NULL;");
     }
 
     /// <summary>¿Existe la columna en la tabla SQLite? (<c>PRAGMA table_info</c>). Para upgrades idempotentes de esquema.</summary>

@@ -140,6 +140,12 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isLocked;
     [ObservableProperty] private string _profileText = "—";
 
+    /// <summary>Nombre del preset de grabación vigente (el badge del panel): con qué se grabará al pulsar Grabar.</summary>
+    [ObservableProperty] private string _presetText = "—";
+
+    /// <summary>Explicación del badge, con el resumen técnico del perfil.</summary>
+    [ObservableProperty] private string _presetToolTip = "";
+
     [ObservableProperty] private double _leftLevel;
     [ObservableProperty] private double _rightLevel;
     [ObservableProperty] private double _leftPeak;
@@ -217,27 +223,23 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     {
         if (_config is null || IsRecording) return;
         var current = _config.Profile;
-        _config.Profile = preset.ToProfile(current.Id, current.Name); // conserva Id/Name persistidos
-        // El slate es operativo por canal, no del preset: se reaplica al nuevo perfil.
-        _config.Profile.SlateOnSignalLoss = SlateOnSignalLoss;
+        var applied = preset.ToProfile(current.Id, current.Name); // conserva Id/Name persistidos; el preset deja su nombre
+        // El slate es operativo por canal, no del preset: se reaplica ANTES de entregar el perfil al motor (que lo
+        // persiste y publica el estado en el acto).
+        applied.SlateOnSignalLoss = SlateOnSignalLoss;
+        _config.Profile = applied;
         RefreshProfileText();
     }
 
     /// <summary>Resumen legible del perfil vigente (lo que se grabará): códec · tasa · tamaño · contenedor.</summary>
     private void RefreshProfileText()
     {
-        if (_config is null) { ProfileText = "—"; return; }
+        if (_config is null) { ProfileText = "—"; PresetText = "—"; PresetToolTip = ""; return; }
         var p = _config.Profile;
-        if (p.AudioOnly)
-        {
-            ProfileText = Loc.F("Ch_Profile_AudioOnly", p.AudioCodec, p.Container);
-            return;
-        }
-        string rate = p.RateControl == RateControlMode.ConstantQuality
-            ? $"CRF {p.Quality}"
-            : p.VideoBitrate.ToString();
-        string res = p.TargetResolution?.ToString() ?? Loc.T("Ch_NativeResolution");
-        ProfileText = $"{p.VideoCodec} · {rate} · {res} · {p.Container}";
+        // Mismo texto que publica la API (y muestra el cliente web): una sola forma de contar el perfil.
+        ProfileText = RecordingProfileSummary.Describe(p);
+        PresetText = RecordingProfileSummary.DisplayName(p);
+        PresetToolTip = Loc.F("Ch_PresetTip", ProfileText);
     }
 
     // ---------------------------------------------------------------------

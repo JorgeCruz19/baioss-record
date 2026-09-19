@@ -12,6 +12,7 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import SdStorageOutlinedIcon from '@mui/icons-material/SdStorageOutlined'
 import VideocamOffOutlinedIcon from '@mui/icons-material/VideocamOffOutlined'
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import type { AudioMeter, ChannelStatus } from '../api/types'
 import { RecordingState, SignalState } from '../api/types'
 import { alarmLabel, formatBitrate, formatBytes, formatDuration, formatFps, formatTimeSpan, recordingStateLabel, signalLabel } from '../api/format'
@@ -191,7 +192,24 @@ export default function ChannelCard({ ch, operator, recordingSince, canRecord, s
       {/* Estado + cronómetro, y la acción principal */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2 }}>
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-          <StatusTag tone={stateTone} pulsing={recording} label={recordingStateLabel[ch.recordingState] ?? 'Estado'} />
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 0.75 }}>
+            <StatusTag tone={stateTone} pulsing={recording} label={recordingStateLabel[ch.recordingState] ?? 'Estado'} />
+            {/* Con qué se grabará: no es un estado (va en neutro, con su icono), pero el operador debe verlo antes de grabar. */}
+            {ch.presetName && (
+              <Tooltip
+                title={
+                  <>
+                    Preset de grabación del canal{ch.profileSummary ? `: ${ch.profileSummary}` : ''}.
+                    <br />Se cambia en la aplicación de escritorio, en «Presets de grabación».
+                  </>
+                }
+              >
+                <Box component="span" sx={{ display: 'inline-flex', minWidth: 0, maxWidth: '100%' }}>
+                  <StatusTag tone="neutral" icon={<TuneRoundedIcon />} label={ch.presetName} />
+                </Box>
+              </Tooltip>
+            )}
+          </Box>
           <Typography
             component="div"
             aria-label={recording ? `Tiempo de grabación ${elapsed}` : undefined}

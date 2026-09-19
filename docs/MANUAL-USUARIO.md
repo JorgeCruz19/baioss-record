@@ -91,6 +91,7 @@ Cada panel te muestra, de arriba a abajo:
   - **● Grabar:** empieza a grabar a mano.
   - **■ Detener:** para la grabación manual (solo aparece cuando estás grabando a mano).
   - **⏏ Detener grabación automática:** aparece solo si hay una grabación **programada** en curso; sirve para saltarte *esa* grabación sin afectar a las siguientes.
+  - A la derecha, la etiqueta **PRESET** dice **con qué formato se grabará** al pulsar Grabar (por ejemplo «ProRes 422 · 1080p25»). Al pasar el ratón por encima ves el resumen técnico (códec · tasa · tamaño · contenedor). Se cambia en **⚙ Presets de grabación** (ver punto 4).
 
 - **Recuadro de programación:** muestra la grabación programada que está **en curso** ahora mismo (en verde, "EN CURSO"), o "Sin grabación en curso". El botón **🕒 Mostrar programación** abre la lista completa del día.
 
@@ -162,7 +163,8 @@ Un **preset** define **cómo se graba** el vídeo: el formato del archivo, la re
 **Cómo poner un formato a un canal:**
 1. Busca y selecciona el preset que quieras (arriba hay un buscador 🔍).
 2. Abajo a la derecha, en **"Aplicar a:"**, elige el canal (A, B…).
-3. Pulsa **Aplicar al canal**.
+3. Pulsa **Aplicar al canal**. La etiqueta **PRESET** del panel del canal cambia en el acto al nombre del preset, y el
+   cambio queda guardado: se mantiene aunque cierres el programa sin haber grabado.
 
 **También puedes:**
 - **＋ Nuevo / ✎ Editar / ⧉ Duplicar / 🗑 Eliminar:** crear tus propios presets a partir de los existentes.

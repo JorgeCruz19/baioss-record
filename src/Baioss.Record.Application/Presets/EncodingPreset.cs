@@ -84,6 +84,7 @@ public sealed class EncodingPreset
     {
         Id = id ?? Guid.NewGuid(),
         Name = name ?? Name,
+        PresetName = Name, // qué preset es, aunque el perfil del canal conserve su propio Id/Name
         Container = Container,
         VideoCodec = VideoCodec,
         HwAccel = HwAccel.None, // decode software; el encoder (incl. NVENC) recibe frames de CPU

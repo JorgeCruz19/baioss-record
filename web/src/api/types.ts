@@ -78,6 +78,10 @@ export interface ChannelStatus {
   alarms: ChannelAlarm[] | null
   storage: StorageInfo | null
   inputName: string | null
+  /** Preset de grabación vigente del canal (con el que se grabará al pulsar Grabar). */
+  presetName: string | null
+  /** Resumen técnico de ese preset («H264x264 · 8 Mbps · nativa · Mp4»), en el idioma de la aplicación. */
+  profileSummary: string | null
 }
 
 export type ProtectionLevel = 'None' | 'Important' | 'Protected'

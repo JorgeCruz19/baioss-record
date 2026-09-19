@@ -393,7 +393,23 @@
             <!-- Transporte: controles de grabación. El badge de estado (Grabando/Inactivo) se muestra
                  flotando sobre el preview, no aquí, para no solaparse con «Detener grabación automática». -->
             <Grid Grid.Row="4" Margin="0,10,0,0">
-                <StackPanel Orientation="Horizontal">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <!-- Preset de grabación vigente: con qué se grabará al pulsar Grabar. Se cambia en «Presets de grabación»;
+                     el tooltip da el resumen técnico (códec · tasa · tamaño · contenedor). -->
+                <Border Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                        Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
+                        CornerRadius="12" Padding="10,4" ToolTip="{Binding PresetToolTip}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,7,0"/>
+                        <TextBlock Text="{Binding PresetText}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" MaxWidth="260"/>
+                    </StackPanel>
+                </Border>
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
                     <Button Content="{loc:T Ch_Record}"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
                     <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
                     <Button Content="{loc:T Ch_Stop}"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"

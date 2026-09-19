@@ -25,7 +25,11 @@ public sealed record ChannelStatus(
     StorageInfo? Storage = null,
     // InputName: nombre de la ENTRADA (fuente) asignada al canal, p. ej. «Clip A», «DeckLink — Mini Recorder»,
     // «NDI — OBS». Para mostrar qué entrada está activa en la UI (panel y gestor de entradas).
-    string? InputName = null);
+    string? InputName = null,
+    // Preset de grabación vigente del canal (el que se usará al pulsar REC) y su resumen técnico en el idioma de la
+    // aplicación («H264x264 · 8 Mbps · nativa · Mp4»), para el badge del panel y del cliente web.
+    string? PresetName = null,
+    string? ProfileSummary = null);
 
 /// <summary>
 /// Orquestador de un canal. Compone captura + monitor de señal + grabación +

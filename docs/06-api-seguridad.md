@@ -12,7 +12,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | POST | `/channels/{id}/recording/pause` | Pausa | Operador |
 | POST | `/channels/{id}/recording/resume` | Reanuda | Operador |
 | GET | `/channels` | Lista canales con estado | Operador |
-| GET | `/channels/{id}/status` | Estado consolidado (señal, stats, sesión) | Operador |
+| GET | `/channels/{id}/status` | Estado consolidado (señal, stats, sesión, y el preset vigente: `presetName` + `profileSummary`) | Operador |
 | GET | `/channels/{id}/preview.jpg?w=320` | Instantánea JPEG de BAJA resolución del preview (`w` = 160–640 px de ancho, 320 por defecto ≈ 5–20 KB; `Cache-Control: no-store`). La aplicación captura y codifica SOLO cuando se pide: sin clientes no cuesta nada. 404 si el canal no tiene preview | Operador |
 | GET | `/inputs` | Fuentes disponibles / descubiertas | Operador |
 | GET | `/storage?volume=D:\` | Espacio, tiempo restante, consumo por canal | Operador |

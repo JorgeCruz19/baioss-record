@@ -91,6 +91,7 @@ Each panel shows you, from top to bottom:
   - **● Record:** starts recording by hand.
   - **■ Stop:** stops the manual recording (it only appears while you are recording by hand).
   - **⏏ Stop scheduled recording:** appears only if a **scheduled** recording is running; it lets you skip *that* recording without affecting the following ones.
+  - On the right, the **PRESET** tag tells you **which format will be recorded** when you press Record (for example "ProRes 422 · 1080p25"). Hovering over it shows the technical summary (codec · rate · size · container). It is changed in **⚙ Recording presets** (see section 4).
 
 - **Schedule box:** shows the scheduled recording that is **running** right now (in green, "RUNNING"), or "No recording in progress". The **🕒 Show schedule** button opens the full list for the day.
 
@@ -163,7 +164,8 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 **How to give a channel a format:**
 1. Find and select the preset you want (there is a 🔍 search box at the top).
 2. At the bottom right, under **"Apply to:"**, choose the channel (A, B…).
-3. Press **Apply to channel**.
+3. Press **Apply to channel**. The **PRESET** tag on the channel panel changes at once to the preset's name, and the
+   change is saved: it is kept even if you close the program without having recorded.
 
 **You can also:**
 - **＋ New / ✎ Edit / ⧉ Duplicate / 🗑 Delete:** create your own presets from the existing ones.

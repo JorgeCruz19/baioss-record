@@ -53,7 +53,9 @@ public sealed class SimulatedChannelEngine : IChannelEngine, IConfigurableRecord
     public Guid ChannelId { get; }
     public string Key { get; }
 
-    public ChannelStatus Status => new(ChannelId, Key, _state, _signal, BuildStats(), _sessionId, _audio);
+    public ChannelStatus Status => new(ChannelId, Key, _state, _signal, BuildStats(), _sessionId, _audio,
+        PresetName: Baioss.Record.Application.Presets.RecordingProfileSummary.DisplayName(Profile),
+        ProfileSummary: Baioss.Record.Application.Presets.RecordingProfileSummary.Describe(Profile));
 
     public event EventHandler<ChannelStatus>? StatusChanged;
 

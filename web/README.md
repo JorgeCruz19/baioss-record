@@ -8,7 +8,7 @@ WebSocket de eventos (`/ws/events`).
 
 | Pantalla | Qué muestra / permite |
 |---|---|
-| **Canales** | **Vista previa de baja resolución** de cada canal (se puede apagar) y su estado en vivo (grabando/inactivo, señal, cronómetro de grabación, FPS, bitrate, cuadros perdidos, alarmas, audio, disco) y **Grabar / Detener**. Con una fuente de 8/16 canales, los medidores se agrupan por pares y el par que se graba lleva la marca roja (`signal.audioSelectedPairs`). El nombre de operador queda en la auditoría (origen «API»). |
+| **Canales** | **Vista previa de baja resolución** de cada canal (se puede apagar) y su estado en vivo (grabando/inactivo, **preset de grabación vigente** en un badge, señal, cronómetro de grabación, FPS, bitrate, cuadros perdidos, alarmas, audio, disco) y **Grabar / Detener**. Con una fuente de 8/16 canales, los medidores se agrupan por pares y el par que se graba lleva la marca roja (`signal.audioSelectedPairs`). El nombre de operador queda en la auditoría (origen «API»). |
 | **Grabaciones** | Historial (`GET /recordings`) con filtros por canal y periodo; origen (manual/programada/API), motivo de fin, tamaño, archivos; cambiar la **protección** (Normal / Importante / Protegida) frente a la limpieza automática. |
 | **Actividad** | Registro de auditoría (`GET /events`) con filtros por periodo, canal, severidad mínima y categoría; cada fila se despliega con el detalle (payload). |
 | **Almacenamiento** | Estado de cada disco de grabación y los ajustes de retención/alertas (`GET/PUT /storage/settings`), editables en caliente. |

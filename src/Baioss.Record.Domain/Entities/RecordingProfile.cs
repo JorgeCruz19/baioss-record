@@ -11,6 +11,14 @@ public sealed class RecordingProfile
     public Guid Id { get; init; } = Guid.NewGuid();
     public required string Name { get; set; }
 
+    /// <summary>
+    /// Nombre del PRESET de encoding con el que se rellenó este perfil (lo que el operador eligió en el gestor de
+    /// presets), para enseñárselo en el panel del canal y en la API. <c>null</c> mientras no se haya aplicado ninguno
+    /// (perfil sembrado) o en filas anteriores a esta columna: ahí se muestra el resumen técnico. Es una FOTO del momento
+    /// de aplicar: si el preset se edita o se borra después, el canal sigue grabando con lo que copió, bajo este nombre.
+    /// </summary>
+    public string? PresetName { get; set; }
+
     // --- Video ---
     public VideoCodec VideoCodec { get; set; } = VideoCodec.HevcNvenc;
     public HwAccel HwAccel { get; set; } = HwAccel.Nvenc;

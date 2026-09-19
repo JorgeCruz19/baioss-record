@@ -10,6 +10,7 @@ using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Licensing;
 using Baioss.Record.Application.Persistence;
+using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Recording;
 using Baioss.Record.Application.Storage;
 using Baioss.Record.Infrastructure.Preview;
@@ -98,7 +99,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         ChannelId = channelId ?? Guid.NewGuid();
         _key = key;
         _source = source;
-        Profile = profile;
+        _profile = profile; // el campo, no la propiedad: el perfil que llega al construir YA es el persistido
         _engine = engine;
         _sessions = sessions;
         _segments = segments;
@@ -126,8 +127,31 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     public Guid ChannelId { get; }
 
-    /// <summary>Perfil de grabación vigente (formato, tamaño, códec, bitrate, audio). Lo edita la UI.</summary>
-    public RecordingProfile Profile { get; set; }
+    private RecordingProfile _profile;
+
+    /// <summary>
+    /// Perfil de grabación vigente (formato, tamaño, códec, bitrate, audio). Lo cambia la UI al aplicar un preset, y el
+    /// cambio se PERSISTE en el acto: antes solo se guardaba al empezar a grabar, así que un preset aplicado se perdía
+    /// si la aplicación se reiniciaba sin haber grabado (y el canal volvía, sin avisar, al preset anterior). También
+    /// publica el estado, para que el badge del preset cambie al instante en el panel y en la API.
+    /// </summary>
+    public RecordingProfile Profile
+    {
+        get => _profile;
+        set
+        {
+            _profile = value;
+            _ = PersistProfileAsync(value);
+            Raise();
+        }
+    }
+
+    private async Task PersistProfileAsync(RecordingProfile profile)
+    {
+        if (_profiles is null) return;
+        try { await _profiles.UpdateAsync(profile).ConfigureAwait(false); }
+        catch (Exception ex) { _log?.LogError(ex, "Canal {Key}: no se pudo persistir el perfil {ProfileId} al aplicar el preset.", _key, profile.Id); }
+    }
 
     /// <summary>Carpeta de destino de las grabaciones (raíz; el motor crea una subcarpeta por canal).</summary>
     public string OutputDirectory
@@ -142,7 +166,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         {
             ChannelAlarm[] alarms;
             lock (_alarmLock) alarms = _alarms.Values.ToArray();
-            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage, _source.Definition.Name);
+            var profile = _profile;
+            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage,
+                _source.Definition.Name, RecordingProfileSummary.DisplayName(profile), RecordingProfileSummary.Describe(profile));
         }
     }
 

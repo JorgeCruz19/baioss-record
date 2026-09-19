@@ -53,11 +53,14 @@ export function StatusTag({ tone = 'neutral', label, icon, pulsing = false }: { 
         fontWeight: 600,
         lineHeight: 1,
         whiteSpace: 'nowrap',
-        '& svg': { fontSize: 15, color: toneColor(t, tone) },
+        // Una etiqueta larga (el nombre de un preset) se recorta con puntos suspensivos en vez de desbordar la tarjeta.
+        minWidth: 0,
+        maxWidth: '100%',
+        '& svg': { fontSize: 15, flexShrink: 0, color: toneColor(t, tone) },
       })}
     >
       {icon ?? <Dot tone={tone} pulsing={pulsing} />}
-      {label}
+      <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.3 }}>{label}</Box>
     </Box>
   )
 }
