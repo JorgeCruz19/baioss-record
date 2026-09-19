@@ -178,8 +178,8 @@ how the pairs chosen on the input (see section 3) are stored:
   codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores one stereo track per pair instead, because a lossy
   5.1/7.1 track treats channel 4 as the bass channel (LFE) and strips it.
 
-**PairsAsTracks** and **Multichannel** need **All pairs** on the input. A separate guide with typical setups and how
-to read the per-pair meters exists in Spanish: `MANUAL-AUDIO-MULTICANAL.md`.
+**PairsAsTracks** and **Multichannel** need **All pairs** on the input. There is a separate guide with typical setups
+and how to read the per-pair meters: `MULTICHANNEL-AUDIO-MANUAL.md`.
 
 > The preset only changes **the quality and the file format**. The folder where recordings are saved is configured separately (see section 6).
 

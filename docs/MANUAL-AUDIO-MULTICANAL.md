@@ -4,6 +4,8 @@
 decidir cómo se guardan las pistas y leer los medidores. Está pensado para el operador; los detalles técnicos están en
 `FFMPEG.md`.*
 
+> *(Hay una versión en inglés en `MULTICHANNEL-AUDIO-MANUAL.md`; las dos se mantienen a la par.)*
+
 ---
 
 ## 1. Lo básico en un minuto
@@ -49,18 +51,21 @@ Dos cosas que conviene tener claras desde el principio:
      En el panel del canal verás con cuántos se ha quedado («Par 1-2 de 8 · PCM»).
    - **2 / 8 / 16 canales** — si sabes lo que trae tu instalación y quieres fijarlo.
 3. Si no sabes qué lleva cada par, pulsa **🎧 Medir audio** (con la tarjeta libre). El programa escucha unos tres
-   segundos y te enseña el nivel de pico de cada par, por ejemplo:
+   segundos y te enseña el nivel de pico de cada par bajo el desplegable, y el resumen en la barra de abajo:
 
-   > Canal A: la tarjeta entrega 8 canales; con sonido: pares 1-2, 3-4 · 1-2: −8 dB · 3-4: −20 dB · 5-6: silencio · 7-8: silencio
+   > 1-2: −8 dB · 3-4: −20 dB · 5-6: silencio · 7-8: silencio
+   >
+   > Canal A: la tarjeta entrega 8 canales; con sonido: pares 1-2, 3-4. A grabar: Par 1-2 (pulsa Aplicar para guardarlo).
 
    Además **propone el primer par con sonido** y, si estabas en *Automático*, fija el recuento que la tarjeta aceptó.
    Un par se considera en silencio por debajo de −60 dBFS. La propuesta **no se guarda** hasta que pulses **Aplicar**.
+   Si ya habías elegido *Todos los pares*, la medida no toca esa elección.
 4. En **Par a grabar** elige:
    - **Par 1-2, Par 3-4, …** — se graba solo ese par (estéreo). Es lo normal cuando quieres el programa o un idioma concreto.
    - **Todos los pares** — se graban todos los canales que entrega la tarjeta. Es lo que necesitas para guardar el
      programa y el internacional en pistas separadas, o para conservar todo el audio del SDI (ver el punto 4).
 5. Pulsa **Aplicar**. El canal se reconecta a la entrada con la nueva configuración y el mensaje de abajo lo confirma
-   («Canal A → DeckLink … · audio: par 3-4 (Automático)»). En el panel del canal, bajo el preview, aparece lo elegido:
+   («Canal A → DeckLink … · audio: Par 3-4 (Automático…)»). En el panel del canal, bajo el preview, aparece lo elegido:
    «**Par 3-4 de 8 · PCM**» o «**Los 8 canales · PCM**».
 
 > **Ojo:** al abrir la ventana de Entradas, los desplegables muestran los valores por defecto (*Automático* y *Par 1-2*),
@@ -147,8 +152,8 @@ Aplicar. No hay *Audio de la tarjeta*: los canales los pone la fuente.
 ## 7. Qué pasa si…
 
 - **La tarjeta no admite 16 canales.** Con *Automático* el programa baja solo a 8 y luego a 2 y lo anota en el registro
-  de actividad. Si habías fijado 16 a mano, el canal registra el error y no captura audio: vuelve a Entradas y elige
-  8 o 2.
+  del programa (carpeta `logs`). Si habías fijado 16 a mano, la tarjeta no llega a abrirse —el canal se queda sin imagen
+  ni sonido— y el registro explica por qué: vuelve a Entradas y elige 8 o 2.
 - **«Medir audio» no encuentra sonido.** Comprueba que ningún canal esté usando la tarjeta (tiene que estar libre),
   que la señal lleve audio embebido y que el nivel supere −60 dBFS. Si la tarjeta está ocupada, el mensaje de abajo lo dice.
 - **Elegiste el par 5-6 pero la tarjeta solo entrega 2 canales.** Se graba el par 1-2 (mejor grabar el par que existe

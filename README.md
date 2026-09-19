@@ -75,7 +75,8 @@ Capacidades de fiabilidad y validación integradas en el motor de grabación:
 | 09 | [Publicación / Release](docs/09-release.md) | Empaquetado portable self-contained (win-x64), FFmpeg incluido |
 
 Manuales para el operador: [MANUAL-USUARIO.md](docs/MANUAL-USUARIO.md) / [USER-MANUAL.md](docs/USER-MANUAL.md) y
-[MANUAL-AUDIO-MULTICANAL.md](docs/MANUAL-AUDIO-MULTICANAL.md) (señales con 8 o 16 canales de audio: pares, medida,
+[MANUAL-AUDIO-MULTICANAL.md](docs/MANUAL-AUDIO-MULTICANAL.md) /
+[MULTICHANNEL-AUDIO-MANUAL.md](docs/MULTICHANNEL-AUDIO-MANUAL.md) (señales con 8 o 16 canales de audio: pares, medida,
 pistas y medidores).
 
 ---

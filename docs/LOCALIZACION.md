@@ -110,7 +110,7 @@ Cada uno tiene su gemelo; si tocas uno, toca el otro:
 | `installer\AVISOS-TERCEROS.txt` | `installer\THIRD-PARTY-NOTICES.txt` | Junto al programa |
 | `installer\FFMPEG-LEEME.txt` | `installer\FFMPEG-README.txt` | En `tools\ffmpeg\` |
 | `docs\MANUAL-USUARIO.md` | `docs\USER-MANUAL.md` | Se entrega al cliente |
-| `docs\MANUAL-AUDIO-MULTICANAL.md` | — (pendiente) | Manual del audio de 8/16 canales; solo en español por ahora |
+| `docs\MANUAL-AUDIO-MULTICANAL.md` | `docs\MULTICHANNEL-AUDIO-MANUAL.md` | Manual del audio de 8/16 canales; se entrega al cliente |
 
 Los cuatro pares se instalan **completos, en los dos idiomas**, independientemente del idioma del asistente:
 quien instala y quien opera no tienen por qué ser la misma persona, y el idioma de la aplicación se cambia en
