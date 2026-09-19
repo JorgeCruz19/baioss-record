@@ -158,18 +158,21 @@ public static class Strings
         ["In_AudioAuto"] = "Automático (los que admita la tarjeta)",
         ["In_AudioNCh"] = "{0} canales",
         ["In_Pair"] = "Par {0}",
-        ["In_Msg_AppliedAudio"] = " · audio: par {0} ({1})",
-        ["In_Msg_AppliedPair"] = " · audio: par {0}",
+        ["In_PairAll"] = "Todos los pares",
+        ["In_Msg_AppliedAudio"] = " · audio: {0} ({1})",
+        ["In_Msg_AppliedPair"] = " · audio: {0}",
         ["Audio_PairOf"] = "Par {0} de {1}",
         ["Audio_PairsOf"] = "Pares {0} de {1}",
         ["Audio_AllChannels"] = "Los {0} canales",
+        ["Audio_TrackTitle"] = "Canales {0}",
+        ["Audio_TrackTitleOne"] = "Canal {0}",
         // Asistente «Medir audio» (gestor de entradas).
         ["In_DetectAudio"] = "🎧 Medir audio",
         ["In_ProbeSilence"] = "silencio",
         ["In_Msg_ProbingAudio"] = "Midiendo el audio de «{0}» durante unos segundos…",
         ["In_Msg_AudioProbeNone"] = "No se pudo medir el audio de «{0}». Si un canal ya está usando esa tarjeta, asígnale otra entrada antes de medir; también puede que no haya señal.",
-        ["In_Msg_AudioProbe"] = "Canal {0}: la tarjeta entrega {1} canales; con sonido: pares {2}. Par propuesto: {3} (pulsa Aplicar para guardarlo).",
-        ["In_Msg_AudioProbeSilent"] = "Canal {0}: la tarjeta entrega {1} canales, pero ninguno tiene sonido ahora mismo (un par callado no es un par ausente). Se mantiene el par {2}.",
+        ["In_Msg_AudioProbe"] = "Canal {0}: la tarjeta entrega {1} canales; con sonido: pares {2}. A grabar: {3} (pulsa Aplicar para guardarlo).",
+        ["In_Msg_AudioProbeSilent"] = "Canal {0}: la tarjeta entrega {1} canales, pero ninguno tiene sonido ahora mismo (un par callado no es un par ausente). Se mantiene: {2}.",
 
         // --- Reasignación de entrada (mensajes que acaban en la ventana de Entradas) ---
         ["Rebind_Err_Simulated"] = "La reasignación de entrada no está disponible (modo de demostración).",
@@ -519,7 +522,7 @@ public static class Strings
         ["PreEd_IntraHint"] = "(solo ProRes / DNxHR)",
         ["PreEd_AudioChannels"] = "Canales",
         ["PreEd_AudioTracks"] = "Pistas de audio",
-        ["PreEd_AudioTracksHint"] = "Con fuentes de 8/16 canales: Single = una pista con lo elegido · PairsAsTracks = una pista estéreo por par · Multichannel = todos los canales en una pista (PCM en MXF/MKV; con AAC, máximo 8)",
+        ["PreEd_AudioTracksHint"] = "Con fuentes de 8/16 canales: Single = una pista con lo elegido · PairsAsTracks = una pista estéreo por par · Multichannel = todos los canales en una pista PCM (MXF/MKV/AVI/WAV); con AAC, Opus o MP2 se guarda una pista por par",
         ["PreEd_AudioOnly"] = "Solo audio",
 
         // --- Diálogos de la aplicación ---
@@ -677,18 +680,21 @@ public static class Strings
         ["In_AudioAuto"] = "Automatic (as many as the card allows)",
         ["In_AudioNCh"] = "{0} channels",
         ["In_Pair"] = "Pair {0}",
-        ["In_Msg_AppliedAudio"] = " · audio: pair {0} ({1})",
-        ["In_Msg_AppliedPair"] = " · audio: pair {0}",
+        ["In_PairAll"] = "All pairs",
+        ["In_Msg_AppliedAudio"] = " · audio: {0} ({1})",
+        ["In_Msg_AppliedPair"] = " · audio: {0}",
         ["Audio_PairOf"] = "Pair {0} of {1}",
         ["Audio_PairsOf"] = "Pairs {0} of {1}",
         ["Audio_AllChannels"] = "All {0} channels",
+        ["Audio_TrackTitle"] = "Channels {0}",
+        ["Audio_TrackTitleOne"] = "Channel {0}",
         // "Measure audio" assistant (inputs manager).
         ["In_DetectAudio"] = "🎧 Measure audio",
         ["In_ProbeSilence"] = "silence",
         ["In_Msg_ProbingAudio"] = "Measuring the audio of «{0}» for a few seconds…",
         ["In_Msg_AudioProbeNone"] = "Could not measure the audio of «{0}». If a channel is already using that card, assign it another input before measuring; the card may also have no signal.",
-        ["In_Msg_AudioProbe"] = "Channel {0}: the card delivers {1} channels; with sound: pairs {2}. Proposed pair: {3} (press Apply to save it).",
-        ["In_Msg_AudioProbeSilent"] = "Channel {0}: the card delivers {1} channels, but none has sound right now (a quiet pair is not an absent pair). Keeping pair {2}.",
+        ["In_Msg_AudioProbe"] = "Channel {0}: the card delivers {1} channels; with sound: pairs {2}. To record: {3} (press Apply to save it).",
+        ["In_Msg_AudioProbeSilent"] = "Channel {0}: the card delivers {1} channels, but none has sound right now (a quiet pair is not an absent pair). Keeping: {2}.",
 
         // --- Input rebinding (messages that end up in the Inputs window) ---
         ["Rebind_Err_Simulated"] = "Changing the input is not available (demonstration mode).",
@@ -1038,7 +1044,7 @@ public static class Strings
         ["PreEd_IntraHint"] = "(ProRes / DNxHR only)",
         ["PreEd_AudioChannels"] = "Channels",
         ["PreEd_AudioTracks"] = "Audio tracks",
-        ["PreEd_AudioTracksHint"] = "With 8/16-channel sources: Single = one track with the selection · PairsAsTracks = one stereo track per pair · Multichannel = all channels in one track (PCM in MXF/MKV; with AAC, up to 8)",
+        ["PreEd_AudioTracksHint"] = "With 8/16-channel sources: Single = one track with the selection · PairsAsTracks = one stereo track per pair · Multichannel = all channels in one PCM track (MXF/MKV/AVI/WAV); with AAC, Opus or MP2 one track per pair is stored",
         ["PreEd_AudioOnly"] = "Audio only",
 
         // --- Application dialogs ---

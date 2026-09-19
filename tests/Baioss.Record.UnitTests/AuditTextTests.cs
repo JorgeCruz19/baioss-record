@@ -9,6 +9,7 @@ namespace Baioss.Record.UnitTests;
 /// su copia en JSON— en algo que un supervisor pueda leer de un vistazo. Es lo que separa una tabla útil de un
 /// volcado técnico.
 /// </summary>
+[Collection("Localizer")] // el idioma es estado global: estas clases no se ejecutan en paralelo entre sí
 public class AuditTextTests : IDisposable
 {
     private readonly AppLanguage _original = Localizer.Language;

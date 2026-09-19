@@ -48,7 +48,7 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     /// audio input» (mismo retroceso que la captura). Devuelve <c>null</c> si no hay medida: dispositivo en uso por un
     /// canal (DeckLink es exclusivo), sin señal, o FFmpeg no arrancó.
     /// </summary>
-    public async Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, CancellationToken ct = default)
+    public async Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, string? formatCode = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(deviceId) || type is not (InputType.DecklinkSdi or InputType.File)) return null;
         var candidates = channels > 0 ? new[] { channels } : new[] { 16, 8, 2 };
@@ -56,7 +56,13 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         {
             var args = new List<string> { "-hide_banner" };
             if (type is InputType.DecklinkSdi)
-                args.AddRange(new[] { "-f", "decklink", "-draw_bars", "false", "-channels", n.ToString(CultureInfo.InvariantCulture) });
+            {
+                args.AddRange(new[] { "-f", "decklink", "-draw_bars", "false" });
+                // Mismo modo SDI que usará la captura: sin él FFmpeg autodetecta, y en las tarjetas/señales donde la
+                // autodetección falla (por eso el operador fijó un modo) la medida no abriría nunca.
+                if (!string.IsNullOrWhiteSpace(formatCode)) args.AddRange(new[] { "-format_code", formatCode });
+                args.AddRange(new[] { "-channels", n.ToString(CultureInfo.InvariantCulture) });
+            }
             args.AddRange(new[] { "-t", ProbeSeconds, "-i", deviceId, "-vn",
                 "-af", "astats=measure_perchannel=Peak_level:measure_overall=none", "-f", "null", "-" });
 

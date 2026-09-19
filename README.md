@@ -74,6 +74,10 @@ Capacidades de fiabilidad y validación integradas en el motor de grabación:
 | 08 | [Presets de grabación](docs/08-presets.md) | Presets de encoding (Marsis-style): UI 3 paneles, catálogo, JSON |
 | 09 | [Publicación / Release](docs/09-release.md) | Empaquetado portable self-contained (win-x64), FFmpeg incluido |
 
+Manuales para el operador: [MANUAL-USUARIO.md](docs/MANUAL-USUARIO.md) / [USER-MANUAL.md](docs/USER-MANUAL.md) y
+[MANUAL-AUDIO-MULTICANAL.md](docs/MANUAL-AUDIO-MULTICANAL.md) (señales con 8 o 16 canales de audio: pares, medida,
+pistas y medidores).
+
 ---
 
 ## Estructura de la solución

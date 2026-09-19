@@ -8,6 +8,7 @@ using Xunit;
 namespace Baioss.Record.UnitTests;
 
 /// <summary>Canales de audio que se piden a la DeckLink y retroceso cuando la tarjeta no los admite.</summary>
+[Collection("Localizer")] // el idioma es estado global: estas clases no se ejecutan en paralelo entre sí
 public class DecklinkAudioChannelsTests
 {
     private static DecklinkCaptureSource Source(string? channels = null, string? pairs = null)

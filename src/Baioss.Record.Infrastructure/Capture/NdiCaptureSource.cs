@@ -40,7 +40,11 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// de 2, el builder ELIGE los pares con <c>pan</c> (parámetro <c>audio_pairs</c>; sin él, el par 1) y mide todos los
     /// canales, igual que con DeckLink; antes un NDI de 4 u 8 canales se mezclaba entero en el estéreo con <c>-ac 2</c>.
     /// </summary>
-    public int AudioChannelCount => _receiver?.Channels ?? 2;
+    public int AudioChannelCount => _receiver?.Channels ?? _lastChannels;
+
+    /// <summary>Último recuento conocido: si el receptor se cae a mitad de una grabación (reapertura fallida), la carta
+    /// de ajuste debe seguir generando las MISMAS pistas que las piezas reales, no volver a estéreo.</summary>
+    private int _lastChannels = 2;
 
     /// <summary>NDI reporta pérdida y recuperación de señal por sí mismo (el receptor detecta la presencia de
     /// vídeo y lo publica en <see cref="SignalChanged"/>): el motor NO debe sondear el dispositivo para NDI
@@ -96,7 +100,7 @@ public sealed class NdiCaptureSource : ICaptureSource
         var r = _receiver!;
         var res = new Resolution(r.Width, r.Height);
         var rate = new FrameRate(r.FrameRateN, r.FrameRateD);
-        int ch = r.Channels;
+        int ch = _lastChannels = r.Channels;
         return new SignalInfo(SignalState.Locked, res, rate,
             AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
             FormatLabel: $"{res.Width}×{res.Height} · NDI",

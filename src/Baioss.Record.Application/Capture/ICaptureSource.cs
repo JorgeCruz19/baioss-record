@@ -120,10 +120,12 @@ public interface IDeviceEnumerator
     /// <summary>
     /// Mide unos segundos el audio embebido de un dispositivo (DeckLink) o archivo y devuelve el pico por canal, para
     /// que el instalador VEA qué pares traen sonido y elija cuál grabar. <paramref name="channels"/> = 2, 8 o 16, o 0
-    /// para probar 16→8→2 hasta que la tarjeta acepte. <c>null</c> si no se pudo medir (dispositivo en uso, sin FFmpeg…).
+    /// para probar 16→8→2 hasta que la tarjeta acepte. <paramref name="formatCode"/> = modo SDI elegido en la fila (si
+    /// el operador fijó uno es porque la autodetección no le sirve: la medida debe abrir la tarjeta igual que la
+    /// captura). <c>null</c> si no se pudo medir (dispositivo en uso, sin FFmpeg…).
     /// Requiere el dispositivo LIBRE: DeckLink es exclusivo y un canal que ya lo capture bloquea la medición.
     /// </summary>
-    Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, CancellationToken ct = default)
+    Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, string? formatCode = null, CancellationToken ct = default)
         => Task.FromResult<AudioProbe?>(null);
 }
 

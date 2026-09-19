@@ -10,6 +10,7 @@ namespace Baioss.Record.UnitTests;
 /// que una ventana aparezca en español dentro de la interfaz en inglés porque alguien añadió una cadena y se
 /// olvidó del otro idioma.
 /// </summary>
+[Collection("Localizer")] // el idioma es estado global: estas clases no se ejecutan en paralelo entre sí
 public sealed class LocalizationTests
 {
     [Fact]

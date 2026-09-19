@@ -131,7 +131,8 @@ This is where you decide **which video source is connected to each channel**.
    - **Mode / format (DeckLink):** the resolution and rate of the SDI signal (for example "1080i 59.94").
    - **Card audio (DeckLink):** how many embedded audio channels to request from the card. **Automatic** asks for as
      many as the card allows (16, falling back to 8 or 2). If you know what your signal carries, you can fix 2, 8 or 16.
-   - **Pair to record (DeckLink and NDI):** which pair of SDI channels goes into the recording (pair 1-2, 3-4, 5-6…). For
+   - **Pair to record (DeckLink and NDI):** which pair of SDI channels goes into the recording (pair 1-2, 3-4, 5-6…) or
+     **All pairs** (to keep each pair in its own track or preserve all the audio; see section 4). For
      example, if the programme is on 1-2 and the international sound on 3-4, pick the pair you want recorded. With NDI
      the program cannot know how many channels the source carries until it connects: all eight possible pairs are
      offered and, if the chosen one does not exist, pair 1-2 is recorded.
@@ -171,10 +172,14 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 **Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
 how the pairs chosen on the input (see section 3) are stored:
 - **Single:** one track with the selection (the pair in stereo, or 5.1/7.1 with the first channels). This is the usual behaviour.
-- **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Canales 3-4"), so the programme, the
+- **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Channels 3-4"), so the programme, the
   international sound or each language stay in separate tracks without mixing.
-- **Multichannel:** all chosen channels in a single track. With PCM (MXF, MKV) up to 16 fit; with AAC (MP4, MOV,
-  TS) at most 8.
+- **Multichannel:** all chosen channels in a single **PCM** track (MXF, MKV, AVI, WAV; up to 16 fit). With a lossy
+  codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores one stereo track per pair instead, because a lossy
+  5.1/7.1 track treats channel 4 as the bass channel (LFE) and strips it.
+
+**PairsAsTracks** and **Multichannel** need **All pairs** on the input. A separate guide with typical setups and how
+to read the per-pair meters exists in Spanish: `MANUAL-AUDIO-MULTICANAL.md`.
 
 > The preset only changes **the quality and the file format**. The folder where recordings are saved is configured separately (see section 6).
 

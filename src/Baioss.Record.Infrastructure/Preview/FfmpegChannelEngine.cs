@@ -112,6 +112,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // Retroceso de canales de audio (DeckLink con «audio_channels=auto»): la tarjeta rechazó los canales pedidos
     // («Cannot enable audio input») → la fuente baja un escalón (16→8→2) y se reconstruye el proceso con el argv nuevo.
     private volatile bool _audioFallbackPending;
+    /// <summary>Fuente para la que ya se registró que rechaza el recuento FIJO de canales (evita repetir el error en cada relanzamiento).</summary>
+    private ICaptureSource? _audioRejectLoggedFor;
 
     // Recuperación tras la CAÍDA del proceso de grabación (N1): el supervisor ya NO relanza el mismo argv —que
     // reabriría el archivo con -y y lo truncaría—; el motor reconstruye en una PIEZA NUEVA vía ReplaceProcessAsync,
@@ -609,7 +611,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             line.Contains("Cannot enable audio input", StringComparison.Ordinal))
         {
             _audioFallbackPending = true;
-            _log.LogWarning("Canal {Key}: el dispositivo rechazó {N} canales de audio → {Line}", _channelKey, _source.AudioChannelCount, line);
+            // Con un recuento fijo que la tarjeta no admite, el supervisor relanza y la línea vuelve en cada intento:
+            // se registra solo la primera vez por fuente (TryReduceAudioChannelsAsync deja constancia del error).
+            if (!ReferenceEquals(_audioRejectLoggedFor, _source))
+                _log.LogWarning("Canal {Key}: el dispositivo rechazó {N} canales de audio → {Line}", _channelKey, _source.AudioChannelCount, line);
             _ = Task.Run(TryReduceAudioChannelsAsync);
             return;
         }
@@ -986,6 +991,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// </summary>
     private async Task TryReduceAudioChannelsAsync()
     {
+        bool resumeRecovery = false;
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -994,7 +1000,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             int before = src.AudioChannelCount;
             if (!src.TryReduceAudioChannels())
             {
-                _log.LogError("Canal {Key}: el dispositivo no admite {N} canales de audio y la entrada no permite bajar; elige en «Entradas» un valor que la tarjeta admita (2 u 8).", _channelKey, before);
+                // Una vez por fuente: el supervisor relanza el preview y el mensaje se repetiría en cada intento.
+                if (!ReferenceEquals(_audioRejectLoggedFor, src))
+                {
+                    _audioRejectLoggedFor = src;
+                    _log.LogError("Canal {Key}: el dispositivo no admite {N} canales de audio y la entrada no permite bajar; elige en «Entradas» un valor que la tarjeta admita (2 u 8).", _channelKey, before);
+                }
+                // No hay escalón al que bajar, así que este método NO reinicia nada. Mientras _audioFallbackPending
+                // estaba activo, OnRecordingProcessDied se abstuvo de recuperar: si el proceso murió en esa ventana
+                // (este método puede esperar el semáforo tras StartRecording) nadie lo levantaría y el canal quedaría
+                // «grabando» sin proceso. Se devuelve la caída a su camino normal (pieza nueva / carta de ajuste).
+                resumeRecovery = _state is RecordingState.Recording or RecordingState.Starting;
                 return;
             }
             _log.LogWarning("Canal {Key}: el dispositivo no admite {From} canales de audio; se reintenta con {To}.", _channelKey, before, src.AudioChannelCount);
@@ -1002,7 +1018,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             await ReplaceProcessAsync(recording, recording && _slate, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al bajar los canales de audio.", _channelKey); }
-        finally { _audioFallbackPending = false; _gate.Release(); }
+        finally
+        {
+            _audioFallbackPending = false;
+            _gate.Release();
+            // Fuera del semáforo y con la bandera ya bajada; _recovering evita duplicar si la caída real llega después.
+            if (resumeRecovery) OnRecordingProcessDied(this, 1);
+        }
     }
 
     private void StartRecoveryProbe()

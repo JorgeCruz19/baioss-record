@@ -4,6 +4,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Localization;
 
 namespace Baioss.Record.Engine.FFmpeg;
 
@@ -175,6 +176,9 @@ public sealed class FfmpegArgumentBuilder
             var (proxMux, proxExt) = FfmpegCodecMap.Container(p.Container);
             args.Add("-map"); args.Add("[proxout]");
             args.Add("-map"); args.Add("0:a?");
+            // Con una fuente multicanal el proxy lleva el primer par elegido: el audio crudo serían 8 canales en un AAC
+            // de 128 k, y con 16 el codificador ni siquiera abre.
+            if (audioFilter is not null) { args.Add("-af"); args.Add(MeterPan(source)); }
             args.AddRange(new[]
             {
                 "-c:v", FfmpegCodecMap.VideoEncoder(p.Codec),
@@ -733,8 +737,17 @@ public sealed class FfmpegArgumentBuilder
     /// <list type="bullet">
     ///   <item>Single: un pan con la distribución del perfil (estéreo del par elegido, 5.1 con los seis primeros…).</item>
     ///   <item>PairsAsTracks: un pan estéreo por par elegido, cada uno con título «Canales 3-4».</item>
-    ///   <item>Multichannel: un pan con todos los canales elegidos; en PCM con distribución sin nombre («8c»), y con un
-    ///   códec con pérdida la mayor distribución estándar que quepa (7.1, 5.1, quad o estéreo).</item>
+    ///   <item>Multichannel: un pan con todos los canales elegidos en una pista PCM de distribución sin nombre («8c»).</item>
+    /// </list>
+    /// El modo pedido se AJUSTA a lo que el códec y el contenedor pueden llevar sin estropear el audio (medido con el
+    /// FFmpeg empaquetado, auditoría 2026-09-18):
+    /// <list type="bullet">
+    ///   <item>Multichannel con un códec con pérdida → una pista estéreo por par. Una pista 5.1/7.1 en AAC o FDK-AAC
+    ///   codifica el canal 4 como LFE (banda limitada): un tono de 1,2 kHz ahí salía a −89 dB; FDK con «quad» lo
+    ///   rematriza a 5.0; y MP2/MP3, que solo admiten estéreo, MEZCLAN los ocho canales sin dar error.</item>
+    ///   <item>Varias pistas en un contenedor de un solo flujo de audio (WAV, MP3) → una sola: todos los canales en una
+    ///   pista si es PCM (WAV), o el primer par si tiene pérdida. Si no, el muxer aborta y no se graba nada.</item>
+    ///   <item>Single con una distribución que el códec no puede llevar (5.1 con MP2) → estéreo del primer par.</item>
     /// </list>
     /// </summary>
     internal static IReadOnlyList<AudioRoute>? AudioRoutes(ICaptureSource source, RecordingProfile profile)
@@ -742,7 +755,14 @@ public sealed class FfmpegArgumentBuilder
         int available = source.AudioChannelCount;
         if (!AudioSelection.RequiresRouting(available)) return null;
         var channels = AudioSelection.FromParameters(source.Definition.Parameters).ChannelIndexes(available);
-        switch (profile.AudioTracks)
+
+        bool pcm = FfmpegCodecMap.IsPcmAudio(profile.AudioCodec, profile.Container);
+        var mode = profile.AudioTracks;
+        if (mode is AudioTrackMode.Multichannel && !pcm) mode = AudioTrackMode.PairsAsTracks;
+        if (mode is AudioTrackMode.PairsAsTracks && FfmpegCodecMap.SingleAudioStream(profile.Container))
+            mode = pcm ? AudioTrackMode.Multichannel : AudioTrackMode.Single;
+
+        switch (mode)
         {
             case AudioTrackMode.PairsAsTracks:
             {
@@ -750,22 +770,33 @@ public sealed class FfmpegArgumentBuilder
                 for (int i = 0; i < channels.Count; i += 2)
                 {
                     int a = channels[i];
-                    int b = i + 1 < channels.Count ? channels[i + 1] : a;
-                    routes.Add(new AudioRoute(
-                        string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{a}|c1=c{b}"),
-                        string.Create(CultureInfo.InvariantCulture, $"Canales {a + 1}-{b + 1}")));
+                    bool paired = i + 1 < channels.Count;
+                    int b = paired ? channels[i + 1] : a;
+                    // El título va en el idioma de la aplicación: es lo que verá el montador en su editor. Un canal
+                    // suelto (fuente con recuento impar) se duplica en L/R y se titula en singular.
+                    string title = paired
+                        ? Localizer.F("Audio_TrackTitle", string.Create(CultureInfo.InvariantCulture, $"{a + 1}-{b + 1}"))
+                        : Localizer.F("Audio_TrackTitleOne", a + 1);
+                    routes.Add(new AudioRoute(string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{a}|c1=c{b}"), title));
                 }
                 return routes;
             }
             case AudioTrackMode.Multichannel:
-            {
-                bool lossy = !FfmpegCodecMap.EffectiveAudioEncoder(profile.AudioCodec, profile.Container).StartsWith("pcm", StringComparison.Ordinal);
-                return new[] { new AudioRoute(MultichannelPan(channels, lossy), null) };
-            }
+                return new[] { new AudioRoute(MultichannelPan(channels), null) };
             default:
-                return new[] { new AudioRoute(PanFilter(profile.AudioLayout, channels), null) };
+            {
+                var layout = profile.AudioLayout;
+                if (LayoutChannels(layout) > FfmpegCodecMap.MaxAudioChannels(profile.AudioCodec, profile.Container))
+                    layout = AudioLayout.Stereo;
+                return new[] { new AudioRoute(PanFilter(layout, channels), null) };
+            }
         }
     }
+
+    private static int LayoutChannels(AudioLayout layout) => layout switch
+    {
+        AudioLayout.Mono => 1, AudioLayout.Surround51 => 6, AudioLayout.Surround71 => 8, _ => 2
+    };
 
     /// <summary>Primer flujo de audio (para las rutas de un solo stream: <see cref="Build"/> y solo-audio), o null.</summary>
     internal static string? AudioRoutingFilter(ICaptureSource source, RecordingProfile profile)
@@ -784,22 +815,21 @@ public sealed class FfmpegArgumentBuilder
         => analyze ? $"ebur128=peak=true,{MeterPan(source)},{SilenceDetect}" : "ebur128=peak=true";
 
     /// <summary>
-    /// Pan de una sola pista con todos los canales elegidos. PCM admite cualquier recuento (distribución sin nombre
-    /// «Nc»; MOV/MXF lo escriben sin problema); un códec con pérdida (AAC, MP2…) exige una distribución estándar, así
-    /// que se toma la mayor que quepa: 7.1 (8), 5.1 (6), quad (4) o estéreo. Los canales que sobran no se graban.
+    /// Pan de una sola pista PCM con todos los canales elegidos, en una distribución SIN NOMBRE («8c», «16c»): así ningún
+    /// canal se trata como LFE ni se rematriza; MXF, MKV, AVI y WAV la escriben con cualquier recuento (probado con 16).
+    /// Solo para PCM: con un códec con pérdida <see cref="AudioRoutes"/> reparte por pares.
     /// </summary>
-    internal static string MultichannelPan(IReadOnlyList<int> channels, bool lossy)
+    internal static string MultichannelPan(IReadOnlyList<int> channels)
     {
         int count = channels.Count;
-        string layout;
-        int take;
-        if (!lossy) { layout = count == 2 ? "stereo" : string.Create(CultureInfo.InvariantCulture, $"{count}c"); take = count; }
-        else if (count >= 8) { layout = "7.1"; take = 8; }
-        else if (count >= 6) { layout = "5.1"; take = 6; }
-        else if (count >= 4) { layout = "quad"; take = 4; }
-        else { layout = "stereo"; take = Math.Min(2, count); }
+        string layout = count switch
+        {
+            1 => "mono",
+            2 => "stereo",
+            _ => string.Create(CultureInfo.InvariantCulture, $"{count}c"),
+        };
         var sb = new StringBuilder("pan=").Append(layout);
-        for (int i = 0; i < take; i++) sb.Append(CultureInfo.InvariantCulture, $"|c{i}=c{channels[i]}");
+        for (int i = 0; i < count; i++) sb.Append(CultureInfo.InvariantCulture, $"|c{i}=c{channels[i]}");
         return sb.ToString();
     }
 

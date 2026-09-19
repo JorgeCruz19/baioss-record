@@ -71,20 +71,42 @@ archivo con `audio_channels=8`; el par grabado se verifica con `pan=mono|c0=cN,b
 **Asistente «Medir audio»** (`FfmpegDeviceEnumerator.MeasureAudioAsync`): abre el dispositivo unos 3 s con
 `-f decklink -channels N … -vn -af astats=measure_perchannel=Peak_level -f null -` (probando 16→8→2 si se pidió
 «auto») y parsea el pico por canal de la salida de `astats`; el gestor de entradas enseña el nivel de cada par y
-propone el primero con sonido. Exige la tarjeta libre (DeckLink es exclusiva): si un canal ya la captura, no hay medida.
+propone el primero con sonido (salvo que ya esté elegido «Todos los pares», que la medida no deshace). Usa el MISMO
+`-format_code` que la fila tenga elegido: si el operador fijó un modo SDI es porque la autodetección no le sirve, y sin
+él la medida no abriría. Exige la tarjeta libre (DeckLink es exclusiva): si un canal ya la captura, no hay medida.
 
 **Modos de pistas** (`RecordingProfile.AudioTracks`, fase 3): con una fuente de más de 2 canales, el grafo reparte el
 audio con `asplit` a los medidores (todos los canales capturados) y a una rama por pista:
 
 - `Single`: un `pan` con la distribución del perfil (estéreo del par elegido; 5.1/7.1 con los primeros seis/ocho canales elegidos).
 - `PairsAsTracks`: un `pan=stereo` por par elegido y `-metadata:s:a:N title=Canales 5-6` (en MP4 aparece como `name`).
-- `Multichannel`: un `pan` con todos los canales elegidos. Con PCM (MXF/MKV) vale cualquier recuento («8c», «16c»,
-  distribución sin nombre); con un códec con pérdida (MP4/MOV/TS promueven PCM a AAC) se toma la mayor distribución
-  estándar que quepa: 7.1, 5.1, quad o estéreo, y el resto no se graba.
+- `Multichannel`: un `pan` con todos los canales elegidos en UNA pista PCM de distribución sin nombre («8c», «16c»):
+  MXF, MKV, AVI y WAV la escriben con cualquier recuento (probado con 16).
+
+El modo pedido se **ajusta** a lo que el códec y el contenedor llevan sin estropear el audio (auditoría 2026-09-18,
+medido con el FFmpeg empaquetado; `FfmpegArgumentBuilder.AudioRoutes`):
+
+- **Multichannel con un códec con pérdida → una pista estéreo por par** (como `PairsAsTracks`). Una pista 5.1/7.1 en
+  AAC o FDK-AAC codifica el canal 4 como **LFE** (banda limitada): un tono de 1,2 kHz en ese canal salía a **−89 dB**
+  (los demás, a −9 dB). FDK-AAC con «quad» rematriza a 5.0 y pierde canales; «octagonal» en AAC también los mezcla. Y
+  MP2/MP3, que solo admiten estéreo, **no fallan**: FFmpeg inserta un remuestreo y MEZCLA los ocho canales en el
+  estéreo en silencio. (MP4/MOV/TS promueven PCM a AAC, así que ahí «multicanal» es siempre una pista por par.)
+- **Varias pistas en un contenedor de un solo flujo de audio (WAV, MP3) → una sola**: con dos `-map` de audio el muxer
+  aborta («wav muxer does not support more than one stream of type audio») y no se grabaría nada. Si es PCM (WAV), todos
+  los canales elegidos van en una pista multicanal; si tiene pérdida (MP3), el primer par.
+- **Single con una distribución que el códec no puede llevar** (5.1 con MP2) → estéreo del primer par, por lo mismo.
+
+`Single` con un preset 5.1/7.1 y AAC sigue tratando el canal 4 como LFE **a propósito**: ese modo declara que el SDI trae
+una mezcla 5.1 real (L R C LFE Ls Rs). Con pares discretos hay que usar `PairsAsTracks` o `Multichannel`.
+
+Los títulos de pista (`Audio_TrackTitle`: «Canales 5-6» / «Channels 5-6») van en el idioma de la aplicación; un canal
+suelto de una fuente con recuento impar (NDI de 3 canales) se duplica en L/R y se titula en singular.
 
 La carta de ajuste genera el silencio con tantos canales como la fuente (`anullsrc=channel_layout=8c`) y le aplica los
-MISMOS pans, así que sus piezas llevan exactamente las mismas pistas que las reales. Verificado: dos pistas estéreo con
-solo el par 1-2 y solo el par 5-6 (−11 dB en su tono, ≤ −56 dB en los ajenos) y una pista quad AAC con los cuatro canales.
+MISMOS pans, así que sus piezas llevan exactamente las mismas pistas que las reales. Verificado en vivo con un clip de 8
+tonos: `Multichannel` + MP4/AAC → cuatro pistas estéreo con nombre, cada canal con SU tono a −11 dB y el siguiente a
+≤ −34 dB (incluido el canal 4, el que AAC 7.1 destrozaba); `Multichannel` + MKV/PCM → una pista `pcm_s24le` de 8 canales
+con los ocho tonos intactos.
 
 **Medidores por par (fase 4).** Con una fuente de más de 2 canales, `ebur128=peak=true` va ANTES de cualquier `pan`,
 sobre el flujo completo: su línea `FTPK:` trae un true-peak POR CANAL (probado con 8 y 16 canales, también con las

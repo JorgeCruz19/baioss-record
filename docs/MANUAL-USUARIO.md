@@ -131,7 +131,8 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
    - **Modo / formato (DeckLink):** la resolución y cadencia de la señal SDI (por ejemplo "1080i 59.94").
    - **Audio de la tarjeta (DeckLink):** cuántos canales de audio embebido se le piden a la tarjeta. **Automático** pide
      los máximos que admita (16, y si no puede, 8 o 2). Si sabes lo que trae tu señal, puedes fijar 2, 8 o 16.
-   - **Par a grabar (DeckLink y NDI):** qué par de canales del SDI va a la grabación (par 1-2, 3-4, 5-6…). Por ejemplo, si el
+   - **Par a grabar (DeckLink y NDI):** qué par de canales del SDI va a la grabación (par 1-2, 3-4, 5-6…) o **Todos los
+     pares** (para guardar cada par en su pista o conservar todo el audio; ver el punto 4). Por ejemplo, si el
      programa va en el 1-2 y el sonido internacional en el 3-4, elige el par que quieras grabar. Con NDI el programa no
      sabe cuántos canales trae la fuente hasta conectarla: se ofrecen los ocho pares posibles y, si el elegido no existe,
      se graba el par 1-2.
@@ -172,8 +173,12 @@ decide cómo se guardan los pares elegidos en la entrada (ver punto 3):
 - **Single:** una sola pista con lo elegido (estéreo del par, o 5.1/7.1 con los primeros canales). Es lo de siempre.
 - **PairsAsTracks:** una pista estéreo por cada par elegido, cada una con su nombre («Canales 3-4»). Así el programa,
   el sonido internacional o cada idioma quedan en pistas separadas, sin mezclarse.
-- **Multichannel:** todos los canales elegidos en una sola pista. Con PCM (MXF, MKV) caben hasta 16; con AAC (MP4,
-  MOV, TS) como máximo 8.
+- **Multichannel:** todos los canales elegidos en una sola pista **PCM** (MXF, MKV, AVI, WAV; caben hasta 16). Con un
+  códec con pérdida (AAC en MP4/MOV/TS, Opus, MP2, MP3) el programa guarda una pista estéreo por par, porque una
+  pista 5.1/7.1 con pérdida trata el canal 4 como graves (LFE) y lo recorta.
+
+Los modos **PairsAsTracks** y **Multichannel** necesitan **Todos los pares** en la entrada. Hay un manual aparte, con
+casos típicos y cómo leer los medidores por par: `MANUAL-AUDIO-MULTICANAL.md`.
 
 > El preset solo cambia **la calidad y el formato del archivo**. La carpeta donde se guarda se configura aparte (ver punto 6).
 

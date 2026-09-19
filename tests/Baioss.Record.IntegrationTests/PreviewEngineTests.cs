@@ -32,7 +32,8 @@ public sealed class PreviewEngineTests
         double lastLeft = double.NaN, lastRight = double.NaN;
         int expectedBytes = engine.FrameWidth * engine.FrameHeight * 4;
         engine.FrameReady += (_, f) => { Interlocked.Increment(ref frames); if (f.Bgra.Length != expectedBytes) Interlocked.Increment(ref badFrames); };
-        engine.AudioPeaksUpdated += (_, lr) => { Interlocked.Increment(ref audioEvents); lastLeft = lr.Left; lastRight = lr.Right; };
+        // Un true-peak por canal capturado (el clip demo es estéreo: L y R; con mono llegaría uno solo).
+        engine.AudioPeaksUpdated += (_, peaks) => { Interlocked.Increment(ref audioEvents); lastLeft = peaks[0]; lastRight = peaks[peaks.Count > 1 ? 1 : 0]; };
 
         await engine.StartAsync(source);
         await Task.Delay(TimeSpan.FromSeconds(4));

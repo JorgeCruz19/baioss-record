@@ -52,6 +52,28 @@ public static class FfmpegCodecMap
             ? "aac"
             : AudioEncoder(codec);
 
+    /// <summary>True si el audio se escribe sin pérdida (PCM) en ese contenedor, una vez aplicada la promoción a AAC.</summary>
+    public static bool IsPcmAudio(AudioCodec codec, ContainerFormat container) =>
+        EffectiveAudioEncoder(codec, container).StartsWith("pcm", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Canales que caben en UNA pista con el codificador efectivo. PCM no tiene límite práctico (16 embebidos de sobra);
+    /// MP2 y MP3 solo admiten mono/estéreo —y FFmpeg NO falla si se le da más: inserta un remuestreo y MEZCLA todo en el
+    /// estéreo en silencio (medido)—; AAC, FDK-AAC y Opus llegan a 8.
+    /// </summary>
+    public static int MaxAudioChannels(AudioCodec codec, ContainerFormat container) =>
+        EffectiveAudioEncoder(codec, container) switch
+        {
+            "mp2" or "libmp3lame" => 2,
+            var e when e.StartsWith("pcm", StringComparison.Ordinal) => int.MaxValue,
+            _ => 8,
+        };
+
+    /// <summary>Contenedores que solo admiten UN flujo de audio: con varias pistas el muxer aborta («wav muxer does not
+    /// support more than one stream of type audio», «Exactly one MP3 audio stream is required») y no se graba nada.</summary>
+    public static bool SingleAudioStream(ContainerFormat container) =>
+        container is ContainerFormat.Wav or ContainerFormat.Mp3Audio;
+
     public static (string Muxer, string Extension) Container(ContainerFormat format) => format switch
     {
         ContainerFormat.Mp4 => ("mp4", "mp4"),

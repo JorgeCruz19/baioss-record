@@ -2,14 +2,21 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Localization;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.UnitTests.Fakes;
 using Xunit;
 
 namespace Baioss.Record.UnitTests;
 
-public class FfmpegArgumentBuilderTests
+[Collection("Localizer")] // los títulos de pista van en el idioma de la aplicación (estado global)
+public class FfmpegArgumentBuilderTests : IDisposable
 {
+    // Cada test arranca en español (los títulos «Canales 1-2» dependen del idioma) y deja el idioma como estaba.
+    private readonly AppLanguage _originalLanguage = Localizer.Language;
+    public FfmpegArgumentBuilderTests() => Localizer.Language = AppLanguage.Spanish;
+    public void Dispose() => Localizer.Language = _originalLanguage;
+
     private static (string Joined, string OutputFile) Build(RecordingProfile profile)
     {
         var builder = new FfmpegArgumentBuilder()
@@ -563,25 +570,126 @@ public class FfmpegArgumentBuilderTests
     }
 
     [Fact]
-    public void BuildLive_Multichannel_Aac_CapsToTheLargestStandardLayout()
+    public void BuildLive_Multichannel_LossyCodec_StoresOneStereoTrackPerPair_NeverASurroundTrack()
     {
-        var profile = SoftwareMp4();                          // AAC en MP4: máximo 7.1
+        // Auditoría 2026-09-18 (medido con el FFmpeg empaquetado): una pista 5.1/7.1 en AAC codifica el canal 4 como
+        // LFE y lo deja sin banda (un tono de 1,2 kHz salía a −89 dB). Con pérdida, «multicanal» = una pista por par.
+        var profile = SoftwareMp4();                          // AAC en MP4
         profile.AudioTracks = AudioTrackMode.Multichannel;
 
-        var joined = BuildLiveMultichannel(profile, recording: true, channels: 16, pairs: "all");
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
 
-        Assert.Contains("[r1]pan=7.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5|c6=c6|c7=c7[arec1]", joined);
-        Assert.DoesNotContain("c8=c8", joined);               // los que no caben no se graban
+        Assert.Contains("[0:a:0]asplit=5[m0][r1][r2][r3][r4]", joined);
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c2|c1=c3[arec2];[r3]pan=stereo|c0=c4|c1=c5[arec3];[r4]pan=stereo|c0=c6|c1=c7[arec4]", joined);
+        Assert.Contains("-map [vmain] -map [arec1] -map [arec2] -map [arec3] -map [arec4]", joined);
+        Assert.DoesNotContain("pan=7.1", joined);
+        Assert.DoesNotContain("pan=5.1", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Multichannel_Mp2_NeverHandsTheEncoderMoreThanStereo()
+    {
+        // MP2/MP3 solo admiten estéreo y FFmpeg NO falla con más: remuestrea y MEZCLA los ocho canales en silencio.
+        var profile = SoftwareMp4();
+        profile.Container = ContainerFormat.Ts;
+        profile.AudioCodec = AudioCodec.Mp2;
+        profile.AudioTracks = AudioTrackMode.Multichannel;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
+
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c4|c1=c5[arec2]", joined);
+        Assert.DoesNotContain("pan=quad", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Single_SurroundLayoutTheCodecCannotCarry_FallsBackToTheFirstPair()
+    {
+        var profile = SoftwareMp4();
+        profile.Container = ContainerFormat.Ts;
+        profile.AudioCodec = AudioCodec.Mp2;                  // 2 canales como mucho
+        profile.AudioLayout = AudioLayout.Surround51;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
+
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1]", joined);
+        Assert.DoesNotContain("pan=5.1", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PairsAsTracks_IntoWav_BecomesOnePcmTrackWithEveryChosenChannel()
+    {
+        // WAV solo admite un flujo de audio: con dos pistas el muxer aborta y no se graba nada. Al ser PCM, los canales
+        // elegidos van todos en UNA pista, sin mezclar ni perder ninguno.
+        var profile = SoftwareMp4();
+        profile.AudioOnly = true;
+        profile.Container = ContainerFormat.Wav;
+        profile.AudioCodec = AudioCodec.Pcm;
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
+
+        Assert.Contains("[0:a:0]asplit=2[m0][r1]", joined);
+        Assert.Contains("[r1]pan=4c|c0=c0|c1=c1|c2=c4|c3=c5[arec1]", joined);
+        Assert.DoesNotContain("[arec2]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PairsAsTracks_IntoMp3_KeepsOnlyTheFirstPair()
+    {
+        var profile = SoftwareMp4();
+        profile.AudioOnly = true;
+        profile.Container = ContainerFormat.Mp3Audio;         // un solo flujo y, además, solo estéreo
+        profile.AudioCodec = AudioCodec.Mp3;
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "2,3");
+
+        Assert.Contains("[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
+        Assert.DoesNotContain("[arec2]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_PairsAsTracks_TitlesFollowTheApplicationLanguage_AndALoneChannelIsSingular()
+    {
+        var profile = SoftwareMp4();
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+        var previous = Localizer.Language;
+        try
+        {
+            Localizer.Language = AppLanguage.English;
+            Assert.Contains("-metadata:s:a:1 title=Channels 5-6", BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3"));
+
+            // Fuente con recuento impar (NDI de 3 canales): el canal suelto va duplicado en L/R y se titula en singular.
+            Localizer.Language = AppLanguage.Spanish;
+            var odd = BuildLiveMultichannel(profile, recording: true, channels: 3, pairs: "all");
+            Assert.Contains("[r2]pan=stereo|c0=c2|c1=c2[arec2]", odd);
+            Assert.Contains("-metadata:s:a:0 title=Canales 1-2", odd);
+            Assert.Contains("-metadata:s:a:1 title=Canal 3", odd);
+        }
+        finally { Localizer.Language = previous; }
     }
 
     [Theory]
-    [InlineData(4, true, "pan=quad|c0=c0|c1=c1|c2=c4|c3=c5")]
-    [InlineData(4, false, "pan=4c|c0=c0|c1=c1|c2=c4|c3=c5")]
-    [InlineData(2, false, "pan=stereo|c0=c0|c1=c1")]
-    public void MultichannelPan_ChoosesLayoutByCodecAndCount(int count, bool lossy, string expected)
+    [InlineData(4, "pan=4c|c0=c0|c1=c1|c2=c4|c3=c5")]
+    [InlineData(2, "pan=stereo|c0=c0|c1=c1")]
+    [InlineData(1, "pan=mono|c0=c0")]
+    public void MultichannelPan_IsAnUnnamedPcmLayoutSoNoChannelIsTreatedAsLfe(int count, string expected)
     {
         var channels = new[] { 0, 1, 4, 5 }.Take(count).ToArray();
-        Assert.Equal(expected, FfmpegArgumentBuilder.MultichannelPan(channels, lossy));
+        Assert.Equal(expected, FfmpegArgumentBuilder.MultichannelPan(channels));
+    }
+
+    [Fact]
+    public void Build_Legacy_ProxyOfAMultichannelSource_CarriesTheFirstChosenPair()
+    {
+        // El proxy mapeaba el audio crudo: 8 canales en un AAC de 128 k, y con 16 el codificador ni abre.
+        var profile = SoftwareMp4();
+        profile.Proxy = new ProxyProfile();
+        var joined = string.Join(' ', new FfmpegArgumentBuilder()
+            .From(MultichannelSource(16, pairs: "2")).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .ProxyToDirectory("C:/proxy").Build());
+
+        Assert.Contains("-map [proxout] -map 0:a? -af pan=stereo|c0=c2|c1=c3 -c:v", joined);
     }
 
     [Fact]

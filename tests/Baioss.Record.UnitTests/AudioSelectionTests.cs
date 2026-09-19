@@ -5,6 +5,7 @@ using Xunit;
 namespace Baioss.Record.UnitTests;
 
 /// <summary>Selección de audio de una entrada (canales pedidos y pares a grabar) leída de sus parámetros.</summary>
+[Collection("Localizer")] // el idioma es estado global: estas clases no se ejecutan en paralelo entre sí
 public class AudioSelectionTests
 {
     private static AudioSelection Parse(string? channels = null, string? pairs = null)

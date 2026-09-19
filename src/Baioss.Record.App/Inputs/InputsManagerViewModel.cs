@@ -63,12 +63,15 @@ public sealed class InputDeviceOption
             // FIJO con la entrada: la tarjeta no dice qué trae la señal, y un par callado no es un par ausente.
             bool auto = audioChannels is null || audioChannels.Value == AudioSelection.AutoValue;
             int requested = !auto && int.TryParse(audioChannels!.Value, out var n) ? n : AudioSelection.MaxChannels;
-            new AudioSelection(requested, auto, new[] { pair?.Pair ?? 1 }, false).WriteTo(def.Parameters);
+            bool all = pair?.All ?? false;
+            new AudioSelection(requested, auto, new[] { all ? 1 : pair?.Pair ?? 1 }, all).WriteTo(def.Parameters);
         }
         else if (Type is InputType.Ndi)
         {
             // NDI trae los canales que trae (los cuenta el receptor al conectar): solo se elige el par. Sin parámetro, par 1.
-            def.Parameters[AudioSelection.PairsKey] = (pair?.Pair ?? 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            def.Parameters[AudioSelection.PairsKey] = pair?.All == true
+                ? AudioSelection.AllValue
+                : (pair?.Pair ?? 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
         return def;
     }
@@ -80,9 +83,12 @@ public sealed record AudioChannelsOption(string Label, string Value)
     public override string ToString() => Label;
 }
 
-/// <summary>Un par de canales de audio embebido (1 = canales 1-2, 2 = 3-4…), con su etiqueta legible.</summary>
+/// <summary>Un par de canales de audio embebido (1 = canales 1-2, 2 = 3-4…) o, con <see cref="Pair"/> = 0, TODOS los
+/// pares que entregue la fuente (para los modos de pistas «una por par» y «multicanal»), con su etiqueta legible.</summary>
 public sealed record PairOption(int Pair, string Label)
 {
+    public const int AllPairs = 0;
+    public bool All => Pair == AllPairs;
     public override string ToString() => Label;
 }
 
@@ -197,15 +203,23 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         new(Loc.F("In_AudioNCh", 16), "16"),
     };
 
-    /// <summary>Pares que caben en los canales pedidos: 2 → «1-2»; 8 → cuatro; 16 y «auto» → ocho.</summary>
+    /// <summary>Pares que caben en los canales pedidos: 2 → «1-2»; 8 → cuatro; 16 y «auto» → ocho. Con más de un par,
+    /// además «Todos los pares» (lo que necesitan los modos de pistas «una por par» y «multicanal» del preset).</summary>
     public static IReadOnlyList<PairOption> PairsFor(AudioChannelsOption? option)
     {
         int channels = option is null || option.Value == AudioSelection.AutoValue || !int.TryParse(option.Value, out var n)
             ? AudioSelection.MaxChannels : n;
-        return Enumerable.Range(1, Math.Max(1, channels / 2))
+        int pairs = Math.Max(1, channels / 2);
+        var list = Enumerable.Range(1, pairs)
             .Select(p => new PairOption(p, Loc.F("In_Pair", AudioSelection.PairLabel(p))))
             .ToList();
+        if (pairs > 1) list.Add(new PairOption(PairOption.AllPairs, Loc.T("In_PairAll")));
+        return list;
     }
+
+    /// <summary>Lo elegido en palabras para los mensajes de estado: «Par 1-2», «Par 3-4»… o «Todos los pares».</summary>
+    private static string PairText(PairOption? pair)
+        => pair is { All: true } ? Loc.T("In_PairAll") : Loc.F("In_Pair", AudioSelection.PairLabel(pair?.Pair ?? 1));
 
     [ObservableProperty] private string _statusMessage = "";
     [ObservableProperty]
@@ -314,7 +328,9 @@ public sealed partial class InputsManagerViewModel : ObservableObject
         try
         {
             int requested = row.SelectedAudioChannels.Value == AudioSelection.AutoValue ? 0 : int.Parse(row.SelectedAudioChannels.Value);
-            var probe = await _devices.MeasureAudioAsync(row.SelectedDevice.Type, row.SelectedDevice.DeviceId ?? "", requested);
+            // Con el MISMO modo SDI que se aplicará: si el operador fijó uno, la autodetección no le sirve.
+            string? formatCode = row.FormatEnabled && row.SelectedFormat is { Code.Length: > 0 } f ? f.Code : null;
+            var probe = await _devices.MeasureAudioAsync(row.SelectedDevice.Type, row.SelectedDevice.DeviceId ?? "", requested, formatCode);
             if (probe is null)
             {
                 row.AudioProbeText = "";
@@ -338,13 +354,16 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             var active = probe.ActivePairs;
             if (active.Count > 0)
             {
-                row.SelectedPair = row.Pairs.FirstOrDefault(p => p.Pair == active[0]) ?? row.SelectedPair;
+                // Se propone el primer par con sonido… salvo que el operador ya hubiera elegido «Todos los pares»:
+                // esa elección incluye cualquier par y la medida no debe deshacerla.
+                if (row.SelectedPair is not { All: true })
+                    row.SelectedPair = row.Pairs.FirstOrDefault(p => p.Pair == active[0]) ?? row.SelectedPair;
                 StatusMessage = Loc.F("In_Msg_AudioProbe", row.Key, probe.Channels,
-                    string.Join(", ", active.Select(AudioSelection.PairLabel)), AudioSelection.PairLabel(active[0]));
+                    string.Join(", ", active.Select(AudioSelection.PairLabel)), PairText(row.SelectedPair));
             }
             else
             {
-                StatusMessage = Loc.F("In_Msg_AudioProbeSilent", row.Key, probe.Channels, AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1));
+                StatusMessage = Loc.F("In_Msg_AudioProbeSilent", row.Key, probe.Channels, PairText(row.SelectedPair));
             }
         }
         catch (Exception ex)
@@ -368,8 +387,8 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             row.CurrentInput = row.SelectedDevice.Label; // refleja de inmediato la entrada ahora activa
             var mode = row.FormatEnabled && row.SelectedFormat is { Code.Length: > 0 } ? $" · {row.SelectedFormat.Description}" : "";
             var audio = row.AudioSelectionEnabled
-                ? Loc.F("In_Msg_AppliedAudio", AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1), row.SelectedAudioChannels.Label)
-                : row.PairSelectionEnabled ? Loc.F("In_Msg_AppliedPair", AudioSelection.PairLabel(row.SelectedPair?.Pair ?? 1))
+                ? Loc.F("In_Msg_AppliedAudio", PairText(row.SelectedPair), row.SelectedAudioChannels.Label)
+                : row.PairSelectionEnabled ? Loc.F("In_Msg_AppliedPair", PairText(row.SelectedPair))
                 : "";
             StatusMessage = Loc.F("In_Msg_Applied", row.Key, row.SelectedDevice.Label, mode + audio);
         }
