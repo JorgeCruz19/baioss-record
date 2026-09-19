@@ -11,7 +11,13 @@ export function wsEventsUrl(): string {
   return base.replace(/^http/i, 'ws') + '/ws/events'
 }
 
-const UNREACHABLE = 'No se pudo contactar con la aplicación. Ábrela en este equipo; el panel se reconectará solo.'
+/** URL del WebSocket de vista previa de un canal: la aplicación empuja JPEG de `width` px a `fps` imágenes por segundo. */
+export function wsPreviewUrl(channelId: string, width: number, fps: number): string {
+  const base = apiBaseUrl || window.location.origin
+  return `${base.replace(/^http/i, 'ws')}/ws/preview/${channelId}?w=${width}&fps=${fps}`
+}
+
+const UNREACHABLE ='No se pudo contactar con la aplicación. Ábrela en este equipo; el panel se reconectará solo.'
 
 /**
  * Texto legible de un fallo: el `error` que devuelve el Record (400/409/422), un ProblemDetails, o que la aplicación

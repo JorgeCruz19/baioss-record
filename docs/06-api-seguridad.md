@@ -13,6 +13,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | POST | `/channels/{id}/recording/resume` | Reanuda | Operador |
 | GET | `/channels` | Lista canales con estado | Operador |
 | GET | `/channels/{id}/status` | Estado consolidado (señal, stats, sesión) | Operador |
+| GET | `/channels/{id}/preview.jpg?w=320` | Instantánea JPEG de BAJA resolución del preview (`w` = 160–640 px de ancho, 320 por defecto ≈ 5–20 KB; `Cache-Control: no-store`). La aplicación captura y codifica SOLO cuando se pide: sin clientes no cuesta nada. 404 si el canal no tiene preview | Operador |
 | GET | `/inputs` | Fuentes disponibles / descubiertas | Operador |
 | GET | `/storage?volume=D:\` | Espacio, tiempo restante, consumo por canal | Operador |
 | GET | `/recordings?channel=&from=&to=` | Historial de grabaciones (paginado) | Supervisor |
@@ -32,6 +33,19 @@ Content-Type: application/json
 
 El mapeo vive en `Api/ApiEndpoints.cs` (`MapBaiossApi`). Cada endpoint despacha un
 comando/query CQRS — la API y la UI comparten exactamente la misma lógica de aplicación.
+
+## WebSocket de preview de baja resolución
+
+`GET /ws/preview/{id}?w=320&fps=5` (upgrade). Para el panel web: el SERVIDOR empuja un JPEG de `w` píxeles de ancho
+(160–640; 320 por defecto) cada 1/`fps` segundos (1–15; 5 por defecto).
+
+- Mensaje **binario** = un JPEG completo. Mensaje de **texto** `unavailable` = el canal no tiene imagen ahora mismo
+  (canal simulado, entrada reasignándose); la conexión sigue abierta y los cuadros vuelven solos.
+- **Sin colas**: el siguiente cuadro no se captura hasta que el anterior salió, así que un cliente lento recibe menos
+  cuadros en vez de acumular retraso. Cada envío tiene un plazo de 5 s; si vence, la conexión se aborta.
+- **Bajo demanda**: la captura y la codificación solo ocurren mientras hay un cliente conectado (o pidiendo
+  `preview.jpg`). Tope de 32 conexiones simultáneas (503 si se supera).
+- El cliente no envía datos; cerrar el socket detiene la captura.
 
 ## WebSocket de eventos
 

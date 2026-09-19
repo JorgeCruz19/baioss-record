@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Box, Card, InputAdornment, Skeleton, TextField, Tooltip, Typography } from '@mui/material'
+import { Box, Card, FormControlLabel, InputAdornment, MenuItem, Select, Skeleton, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded'
 import VideocamOffOutlinedIcon from '@mui/icons-material/VideocamOffOutlined'
 import WifiOffRoundedIcon from '@mui/icons-material/WifiOffRounded'
 import { useChannels, useLicense, useRecordings } from '../hooks/queries'
+import { DEFAULT_PREVIEW_RATE, PREVIEW_RATES, type PreviewRate } from '../hooks/useChannelPreview'
 import ChannelCard from '../components/ChannelCard'
 import { ConnectionError, EmptyState, PageHeader } from '../components/common'
 import { RecordingState } from '../api/types'
 import { toneColor, toneTint } from '../theme'
 
 const OPERATOR_KEY = 'baioss.operator'
+const PREVIEW_KEY = 'baioss.preview'
+const PREVIEW_FPS_KEY = 'baioss.previewFps'
+
+/** Lo que el operador elige es un compromiso entre fluidez y consumo: se dice en palabras, no solo con el número. */
+const rateLabel: Record<PreviewRate, string> = { 1: '1 imagen/s · mínimo', 5: '5 imágenes/s', 10: '10 imágenes/s · fluido' }
 
 function CardSkeleton() {
   return (
@@ -38,6 +44,25 @@ export default function ChannelsPage() {
     try { localStorage.setItem(OPERATOR_KEY, operator) } catch { /* sin almacenamiento local: no pasa nada */ }
   }, [operator])
 
+  // Vista previa de baja resolución: encendida por defecto; quien vaya justo de red la apaga y se recuerda.
+  const [showPreview, setShowPreview] = useState(() => {
+    try { return localStorage.getItem(PREVIEW_KEY) !== '0' } catch { return true }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(PREVIEW_KEY, showPreview ? '1' : '0') } catch { /* ídem */ }
+  }, [showPreview])
+
+  // Ritmo de la vista previa: la aplicación empuja las imágenes por WebSocket a este paso.
+  const [previewFps, setPreviewFps] = useState<PreviewRate>(() => {
+    try {
+      const saved = Number(localStorage.getItem(PREVIEW_FPS_KEY))
+      return (PREVIEW_RATES as readonly number[]).includes(saved) ? (saved as PreviewRate) : DEFAULT_PREVIEW_RATE
+    } catch { return DEFAULT_PREVIEW_RATE }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(PREVIEW_FPS_KEY, String(previewFps)) } catch { /* ídem */ }
+  }, [previewFps])
+
   const list = useMemo(() => (channels.data ?? []).slice().sort((a, b) => a.key.localeCompare(b.key)), [channels.data])
 
   // Inicio de las sesiones EN CURSO (sin fin), para el cronómetro de grabación de cada tarjeta.
@@ -57,6 +82,23 @@ export default function ChannelsPage() {
   return (
     <Box>
       <PageHeader title="Canales" subtitle={subtitle}>
+        <Tooltip title="Imagen de baja resolución (320 px) que la aplicación envía al ritmo elegido. Se pausa sola con la pestaña oculta o la tarjeta fuera de pantalla.">
+          <FormControlLabel
+            sx={{ mr: 0.5 }}
+            control={<Switch size="small" checked={showPreview} onChange={e => setShowPreview(e.target.checked)} />}
+            label={<Typography variant="body2">Vista previa</Typography>}
+          />
+        </Tooltip>
+        <Select
+          size="small"
+          value={previewFps}
+          disabled={!showPreview}
+          onChange={e => setPreviewFps(Number(e.target.value) as PreviewRate)}
+          inputProps={{ 'aria-label': 'Ritmo de la vista previa' }}
+          sx={{ minWidth: 176 }}
+        >
+          {PREVIEW_RATES.map(r => <MenuItem key={r} value={r}>{rateLabel[r]}</MenuItem>)}
+        </Select>
         <Tooltip title="Tu nombre queda en la auditoría como quien inició la grabación.">
           <TextField
             size="small"
@@ -104,6 +146,8 @@ export default function ChannelsPage() {
               ch={ch}
               operator={operator}
               canRecord={canRecord}
+              showPreview={showPreview}
+              previewFps={previewFps}
               recordingSince={ch.sessionId ? startedAt.get(ch.sessionId) : undefined}
             />
           ))}

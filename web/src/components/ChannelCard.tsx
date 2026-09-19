@@ -11,11 +11,13 @@ import SensorsOffRoundedIcon from '@mui/icons-material/SensorsOffRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import SdStorageOutlinedIcon from '@mui/icons-material/SdStorageOutlined'
+import VideocamOffOutlinedIcon from '@mui/icons-material/VideocamOffOutlined'
 import type { AudioMeter, ChannelStatus } from '../api/types'
 import { RecordingState, SignalState } from '../api/types'
 import { alarmLabel, formatBitrate, formatBytes, formatDuration, formatFps, formatTimeSpan, recordingStateLabel, signalLabel } from '../api/format'
 import { ChannelBadge, Meter, Metric, StatusTag } from './common'
 import { useStartRecording, useStopRecording } from '../hooks/queries'
+import { useChannelPreview } from '../hooks/useChannelPreview'
 import { useSnack } from './Snack'
 import { errorMessage } from '../api/client'
 import { toneColor, type Tone } from '../theme'
@@ -24,6 +26,8 @@ import { toneColor, type Tone } from '../theme'
 const meterPercent = (db: number) => Math.max(0, Math.min(100, ((db + 60) / 60) * 100))
 /** Severidad del relleno: recorte → crítico; a menos de 6 dB del techo → aviso; si no, acento. */
 const meterTone = (m: AudioMeter): Tone => (m.clipping ? 'critical' : m.peakDb > -6 ? 'warning' : 'accent')
+/** Etiqueta sobre la imagen de vista previa (abajo): fondo translúcido para leerse sobre cualquier vídeo. */
+const previewChip = { position: 'absolute', bottom: 8, px: 1, py: 0.25, borderRadius: 1, bgcolor: 'rgba(0,0,0,.6)', color: '#fff' } as const
 const formatDb = (db: number) => `${db <= -60 ? '−∞' : db.toFixed(1)} dB`
 
 interface Props {
@@ -33,13 +37,18 @@ interface Props {
   recordingSince?: string
   /** La licencia permite grabar (si no, el botón se desactiva y lo explica). */
   canRecord: boolean
+  /** Mostrar la vista previa de baja resolución (el operador puede apagarla para no gastar red). */
+  showPreview: boolean
+  /** Imágenes por segundo de la vista previa (1 = mínimo consumo, 10 = fluido). */
+  previewFps: number
 }
 
-export default function ChannelCard({ ch, operator, recordingSince, canRecord }: Props) {
+export default function ChannelCard({ ch, operator, recordingSince, canRecord, showPreview, previewFps }: Props) {
   const { notify } = useSnack()
   const start = useStartRecording()
   const stop = useStopRecording()
   const [confirmStop, setConfirmStop] = useState(false)
+  const preview = useChannelPreview(ch.channelId, showPreview, previewFps)
 
   const recording = ch.recordingState === RecordingState.Recording
     || ch.recordingState === RecordingState.Starting
@@ -132,6 +141,52 @@ export default function ChannelCard({ ch, operator, recordingSince, canRecord }:
           icon={ch.signal.state === SignalState.NoSignal ? <SensorsOffRoundedIcon /> : <SensorsRoundedIcon />}
         />
       </Box>
+
+      {/* Vista previa de baja resolución: la aplicación empuja JPEG por WebSocket, solo con la tarjeta a la vista */}
+      {showPreview && (
+        <Box
+          ref={preview.containerRef}
+          sx={t => ({
+            position: 'relative',
+            aspectRatio: '16 / 9',
+            width: '100%',
+            overflow: 'hidden',
+            borderRadius: 2.5,
+            bgcolor: t.palette.mode === 'dark' ? '#0b0d12' : '#11151c', // la imagen es vídeo: fondo oscuro en ambos temas
+            display: 'grid',
+            placeItems: 'center',
+          })}
+        >
+          {/* Se pinta por referencia (canvas): un cuadro nuevo no re-renderiza la tarjeta. */}
+          <Box
+            component="canvas"
+            ref={preview.canvasRef}
+            role="img"
+            aria-label={`Vista previa del canal ${ch.key}`}
+            sx={{ width: '100%', height: '100%', objectFit: 'contain', display: preview.hasFrame ? 'block' : 'none' }}
+          />
+          {!preview.hasFrame && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.75, color: 'rgba(255,255,255,.62)', px: 2, textAlign: 'center' }}>
+              {preview.state === 'unavailable'
+                ? <VideocamOffOutlinedIcon sx={{ fontSize: 28 }} />
+                : <CircularProgress size={22} sx={{ color: 'rgba(255,255,255,.62)' }} />}
+              <Typography variant="caption" sx={{ color: 'inherit' }}>
+                {preview.state === 'unavailable' ? 'Vista previa no disponible' : 'Cargando vista previa…'}
+              </Typography>
+            </Box>
+          )}
+          {preview.hasFrame && preview.state === 'unavailable' && (
+            <Typography variant="caption" sx={{ ...previewChip, left: 8 }}>Sin imagen nueva · reintentando</Typography>
+          )}
+          {/* Lo que cuesta de verdad, medido en el navegador: ritmo recibido y consumo de red de este canal. */}
+          {preview.stats && preview.state === 'live' && (
+            <Typography variant="caption" sx={{ ...previewChip, right: 8, fontVariantNumeric: 'tabular-nums' }}>
+              {preview.stats.fps.toFixed(preview.stats.fps < 3 ? 1 : 0)} img/s · {Math.round(preview.stats.kbps)} kbps
+              {preview.stats.transport === 'http' ? ' · HTTP' : ''}
+            </Typography>
+          )}
+        </Box>
+      )}
 
       {/* Estado + cronómetro, y la acción principal */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 2 }}>

@@ -10,8 +10,12 @@ const proxy = {
   '/ws': { target, ws: true, changeOrigin: true },
 }
 
+// PORT permite que quien lo lance (p. ej. el panel del navegador de Claude Code) asigne un puerto libre cuando el
+// 5173 ya lo usa otro proyecto; sin ella, el de siempre.
+const port = Number(process.env.PORT) || 5173
+
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, proxy },
+  server: { port, proxy },
   preview: { port: 4173, proxy },
 })

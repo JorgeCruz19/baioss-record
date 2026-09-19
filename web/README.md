@@ -8,13 +8,48 @@ WebSocket de eventos (`/ws/events`).
 
 | Pantalla | Qué muestra / permite |
 |---|---|
-| **Canales** | Estado de cada canal en vivo (grabando/inactivo, señal, cronómetro de grabación, FPS, bitrate, cuadros perdidos, alarmas, audio, disco) y **Grabar / Detener**. Con una fuente de 8/16 canales, los medidores se agrupan por pares y el par que se graba lleva la marca roja (`signal.audioSelectedPairs`). El nombre de operador queda en la auditoría (origen «API»). |
+| **Canales** | **Vista previa de baja resolución** de cada canal (se puede apagar) y su estado en vivo (grabando/inactivo, señal, cronómetro de grabación, FPS, bitrate, cuadros perdidos, alarmas, audio, disco) y **Grabar / Detener**. Con una fuente de 8/16 canales, los medidores se agrupan por pares y el par que se graba lleva la marca roja (`signal.audioSelectedPairs`). El nombre de operador queda en la auditoría (origen «API»). |
 | **Grabaciones** | Historial (`GET /recordings`) con filtros por canal y periodo; origen (manual/programada/API), motivo de fin, tamaño, archivos; cambiar la **protección** (Normal / Importante / Protegida) frente a la limpieza automática. |
 | **Actividad** | Registro de auditoría (`GET /events`) con filtros por periodo, canal, severidad mínima y categoría; cada fila se despliega con el detalle (payload). |
 | **Almacenamiento** | Estado de cada disco de grabación y los ajustes de retención/alertas (`GET/PUT /storage/settings`), editables en caliente. |
 
 La barra lateral (un cajón en el móvil) lleva la navegación y, abajo, el disco más lleno con su medidor, el resumen de la
 licencia, si el canal en vivo está conectado y el selector de tema.
+
+## Vista previa de baja resolución
+
+Cada tarjeta de canal muestra la imagen del canal. La aplicación la **empuja por WebSocket**
+(`/ws/preview/{id}?w=320&fps=5`): cada mensaje binario es un JPEG completo de 320 px, al ritmo que elija el operador en
+la cabecera de **Canales** (se recuerda en el navegador):
+
+| Ritmo | Red por canal (medido, carta de barras) | Para qué |
+|---|---|---|
+| 1 imagen/s · mínimo | ~42 kbps | Comprobar que entra la imagen correcta gastando casi nada |
+| 5 imágenes/s (por defecto) | ~220 kbps | Seguimiento normal |
+| 10 imágenes/s · fluido | ~435 kbps | Ver movimiento |
+
+Con vídeo real las imágenes pesarán más que la carta de barras (estimación sin medir: del orden de 2 a 3 veces; la
+etiqueta sobre la imagen da la cifra real de cada canal). En cualquier caso, muy lejos de
+los ~184 Mbps del preview crudo (BGRA sin comprimir) que usa la aplicación de escritorio por su socket local: ese flujo
+no puede ir a un navegador (es TCP crudo, con un único lector) ni conviene por red.
+
+Está pensada para gastar poco en los dos lados:
+
+- **El servidor marca el ritmo y no encola.** Captura un cuadro cuando toca enviarlo y no pide el siguiente hasta que el
+  anterior salió: a un cliente lento o con mala red le llegan menos cuadros, sin retraso acumulado, y FFmpeg ni se
+  entera (el navegador nunca lee de una salida de FFmpeg, solo de la memoria de la aplicación).
+- **En el navegador** (`src/hooks/useChannelPreview.ts`): se pinta en un `<canvas>` por referencia, así que un cuadro
+  nuevo no re-renderiza la tarjeta; si llega un cuadro mientras se decodifica otro, solo sobrevive el último; con la
+  pestaña oculta o la tarjeta fuera de pantalla se **cierra el WebSocket**; y el interruptor **Vista previa** lo apaga
+  del todo. Sobre la imagen se ve lo que cuesta de verdad: ritmo recibido y kbps de ese canal.
+- **En la aplicación** (`PreviewSnapshotService`): captura y codifica **solo cuando alguien pide** —sin panel abierto no
+  hay suscripción al preview, ni copias, ni JPEG—; varios clientes del mismo canal comparten la captura; los buffers
+  salen de un pool; y un único hilo de prioridad baja codifica, de modo que nunca compite con la grabación. Medido con
+  dos canales a 10 imágenes por segundo: sin aumento apreciable de CPU frente a tenerla apagada.
+
+Si el WebSocket no llega a abrir varias veces (un proxy que no lo deja pasar), el cliente recurre solo al sondeo HTTP de
+`GET /channels/{id}/preview.jpg?w=320` (la etiqueta lo indica con «HTTP»). Si el canal no tiene imagen (canal simulado,
+entrada reasignándose) la aplicación envía el texto `unavailable` y la tarjeta lo dice mientras sigue esperando.
 
 ## Diseño
 
@@ -45,6 +80,8 @@ npm run dev        # http://localhost:5173
 ```
 
 `npm run build` genera `dist/`; `npm run preview` sirve esa build (http://localhost:4173) con el mismo proxy.
+Si el 5173 ya lo usa otro proyecto, `PORT=5180 npm run dev` lo cambia (es también como el panel del navegador de Claude
+Code le asigna un puerto libre: `.claude/launch.json` lleva `autoPort`).
 
 ## Cómo llega a la API (y por qué hay un proxy)
 

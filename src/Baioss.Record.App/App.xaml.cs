@@ -238,6 +238,10 @@ public partial class App : System.Windows.Application
         s.AddBaiossCqrs(); // IDispatcher + handlers de comandos/queries que despacha la API
         s.AddSingleton(new RecordingCapabilities { GpuEncoders = gpuEncoders });
         s.AddSingleton<PreviewCatalog>();
+        // Instantáneas JPEG de baja resolución del preview para el panel web (GET /channels/{id}/preview.jpg): bajo
+        // demanda, así que con el panel cerrado no cuestan nada.
+        s.AddSingleton<PreviewSnapshotService>();
+        s.AddSingleton<Baioss.Record.Application.Channels.IChannelSnapshotProvider>(sp => sp.GetRequiredService<PreviewSnapshotService>());
         // Contenedor MP4/MOV: true (por defecto) fMP4 fragmentado ROBUSTO ante corte eléctrico/kill (+ remux a
         // faststart al detener); false = MP4 ESTÁNDAR con el moov al final (100% seekable en local, cierre rápido
         // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner

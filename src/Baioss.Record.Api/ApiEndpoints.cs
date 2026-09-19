@@ -49,6 +49,19 @@ public static class ApiEndpoints
         api.MapGet("/channels", (IChannelManager m) =>
             Results.Ok(m.Channels.Select(c => c.Status)));
 
+        // Preview de BAJA RESOLUCIÓN para clientes remotos (el panel web): una instantánea JPEG del último frame, de
+        // `w` píxeles de ancho (160–640; 320 por defecto ≈ 10–20 KB). El cliente la pide a su ritmo (1 por segundo);
+        // la aplicación captura y codifica SOLO cuando alguien pregunta, así que sin panel abierto no cuesta nada.
+        // 404 si el canal no tiene preview (canal simulado, entrada reasignándose) o el host no ofrece instantáneas.
+        api.MapGet("/channels/{id:guid}/preview.jpg", async (Guid id, int? w, HttpContext http, CancellationToken ct) =>
+        {
+            var snapshots = http.RequestServices.GetService<IChannelSnapshotProvider>();
+            var jpeg = snapshots is null ? null : await snapshots.GetJpegAsync(id, w is > 0 ? w.Value : 320, ct: ct);
+            if (jpeg is null) return Results.NotFound(new { error = "El canal no tiene preview disponible." });
+            http.Response.Headers.CacheControl = "no-store"; // cada petición es un frame nuevo: que nadie lo cachee
+            return Results.Bytes(jpeg, "image/jpeg");
+        });
+
         api.MapGet("/storage", async (string? volume, IStorageManager s, CancellationToken ct) =>
         {
             // Seguridad: solo se permite consultar el VOLUMEN donde corre la app (donde se graba), no una ruta
@@ -191,7 +204,116 @@ public static class ApiEndpoints
             await WaitUntilClosedAsync(socket);
         });
 
+        // --- WebSocket de preview de baja resolución (panel web) ---
+        // El SERVIDOR marca el ritmo: empuja un JPEG de `w` píxeles cada 1/fps segundos (fps 1–15, 5 por defecto). Cada
+        // cuadro se captura cuando toca enviarlo y el siguiente no se pide hasta que el anterior SALIÓ, así que nunca hay
+        // más de uno en vuelo por cliente: a uno lento (o con mala red) simplemente le llegan menos cuadros, sin colas ni
+        // retraso acumulado, y FFmpeg ni se entera. Mensajes: binario = un JPEG completo; texto «unavailable» = el canal no
+        // tiene imagen ahora mismo (canal simulado, entrada reasignándose) y se sigue intentando.
+        app.Map("/ws/preview/{id:guid}", async (Guid id, int? w, int? fps, HttpContext ctx) =>
+        {
+            if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
+            var snapshots = ctx.RequestServices.GetService<IChannelSnapshotProvider>();
+            if (snapshots is null) { ctx.Response.StatusCode = 404; return; }
+            // Tope global: cada conexión es una captura periódica; un cliente defectuoso que abra cientos no debe poder
+            // cargar la máquina que graba.
+            if (Interlocked.Increment(ref _previewSockets) > MaxPreviewSockets)
+            {
+                Interlocked.Decrement(ref _previewSockets);
+                ctx.Response.StatusCode = 503;
+                return;
+            }
+            try
+            {
+                using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+                await StreamPreviewAsync(socket, snapshots, id, w is > 0 ? w.Value : 320, Math.Clamp(fps ?? 5, 1, MaxPreviewFps), ctx.RequestAborted);
+            }
+            finally { Interlocked.Decrement(ref _previewSockets); }
+        });
+
         return app;
+    }
+
+    private const int MaxPreviewSockets = 32;
+    private const int MaxPreviewFps = 15;
+    private static readonly TimeSpan PreviewSendTimeout = TimeSpan.FromSeconds(5);
+    private static int _previewSockets;
+
+    private static async Task StreamPreviewAsync(WebSocket socket, IChannelSnapshotProvider snapshots, Guid channelId,
+        int width, int fps, CancellationToken aborted)
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(aborted);
+
+        // El cliente no envía datos: esta lectura solo existe para VER su Close (o su caída) y cortar el envío. No
+        // responde al Close aquí: el cierre lo completa el bucle de envío al salir, porque un WebSocket no admite dos
+        // envíos a la vez (el Close de respuesta podría solaparse con un cuadro en vuelo).
+        var reader = Task.Run(async () =>
+        {
+            var buffer = new byte[256];
+            try
+            {
+                while (socket.State == WebSocketState.Open)
+                {
+                    var r = await socket.ReceiveAsync(buffer, CancellationToken.None).ConfigureAwait(false);
+                    if (r.MessageType == WebSocketMessageType.Close) break;
+                }
+            }
+            catch { /* cliente caído o socket abortado */ }
+            finally { try { stop.Cancel(); } catch (ObjectDisposedException) { } }
+        });
+
+        var period = TimeSpan.FromMilliseconds(1000.0 / fps);
+        int maxAgeMs = Math.Max(1, (int)(period.TotalMilliseconds / 2)); // nunca dos veces la misma imagen a este ritmo
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var next = TimeSpan.Zero;
+        bool toldUnavailable = false;
+        try
+        {
+            while (socket.State == WebSocketState.Open && !stop.IsCancellationRequested)
+            {
+                var wait = next - clock.Elapsed;
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, stop.Token).ConfigureAwait(false);
+                // El siguiente cuadro se programa desde AHORA, no desde el anterior: si la captura o el envío tardaron
+                // más que el periodo, se PIERDEN cuadros en vez de acumular retraso o soltar una ráfaga después.
+                next = clock.Elapsed + period;
+
+                var jpeg = await snapshots.GetJpegAsync(channelId, width, maxAgeMs, stop.Token).ConfigureAwait(false);
+                if (jpeg is null)
+                {
+                    if (!toldUnavailable) { await SendAsync(socket, "unavailable"u8.ToArray(), WebSocketMessageType.Text, stop.Token).ConfigureAwait(false); toldUnavailable = true; }
+                    next = clock.Elapsed + TimeSpan.FromSeconds(1); // sin imagen no tiene sentido insistir al ritmo de vídeo
+                    continue;
+                }
+                toldUnavailable = false;
+                await SendAsync(socket, jpeg, WebSocketMessageType.Binary, stop.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { /* el cliente se fue, o un envío superó su plazo */ }
+        catch (WebSocketException) { /* conexión rota a mitad de un envío */ }
+        finally
+        {
+            try { stop.Cancel(); } catch (ObjectDisposedException) { }
+            try
+            {
+                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                {
+                    using var closing = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", closing.Token).ConfigureAwait(false);
+                }
+            }
+            catch { /* ya estaba roto */ }
+            try { if (socket.State is not (WebSocketState.Closed or WebSocketState.Aborted)) socket.Abort(); } catch { /* ídem */ }
+            try { await reader.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { /* la lectura muere con el socket */ }
+        }
+    }
+
+    /// <summary>Un envío con plazo: un cliente que no lee (pestaña congelada, red colgada) no retiene la conexión para
+    /// siempre; al vencer, el token cancela el envío y el WebSocket queda abortado.</summary>
+    private static async Task SendAsync(WebSocket socket, byte[] data, WebSocketMessageType type, CancellationToken stop)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        timeout.CancelAfter(PreviewSendTimeout);
+        await socket.SendAsync(data, type, endOfMessage: true, timeout.Token).ConfigureAwait(false);
     }
 
     private static async Task WaitUntilClosedAsync(WebSocket socket)
