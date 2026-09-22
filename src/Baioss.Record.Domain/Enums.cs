@@ -217,6 +217,16 @@ public enum ScheduledAction
     SwitchSource
 }
 
+/// <summary>Qué se le hizo a una tarea programada (para la auditoría: evento ScheduleChanged).</summary>
+public enum ScheduleChangeKind
+{
+    Created = 1,
+    Updated = 2,
+    Deleted = 3,
+    Paused = 4,
+    Resumed = 5,
+}
+
 /// <summary>Tipo de repetición de un trabajo programado.</summary>
 public enum RecurrenceKind
 {

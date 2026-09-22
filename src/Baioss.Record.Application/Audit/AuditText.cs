@@ -47,6 +47,7 @@ public static class AuditText
                 "RecordingRenamed" => Renamed(j),
                 "RecordingStartFailed" => Failed(j),
                 "ScheduledRecordingSkipped" => Skipped(j),
+                "ScheduleChanged" => ScheduleChanged(j),
                 "SegmentCompleted" => Segment(j),
                 "StorageLow" => StorageLow(j),
                 "StorageEmergencyEntered" or "StorageEmergencyCleared" => StorageEmergency(j),
@@ -120,6 +121,26 @@ public static class AuditText
         var reason = Str(j, "Reason") ?? "";
         var job = Str(j, "ScheduledJobTitle");
         return string.IsNullOrEmpty(job) ? reason : $"«{job}» · {reason}";
+    }
+
+    /// <summary>«Tarea borrada · «Noticias 20:00» · jcruz»: quién tocó la programación y qué le hizo.</summary>
+    private static string ScheduleChanged(JsonElement j)
+    {
+        var parts = new List<string>(3)
+        {
+            Localizer.T(Str(j, "Change") switch
+            {
+                "1" or "Created" => "Audit_Sched_Created",
+                "2" or "Updated" => "Audit_Sched_Updated",
+                "3" or "Deleted" => "Audit_Sched_Deleted",
+                "4" or "Paused" => "Audit_Sched_Paused",
+                "5" or "Resumed" => "Audit_Sched_Resumed",
+                _ => "Audit_Cat_ScheduleChanged",
+            }),
+        };
+        if (Str(j, "ScheduledJobTitle") is { Length: > 0 } title) parts.Add($"«{title}»");
+        if (Str(j, "Operator") is { Length: > 0 } op) parts.Add(op);
+        return string.Join(" · ", parts);
     }
 
     /// <summary>«27,7 GB libres · quedan 7 h 27 min». El aviso de disco es de los sucesos más frecuentes en

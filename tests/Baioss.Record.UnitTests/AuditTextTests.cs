@@ -87,6 +87,21 @@ public class AuditTextTests : IDisposable
     }
 
     [Fact]
+    public void Quien_Toco_La_Programacion_Y_Que_Le_Hizo_Se_Lee_De_Un_Vistazo()
+    {
+        // La programación se gestiona también desde el panel web (sin contraseña): cuando un programa no se grabó, lo
+        // primero que se pregunta es quién quitó o pausó esa tarea.
+        var borrada = """{"ChannelId":"...","ScheduledJobId":"...","ScheduledJobTitle":"Noticias 20:00","Change":3,"Operator":"jcruz"}""";
+
+        Assert.Equal("Programación modificada", AuditText.Category("ScheduleChanged"));
+        Assert.Equal("Tarea borrada · «Noticias 20:00» · jcruz", AuditText.Detail("ScheduleChanged", borrada, "x"));
+        Assert.Equal("Tarea pausada · «Pleno»", AuditText.Detail("ScheduleChanged", """{"ScheduledJobTitle":"Pleno","Change":4,"Operator":null}""", "x"));
+
+        Localizer.Language = AppLanguage.English;
+        Assert.StartsWith("Task created", AuditText.Detail("ScheduleChanged", """{"ScheduledJobTitle":"News","Change":1}""", "x"));
+    }
+
+    [Fact]
     public void Una_Grabacion_Corta_Muestra_Segundos_Y_Una_Larga_Horas()
     {
         var corta = AuditText.Detail("RecordingStopped", """{"Duration":"00:00:40","Reason":1,"Files":1}""", "x");

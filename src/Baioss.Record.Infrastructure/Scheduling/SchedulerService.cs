@@ -36,7 +36,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     // lo escribe el bucle del BackgroundService y lo lee/modifica la UI (saltar / indicador de activo). El
     // SessionId permite que el auto-stop detenga SOLO la sesión que el scheduler inició: si el operador paró
     // la programada y arrancó una manual en ese mismo canal, no se la corta al vencer la duración. (Auditoría #20.)
-    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId)> _active = new();
+    private readonly ConcurrentDictionary<Guid, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId, string Title)> _active = new();
     // Concurrente porque el tick ahora procesa los trabajos EN PARALELO (N7).
     private readonly ConcurrentDictionary<Guid, byte> _warnedBusy = new();
     // N13: última ocurrencia YA completada (auto-stop) por trabajo, para no re-dispararla si el reloj RETROCEDE
@@ -64,9 +64,27 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     public TimeSpan StartGrace { get; init; } = TimeSpan.FromMinutes(2);
 
     public IReadOnlySet<Guid> ActiveScheduledChannels => _active.Values.Select(v => v.ChannelId).ToHashSet();
+
+    public IReadOnlyList<ActiveScheduledRecording> ActiveRecordings
+        => _active.Select(kv => new ActiveScheduledRecording(kv.Key, kv.Value.ChannelId, kv.Value.SessionId, kv.Value.Title, kv.Value.Occ, kv.Value.StopAt))
+            .OrderBy(a => a.StartedAt).ToList();
+
     public event EventHandler? ActiveChanged;
+    public event EventHandler? JobsChanged;
 
     private void RaiseActiveChanged() => ActiveChanged?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>La lista de tareas cambió: invalida la caché del tick, avisa a quien la muestre y lo deja en la auditoría
+    /// (quién creó, editó, borró o pausó qué tarea). Nunca lanza: el cambio ya está guardado.</summary>
+    private async Task JobsChangedAsync(ScheduledJob job, ScheduleChangeKind change, string? operatorName)
+    {
+        _cache = null;
+        try { JobsChanged?.Invoke(this, EventArgs.Empty); }
+        catch (Exception ex) { _log.LogError(ex, "Scheduler: un suscriptor de JobsChanged falló."); }
+        if (_bus is null) return;
+        try { await _bus.PublishAsync(new ScheduleChanged(job.ChannelId, job.Id, job.Title, change, operatorName)).ConfigureAwait(false); }
+        catch (Exception ex) { _log.LogError(ex, "Scheduler: no se pudo auditar el cambio de «{Title}».", job.Title); }
+    }
 
     public SchedulerService(IScheduledJobRepository repo, IChannelManager channels, IClock clock,
         ILogger<SchedulerService> log, IEventBus? bus = null)
@@ -97,39 +115,44 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
     // --- ISchedulerService: CRUD que usan la UI y la API ---
 
-    public async Task<ScheduledJob> ScheduleAsync(ScheduledJob job, CancellationToken ct = default)
+    public async Task<ScheduledJob> ScheduleAsync(ScheduledJob job, string? operatorName = null, CancellationToken ct = default)
     {
         await _repo.AddAsync(job, ct).ConfigureAwait(false);
-        _cache = null;
         _log.LogInformation("Programado «{Title}»: canal {Channel}, {RunAt} ({Recurrence}).",
             job.Title, job.ChannelId, job.RunAt, job.Recurrence);
+        await JobsChangedAsync(job, ScheduleChangeKind.Created, operatorName).ConfigureAwait(false);
         return job;
     }
 
-    public async Task CancelAsync(Guid jobId, CancellationToken ct = default)
+    public async Task CancelAsync(Guid jobId, string? operatorName = null, CancellationToken ct = default)
     {
+        var job = await _repo.GetAsync(jobId, ct).ConfigureAwait(false); // antes de borrarla: la auditoría necesita su título
         await _repo.RemoveAsync(jobId, ct).ConfigureAwait(false);
         _cache = null;
+        if (job is null) return;
+        _log.LogInformation("Borrada la programación «{Title}» del canal {Channel}.", job.Title, job.ChannelId);
+        await JobsChangedAsync(job, ScheduleChangeKind.Deleted, operatorName).ConfigureAwait(false);
     }
 
     public Task<IReadOnlyList<ScheduledJob>> GetAllAsync(CancellationToken ct = default) => _repo.ListAsync(ct);
 
-    public async Task SetEnabledAsync(Guid jobId, bool enabled, CancellationToken ct = default)
+    public async Task SetEnabledAsync(Guid jobId, bool enabled, string? operatorName = null, CancellationToken ct = default)
     {
         if (await _repo.GetAsync(jobId, ct).ConfigureAwait(false) is { } job)
         {
+            if (job.Enabled == enabled) return; // ya estaba así: ni se escribe ni se audita un cambio que no lo es
             job.Enabled = enabled;
             await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
-            _cache = null;
+            await JobsChangedAsync(job, enabled ? ScheduleChangeKind.Resumed : ScheduleChangeKind.Paused, operatorName).ConfigureAwait(false);
         }
     }
 
-    public async Task UpdateAsync(ScheduledJob job, CancellationToken ct = default)
+    public async Task UpdateAsync(ScheduledJob job, string? operatorName = null, CancellationToken ct = default)
     {
         await _repo.UpdateAsync(job, ct).ConfigureAwait(false);
-        _cache = null;
         _log.LogInformation("Editada «{Title}»: canal {Channel}, {RunAt} ({Recurrence}).",
             job.Title, job.ChannelId, job.RunAt, job.Recurrence);
+        await JobsChangedAsync(job, ScheduleChangeKind.Updated, operatorName).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<ScheduledJob>> GetUpcomingAsync(DateTimeOffset until, CancellationToken ct = default)
@@ -204,7 +227,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     /// <summary>Auto-stop de una grabación programada cuya duración expiró (aislado para el tick paralelo). Detiene
     /// SOLO si el canal sigue en la MISMA sesión que inició el scheduler (#20), retira la segmentación, marca la
     /// ocurrencia como COMPLETADA (N13) y quita el trabajo de los activos.</summary>
-    private async Task AutoStopExpiredAsync(Guid jobId, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId) info, CancellationToken ct)
+    private async Task AutoStopExpiredAsync(Guid jobId, (DateTimeOffset StopAt, DateTimeOffset Occ, Guid ChannelId, Guid SessionId, string Title) info, CancellationToken ct)
     {
         if (_channels.TryGet(info.ChannelId, out var ch) && ch is not null)
         {
@@ -299,7 +322,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             {
                 // Captura la sesión recién creada para validar luego que el auto-stop no pise otra grabación. (#20.)
                 var sessionId = ch.Status.SessionId ?? Guid.Empty;
-                _active[job.Id] = (st, occ, job.ChannelId, sessionId);
+                _active[job.Id] = (st, occ, job.ChannelId, sessionId, job.Title);
                 RaiseActiveChanged();
             }
             _log.LogInformation("Scheduler: inicio de «{Title}» en canal {Channel}{Until}.",
@@ -362,13 +385,13 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
     /// Salta la grabación programada en curso de un canal: marca SOLO la ocurrencia actual como saltada
     /// (no se reanuda) y detiene la grabación ya. Las siguientes ocurrencias se ejecutan con normalidad.
     /// </summary>
-    public async Task SkipCurrentAsync(Guid channelId, CancellationToken ct = default)
+    public async Task<bool> SkipCurrentAsync(Guid channelId, CancellationToken ct = default)
     {
         // Busca el trabajo activo de ese canal.
         Guid jobId = default; bool found = false;
         foreach (var kv in _active)
             if (kv.Value.ChannelId == channelId) { jobId = kv.Key; found = true; break; }
-        if (!found) return;
+        if (!found) return false;
 
         // Marca la ocurrencia actual como saltada (persistente: sobrevive a un reinicio dentro de la ventana).
         var now = _clock.UtcNow;
@@ -389,6 +412,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
             if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = null;
         }
         if (_active.TryRemove(jobId, out _)) RaiseActiveChanged();
+        return true;
     }
 
     /// <summary>

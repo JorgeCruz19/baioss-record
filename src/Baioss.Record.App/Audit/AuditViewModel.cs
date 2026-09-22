@@ -42,7 +42,7 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
     /// <summary>Sucesos que cuentan como «de grabación» para el filtro rápido.</summary>
     private static readonly HashSet<string> RecordingCategories = new(StringComparer.Ordinal)
     {
-        "RecordingStarted", "RecordingStopped", "RecordingRenamed", "RecordingStartFailed", "ScheduledRecordingSkipped",
+        "RecordingStarted", "RecordingStopped", "RecordingRenamed", "RecordingStartFailed", "ScheduledRecordingSkipped", "ScheduleChanged",
         "SegmentCompleted", "RecordingPaused", "RecordingResumed", "RecordingRecovered", "OrphanSessionsClosed",
         "RecordingInterrupted", "RecordingFileUnverified",
     };

@@ -64,6 +64,15 @@ public sealed record RecordingFileUnverified(Guid ChannelId, Guid SessionId, str
 public sealed record ScheduledRecordingSkipped(
     Guid ChannelId, Guid ScheduledJobId, string? ScheduledJobTitle, DateTimeOffset Occurrence, string Reason) : DomainEventBase;
 
+/// <summary>
+/// Alguien CAMBIÓ la programación: creó, editó, borró, pausó o reanudó una tarea automática. La programación ya se
+/// puede tocar también desde el panel web (la API no tiene contraseña), y cuando una grabación no se hizo lo primero
+/// que se pregunta es «¿quién quitó esa tarea, y cuándo?». <paramref name="Operator"/>: el usuario de Windows en la
+/// aplicación; lo que declare el panel web o el sistema externo por la API.
+/// </summary>
+public sealed record ScheduleChanged(
+    Guid ChannelId, Guid ScheduledJobId, string? ScheduledJobTitle, ScheduleChangeKind Change, string? Operator = null) : DomainEventBase;
+
 /// <summary>Al arrancar se cerraron sesiones que habían quedado «grabando» de una ejecución anterior (corte de
 /// luz, cierre abrupto). Deja constancia de que hubo una interrupción no controlada.</summary>
 public sealed record OrphanSessionsClosed(int Count) : DomainEventBase;

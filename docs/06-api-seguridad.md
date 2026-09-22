@@ -18,7 +18,12 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | GET | `/storage?volume=D:\` | Espacio, tiempo restante, consumo por canal | Operador |
 | GET | `/recordings?channel=&from=&to=` | Historial de grabaciones (paginado) | Supervisor |
 | GET | `/events?days=&channel=&category=&severity=&take=` | Registro de auditoría (ver `AUDITORIA-GRABACIONES.md`) | Supervisor |
-| POST | `/schedule` | Crea trabajo programado | Supervisor |
+| GET | `/schedule?channel=` | Tareas automáticas (todas o las de un canal) con próxima ejecución, estado, ocurrencia de HOY y las que están en marcha (ver abajo) | Supervisor |
+| GET | `/schedule/active` | Solo las grabaciones programadas EN MARCHA (lo que enseña la tarjeta del canal) | Operador |
+| POST / PUT | `/schedule`, `/schedule/{id}` | Crea / edita una tarea automática | Supervisor |
+| POST | `/schedule/{id}/enabled` | Pausa o reanuda sin borrar (`{ "enabled", "operator" }`) | Supervisor |
+| DELETE | `/schedule/{id}?operator=` | Borra la tarea (una grabación en curso sigue hasta su fin) | Supervisor |
+| POST | `/channels/{id}/schedule/skip` | Salta la grabación programada EN CURSO de ese canal: la detiene ya y solo esa ocurrencia | Operador |
 
 Ejemplo:
 
@@ -57,6 +62,42 @@ en la auditoría como `RecordingRenamed`.
   válidos o archivo que no se pudo mover). La grabación se detiene en todos los casos.
 - `GET /channels` y `/status` llevan `sessionTrigger` (1 manual · 2 programada · 3 API; `null` en reposo) para que el
   cliente sepa si tiene sentido pedir nombre.
+
+### Programación (tareas automáticas de cada canal)
+
+La misma programación que la ventana «🕒 Programación» de la aplicación, para gestionarla desde el panel web o desde la
+automatización. Las REGLAS (fin ≠ inicio, primera ocurrencia futura, título único, sin solapes en el mismo canal, duración
+que no alcance la siguiente ocurrencia…) viven en `Application/Scheduling/SchedulePlanner` y son las MISMAS que aplica la
+aplicación: lo que una interfaz acepta lo acepta la otra. Endpoints en `Api/ScheduleEndpoints.cs`.
+
+```http
+POST /api/v1/schedule
+Content-Type: application/json
+
+{ "channelId": "8f3c...", "title": "Noticias", "recurrence": "Weekly", "weekdays": ["Mon", "Wed"],
+  "startTime": "20:00", "endTime": "21:30", "segmentMinutes": 15, "operator": "jcruz" }
+→ 201 Created { "job": { "id": "…", "state": "scheduled", "nextRun": "2026-09-21T20:00:00", "today": null, … }, "notes": [] }
+```
+
+- **Las horas son de PARED del equipo que graba, sin zona** (`"20:00"`, `"2026-09-21T20:00:00"`): una tarea «diaria a
+  las 20:00» son las 20:00 de ese equipo todo el año, aunque cambie el horario de verano. `GET /schedule` devuelve `now`
+  y `utcOffsetMinutes` para que un cliente en otra zona lo sepa (el panel lo avisa). `recurrence`: `Once` (con `date`
+  yyyy-MM-dd), `Daily` o `Weekly` (con `weekdays` Mon…Sun). Fin anterior al inicio = termina al día siguiente.
+- Un borrador que no pasa las reglas contesta **400** (mal formado: `end-equals-start`, `pick-weekday`, `pick-date`,
+  `past-date`, `invalid-time`, `invalid-date`, `invalid-weekdays`, `segment-minutes-invalid`, `unknown-channel`,
+  `duration-overlaps-next`) o **409** (choca con lo que ya hay: `duplicate-title`, `clash` + `clashWith`), siempre con
+  un `code` estable y un `error` en el idioma de la aplicación (el panel traduce por código). Reanudar una tarea en pausa
+  pasa por la misma comprobación de solape: mientras estaba en pausa pudo ocuparse su franja.
+- Cada tarea lleva `state` (`running` · `scheduled` · `paused` · `done`), `nextRun`, `lastRun`, `runningUntil` y
+  `today` (`{ start, end, status: scheduled | running | recorded | skipped }`, la ocurrencia de hoy aunque su hora ya
+  pasara). `GET /schedule/active` da las que graban AHORA (la realidad del scheduler, no una deducción por la hora) con
+  `remainingSeconds` calculado con el reloj del equipo que graba.
+- Borrar una tarea que está grabando no corta esa grabación (sigue hasta su hora de fin, como en la aplicación); para
+  cortarla está `POST /channels/{id}/schedule/skip` (409 `no-active-task` si no hay ninguna en marcha). El panel web
+  hace eso cuando se pulsa «Detener» sobre una grabación automática.
+- Todo cambio queda en la auditoría como `ScheduleChanged` (creada / editada / borrada / pausada / reanudada + quién),
+  también los hechos desde la ventana de la aplicación (usuario de Windows). Un host sin programador contesta 404
+  `no-scheduler` sin romper el resto de la API.
 
 El mapeo vive en `Api/ApiEndpoints.cs` (`MapBaiossApi`). Cada endpoint despacha un
 comando/query CQRS — la API y la UI comparten exactamente la misma lógica de aplicación.

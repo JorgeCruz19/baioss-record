@@ -57,6 +57,9 @@ public static class ApiEndpoints
             });
         });
 
+        // --- Programación (tareas automáticas de cada canal): ver ScheduleEndpoints ---
+        api.MapBaiossSchedule();
+
         // --- Estado / consultas ---
         api.MapGet("/channels/{id:guid}/status", async (Guid id, IDispatcher d, CancellationToken ct) =>
             Results.Ok(await d.QueryAsync(new GetChannelStatusQuery(id), ct)));

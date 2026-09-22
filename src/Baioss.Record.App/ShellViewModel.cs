@@ -81,6 +81,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
         _host.ChannelRebound += OnChannelRebound;
         _scheduler.ActiveChanged += OnScheduledActiveChanged;
+        _scheduler.JobsChanged += OnScheduledActiveChanged; // alta/edición/baja (también desde el panel web): refresca ya
         RefreshScheduledActive();
         RefreshTodayTasks();
 

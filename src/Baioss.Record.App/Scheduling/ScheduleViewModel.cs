@@ -137,20 +137,8 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private static TimeSpan Tod(string h, string m, string s) => new(Parse(h), Parse(m), Parse(s));
     private static int Parse(string s) => int.TryParse(s, out var v) ? v : 0;
 
-    /// <summary>Duración inicio→fin; si fin ≤ inicio se asume cruce de medianoche (fin del día siguiente).</summary>
-    private static TimeSpan DurationFromStartEnd(TimeSpan start, TimeSpan end)
-        => end > start ? end - start
-         : end < start ? end + TimeSpan.FromDays(1) - start
-         : TimeSpan.Zero;
-
-    private static string DescribeDuration(TimeSpan d)
-    {
-        var parts = new List<string>();
-        if (d.Hours > 0) parts.Add($"{d.Hours} h");
-        if (d.Minutes > 0) parts.Add($"{d.Minutes} min");
-        if (d.Seconds > 0) parts.Add($"{d.Seconds} s");
-        return parts.Count > 0 ? string.Join(" ", parts) : "0 s";
-    }
+    private static TimeSpan DurationFromStartEnd(TimeSpan start, TimeSpan end) => SchedulePlanner.DurationFromStartEnd(start, end);
+    private static string DescribeDuration(TimeSpan d) => ScheduleText.Duration(d);
 
     [ObservableProperty] private bool _mon;
     [ObservableProperty] private bool _tue;
@@ -246,7 +234,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
             if (!validChannels.Contains(job.ChannelId)) { skippedChannel++; continue; } // canal no existe en este equipo
             var title = job.Title?.Trim() ?? "";
             if (title.Length > 0 && !titles.Add(title)) { skippedDup++; continue; }      // título ya en uso (únicos)
-            await _scheduler.ScheduleAsync(job);
+            await _scheduler.ScheduleAsync(job, Environment.UserName);
             added++;
         }
 
@@ -340,101 +328,39 @@ public sealed partial class ScheduleViewModel : ObservableObject
         if (SelectedChannel is null) { StatusMessage = "Elige un canal."; return; }
         if (SelectedRecurrence is null) { StatusMessage = Loc.T("Sch_Err_PickRecurrence"); return; }
 
-        // Hora de inicio/fin (hh:mm:ss). La duración (auto-stop) es fin − inicio: fin == inicio no es válido
-        // y fin < inicio se interpreta como cruce de medianoche (la grabación termina al día siguiente).
-        var start = StartTimeOfDay;
-        var end = EndTimeOfDay;
-        if (end == start) { StatusMessage = "La hora de fin debe ser distinta de la de inicio."; return; }
-        var duration = DurationFromStartEnd(start, end);
-        if (SegmentEnabled && SegmentMinutes <= 0) { StatusMessage = "Los minutos por segmento deben ser mayores que 0."; return; }
-
-        var kind = SelectedRecurrence.Kind;
-        // La hora del día se interpreta en la ZONA local (offset por-ocurrencia, DST-correcto), no en un offset
-        // fijo capturado ahora: así una recurrente no se corre 1 h tras un cambio de horario de verano. (N4.)
-        var tz = TimeZoneInfo.Local;
-        var now = _clock.UtcNow;
-
         var weekdays = Weekdays.None;
-        if (kind == RecurrenceKind.Weekly)
-        {
-            if (Mon) weekdays |= Weekdays.Monday;
-            if (Tue) weekdays |= Weekdays.Tuesday;
-            if (Wed) weekdays |= Weekdays.Wednesday;
-            if (Thu) weekdays |= Weekdays.Thursday;
-            if (Fri) weekdays |= Weekdays.Friday;
-            if (Sat) weekdays |= Weekdays.Saturday;
-            if (Sun) weekdays |= Weekdays.Sunday;
-            if (weekdays == Weekdays.None) { StatusMessage = Loc.T("Sch_Err_PickWeekday"); return; }
-        }
+        if (Mon) weekdays |= Weekdays.Monday;
+        if (Tue) weekdays |= Weekdays.Tuesday;
+        if (Wed) weekdays |= Weekdays.Wednesday;
+        if (Thu) weekdays |= Weekdays.Thursday;
+        if (Fri) weekdays |= Weekdays.Friday;
+        if (Sat) weekdays |= Weekdays.Saturday;
+        if (Sun) weekdays |= Weekdays.Sunday;
 
-        DateTimeOffset runAt;
-        if (kind == RecurrenceKind.Once)
-        {
-            if (SelectedDate is not { } d) { StatusMessage = "Elige una fecha."; return; }
-            var wall = new DateTime(d.Year, d.Month, d.Day, start.Hours, start.Minutes, start.Seconds, DateTimeKind.Unspecified);
-            runAt = new DateTimeOffset(wall, tz.GetUtcOffset(wall)); // offset del DST vigente ESE día
-            if (runAt <= now) { StatusMessage = Loc.T("Sch_Err_PastDate"); return; }
-        }
-        else
-        {
-            // (3) Primera ocurrencia FUTURA: si la hora de hoy ya pasó, empieza el próximo día válido
-            // (evita que una tarea recién creada arranque un trozo de inmediato).
-            runAt = ScheduleValidator.NextRecurringAnchor(kind, weekdays, start, tz, now);
-        }
-
-        var job = new ScheduledJob
-        {
-            Id = EditingJobId ?? Guid.NewGuid(),   // al editar conserva el mismo Id (es la misma tarea)
-            ChannelId = SelectedChannel.ChannelId,
-            Action = ScheduledAction.StartRecording,
-            Title = string.IsNullOrWhiteSpace(Title) ? Loc.T("Sch_DefaultTitle") : Title.Trim(),
-            RunAt = runAt,
-            Recurrence = kind,
-            Weekdays = weekdays,
-            Duration = duration,
-            SegmentMinutes = SegmentEnabled && SegmentMinutes > 0 ? SegmentMinutes : null,
-            Enabled = true,
-        };
-
-        // (1) La duración no puede alcanzar la siguiente ocurrencia (si no, esa se perdería en silencio).
-        if (!ScheduleValidator.DurationFitsInterval(job))
-        {
-            StatusMessage = Loc.F("Sch_Err_DurationOverlaps", DescribeDuration(duration), DescribeInterval(ScheduleValidator.RecurrenceInterval(job)));
-            return;
-        }
-
+        // LAS REGLAS (duración, fecha futura, título único, solapes, primera ocurrencia…) viven en SchedulePlanner, en la
+        // capa Application: son las MISMAS que aplica la API cuando la programación se gestiona desde el panel web.
         var existing = await _scheduler.GetAllAsync();
-
-        // Al editar, conserva el estado de pausa de la tarea original (editar no la reactiva sola).
-        if (EditingJobId is { } eid) job.Enabled = existing.FirstOrDefault(e => e.Id == eid)?.Enabled ?? true;
-
-        // Nombre ÚNICO: no se permite guardar una tarea con un título que ya existe (los archivos se
-        // nombran por título; dos iguales se confundirían). Sin mayúsculas; al editar no choca consigo misma.
-        if (existing.Any(e => e.Id != job.Id && string.Equals(e.Title?.Trim(), job.Title, StringComparison.OrdinalIgnoreCase)))
-        {
-            StatusMessage = Loc.F("Sch_Err_DuplicateTitle", job.Title);
-            return;
-        }
-
-        // (2) No solapar con otra tarea del mismo canal (doble reserva).
-        var clash = existing.FirstOrDefault(e => e.Enabled && ScheduleValidator.Overlaps(job, e, now));
-        if (clash is not null)
-        {
-            StatusMessage = Loc.F("Sch_Err_Clash", clash.Title, SelectedChannel.Key);
-            return;
-        }
-
-        bool wasEditing = IsEditing;
-        if (wasEditing) await _scheduler.UpdateAsync(job);
-        else await _scheduler.ScheduleAsync(job);
+        var draft = new ScheduleDraft(
+            SelectedChannel.ChannelId, Title, SelectedRecurrence.Kind,
+            SelectedDate is { } d ? DateOnly.FromDateTime(d) : null,
+            StartTimeOfDay, EndTimeOfDay, weekdays,
+            SegmentEnabled ? SegmentMinutes : null);
+        var editing = EditingJobId is { } eid ? existing.FirstOrDefault(e => e.Id == eid) : null;
+        var plan = SchedulePlanner.Plan(draft, existing, _clock.UtcNow, TimeZoneInfo.Local, editing);
+        if (!plan.Ok) { StatusMessage = ScheduleText.Describe(plan, SelectedChannel.Key); return; }
+        var job = plan.Job!;
+        // Una tarea que ya no existe (la borraron desde el panel web mientras se editaba aquí) se guarda como nueva.
+        bool wasEditing = IsEditing && editing is not null;
+        if (wasEditing) await _scheduler.UpdateAsync(job, Environment.UserName);
+        else await _scheduler.ScheduleAsync(job, Environment.UserName);
 
         // Avisos suaves (no bloquean el guardado).
         var notes = new List<string>();
-        if (SegmentEnabled && TimeSpan.FromMinutes(SegmentMinutes) >= duration) notes.Add(Loc.T("Sch_Note_SegmentsSingleFile"));
-        if (ScheduleValidator.SpansToNextDay(job)) notes.Add(Loc.F("Sch_Note_EndsNextDayAt", (job.RunAt + job.Duration!.Value).ToLocalTime().ToString("HH:mm")));
+        if (plan.Notes.Contains(ScheduleNote.SegmentsSingleFile)) notes.Add(Loc.T("Sch_Note_SegmentsSingleFile"));
+        if (plan.Notes.Contains(ScheduleNote.EndsNextDay)) notes.Add(Loc.F("Sch_Note_EndsNextDayAt", (job.RunAt + job.Duration!.Value).ToLocalTime().ToString("HH:mm")));
         StatusMessage = Loc.F("Sch_Msg_Saved", Loc.T(wasEditing ? "Sch_Saved_Updated" : "Sch_Saved_Scheduled"), job.Title, SelectedChannel.Key)
                         + (notes.Count > 0 ? Loc.T("Sch_Notice") + string.Join("; ", notes) + "." : "");
-        if (wasEditing) { EditingJobId = null; ResetForm(); }   // sale del modo edición y limpia el formulario
+        if (IsEditing) { EditingJobId = null; ResetForm(); }    // sale del modo edición y limpia el formulario
         await RefreshAsync();
     }
 
@@ -493,17 +419,11 @@ public sealed partial class ScheduleViewModel : ObservableObject
         SegmentEnabled = false; SegmentMinutes = 10;
     }
 
-    private static string DescribeInterval(TimeSpan? iv)
-        => iv is not { } t ? "—"
-           : (int)t.TotalDays == 1 ? Loc.T("Sch_Interval_Daily")
-           : t.TotalDays >= 1 ? Loc.F("Sch_Interval_Days", (int)t.TotalDays)
-           : Loc.F("Sch_Interval_Hours", (int)t.TotalHours);
-
     [RelayCommand]
     private async Task Delete(ScheduledJobRow? row)
     {
         if (row is null) return;
-        await _scheduler.CancelAsync(row.Job.Id);
+        await _scheduler.CancelAsync(row.Job.Id, Environment.UserName);
         await RefreshAsync();
     }
 
@@ -511,7 +431,7 @@ public sealed partial class ScheduleViewModel : ObservableObject
     private async Task ToggleEnabled(ScheduledJobRow? row)
     {
         if (row is null) return;
-        await _scheduler.SetEnabledAsync(row.Job.Id, !row.Job.Enabled);
+        await _scheduler.SetEnabledAsync(row.Job.Id, !row.Job.Enabled, Environment.UserName);
         await RefreshAsync();
     }
 

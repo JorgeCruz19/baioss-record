@@ -31,6 +31,7 @@ y una **copia estructurada en JSON** (`PayloadJson`) para explotarla con herrami
 | `RecordingRenamed` | Se le puso nombre al detener (diálogo de la aplicación, panel web o API) | Nombre final y nombre temporal anterior, nº de archivos, quién lo puso. Antes el renombrado no dejaba rastro: la auditoría decía que la grabación terminó pero no con qué nombre quedó el material |
 | `RecordingStartFailed` | No llegó a arrancar | El motivo (pre-vuelo, dispositivo, licencia…) |
 | `ScheduledRecordingSkipped` | El programador omitió una ocurrencia | Por qué (el canal ya grababa, el canal no está disponible) |
+| `ScheduleChanged` | Alguien creó, editó, borró, pausó o reanudó una tarea automática (ventana de la aplicación, panel web o API) | Qué cambio, qué tarea y quién. Cuando un programa no se grabó, lo primero que se pregunta es quién quitó o pausó esa tarea |
 | `SegmentCompleted` | Se cerró cada trozo | La ruta y el tamaño de cada archivo |
 | `RecordingInterrupted` | El proceso de grabación murió a mitad y siguió en una pieza nueva | El código de salida de FFmpeg (−1 = matado por el vigilante o desde fuera) y el motivo conocido |
 | `RecordingFileUnverified` | Un archivo recién cerrado no se puede reproducir | Qué archivo y cuánto ocupa; el segmento queda marcado como dañado en el historial |
