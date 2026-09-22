@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Baioss.Record.Api;
 
@@ -179,10 +180,16 @@ public static class ApiEndpoints
         });
 
         // --- WebSocket de eventos ---
-        app.Map("/ws/events", async (HttpContext ctx, IEventBus bus) =>
+        app.Map("/ws/events", async (HttpContext ctx, IEventBus bus, IHostApplicationLifetime lifetime) =>
         {
             if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = 400; return; }
             using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+            // AL CERRAR LA APLICACIÓN NO SE ESPERA AL CLIENTE. Este bucle solo terminaba cuando el cliente cerraba; con
+            // un panel web abierto, el apagado de Kestrel se quedaba esperando (30 s), el cierre de la aplicación
+            // agotaba su tope de 20 s ANTES de llegar a finalizar las grabaciones y acababa en salida forzada: sesión
+            // sin cerrar en BD y archivo sin finalizar (medido). Al empezar el apagado se corta el socket; el panel
+            // reconecta solo cuando la aplicación vuelve.
+            using var onStopping = lifetime.ApplicationStopping.Register(() => { try { socket.Abort(); } catch { /* ya cerrado */ } });
             // Un WebSocket NO admite envíos solapados: con varios canales publicando a la vez, dos SendAsync
             // concurrentes lanzan InvalidOperationException y dejan el stream de eventos en estado Aborted. Se
             // serializan con un semáforo por conexión, y cada envío lleva timeout para que un cliente lento no
@@ -226,7 +233,11 @@ public static class ApiEndpoints
             try
             {
                 using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
-                await StreamPreviewAsync(socket, snapshots, id, w is > 0 ? w.Value : 320, Math.Clamp(fps ?? 5, 1, MaxPreviewFps), ctx.RequestAborted);
+                // Igual que en /ws/events: el cierre de la aplicación corta el envío (RequestAborted no se dispara
+                // hasta que Kestrel agota su plazo de apagado).
+                var stopping = ctx.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+                using var ends = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, stopping);
+                await StreamPreviewAsync(socket, snapshots, id, w is > 0 ? w.Value : 320, Math.Clamp(fps ?? 5, 1, MaxPreviewFps), ends.Token);
             }
             finally { Interlocked.Decrement(ref _previewSockets); }
         });
@@ -319,12 +330,22 @@ public static class ApiEndpoints
     private static async Task WaitUntilClosedAsync(WebSocket socket)
     {
         var buffer = new byte[256];
-        while (socket.State == WebSocketState.Open)
+        try
         {
-            var r = await socket.ReceiveAsync(buffer, CancellationToken.None);
-            if (r.MessageType == WebSocketMessageType.Close)
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+            while (socket.State == WebSocketState.Open)
+            {
+                var r = await socket.ReceiveAsync(buffer, CancellationToken.None);
+                if (r.MessageType == WebSocketMessageType.Close)
+                {
+                    using var closing = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", closing.Token);
+                }
+            }
         }
+        // Cliente caído sin Close, o socket cortado por el cierre de la aplicación: es un final normal, no un error.
+        catch (WebSocketException) { }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
     }
 
     public sealed record StartBody(Guid ProfileId, string? Operator);

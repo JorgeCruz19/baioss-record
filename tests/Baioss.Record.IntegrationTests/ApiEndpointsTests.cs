@@ -106,6 +106,81 @@ public sealed class ApiEndpointsTests
         await app.StopAsync();
     }
 
+    // --- CORS: el panel web apuntando a la IP y el puerto de este Record desde OTRO origen ---
+
+    private static WebApplication BuildApiWithCors(string allowedOrigins)
+    {
+        var settings = new Baioss.Record.Application.Network.ApiAccessSettings { AllowedOrigins = allowedOrigins }.Sanitized();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton<IChannelEngine>(new FakeChannelEngine(Guid.NewGuid(), "A"));
+        builder.Services.AddSingleton<IChannelManager, ChannelManager>();
+        builder.Services.AddSingleton<IEventBus, InProcessEventBus>();
+        builder.Services.AddSingleton<IStorageManager, StorageManager>();
+        builder.Services.AddBaiossCqrs();
+        builder.Services.AddBaiossApiCors(settings);
+        var app = builder.Build();
+        app.UseBaiossApiCors(settings);
+        app.MapBaiossApi();
+        return app;
+    }
+
+    private static async Task<HttpResponseMessage> GetChannelsFrom(WebApplication app, string origin)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/channels");
+        request.Headers.Add("Origin", origin);
+        return await app.GetTestClient().SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Cors_WithoutAllowedOrigins_TheApiBehavesAsAlways_NoCorsHeaders()
+    {
+        await using var app = BuildApiWithCors("");
+        await app.StartAsync();
+
+        var response = await GetChannelsFrom(app, "http://192.168.1.50:5173");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(response.Headers.Contains("Access-Control-Allow-Origin")); // el navegador de otro origen no podrá leerla
+        await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task Cors_AllowedOrigin_CanCallTheApi_AndOthersCannot()
+    {
+        await using var app = BuildApiWithCors("http://192.168.1.50:5173/");
+        await app.StartAsync();
+
+        var allowed = await GetChannelsFrom(app, "http://192.168.1.50:5173");
+        Assert.Equal("http://192.168.1.50:5173", allowed.Headers.GetValues("Access-Control-Allow-Origin").Single());
+
+        var other = await GetChannelsFrom(app, "http://malicioso.example");
+        Assert.False(other.Headers.Contains("Access-Control-Allow-Origin"));
+
+        // Preflight del POST con JSON (iniciar grabación): el navegador pregunta antes; debe obtener permiso.
+        var preflight = new HttpRequestMessage(HttpMethod.Options, $"/api/v1/channels/{Guid.NewGuid()}/recording/start");
+        preflight.Headers.Add("Origin", "http://192.168.1.50:5173");
+        preflight.Headers.Add("Access-Control-Request-Method", "POST");
+        preflight.Headers.Add("Access-Control-Request-Headers", "content-type");
+        var answer = await app.GetTestClient().SendAsync(preflight);
+        Assert.Equal(HttpStatusCode.NoContent, answer.StatusCode);
+        Assert.Contains("POST", string.Join(",", answer.Headers.GetValues("Access-Control-Allow-Methods")));
+        await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task Cors_Star_AllowsAnyPanel()
+    {
+        await using var app = BuildApiWithCors("*");
+        await app.StartAsync();
+
+        var response = await GetChannelsFrom(app, "http://cualquier-panel:8080");
+
+        Assert.Equal("*", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        await app.StopAsync();
+    }
+
     // --- Preview de baja resolución para el panel web ---
 
     /// <summary>Instantáneas de mentira: recuerda qué se le pidió y devuelve un «JPEG» reconocible.</summary>
@@ -188,6 +263,46 @@ public sealed class ApiEndpointsTests
         Assert.InRange(Volatile.Read(ref snapshots.Calls) - callsAtClose, 0, 1);
 
         await app.StopAsync();
+    }
+
+    /// <summary>Lee hasta que el socket se acaba (Close o conexión cortada). Devuelve false si venció el plazo.</summary>
+    private static async Task<bool> EndsBeforeAsync(System.Net.WebSockets.WebSocket socket, TimeSpan limit)
+    {
+        using var timeout = new CancellationTokenSource(limit);
+        var buffer = new byte[64 * 1024];
+        try
+        {
+            while (socket.State == System.Net.WebSockets.WebSocketState.Open)
+            {
+                var r = await socket.ReceiveAsync(buffer, timeout.Token);
+                if (r.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) break;
+            }
+        }
+        catch when (!timeout.IsCancellationRequested) { /* cortado por el servidor: también es «se acabó» */ }
+        catch { return false; }
+        return !timeout.IsCancellationRequested;
+    }
+
+    [Fact]
+    public async Task Sockets_AreReleasedAsSoonAsTheApplicationStartsStopping_EvenIfTheClientNeverCloses()
+    {
+        // Un panel web abierto NO cierra sus WebSocket porque la aplicación se vaya a cerrar. Si el servidor los espera,
+        // el apagado de Kestrel se alarga hasta su plazo y el cierre de la aplicación agota su tope ANTES de finalizar
+        // las grabaciones (medido en vivo: salida forzada a los 20 s, sesión sin cerrar en BD).
+        var channelId = Guid.NewGuid();
+        await using var app = BuildPreviewApi(new FakeSnapshots(channelId));
+        await app.StartAsync();
+        using var connect = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var client = app.GetTestServer().CreateWebSocketClient();
+        using var events = await client.ConnectAsync(new Uri("ws://localhost/ws/events"), connect.Token);
+        using var preview = await client.ConnectAsync(new Uri($"ws://localhost/ws/preview/{channelId}?fps=5"), connect.Token);
+        await ReceiveMessageAsync(preview, connect.Token);                 // la vista previa ya está emitiendo
+
+        app.Services.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>().StopApplication();
+
+        var ended = await Task.WhenAll(EndsBeforeAsync(events, TimeSpan.FromSeconds(5)), EndsBeforeAsync(preview, TimeSpan.FromSeconds(5)));
+        Assert.True(ended[0], "El WebSocket de eventos siguió abierto tras empezar el apagado.");
+        Assert.True(ended[1], "El WebSocket de vista previa siguió abierto tras empezar el apagado.");
     }
 
     [Fact]

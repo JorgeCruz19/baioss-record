@@ -12,5 +12,12 @@ public sealed class GeneralSettingsViewModel
 {
     public IReadOnlyList<ChannelViewModel> Channels { get; }
 
-    public GeneralSettingsViewModel(IReadOnlyList<ChannelViewModel> channels) => Channels = channels;
+    /// <summary>Sección «Panel web y API» (null si el host no la ofrece: no debería, pero la ventana abre igual).</summary>
+    public ApiAccessViewModel? Api { get; }
+
+    public GeneralSettingsViewModel(IReadOnlyList<ChannelViewModel> channels, ApiAccessViewModel? api = null)
+    {
+        Channels = channels;
+        Api = api;
+    }
 }

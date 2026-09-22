@@ -34,6 +34,42 @@ Content-Type: application/json
 El mapeo vive en `Api/ApiEndpoints.cs` (`MapBaiossApi`). Cada endpoint despacha un
 comando/query CQRS — la API y la UI comparten exactamente la misma lógica de aplicación.
 
+## Dónde escucha la API (dirección, puerto y CORS)
+
+Por defecto, lo de siempre: **`http://127.0.0.1:5005`, solo este equipo, sin cabeceras CORS**. Abrirla es una decisión
+explícita del administrador, en **🛠 Configuración → Panel web y API** (o editando `data/api-settings.json`), y se aplica
+**al reiniciar**, porque el servidor enlaza su dirección al arrancar:
+
+```json
+{ "Host": "0.0.0.0", "Port": 5005, "AllowedOrigins": "http://192.168.1.50:5173" }
+```
+
+| Campo | Valores |
+|---|---|
+| `Host` | `127.0.0.1` = solo este equipo · `0.0.0.0` = toda la red · o una IPv4 concreta de este equipo. Cualquier otra cosa (nombre, IPv6, vacío) vuelve a `127.0.0.1`. |
+| `Port` | 1–65535 (fuera de rango → 5005). |
+| `AllowedOrigins` | Orígenes web que pueden llamar a la API **desde un navegador** (CORS), separados por comas; se normalizan a `esquema://host[:puerto]`. `*` = cualquiera. Vacío = ninguno (no se añade el middleware de CORS: comportamiento idéntico al de antes). |
+
+La primera vez el archivo se siembra desde la configuración (`Api:Host`, `Api:Port`, `Api:AllowedOrigins`, o las
+variables `Api__Host`…); después manda el archivo. Piezas: `Application/Network/ApiAccessSettings` (modelo + saneado),
+`Infrastructure/Network/ApiAccessSettingsFile` (leer/guardar atómico + `CanBind`), `Api/ApiCors` y, en la aplicación,
+`App.LoadApiAccess` + `ApiAccessViewModel`.
+
+- **Red de seguridad al arrancar.** Si la dirección guardada no se puede enlazar (una IP que el equipo ya no tiene, un
+  puerto ocupado), la aplicación **arranca igualmente** en `127.0.0.1` con el mismo puerto (y, si tampoco, en el 5005),
+  lo registra como error y lo enseña en la ventana de Configuración. Un ajuste de red equivocado jamás impide grabar. El
+  archivo no se toca: sigue diciendo lo que pidió el administrador.
+- **CORS no es seguridad.** Solo decide qué PÁGINAS WEB pueden leer respuestas desde un navegador; `curl`, un script o
+  cualquier programa lo ignoran. Los WebSocket no pasan por CORS. Lo que protege la API es dónde escucha (y la red).
+- **⚠ La API no tiene autenticación** (ver más abajo). Con `Host` distinto de loopback, cualquiera que llegue al puerto
+  puede ver los canales y grabar/detener. Solo en redes de confianza; nunca expuesta a Internet. El arranque lo deja
+  escrito en el registro («ABIERTA A LA RED, sin autenticación»).
+- **Registro.** El panel web sondea cada segundo, y ASP.NET Core escribía ~7 líneas informativas por petición (decenas de
+  MB al día por panel abierto). `Microsoft.AspNetCore` se registra ahora solo desde *Warning*.
+
+El panel web (`web/`) elige a qué Record se conecta desde el propio navegador (IP y puerto, sin recompilar): ver
+`web/README.md`.
+
 ## WebSocket de preview de baja resolución
 
 `GET /ws/preview/{id}?w=320&fps=5` (upgrade). Para el panel web: el SERVIDOR empuja un JPEG de `w` píxeles de ancho
@@ -65,6 +101,17 @@ alimentados por `IEventBus`:
 
 Permite a sistemas externos (MAM, playout, automatización de master control) reaccionar sin polling.
 
+### Al cerrar la aplicación, el servidor corta los WebSocket
+
+Los dos WebSocket (`/ws/events` y `/ws/preview`) se terminan en cuanto empieza el apagado (`ApplicationStopping`); el
+cliente debe **reconectar** por su cuenta (el panel web lo hace). No es un detalle: antes esperaban a que el cliente
+cerrara, y un panel web abierto retenía el apagado de Kestrel hasta su plazo (30 s). Como el cierre de la aplicación
+para primero el host y DESPUÉS finaliza las grabaciones, todo bajo un tope de 20 s, el tope vencía antes de llegar a
+ellas. Medido (2026-09-19) cerrando con un canal grabando y el panel abierto: 22 s, salida forzada, sesión sin cerrar
+en BD y **archivo MP4 ilegible (`moov atom not found`)**. Con el arreglo: 2,8 s, sesión cerrada con motivo `Shutdown` y
+archivo válido. Además, `HostOptions.ShutdownTimeout` baja a 8 s para que ningún cliente de la API pueda comerse el
+tope. Lo fija `ApiEndpointsTests.Sockets_AreReleasedAsSoonAsTheApplicationStartsStopping…`.
+
 ## Seguridad
 
 ### Roles y permisos
@@ -81,6 +128,11 @@ Permite a sistemas externos (MAM, playout, automatización de master control) re
 los comandos de UI la consultan antes de ejecutar.
 
 ### Autenticación
+
+> **Estado real (2026-09-19): NO implementada.** Lo que sigue es el diseño previsto (pendiente A10 de la auditoría 24/7).
+> Hoy la API acepta cualquier petición que llegue a su puerto, sin token ni TLS. Por eso escucha solo en loopback por
+> defecto y abrirla a la red es una opción explícita, con aviso en la interfaz y en el registro (ver «Dónde escucha la
+> API»). Si se va a usar fuera de una red de confianza, la autenticación debe hacerse ANTES.
 
 - Login usuario/contraseña → token firmado (JWT) con rol y expiración.
 - Contraseñas con **hash + salt** (PBKDF2/Argon2); nunca en claro ni reversibles.

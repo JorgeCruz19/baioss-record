@@ -53,11 +53,15 @@ public sealed partial class ShellViewModel : ObservableObject
     /// y proporcionada. Con 3-4 canales en un monitor normal el tope no llega a morder (se reparte como antes).</summary>
     public double ChannelStripMaxWidth => 720.0 * Math.Max(1, Channels.Count);
 
+    /// <summary>Acceso a la API de esta ejecución (dirección, puerto, webs permitidas): lo edita la ventana de Configuración.</summary>
+    private readonly ApiAccessState? _apiAccess;
+
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
         IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, IEventLogRepository events,
-        ILicenseService? license = null)
+        ILicenseService? license = null, ApiAccessState? apiAccess = null)
     {
+        _apiAccess = apiAccess;
         _host = host;
         _previews = previews;
         _presetStore = presetStore;
@@ -288,7 +292,7 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         // Colección VIVA (no snapshot): si un rebind reemplaza un ChannelViewModel, el ItemsControl re-enlaza sus
         // controles (carpeta / slate) al VM nuevo, en vez de editar el motor ya dispuesto. (Auditoría N10.)
-        var viewModel = new GeneralSettingsViewModel(Channels);
+        var viewModel = new GeneralSettingsViewModel(Channels, _apiAccess is null ? null : new ApiAccessViewModel(_apiAccess));
         var window = new GeneralSettingsWindow
         {
             DataContext = viewModel,

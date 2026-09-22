@@ -39,8 +39,8 @@ namespace Baioss.Record.App;
 /// </summary>
 public partial class App : System.Windows.Application
 {
-    // API local de automatización: solo loopback (sin exposición a la red; la autenticación es Fase 3).
-    private const string ApiUrl = "http://127.0.0.1:5005";
+    // API de automatización: por defecto solo loopback (http://127.0.0.1:5005). La dirección, el puerto y las webs que
+    // pueden llamarla son ajustes (data/api-settings.json, editables en 🛠 Configuración): ver LoadApiAccess.
 
     private IHost? _host;
 
@@ -163,6 +163,42 @@ public partial class App : System.Windows.Application
         catch { return null; } // registro ilegible: manda la configuración embebida, la app arranca igual
     }
 
+    /// <summary>
+    /// Ajustes de acceso a la API (<c>data/api-settings.json</c>), con red de seguridad: si la dirección pedida no se
+    /// puede enlazar AHORA —una IP que ya no es de este equipo porque cambió el DHCP, un puerto ocupado— se cae a «solo
+    /// este equipo» con el mismo puerto y, si tampoco, al puerto de siempre. Un ajuste de red equivocado JAMÁS debe
+    /// impedir que el grabador arranque: lo peor que pasa es que el panel web remoto no conecta, y el motivo queda en
+    /// el registro y a la vista en la ventana de Configuración.
+    /// </summary>
+    private static ApiAccessState LoadApiAccess(string root, Microsoft.Extensions.Configuration.IConfiguration config)
+    {
+        var path = Path.Combine(root, "data", "api-settings.json");
+        var seed = new Baioss.Record.Application.Network.ApiAccessSettings
+        {
+            Host = config["Api:Host"] ?? Baioss.Record.Application.Network.ApiAccessSettings.Loopback,
+            Port = config.GetValue("Api:Port", Baioss.Record.Application.Network.ApiAccessSettings.DefaultPort),
+            AllowedOrigins = config["Api:AllowedOrigins"] ?? "",
+        };
+        // OJO: aquí el registro todavía NO está configurado (lo monta el host al construirse) y lo que se escribiera se
+        // perdería: los problemas viajan en el estado y se registran después, junto a la línea de «escuchando en…».
+        var wanted = Baioss.Record.Infrastructure.Network.ApiAccessSettingsFile.Load(path, seed, out var problem);
+
+        var applied = wanted;
+        string? warning = null;
+        if (!Baioss.Record.Infrastructure.Network.ApiAccessSettingsFile.CanBind(applied.Host, applied.Port, out var reason))
+        {
+            warning = $"{applied.ListenUrl}: {reason}";
+            applied = new Baioss.Record.Application.Network.ApiAccessSettings
+            {
+                Host = Baioss.Record.Application.Network.ApiAccessSettings.Loopback, Port = wanted.Port, AllowedOrigins = wanted.AllowedOrigins,
+            };
+            if (wanted.Port != Baioss.Record.Application.Network.ApiAccessSettings.DefaultPort
+                && !Baioss.Record.Infrastructure.Network.ApiAccessSettingsFile.CanBind(applied.Host, applied.Port, out _))
+                applied.Port = Baioss.Record.Application.Network.ApiAccessSettings.DefaultPort;
+        }
+        return new ApiAccessState(path, wanted, applied, warning, problem);
+    }
+
     private async Task StartHostAsync()
     {
         // Raíz del repositorio (carpeta que contiene tools/), localizada hacia arriba desde el
@@ -191,9 +227,12 @@ public partial class App : System.Windows.Application
         builder.Host.UseSerilog((ctx, cfg) => cfg
             // El scheduler consulta SQLite cada segundo: silencia el log de cada comando SQL de EF (solo avisos).
             .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", Serilog.Events.LogEventLevel.Warning)
+            // El panel web sondea la API cada segundo y ASP.NET Core escribe ~7 líneas informativas POR PETICIÓN
+            // («Request starting/finished», «Executing endpoint», «CORS policy execution successful»…): medido, del
+            // orden de decenas de MB de log al día por panel abierto, que además tapan lo que importa. Solo avisos y errores.
+            .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
             .WriteTo.File(Path.Combine(root, "logs", "baioss-.log"), rollingInterval: RollingInterval.Day)
             .Enrich.FromLogContext());
-        builder.WebHost.UseUrls(ApiUrl);
 
         // Nº de canales a crear (1-8). Se lee del appsettings EMBEBIDO en el binario: el release publicado lo
         // lleva FIJO. Se añade DESPUÉS de cualquier appsettings externo, así que PREVALECE → el operador no
@@ -206,6 +245,11 @@ public partial class App : System.Windows.Application
             Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true, reloadOnChange: false);
 #endif
         int channelCount = Math.Clamp(builder.Configuration.GetValue("Channels:Count", 4), 1, 8);
+
+        // Dónde escucha la API (y qué webs pueden llamarla): con TODA la configuración ya cargada, porque la primera
+        // vez el archivo de ajustes se siembra desde ella (Api:Host / Api:Port / Api:AllowedOrigins).
+        var apiAccess = LoadApiAccess(root, builder.Configuration);
+        builder.WebHost.UseUrls(apiAccess.Applied.ListenUrl);
 
         // CANALES ELEGIDOS EN LA INSTALACIÓN: el asistente pregunta cuántos canales quiere el cliente (1-4) y
         // lo deja en HKLM\Software\Baioss\RecordSetup — una clave que SOLO un administrador puede modificar, a
@@ -224,7 +268,15 @@ public partial class App : System.Windows.Application
         // detiene TODO el host por defecto (BackgroundServiceExceptionBehavior.StopHost) → tumbaría las
         // grabaciones de todos los canales. Con Ignore, un fallo del scheduler/retención/auditoría queda en el
         // log pero NO mata el host (las grabaciones siguen). Complementa los handlers globales de C1. (Auditoría #34.)
-        s.Configure<HostOptions>(o => o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
+        s.Configure<HostOptions>(o =>
+        {
+            o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+            // Parar el host (servicios de fondo + Kestrel) es solo el PRIMER paso del cierre; después hay que finalizar
+            // las grabaciones, y todo comparte el tope de 20 s (ShutdownTimeout de esta clase). Con el plazo por defecto
+            // de .NET (30 s), un cliente de la API que no suelta su conexión se comía el tope entero y las grabaciones
+            // se quedaban sin finalizar. A los 8 s Kestrel corta las conexiones que queden y el cierre sigue.
+            o.ShutdownTimeout = TimeSpan.FromSeconds(8);
+        });
         // Límite de optimización faststart (GB): al detener una grabación de archivo único por encima de este
         // tamaño, NO se reescribe para optimizar la búsqueda (el remux copia el archivo entero y saturaría el
         // disco, compitiendo con las grabaciones activas). 0 = sin límite. Para archivos largos con búsqueda
@@ -237,6 +289,8 @@ public partial class App : System.Windows.Application
         s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null, faststartCap);
         s.AddBaiossCqrs(); // IDispatcher + handlers de comandos/queries que despacha la API
         s.AddSingleton(new RecordingCapabilities { GpuEncoders = gpuEncoders });
+        s.AddSingleton(apiAccess);                       // lo enseña y lo edita la ventana de Configuración
+        s.AddBaiossApiCors(apiAccess.Applied);           // nada si no hay orígenes web permitidos (lo de siempre)
         s.AddSingleton<PreviewCatalog>();
         // Instantáneas JPEG de baja resolución del preview para el panel web (GET /channels/{id}/preview.jpg): bajo
         // demanda, así que con el panel cerrado no cuestan nada.
@@ -371,6 +425,7 @@ public partial class App : System.Windows.Application
         // KeepAlive de servidor: detecta clientes WS caídos en half-open (cable cortado sin frame Close) y
         // libera su suscripción al bus, evitando suscripciones zombi en operación 24/7. (Auditoría 24/7, #28.)
         app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });   // necesario para el endpoint /ws/events
+        app.UseBaiossApiCors(apiAccess.Applied);   // antes de los endpoints
         app.MapBaiossApi();    // REST de automatización + WebSocket de eventos
         _host = app;
 
@@ -435,7 +490,14 @@ public partial class App : System.Windows.Application
             catch (Exception ex) { Serilog.Log.Debug(ex, "Barrido de temporales .faststart falló."); }
         }
 
-        Serilog.Log.Information("API REST + WebSocket escuchando en {Url} (solo loopback).", ApiUrl);
+        Serilog.Log.Information("API REST + WebSocket escuchando en {Url} ({Scope}); webs permitidas (CORS): {Origins}.",
+            apiAccess.Applied.ListenUrl,
+            apiAccess.Applied.ListensOnNetwork ? "ABIERTA A LA RED, sin autenticación" : "solo este equipo",
+            apiAccess.Applied.Origins.Count == 0 ? "ninguna" : string.Join(", ", apiAccess.Applied.Origins));
+        if (apiAccess.LoadProblem is not null) Serilog.Log.Warning("Acceso a la API: {Problem}", apiAccess.LoadProblem);
+        if (apiAccess.Warning is not null)
+            Serilog.Log.Error("La API NO pudo escuchar en la dirección guardada ({Problem}); arrancó en {Url}. Revísalo en Configuración → Panel web y API.",
+                apiAccess.Warning, apiAccess.Applied.ListenUrl);
         Serilog.Log.Information("Canales configurados (Channels:Count): {Count}.", channelCount);
         // Cascada GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264): por qué se descartó cada
         // GPU (p. ej. driver NVIDIA viejo para este FFmpeg) y cuál quedó como encoder por defecto.
