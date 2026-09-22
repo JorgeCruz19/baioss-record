@@ -44,6 +44,7 @@ public static class AuditText
             {
                 "RecordingStarted" => Started(j),
                 "RecordingStopped" => Stopped(j),
+                "RecordingRenamed" => Renamed(j),
                 "RecordingStartFailed" => Failed(j),
                 "ScheduledRecordingSkipped" => Skipped(j),
                 "SegmentCompleted" => Segment(j),
@@ -94,6 +95,16 @@ public static class AuditText
             long bytes = Long(j, "TotalBytes");
             if (bytes > 0) parts.Add(Bytes(bytes));
         }
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>«Noticias del mediodía.mp4» (antes A_20260919_115343.mp4) · 3 archivos · jcruz.</summary>
+    private static string Renamed(JsonElement j)
+    {
+        var parts = new List<string>(3) { Localizer.F("Audit_Renamed_Detail", Str(j, "FileName") ?? "?", Str(j, "PreviousFileName") ?? "?") };
+        int files = Int(j, "Files");
+        if (files > 1) parts.Add(Localizer.F("Audit_Files_Many", files));
+        if (Str(j, "Operator") is { Length: > 0 } op) parts.Add(op);
         return string.Join(" · ", parts);
     }
 

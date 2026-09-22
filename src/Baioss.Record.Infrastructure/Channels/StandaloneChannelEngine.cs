@@ -167,8 +167,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             ChannelAlarm[] alarms;
             lock (_alarmLock) alarms = _alarms.Values.ToArray();
             var profile = _profile;
-            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, _session?.Id, _audio, alarms, _storage,
-                _source.Definition.Name, RecordingProfileSummary.DisplayName(profile), RecordingProfileSummary.Describe(profile));
+            var session = _session; // una sola lectura del campo volatile: Id y Trigger de la MISMA sesión
+            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, session?.Id, _audio, alarms, _storage,
+                _source.Definition.Name, RecordingProfileSummary.DisplayName(profile), RecordingProfileSummary.Describe(profile),
+                session?.Trigger);
         }
     }
 
@@ -507,16 +509,20 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// archivos en segundo plano y corrige la ruta de los segmentos persistidos. Devuelve la nueva ruta
     /// principal, o null si no había nada que renombrar.
     /// </summary>
-    public async Task<string?> RenameLastRecordingAsync(string baseName, CancellationToken ct = default)
+    public async Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default)
     {
+        // Los segmentos de la sesión terminada se fijan AL ENTRAR, igual que sus archivos en el motor: el renombrado
+        // puede esperar decenas de segundos a la optimización del archivo y, si entre tanto termina OTRA grabación, el
+        // snapshot pasa a ser el suyo — las rutas de ESTA sesión se quedarían en la BD con el nombre temporal.
+        Task[] pending;
+        List<Segment> segs;
+        lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _completedSessionSegments.ToList(); }
+
         // File.Move (con reintentos) no debe bloquear el hilo de UI desde el que se llama.
         var pairs = await Task.Run(() => _engine.RenameSessionFiles(baseName), ct).ConfigureAwait(false);
         if (pairs.Count == 0) return null;
 
         // Espera la persistencia en vuelo y corrige la ruta en la BD (que no quede el nombre temporal).
-        Task[] pending;
-        List<Segment> segs;
-        lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _completedSessionSegments.ToList(); }
         try { await Task.WhenAll(pending).ConfigureAwait(false); } catch { /* ya registrado en PersistSegmentAsync */ }
 
         if (_segments is not null)
@@ -529,6 +535,23 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
                     try { await _segments.UpdateAsync(seg, ct).ConfigureAwait(false); }
                     catch (Exception ex) { _log?.LogError(ex, "No se pudo actualizar la ruta del segmento {Id}.", seg.Id); }
                 }
+        }
+
+        // A la auditoría: con qué nombre quedó el material (antes no dejaba rastro, ni desde el diálogo de la aplicación).
+        var moved = pairs.Where(p => !string.Equals(p.Old, p.New, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (moved.Count > 0)
+        {
+            _log?.LogInformation("Canal {Key}: grabación guardada como «{New}» (era «{Old}»).",
+                _key, Path.GetFileName(moved[^1].New), Path.GetFileName(moved[^1].Old));
+            if (_bus is not null)
+            {
+                try
+                {
+                    await _bus.PublishAsync(new RecordingRenamed(ChannelId, segs.FirstOrDefault()?.SessionId,
+                        Path.GetFileName(moved[^1].New), Path.GetFileName(moved[^1].Old), moved.Count, operatorName), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex) { _log?.LogError(ex, "No se pudo publicar el renombrado de la grabación."); }
+            }
         }
         return pairs[^1].New;
     }

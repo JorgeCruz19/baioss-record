@@ -354,8 +354,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             }
             // Snapshot de los archivos de ESTA sesión para el renombrado posterior (inmune a que una grabación
             // nueva vacíe _sessionFiles mientras el operador nombra en el diálogo). (Auditoría N9.)
-            _completedSessionFiles.Clear();
-            _completedSessionFiles.AddRange(_sessionFiles);
+            lock (_completedSessionFiles)
+            {
+                _completedSessionFiles.Clear();
+                _completedSessionFiles.AddRange(_sessionFiles);
+            }
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false);
             RaiseAlarm(AlarmType.EncoderFallback, false);
@@ -688,11 +691,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             SizeBytes = fi.Exists ? fi.Length : 0,
         });
         var verify = VerifyRecordingAsync(path, optimizeSeek); // red de seguridad + (archivo único) optimización de seek
-        // Registra el remux para que el renombrado espere a que TERMINE (anti-carrera). Poda los ya completados
-        // para no crecer sin límite en una grabación larga con muchas piezas. (Auditoría N29.)
-        if (optimizeSeek)
-            lock (_optimizeLock) { _pendingOptimizes.RemoveAll(t => t.IsCompleted); _pendingOptimizes.Add(verify); }
-        else _ = verify;
+        // Se registra SIEMPRE para que el renombrado espere a que TERMINE (anti-carrera). Con remux, porque reescribe el
+        // archivo in situ. Y sin él también: la verificación abre el archivo por su nombre a los 300 ms, y si para
+        // entonces ya se renombró no lo encuentra → FALSA alarma «grabación sin verificar», RecordingFileUnverified de
+        // 0 bytes en la auditoría y el segmento marcado Corrupt. Desde el diálogo de la aplicación era improbable (el
+        // operador tarda en escribir); con el nombre pedido por la API al detener, el renombrado es inmediato y la
+        // carrera era sistemática (medido). Poda los ya completados para no crecer sin límite en una grabación larga
+        // con muchas piezas. (Auditoría N29.)
+        lock (_optimizeLock) { _pendingOptimizes.RemoveAll(t => t.IsCompleted); _pendingOptimizes.Add(verify); }
     }
 
     /// <summary>
@@ -1207,6 +1213,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var pairs = new List<(string Old, string New)>();
         if (safe is null) return pairs;
 
+        // QUÉ archivos se renombran se fija AL ENTRAR, antes de la espera de abajo (que con un archivo grande son
+        // decenas de segundos): si mientras tanto termina OTRA grabación, _completedSessionFiles pasa a ser la suya y
+        // este nombre acabaría en los archivos equivocados. Con el nombre pedido por la API al detener, un sistema
+        // externo que corta clips seguidos (detener+nombre → grabar → detener+nombre) lo provocaría con facilidad.
+        List<string> files;
+        lock (_completedSessionFiles) files = _completedSessionFiles.ToList();
+
         // Espera a que termine la optimización de seek (remux faststart) en vuelo ANTES de mover los archivos:
         // el remux reescribe el archivo in-place (File.Move de un temporal sobre el original) y, si se solapara
         // con el renombrado, dejaría un archivo duplicado/huérfano o un fallo de uso compartido. Para archivos
@@ -1217,22 +1230,32 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         try { if (pendingRemux.Length > 0) Task.WaitAll(pendingRemux, TimeSpan.FromMinutes(10)); }
         catch { /* cada remux ya capturó sus errores internamente */ }
 
-        foreach (var old in _completedSessionFiles.ToList()) // el snapshot de la sesión terminada (N9), no el vivo
+        var current = new List<string>(files.Count); // cómo queda cada archivo de la sesión, renombrado o no
+        foreach (var old in files) // el snapshot de la sesión terminada (N9), tomado al entrar
         {
+            current.Add(old);
             if (!File.Exists(old)) continue;
             var dir = Path.GetDirectoryName(old)!;
             var ext = Path.GetExtension(old).TrimStart('.');
             var target = ResolveUniqueSingleName(dir, safe, ext);
             var newPath = Path.Combine(dir, $"{target}.{ext}");
             if (string.Equals(old, newPath, StringComparison.OrdinalIgnoreCase)) { pairs.Add((old, newPath)); continue; }
-            if (TryMoveWithRetry(old, newPath)) pairs.Add((old, newPath));
+            if (TryMoveWithRetry(old, newPath)) { pairs.Add((old, newPath)); current[^1] = newPath; }
         }
 
         if (pairs.Count > 0)
         {
-            LastOutputFile = pairs[^1].New;
-            _completedSessionFiles.Clear();
-            _completedSessionFiles.AddRange(pairs.Select(p => p.New));
+            lock (_completedSessionFiles)
+            {
+                // Solo si la lista sigue siendo la de ESTA sesión: si ya la reemplazó una grabación posterior, sus
+                // archivos (y su «último archivo») no se tocan.
+                if (_completedSessionFiles.SequenceEqual(files, StringComparer.OrdinalIgnoreCase))
+                {
+                    LastOutputFile = pairs[^1].New;
+                    _completedSessionFiles.Clear();
+                    _completedSessionFiles.AddRange(current);
+                }
+            }
         }
         return pairs;
     }

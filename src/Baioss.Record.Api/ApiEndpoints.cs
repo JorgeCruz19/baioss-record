@@ -37,10 +37,24 @@ public static class ApiEndpoints
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
 
-        api.MapPost("/channels/{id:guid}/recording/stop", async (Guid id, IDispatcher d, CancellationToken ct) =>
+        // Detener. SIN cuerpo (lo de siempre): 204. Con { "name": "…" } además le pone ese nombre al archivo recién
+        // terminado —lo que hace el diálogo de la aplicación al detener una grabación manual— y contesta 200 con lo que
+        // pasó: { renamed, pending, fileName, detail }. «pending» = el archivo aún se está optimizando y se renombrará
+        // solo al acabar (queda en la auditoría como RecordingRenamed). Una grabación PROGRAMADA ya tiene su nombre: se
+        // detiene igual y el nombre se ignora (detail = "scheduled"). El cuerpo se lee A MANO y con tolerancia (ver
+        // ReadStopBodyAsync): los clientes que ya llamaban —sin cuerpo o con cualquier cosa— no notan nada.
+        api.MapPost("/channels/{id:guid}/recording/stop", async (Guid id, HttpContext http, IDispatcher d, CancellationToken ct) =>
         {
-            await d.SendAsync(new StopRecordingCommand(id), ct);
-            return Results.NoContent();
+            var body = await ReadStopBodyAsync(http.Request, ct);
+            var result = await d.SendAsync(new StopRecordingCommand(id, body?.Name, body?.Operator), ct);
+            if (result.Name == RecordingNameOutcome.NotRequested) return Results.NoContent();
+            return Results.Ok(new
+            {
+                renamed = result.Name == RecordingNameOutcome.Renamed,
+                pending = result.Name == RecordingNameOutcome.Pending,
+                fileName = result.FileName,
+                detail = result.Detail,
+            });
         });
 
         // --- Estado / consultas ---
@@ -245,6 +259,21 @@ public static class ApiEndpoints
         return app;
     }
 
+    /// <summary>
+    /// Cuerpo OPCIONAL de «detener», leído con tolerancia. Este endpoint nunca tuvo cuerpo, así que aceptaba CUALQUIER
+    /// POST; con el enlace automático de ASP.NET (<c>StopBody? body</c>) un formulario vacío —lo que envían
+    /// <c>curl -d ''</c> o <c>Invoke-WebRequest -Method Post</c>— pasaba a dar 415 y un JSON mal formado 400: un cliente
+    /// que llevaba años deteniendo así dejaría de poder DETENER una grabación (medido). Solo se atiende un JSON válido y
+    /// pequeño; todo lo demás se ignora y la grabación se detiene como siempre.
+    /// </summary>
+    private static async Task<StopBody?> ReadStopBodyAsync(HttpRequest request, CancellationToken ct)
+    {
+        if (!request.HasJsonContentType() || request.ContentLength is > 8 * 1024) return null;
+        try { return await request.ReadFromJsonAsync<StopBody>(ct); }
+        catch (JsonException) { return null; }            // cuerpo vacío o JSON mal formado
+        catch (BadHttpRequestException) { return null; }  // cuerpo cortado a medias
+    }
+
     private const int MaxPreviewSockets = 32;
     private const int MaxPreviewFps = 15;
     private static readonly TimeSpan PreviewSendTimeout = TimeSpan.FromSeconds(5);
@@ -349,6 +378,8 @@ public static class ApiEndpoints
     }
 
     public sealed record StartBody(Guid ProfileId, string? Operator);
+    /// <summary>Cuerpo OPCIONAL de «detener»: el nombre (sin extensión) con el que guardar la grabación y quién lo pone.</summary>
+    public sealed record StopBody(string? Name, string? Operator);
     public sealed record ProtectionBody(string Level);
     /// <summary>Cuerpo de la activación de licencia: la clave tal como la recibió el cliente.</summary>
     public sealed record ActivateBody(string? Key);

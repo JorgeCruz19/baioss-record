@@ -454,6 +454,8 @@ public static class Strings
         // Tipos de suceso (el nombre técnico se traduce; si falta la clave se muestra tal cual)
         ["Audit_Cat_RecordingStarted"] = "Grabación iniciada",
         ["Audit_Cat_RecordingStopped"] = "Grabación terminada",
+        ["Audit_Cat_RecordingRenamed"] = "Grabación guardada con nombre",
+        ["Audit_Renamed_Detail"] = "«{0}» (antes {1})",
         ["Audit_Cat_RecordingStartFailed"] = "No se pudo iniciar",
         ["Audit_Cat_ScheduledRecordingSkipped"] = "Programación omitida",
         ["Audit_Cat_SegmentCompleted"] = "Archivo cerrado",
@@ -995,6 +997,8 @@ public static class Strings
         // Event types (the technical name is translated; an untranslated one is shown as-is)
         ["Audit_Cat_RecordingStarted"] = "Recording started",
         ["Audit_Cat_RecordingStopped"] = "Recording ended",
+        ["Audit_Cat_RecordingRenamed"] = "Recording saved with a name",
+        ["Audit_Renamed_Detail"] = "\"{0}\" (was {1})",
         ["Audit_Cat_RecordingStartFailed"] = "Could not start",
         ["Audit_Cat_ScheduledRecordingSkipped"] = "Schedule skipped",
         ["Audit_Cat_SegmentCompleted"] = "File closed",

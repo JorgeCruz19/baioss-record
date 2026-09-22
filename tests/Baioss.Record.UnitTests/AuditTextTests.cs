@@ -69,6 +69,24 @@ public class AuditTextTests : IDisposable
     }
 
     [Fact]
+    public void El_Nombre_Que_Se_Le_Puso_A_La_Grabacion_Queda_A_La_Vista()
+    {
+        // Antes la auditoría decía que la grabación terminó, pero no con qué nombre quedó el material.
+        var payload = """{"FileName":"Noticias del mediodía.mp4","PreviousFileName":"A_20260919_115343.mp4","Files":1,"Operator":"jcruz"}""";
+
+        Assert.Equal("Grabación guardada con nombre", AuditText.Category("RecordingRenamed"));
+        Assert.Equal("«Noticias del mediodía.mp4» (antes A_20260919_115343.mp4) · jcruz", AuditText.Detail("RecordingRenamed", payload, "x"));
+
+        // Segmentada: cuántas piezas se renombraron. Sin operador (renombrado antiguo): no se inventa.
+        var segmentada = AuditText.Detail("RecordingRenamed", """{"FileName":"Pleno 2.mp4","PreviousFileName":"A_x_2.mp4","Files":3,"Operator":null}""", "x");
+        Assert.Equal("«Pleno 2.mp4» (antes A_x_2.mp4) · 3 archivos", segmentada);
+
+        Localizer.Language = AppLanguage.English;
+        Assert.Equal("Recording saved with a name", AuditText.Category("RecordingRenamed"));
+        Assert.StartsWith("\"Noticias del mediodía.mp4\" (was A_20260919_115343.mp4)", AuditText.Detail("RecordingRenamed", payload, "x"));
+    }
+
+    [Fact]
     public void Una_Grabacion_Corta_Muestra_Segundos_Y_Una_Larga_Horas()
     {
         var corta = AuditText.Detail("RecordingStopped", """{"Duration":"00:00:40","Reason":1,"Files":1}""", "x");

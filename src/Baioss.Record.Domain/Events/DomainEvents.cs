@@ -31,6 +31,15 @@ public sealed record RecordingStopped(
     Guid ChannelId, Guid SessionId, TimeSpan Duration, RecordingStopReason Reason,
     int Files = 0, long TotalBytes = 0, string? Operator = null) : DomainEventBase;
 
+/// <summary>
+/// El operador puso NOMBRE a una grabación recién terminada: el archivo temporal («A_20260919_115343») pasó a llamarse
+/// como él dijo (desde el diálogo de la aplicación o desde el panel web/API al detener). Sin esto la auditoría contaba
+/// que la grabación terminó pero no con qué nombre quedó el material, que es justo lo que se busca después.
+/// <paramref name="Files"/> &gt; 1 en una grabación segmentada (<paramref name="FileName"/> es la última pieza).
+/// </summary>
+public sealed record RecordingRenamed(
+    Guid ChannelId, Guid? SessionId, string FileName, string PreviousFileName, int Files = 1, string? Operator = null) : DomainEventBase;
+
 /// <summary>Una grabación NO llegó a arrancar (pre-vuelo, dispositivo, licencia…). Sin esto, un hueco en la
 /// programación no deja ni rastro en la auditoría: solo faltaría el archivo.</summary>
 public sealed record RecordingStartFailed(

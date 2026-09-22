@@ -8,7 +8,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | Método | Ruta | Descripción | Rol mínimo |
 |--------|------|-------------|-----------|
 | POST | `/channels/{id}/recording/start` | Inicia grabación con un perfil | Operador |
-| POST | `/channels/{id}/recording/stop` | Detiene grabación | Operador |
+| POST | `/channels/{id}/recording/stop` | Detiene grabación. Cuerpo opcional `{ "name", "operator" }`: guarda el archivo con ese nombre (ver abajo) | Operador |
 | POST | `/channels/{id}/recording/pause` | Pausa | Operador |
 | POST | `/channels/{id}/recording/resume` | Reanuda | Operador |
 | GET | `/channels` | Lista canales con estado | Operador |
@@ -30,6 +30,33 @@ Content-Type: application/json
 { "profileId": "1a2b...", "operator": "jcruz" }
 → 200 OK { "sessionId": "9d4e..." }
 ```
+
+### Detener poniéndole nombre al archivo
+
+```http
+POST /api/v1/channels/8f3c.../recording/stop
+Content-Type: application/json
+
+{ "name": "Noticias del mediodía", "operator": "jcruz" }
+→ 200 OK { "renamed": true, "pending": false, "fileName": "Noticias del mediodía.mp4", "detail": null }
+```
+
+Es lo que hace el diálogo de la aplicación al detener una grabación manual, expuesto para el panel web y la automatización:
+el archivo temporal `{canal}_{fecha_hora}` pasa a llamarse así (sin extensión en la petición; se quitan los caracteres no
+válidos y el `%`; si ya existe se añade « 1», « 2»…; máx. 120 caracteres), se corrige la ruta del segmento en la BD y queda
+en la auditoría como `RecordingRenamed`.
+
+- **Sin cuerpo: 204, exactamente como siempre.** El cuerpo se lee a mano y con tolerancia: un formulario vacío (lo que
+  envían `curl -d ''` o `Invoke-WebRequest -Method Post`), texto plano o un JSON mal formado se IGNORAN y la grabación se
+  detiene igual. (Con el enlace automático de ASP.NET esos casos pasaban a 415/400 y un cliente de siempre ya no podía
+  detener: visto en las pruebas y fijado con tests.)
+- `pending: true` — el archivo todavía se está verificando/optimizando (remux faststart) y no se puede mover; la petición
+  no espera más de ~4 s: el renombrado termina solo y deja su `RecordingRenamed`.
+- `renamed: false` + `detail`: `scheduled` (una grabación programada conserva su `fecha_Título`), `not-recording` (no
+  había grabación: **no** se toca la anterior), `unsupported` (canal simulado), `not-renamed` (nombre sin caracteres
+  válidos o archivo que no se pudo mover). La grabación se detiene en todos los casos.
+- `GET /channels` y `/status` llevan `sessionTrigger` (1 manual · 2 programada · 3 API; `null` en reposo) para que el
+  cliente sepa si tiene sentido pedir nombre.
 
 El mapeo vive en `Api/ApiEndpoints.cs` (`MapBaiossApi`). Cada endpoint despacha un
 comando/query CQRS — la API y la UI comparten exactamente la misma lógica de aplicación.

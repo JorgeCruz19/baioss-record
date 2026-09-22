@@ -280,7 +280,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
                 Owner = System.Windows.Application.Current?.MainWindow,
             };
             if (dialog.ShowDialog() == true)
-                await _renamer!.RenameLastRecordingAsync(dialog.RecordingName);
+                await _renamer!.RenameLastRecordingAsync(dialog.RecordingName, Environment.UserName);
         }
         catch (Exception ex)
         {

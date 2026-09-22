@@ -8,7 +8,7 @@ using Baioss.Record.Application.Recording;
 namespace Baioss.Record.IntegrationTests.Fakes;
 
 /// <summary>Doble de prueba de <see cref="IChannelEngine"/> para probar la API/scheduler sin FFmpeg ni canales reales.</summary>
-internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
+internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename
 {
     private readonly string _key;
     private Guid? _sessionId;
@@ -37,7 +37,19 @@ internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording
     public ChannelStatus Status => new(
         ChannelId, _key,
         _sessionId is null ? RecordingState.Idle : RecordingState.Recording,
-        SignalInfo.None, RecorderStats.Empty, _sessionId, null);
+        SignalInfo.None, RecorderStats.Empty, _sessionId, null,
+        SessionTrigger: _sessionId is null ? null : LastOrigin?.Trigger);
+
+    // IPostRecordingRename: el nombre que se le pone al archivo al DETENER (diálogo de la aplicación, o la API).
+    public string? RenamedTo { get; private set; }
+    public string? RenamedBy { get; private set; }
+
+    public Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default)
+    {
+        RenamedTo = baseName;
+        RenamedBy = operatorName;
+        return Task.FromResult<string?>(Path.Combine(@"X:\grabaciones", baseName + ".mp4"));
+    }
 
     public event EventHandler<ChannelStatus>? StatusChanged;
 

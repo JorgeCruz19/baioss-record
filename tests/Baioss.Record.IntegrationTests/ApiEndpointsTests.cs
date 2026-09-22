@@ -81,6 +81,81 @@ public sealed class ApiEndpointsTests
         await app.StopAsync();
     }
 
+    // --- Detener poniéndole nombre al archivo (lo que el panel web ofrece en su diálogo de «Detener») ---
+
+    [Fact]
+    public async Task Stop_WithAName_SavesTheFileUnderThatName_AndSaysSo()
+    {
+        var (app, channel) = BuildApi();
+        await using var _ = app;
+        await app.StartAsync();
+        var client = app.GetTestClient();
+        (await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/recording/start",
+            new { ProfileId = Guid.Empty, Operator = "tester" })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/recording/stop",
+            new { name = "Noticias del mediodía", @operator = "jcruz" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("renamed").GetBoolean());
+        Assert.False(body.GetProperty("pending").GetBoolean());
+        Assert.Equal("Noticias del mediodía.mp4", body.GetProperty("fileName").GetString()); // el nombre, no la ruta del servidor
+        Assert.True(channel.Stopped);
+        Assert.Equal("Noticias del mediodía", channel.RenamedTo);
+        Assert.Equal("jcruz", channel.RenamedBy);
+        await app.StopAsync();
+    }
+
+    // «Detener» nunca tuvo cuerpo y aceptaba cualquier POST. Al añadirle el nombre opcional con el enlace automático de
+    // ASP.NET, un formulario vacío (curl -d '', Invoke-WebRequest -Method Post) pasó a dar 415 y un JSON roto 400: un
+    // cliente de siempre ya no podía DETENER. Se vio en la prueba en vivo; esto lo deja fijado.
+    [Theory]
+    [InlineData("application/json", "{}")]                                  // cuerpo sin nombre
+    [InlineData("application/json", "{\"name\":\"   \"}")]                   // nombre en blanco
+    [InlineData("application/json", "{\"name\":null}")]
+    [InlineData("application/json", "null")]
+    [InlineData("application/json", "")]                                    // JSON declarado, cuerpo vacío
+    [InlineData("application/json", "{esto no es json")]                    // JSON mal formado
+    [InlineData("application/x-www-form-urlencoded", "")]                   // lo que envía curl -d '' / PowerShell
+    [InlineData("application/x-www-form-urlencoded", "name=Nombre")]        // un formulario NO pone nombre: no es el contrato
+    [InlineData("text/plain", "hola")]
+    public async Task Stop_WithAnythingThatIsNotAValidName_BehavesExactlyAsBefore(string contentType, string json)
+    {
+        var (app, channel) = BuildApi();
+        await using var _ = app;
+        await app.StartAsync();
+        var client = app.GetTestClient();
+        (await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/recording/start",
+            new { ProfileId = Guid.Empty, Operator = "tester" })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsync($"/api/v1/channels/{channel.ChannelId}/recording/stop",
+            new StringContent(json, System.Text.Encoding.UTF8, contentType));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);       // 204, como sin cuerpo
+        Assert.True(channel.Stopped);
+        Assert.Null(channel.RenamedTo);
+        await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task Stop_WithAName_WhenNothingIsRecording_DoesNotRenameAnOlderRecording()
+    {
+        var (app, channel) = BuildApi();
+        await using var _ = app;
+        await app.StartAsync();
+
+        var response = await app.GetTestClient().PostAsJsonAsync(
+            $"/api/v1/channels/{channel.ChannelId}/recording/stop", new { name = "Nombre suelto" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(body.GetProperty("renamed").GetBoolean());
+        Assert.Equal("not-recording", body.GetProperty("detail").GetString());
+        Assert.Null(channel.RenamedTo);
+        await app.StopAsync();
+    }
+
     [Fact]
     public async Task Status_UnknownChannel_FailsLoudly()
     {

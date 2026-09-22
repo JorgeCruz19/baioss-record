@@ -4,6 +4,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Channels;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Capture;
 using Baioss.Record.Infrastructure.Preview;
@@ -195,6 +196,59 @@ public sealed class LivePipelineTests
             Assert.EndsWith("Mi Toma 1.mp4", second!);          // dedupe « 1» al final
             Assert.True(File.Exists(second!), $"Falta {second}");
             Assert.True(File.Exists(first!), "La 1ª grabación debe seguir existiendo.");
+        }
+        finally
+        {
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [SkippableFact]
+    public async Task RenamingRightAfterStop_DoesNotRaiseAFalseUnverifiedAlarm()
+    {
+        // Con MP4 ESTÁNDAR (Recording:FragmentedMp4=false, la configuración del cliente) no hay remux, y la verificación
+        // posterior al cierre (ffprobe a los 300 ms) corría sin que el renombrado la esperase. Desde el diálogo de la
+        // aplicación el operador tarda en escribir; la API («detener» con nombre, el panel web) renombra AL INSTANTE →
+        // ffprobe buscaba un archivo que ya no tenía ese nombre → falsa alarma «grabación sin verificar», evento de 0 bytes
+        // en la auditoría y el segmento marcado Corrupt. Visto en la prueba en vivo del panel web.
+        Skip.IfNot(TestAssets.Available, "FFmpeg/clip de prueba no disponibles en tools/.");
+
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-rename-race-{Guid.NewGuid():N}");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            var source = new FileCaptureSource(new InputSource
+            {
+                Name = "clip", Type = InputType.File, Uri = TestAssets.Clip!,
+                Parameters = { ["loop"] = "1", ["realtime"] = "1" },
+                ExpectedResolution = Resolution.Hd720, ExpectedFrameRate = FrameRate.P25,
+            });
+            await source.OpenAsync();
+            var profile = new RecordingProfile
+            {
+                Name = "std", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
+                VideoBitrate = Bitrate.FromMbps(6), GopSize = 50,
+                AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+            };
+
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot, FragmentedMp4 = false };
+            var unverified = new List<string>();
+            var alarms = new List<AlarmType>();
+            engine.FileUnverified += (_, e) => { lock (unverified) unverified.Add(e.FilePath); };
+            engine.AlarmChanged += (_, e) => { if (e.Active) lock (alarms) alarms.Add(e.Type); };
+            await engine.StartPreviewAsync(source, profile, "TST");
+
+            await engine.StartRecordingAsync(Guid.NewGuid(), profile);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            await engine.StopRecordingAsync();
+            var pairs = engine.RenameSessionFiles("Inmediato");            // sin esperar nada: como la API
+
+            Assert.Single(pairs);
+            Assert.EndsWith("Inmediato.mp4", engine.LastOutputFile!);
+            Assert.True(File.Exists(engine.LastOutputFile!), $"Falta {engine.LastOutputFile}");
+            await Task.Delay(TimeSpan.FromSeconds(2));                     // margen: una verificación suelta ya habría fallado
+            lock (unverified) Assert.Empty(unverified);
+            lock (alarms) Assert.DoesNotContain(AlarmType.RecordingUnverified, alarms);
         }
         finally
         {

@@ -28,6 +28,7 @@ y una **copia estructurada en JSON** (`PayloadJson`) para explotarla con herrami
 |---|---|---|
 | `RecordingStarted` | Arrancó | Quién, **cómo** (Manual / Scheduled / Api), qué tarea programada la disparó y con qué nombre |
 | `RecordingStopped` | Terminó | **Por qué** terminó, cuánto duró, cuántos archivos y cuántos bytes dejó |
+| `RecordingRenamed` | Se le puso nombre al detener (diálogo de la aplicación, panel web o API) | Nombre final y nombre temporal anterior, nº de archivos, quién lo puso. Antes el renombrado no dejaba rastro: la auditoría decía que la grabación terminó pero no con qué nombre quedó el material |
 | `RecordingStartFailed` | No llegó a arrancar | El motivo (pre-vuelo, dispositivo, licencia…) |
 | `ScheduledRecordingSkipped` | El programador omitió una ocurrencia | Por qué (el canal ya grababa, el canal no está disponible) |
 | `SegmentCompleted` | Se cerró cada trozo | La ruta y el tamaño de cada archivo |

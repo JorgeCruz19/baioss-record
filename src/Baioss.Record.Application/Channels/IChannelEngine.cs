@@ -29,7 +29,10 @@ public sealed record ChannelStatus(
     // Preset de grabación vigente del canal (el que se usará al pulsar REC) y su resumen técnico en el idioma de la
     // aplicación («H264x264 · 8 Mbps · nativa · Mp4»), para el badge del panel y del cliente web.
     string? PresetName = null,
-    string? ProfileSummary = null);
+    string? ProfileSummary = null,
+    // De dónde viene la grabación EN CURSO (manual, programada, API); null en reposo. Una programada ya tiene su
+    // nombre (fecha_Título): ni la aplicación ni la API le ofrecen ponerle otro al detener.
+    RecordingTrigger? SessionTrigger = null);
 
 /// <summary>
 /// Orquestador de un canal. Compone captura + monitor de señal + grabación +
@@ -89,8 +92,11 @@ public interface IPostRecordingRename
     /// <summary>
     /// Renombra los archivos de la última grabación terminada usando <paramref name="baseName"/> como base
     /// (con dedupe si ya existe). Devuelve la nueva ruta principal, o <c>null</c> si no había nada que renombrar.
+    /// <paramref name="operatorName"/> es quién le puso el nombre, para la auditoría (<c>RecordingRenamed</c>).
+    /// Actúa sobre la grabación que estaba terminada AL LLAMAR: si espera (optimización del archivo en curso) y entre
+    /// tanto termina otra, no toca la nueva.
     /// </summary>
-    Task<string?> RenameLastRecordingAsync(string baseName, CancellationToken ct = default);
+    Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default);
 }
 
 /// <summary>Registro de los canales activos del despliegue (A, B, …).</summary>
