@@ -121,7 +121,9 @@ dotnet run --project src/Baioss.Record.App
 ```
 
 El cliente web (`web/`: React + React Query + Axios + MUI) se levanta aparte, con la aplicación abierta:
-`cd web && npm install && npm run dev` → http://localhost:5173 (detalles en `web/README.md`).
+`cd web && npm install && npm run dev` → http://localhost:5173 (detalles en `web/README.md`). Para abrirlo desde otro
+equipo, la IP y el puerto del Record se eligen en el propio panel (sin recompilar) y el Record lo permite en
+**🛠 Configuración → Panel web y API** (por defecto la API solo escucha en `127.0.0.1:5005`; no tiene autenticación).
 
 > El scaffold incluye `PackageReference` que requieren `dotnet restore` con acceso a NuGet.
 > Algunos cuerpos de método están marcados con `TODO` donde la integración con SDKs

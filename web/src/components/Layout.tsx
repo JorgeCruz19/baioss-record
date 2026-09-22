@@ -6,6 +6,7 @@ import {
 import { alpha, useTheme } from '@mui/material/styles'
 import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined'
 import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined'
+import EventRepeatRoundedIcon from '@mui/icons-material/EventRepeatRounded'
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded'
 import StorageRoundedIcon from '@mui/icons-material/StorageRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
@@ -14,6 +15,7 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined'
 import SettingsBrightnessOutlinedIcon from '@mui/icons-material/SettingsBrightnessOutlined'
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
+import SettingsEthernetRoundedIcon from '@mui/icons-material/SettingsEthernetRounded'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { useLicense, useStorageStatus } from '../hooks/queries'
 import { useLiveEvents } from '../hooks/useLiveEvents'
@@ -22,14 +24,19 @@ import { StorageHealth } from '../api/types'
 import { toneColor, toneTint, type Tone } from '../theme'
 import { Dot, Meter } from './common'
 import { useColorMode, type ModePreference } from './ColorMode'
+import { useConnectionDialog } from './ConnectionDialog'
+import { connectionLabel, useConnection } from '../api/connection'
+import { LANGS, setLang, useT, type Key, type Lang } from '../i18n'
 
 const SIDEBAR_WIDTH = 248
 
-const NAV: Array<{ to: string; label: string; icon: ReactNode }> = [
-  { to: '/canales', label: 'Canales', icon: <VideocamOutlinedIcon fontSize="small" /> },
-  { to: '/grabaciones', label: 'Grabaciones', icon: <VideoLibraryOutlinedIcon fontSize="small" /> },
-  { to: '/actividad', label: 'Actividad', icon: <HistoryRoundedIcon fontSize="small" /> },
-  { to: '/almacenamiento', label: 'Almacenamiento', icon: <StorageRoundedIcon fontSize="small" /> },
+// Las rutas se quedan en español (son direcciones, no textos); lo que se ve es la etiqueta traducida.
+const NAV: Array<{ to: string; label: Key; icon: ReactNode }> = [
+  { to: '/canales', label: 'nav.channels', icon: <VideocamOutlinedIcon fontSize="small" /> },
+  { to: '/programacion', label: 'nav.schedule', icon: <EventRepeatRoundedIcon fontSize="small" /> },
+  { to: '/grabaciones', label: 'nav.recordings', icon: <VideoLibraryOutlinedIcon fontSize="small" /> },
+  { to: '/actividad', label: 'nav.activity', icon: <HistoryRoundedIcon fontSize="small" /> },
+  { to: '/almacenamiento', label: 'nav.storage', icon: <StorageRoundedIcon fontSize="small" /> },
 ]
 
 /** Tono del medidor de disco: acento mientras hay sitio, y de ahí a aviso y a crítico. */
@@ -40,20 +47,22 @@ export function healthTone(h: StorageHealth): Tone {
 }
 
 function Brand() {
+  const { t } = useT()
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
-      <Box sx={t => ({ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: '9px', bgcolor: toneColor(t, 'accent') })}>
+      <Box sx={th => ({ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: '9px', bgcolor: toneColor(th, 'accent') })}>
         <Box sx={{ width: 11, height: 11, borderRadius: '50%', bgcolor: '#ffffff' }} />
       </Box>
       <Box sx={{ lineHeight: 1.15 }}>
         <Typography sx={{ fontSize: 14.5, fontWeight: 700, letterSpacing: '-0.01em' }}>Baioss Record</Typography>
-        <Typography variant="caption" color="text.secondary">Panel web</Typography>
+        <Typography variant="caption" color="text.secondary">{t('app.subtitle')}</Typography>
       </Box>
     </Box>
   )
 }
 
 function ThemeSwitch() {
+  const { t } = useT()
   const { preference, setPreference } = useColorMode()
   return (
     <ToggleButtonGroup
@@ -62,26 +71,52 @@ function ThemeSwitch() {
       size="small"
       value={preference}
       onChange={(_, v: ModePreference | null) => { if (v) setPreference(v) }}
-      aria-label="Tema de la interfaz"
+      aria-label={t('theme.label')}
     >
-      <ToggleButton value="light" aria-label="Tema claro"><Tooltip title="Claro"><LightModeOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
-      <ToggleButton value="dark" aria-label="Tema oscuro"><Tooltip title="Oscuro"><DarkModeOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
-      <ToggleButton value="system" aria-label="Tema del sistema"><Tooltip title="Como el sistema"><SettingsBrightnessOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
+      <ToggleButton value="light" aria-label={t('theme.light')}><Tooltip title={t('theme.light')}><LightModeOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
+      <ToggleButton value="dark" aria-label={t('theme.dark')}><Tooltip title={t('theme.dark')}><DarkModeOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
+      <ToggleButton value="system" aria-label={t('theme.system')}><Tooltip title={t('theme.system')}><SettingsBrightnessOutlinedIcon sx={{ fontSize: 17 }} /></Tooltip></ToggleButton>
+    </ToggleButtonGroup>
+  )
+}
+
+/** Español / inglés, como en la aplicación de escritorio. Cada idioma se nombra en su propio idioma. */
+function LanguageSwitch() {
+  const { t, lang } = useT()
+  const names: Record<Lang, Key> = { es: 'lang.es', en: 'lang.en' }
+  return (
+    <ToggleButtonGroup
+      exclusive
+      fullWidth
+      size="small"
+      value={lang}
+      onChange={(_, v: Lang | null) => { if (v) setLang(v) }}
+      aria-label={t('lang.label')}
+    >
+      {LANGS.map(l => (
+        <ToggleButton key={l} value={l} aria-label={t(names[l])} sx={{ fontWeight: 650, letterSpacing: '0.04em' }}>
+          <Tooltip title={t(names[l])}><span>{l.toUpperCase()}</span></Tooltip>
+        </ToggleButton>
+      ))}
     </ToggleButtonGroup>
   )
 }
 
 function Sidebar({ connected, onNavigate }: { connected: boolean; onNavigate?: () => void }) {
+  const { t } = useT()
   const { pathname } = useLocation()
   const storage = useStorageStatus().data
   const license = useLicense().data
   const measured = storage && storage.health !== StorageHealth.Unknown
+  const { connection } = useConnection()
+  const { open: openConnection } = useConnectionDialog()
+  const label = connectionLabel(connection)
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', p: 2 }}>
       <Box sx={{ px: 1, pt: 1, pb: 3 }}><Brand /></Box>
 
-      <List component="nav" aria-label="Secciones" disablePadding sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+      <List component="nav" aria-label={t('nav.sections')} disablePadding sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
         {NAV.map(item => {
           const selected = pathname.startsWith(item.to)
           return (
@@ -94,9 +129,9 @@ function Sidebar({ connected, onNavigate }: { connected: boolean; onNavigate?: (
               aria-current={selected ? 'page' : undefined}
               sx={{ py: 0.9, px: 1.25 }}
             >
-              <ListItemIcon sx={t => ({ minWidth: 32, color: selected ? toneColor(t, 'accent') : 'text.secondary' })}>{item.icon}</ListItemIcon>
+              <ListItemIcon sx={th => ({ minWidth: 32, color: selected ? toneColor(th, 'accent') : 'text.secondary' })}>{item.icon}</ListItemIcon>
               <ListItemText
-                primary={item.label}
+                primary={t(item.label)}
                 slotProps={{ primary: { sx: { fontSize: 14, fontWeight: selected ? 650 : 500, color: selected ? 'text.primary' : 'text.secondary' } } }}
               />
             </ListItemButton>
@@ -110,41 +145,65 @@ function Sidebar({ connected, onNavigate }: { connected: boolean; onNavigate?: (
         {measured && (
           <Box component={Link} to="/almacenamiento" onClick={onNavigate} sx={{ display: 'block', color: 'inherit', textDecoration: 'none' }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.75 }}>
-              <Typography variant="caption" color="text.secondary">Disco {storage.worstLabel ?? ''}</Typography>
+              <Typography variant="caption" color="text.secondary">{t('storage.disk', { label: storage.worstLabel ?? '' })}</Typography>
               <Typography variant="caption" sx={{ fontWeight: 600 }}>{Math.round(storage.usedPercent)} %</Typography>
             </Box>
-            <Meter value={storage.usedPercent} tone={healthTone(storage.health)} label={`Ocupación del disco ${storage.worstLabel ?? ''}`} />
-            <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.75 }}>{formatBytes(storage.freeBytes)} libres</Typography>
+            <Meter value={storage.usedPercent} tone={healthTone(storage.health)} label={t('storage.diskUsage', { label: storage.worstLabel ?? '' })} />
+            <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.75 }}>{t('storage.free', { bytes: formatBytes(storage.freeBytes) })}</Typography>
           </Box>
         )}
 
         {license && (
           <Tooltip
             placement="right"
-            title={<>{license.summary}<br />Código de equipo: {license.machineCode}<br />Canales con licencia: {license.licensedChannels}</>}
+            title={<>{license.summary}<br />{t('license.machineCode', { code: license.machineCode })}<br />{t('license.channels', { n: license.licensedChannels })}</>}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
-              <KeyOutlinedIcon sx={t => ({ fontSize: 16, color: license.canStartRecording ? 'text.secondary' : toneColor(t, 'critical') })} />
+              <KeyOutlinedIcon sx={th => ({ fontSize: 16, color: license.canStartRecording ? 'text.secondary' : toneColor(th, 'critical') })} />
               <Typography variant="caption" color="text.secondary" noWrap>
-                {license.canStartRecording ? license.summary : 'La licencia no permite grabar'}
+                {license.canStartRecording ? license.summary : t('license.cannotRecord')}
               </Typography>
             </Box>
           </Tooltip>
         )}
 
+        {/* A qué Record está conectado el panel, y el acceso para cambiar su IP y puerto (se aplica en el acto). */}
         <Tooltip
           placement="right"
-          title={connected
-            ? 'Los cambios llegan al instante desde la aplicación.'
-            : 'Sin canal en vivo: los datos se consultan cada segundo.'}
+          title={<>
+            {t('conn.tooltipRecord', { label })}
+            <br />{t(connected ? 'conn.live' : 'conn.polling')}
+            <br />{t('conn.tooltipChange')}
+          </>}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Box
+            component="button"
+            type="button"
+            onClick={() => { openConnection(); onNavigate?.() }}
+            aria-label={t('conn.aria', { label })}
+            sx={{
+              all: 'unset', boxSizing: 'border-box', cursor: 'pointer', width: '100%',
+              display: 'flex', alignItems: 'center', gap: 1, borderRadius: 1.5, py: 0.5, px: 0.5, mx: -0.5,
+              '&:hover': { bgcolor: 'action.hover' },
+              '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' },
+            }}
+          >
             <Dot tone={connected ? 'good' : 'neutral'} />
-            <Typography variant="caption" color="text.secondary">{connected ? 'Conectado en vivo' : 'Reconectando…'}</Typography>
+            <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+              <Typography variant="caption" color="text.secondary" component="div" noWrap>
+                {t(connected ? 'conn.statusLive' : 'conn.statusReconnecting')}
+              </Typography>
+              {/* Solo la dirección: «192.168.100.200:50050» tiene que caber entera en la barra lateral. */}
+              <Typography variant="caption" component="div" noWrap sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{label}</Typography>
+            </Box>
+            <SettingsEthernetRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
           </Box>
         </Tooltip>
 
-        <ThemeSwitch />
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <ThemeSwitch />
+          <LanguageSwitch />
+        </Box>
       </Box>
     </Box>
   )
@@ -152,10 +211,11 @@ function Sidebar({ connected, onNavigate }: { connected: boolean; onNavigate?: (
 
 /** Aviso de disco casi lleno: qué pasa, por qué importa y dónde resolverlo. */
 function StorageEmergencyNotice({ label, usedPercent, showLink }: { label: string; usedPercent: number; showLink: boolean }) {
+  const { t } = useT()
   return (
     <Box
       role="alert"
-      sx={t => ({
+      sx={th => ({
         display: 'flex',
         flexWrap: 'wrap',
         alignItems: 'center',
@@ -163,23 +223,22 @@ function StorageEmergencyNotice({ label, usedPercent, showLink }: { label: strin
         mb: 3,
         p: 2,
         borderRadius: 3,
-        bgcolor: toneTint(t, 'critical', 0.8),
-        border: `1px solid ${alpha(toneColor(t, 'critical'), 0.3)}`,
+        bgcolor: toneTint(th, 'critical', 0.8),
+        border: `1px solid ${alpha(toneColor(th, 'critical'), 0.3)}`,
       })}
     >
-      <ErrorOutlineRoundedIcon sx={t => ({ color: toneColor(t, 'critical') })} />
+      <ErrorOutlineRoundedIcon sx={th => ({ color: toneColor(th, 'critical') })} />
       <Box sx={{ flexGrow: 1, minWidth: 220 }}>
-        <Typography sx={{ fontWeight: 650 }}>Queda muy poco espacio en el disco {label}</Typography>
-        <Typography variant="body2" color="text.secondary">
-          Está al {Math.round(usedPercent)} %. Libera espacio para que las grabaciones no se interrumpan.
-        </Typography>
+        <Typography sx={{ fontWeight: 650 }}>{t('storage.emergencyTitle', { label })}</Typography>
+        <Typography variant="body2" color="text.secondary">{t('storage.emergencyBody', { percent: Math.round(usedPercent) })}</Typography>
       </Box>
-      {showLink && <Button component={Link} to="/almacenamiento" variant="outlined" size="small">Ver almacenamiento</Button>}
+      {showLink && <Button component={Link} to="/almacenamiento" variant="outlined" size="small">{t('storage.viewStorage')}</Button>}
     </Box>
   )
 }
 
 export default function Layout() {
+  const { t } = useT()
   const theme = useTheme()
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'), { noSsr: true })
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -221,7 +280,7 @@ export default function Layout() {
               borderColor: 'divider',
             }}
           >
-            <IconButton aria-label="Abrir el menú" onClick={() => setDrawerOpen(true)}><MenuRoundedIcon /></IconButton>
+            <IconButton aria-label={t('nav.openMenu')} onClick={() => setDrawerOpen(true)}><MenuRoundedIcon /></IconButton>
             <Brand />
           </Box>
         )}

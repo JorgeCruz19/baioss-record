@@ -103,6 +103,11 @@ Each panel shows you, from top to bottom:
 
 > If you leave the name empty, it is saved as `Channel_date_time` (for example `A_20260721_203055.mp4`).
 
+> **The web panel works the same way:** when you press **Stop**, the confirmation prompt includes a **File name** field
+> with the same suggested name. Type yours and press Enter or **Stop recording**; leave it empty to keep the automatic
+> name. **Scheduled** recordings are not asked: they are already saved as `date_Title`. The name given to each recording
+> is logged in **📋 Activity** ("Recording saved with a name"), whether it was typed in the application or in the web panel.
+
 ### 2.3. The storage indicator (the 💾 pill)
 
 At the top, next to the program name, there is a **pill with the disk space**: for example `💾 250 GB · 78%`. It changes colour according to the health of the disk:
@@ -215,11 +220,19 @@ Press **＋ Schedule** to save it.
 
 > Scheduled recordings are saved with the name `date_Title` (for example `21-07-2026_News.mp4`).
 
+> **From the web panel too:** the panel's **Schedule** section does the same from a browser: **New task** (or **Add** on a
+> channel), edit (pencil), pause/resume (switch) and delete (bin), with the same rules as this window (unique title, no
+> overlaps on the same channel, end time different from start time…). The date and the times are chosen with pickers, in
+> 24-hour format, and are always **this computer's**, even if the browser is in another time zone. In **Channels**, each
+> card shows only the automatic task that is **recording right now** (title, times and what is left); pressing **Stop** on
+> it skips just this occurrence and the task stays active for the next ones. Whatever is created, changed or deleted —from
+> the web or from here— is logged in **📋 Activity** as "Schedule changed", with the name of who did it.
+
 ---
 
 ## 6. Destination folder and test pattern — the 🛠 Settings button
 
-Here you configure two things **per channel**:
+Here you configure two things **per channel** (and, for the whole program, the language and the web panel access: 6.3):
 
 ### 6.1. Destination folder
 
@@ -235,6 +248,32 @@ This is the **folder where that channel's recordings are saved**.
 This is a checkbox: **"Test pattern on signal loss (keeps recording bars)"**.
 - If it is **ticked** and the source loses signal in the middle of a recording, the program **keeps recording** a bars/warning screen instead of cutting. That way the file is not interrupted and there is a record that the signal was lost.
 - If it is **unticked**, losing the signal simply means no new picture reaches the recording.
+
+### 6.3. Web panel and API (opening the web panel from another computer)
+
+The **web panel** (channels, their preview, record/stop, history, activity and storage from a browser) talks to the
+program through its **API**. Out of the box the API only answers **on this same computer** (port **5005**) and there is
+nothing to configure. This section is for when you want to open the panel **from another computer** or change the port:
+
+| Setting | What it does |
+|---|---|
+| **Allow connections from other computers on the network** | Off: this computer only (the safe default). On: the API listens on the network. |
+| **Port** | 5005 by default. Change it if another program already uses it. |
+| **Websites allowed to connect** | The address the web panel is opened from in the browser, for example `http://192.168.1.50:5173` (several, separated by commas). `*` = any. Without it the browser blocks the panel even if the network works. Not needed when the panel uses "Este servidor" (this server). |
+
+Press **Save** and **restart Baioss Record**: these settings apply at start-up. Below, the program tells you **what to
+type in the web panel**: this computer's IP and the port. In the web panel, bottom left, click the **"Record · …"** line
+→ **Another computer** → type that IP and port → **Test connection** → **Save**. It is remembered in that browser and
+applies at once, with nothing to reinstall or rebuild. The panel is in English or Spanish: it follows the browser's
+language the first time, and the ES/EN switch at the bottom of its sidebar changes it at once.
+
+> ⚠ **The API has no password.** With "Allow connections…" on, anyone on your network who can reach that port can see
+> the channels and **start or stop recordings**. Enable it only on a trusted network (never on a computer exposed to the
+> Internet). The first time, Windows may ask for firewall permission: allow it for private networks.
+
+> **If the saved address stops being valid** (for example a fixed IP the computer no longer has, or a port already in
+> use), the program **still starts**, in safe mode ("this computer only"), and says so in this same section and in the
+> log: a wrong network setting never prevents recording.
 
 ---
 

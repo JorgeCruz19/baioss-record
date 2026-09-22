@@ -103,6 +103,12 @@ Cada panel te muestra, de arriba a abajo:
 
 > Si no pones nombre, se guarda como `Canal_fecha_hora` (por ejemplo `A_20260721_203055.mp4`).
 
+> **Desde el panel web es igual:** al pulsar **Detener**, el mismo aviso que pide confirmación trae el campo **Nombre del
+> archivo** (con el mismo nombre sugerido). Escribe el tuyo y pulsa Enter o **Detener grabación**; si lo dejas vacío se
+> queda el nombre automático. Las grabaciones **programadas** no lo piden: ya se guardan como `fecha_Título`. El nombre que
+> se le puso a cada grabación queda en **📋 Actividad** («Grabación guardada con nombre»), lo pongas desde la aplicación o
+> desde la web.
+
 ### 2.3. El indicador de almacenamiento (la pastilla 💾)
 
 Arriba, junto al nombre del programa, hay una **pastilla con el espacio de disco**: por ejemplo `💾 250 GB · 78%`. Cambia de color según la salud del disco:
@@ -214,11 +220,20 @@ Pulsa **＋ Programar** para guardarla.
 
 > Las grabaciones programadas se guardan con el nombre `fecha_Título` (por ejemplo `21-07-2026_Noticias.mp4`).
 
+> **Desde el panel web también:** la sección **Programación** del panel hace lo mismo desde el navegador: **Nueva tarea**
+> (o **Añadir** en el canal), editar (lápiz), pausar/reanudar (interruptor) y borrar (papelera), con las mismas reglas que
+> esta ventana (título único, sin solapes en el mismo canal, hora de fin distinta de la de inicio…). La fecha y las horas
+> se eligen con selectores, en 24 horas, y son siempre las de **este equipo**, aunque el navegador esté en otra zona horaria.
+> En **Canales**, cada tarjeta enseña solo la tarea automática que está **grabando ahora** (título, horario y lo que le
+> queda); si pulsas **Detener** sobre ella, se salta solo esa vez y la tarea sigue activa para las próximas. Lo que se
+> cree, cambie o borre —desde la web o desde aquí— queda en **📋 Actividad** como «Programación modificada», con el nombre
+> de quien lo hizo.
+
 ---
 
 ## 6. Carpeta de destino y carta de ajuste — botón 🛠 Configuración
 
-Aquí configuras, **por cada canal**, dos cosas:
+Aquí configuras, **por cada canal**, dos cosas (y, para todo el programa, el idioma y el acceso del panel web: 6.3):
 
 ### 6.1. Carpeta de destino
 
@@ -234,6 +249,32 @@ Es la **carpeta donde se guardan las grabaciones** de ese canal.
 Es una casilla: **"Carta de ajuste al perder señal (sigue grabando barras)"**.
 - Si está **activada** y la fuente pierde señal en mitad de una grabación, el programa **sigue grabando** una pantalla de barras/aviso en lugar de cortar. Así el archivo no se interrumpe y queda constancia de que hubo un corte de señal.
 - Si está **desactivada**, al perder señal la grabación simplemente se queda sin imagen nueva.
+
+### 6.3. Panel web y API (abrir el panel web desde otro equipo)
+
+El **panel web** (ver canales, su vista previa, grabar/detener, historial, actividad y almacenamiento desde un navegador)
+habla con el programa por su **API**. De fábrica la API solo responde **en este mismo equipo** (puerto **5005**) y no
+hay que tocar nada. Esta sección es para cuando quieres abrir el panel **desde otro ordenador** o cambiar el puerto:
+
+| Ajuste | Qué hace |
+|---|---|
+| **Permitir conexiones desde otros equipos de la red** | Desactivado: solo este equipo (lo seguro, por defecto). Activado: la API escucha en la red. |
+| **Puerto** | 5005 por defecto. Cámbialo si otro programa ya lo usa. |
+| **Webs que pueden conectarse** | La dirección desde la que se abre el panel web en el navegador, por ejemplo `http://192.168.1.50:5173` (varias, separadas por comas). `*` = cualquiera. Sin esto, el navegador bloquea al panel aunque la red funcione. No hace falta si el panel usa «Este servidor». |
+
+Pulsa **Guardar** y **reinicia Baioss Record**: estos ajustes se aplican al arrancar. Debajo, el programa te dice **qué
+escribir en el panel web**: la IP de este equipo y el puerto. En el panel web, abajo a la izquierda, pulsa la línea
+**«Record · …»** → **Otro equipo** → escribe esa IP y ese puerto → **Probar conexión** → **Guardar**. Se recuerda en ese
+navegador y se aplica en el momento, sin reinstalar ni recompilar nada. El panel está en español e inglés: la primera
+vez sigue el idioma del navegador, y el selector ES/EN de abajo de su barra lateral lo cambia al instante.
+
+> ⚠ **La API no tiene contraseña.** Con «Permitir conexiones…» activado, cualquiera en tu red que llegue a ese puerto
+> puede ver los canales y **grabar o detener**. Actívalo solo en una red de confianza (nunca en un equipo expuesto a
+> Internet). La primera vez, Windows puede pedirte permiso en el cortafuegos: acepta para redes privadas.
+
+> **Si la dirección guardada deja de valer** (por ejemplo, una IP fija que el equipo ya no tiene, o un puerto ocupado),
+> el programa **arranca igualmente** en modo seguro («solo este equipo») y te lo dice en esta misma sección y en el
+> registro: un ajuste de red equivocado nunca impide grabar.
 
 ---
 

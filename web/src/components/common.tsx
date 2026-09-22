@@ -5,6 +5,8 @@ import CloudOffOutlinedIcon from '@mui/icons-material/CloudOffOutlined'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import { toneColor, toneTint, type Tone } from '../theme'
 import { errorMessage } from '../api/client'
+import { useConnectionDialog } from './ConnectionDialog'
+import { useT } from '../i18n'
 
 // Piezas pequeñas de interfaz que comparten todas las pantallas. Regla de color: el estado se comunica con un
 // punto o icono de color + una etiqueta en tinta normal (nunca con el color solo, ni tiñendo el texto).
@@ -169,13 +171,21 @@ export function EmptyState({ icon, title, description, action }: { icon: ReactNo
 
 /** No se pudo leer de la aplicación: lo que pasó, y un botón para reintentar (además se reintenta solo). */
 export function ConnectionError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const { t } = useT()
+  const { open: openConnection } = useConnectionDialog()
   return (
     <Card>
       <EmptyState
         icon={<CloudOffOutlinedIcon />}
-        title="Sin conexión con Baioss Record"
+        title={t('error.title')}
         description={errorMessage(error)}
-        action={<Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={onRetry}>Reintentar</Button>}
+        action={
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 1 }}>
+            <Button variant="outlined" startIcon={<RefreshRoundedIcon />} onClick={onRetry}>{t('action.retry')}</Button>
+            {/* Puede que el Record esté en otra IP o puerto: se cambia aquí mismo, sin archivos ni recompilar. */}
+            <Button onClick={openConnection}>{t('action.changeConnection')}</Button>
+          </Box>
+        }
       />
     </Card>
   )

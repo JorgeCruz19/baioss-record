@@ -6,6 +6,10 @@ export const RecordingState = {
 } as const
 export type RecordingState = (typeof RecordingState)[keyof typeof RecordingState]
 
+/** De dónde viene una grabación (entero en /channels; en /recordings y /events la API lo da en texto). */
+export const SessionTrigger = { Unknown: 0, Manual: 1, Scheduled: 2, Api: 3 } as const
+export type SessionTrigger = (typeof SessionTrigger)[keyof typeof SessionTrigger]
+
 export const SignalState = { NoSignal: 0, Unstable: 1, Locked: 2 } as const
 export type SignalState = (typeof SignalState)[keyof typeof SignalState]
 
@@ -82,6 +86,75 @@ export interface ChannelStatus {
   presetName: string | null
   /** Resumen técnico de ese preset («H264x264 · 8 Mbps · nativa · Mp4»), en el idioma de la aplicación. */
   profileSummary: string | null
+  /** Origen de la grabación EN CURSO (null en reposo). Una programada ya tiene nombre: al detenerla no se le pide otro. */
+  sessionTrigger?: SessionTrigger | null
+}
+
+/**
+ * Respuesta de «detener» cuando se pidió un nombre. `pending` = el archivo aún se está optimizando y se renombrará solo
+ * al acabar. Si no se aplicó, `detail` dice por qué: not-recording · scheduled · unsupported · not-renamed.
+ */
+export interface StopResult { renamed: boolean; pending: boolean; fileName: string | null; detail: string | null }
+
+// ---------- Programación: tareas automáticas de grabación de cada canal ----------
+// TODAS las horas son de PARED del equipo que graba, sin zona («20:00:00», «2026-09-20T20:00:00»): una tarea «diaria a las
+// 20:00» son las 20:00 de ese equipo todo el año. No se convierten a instantes del navegador: se pintan tal cual.
+
+export type Recurrence = 'Once' | 'Daily' | 'Weekly'
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'
+/** running = grabando ahora · scheduled = tiene una próxima ejecución · paused · done = única y ya pasó. */
+export type TaskState = 'running' | 'scheduled' | 'paused' | 'done'
+export type TodayStatus = 'scheduled' | 'running' | 'recorded' | 'skipped'
+
+export interface ScheduledTask {
+  id: string
+  channelId: string
+  channelKey: string | null
+  title: string
+  recurrence: Recurrence
+  weekdays: Weekday[]
+  /** Fecha (yyyy-MM-dd) de la primera —o única— ocurrencia. */
+  date: string
+  startTime: string
+  endTime: string
+  durationSeconds: number | null
+  endsNextDay: boolean
+  segmentMinutes: number | null
+  enabled: boolean
+  state: TaskState
+  nextRun: string | null
+  lastRun: string | null
+  runningUntil: string | null
+  today: { start: string; end: string | null; status: TodayStatus } | null
+}
+
+/** Una grabación programada EN MARCHA (la realidad del scheduler, no una deducción por la hora). */
+export interface ActiveTask {
+  jobId: string
+  channelId: string
+  channelKey: string | null
+  sessionId: string
+  title: string
+  startedAt: string
+  endsAt: string
+  /** Calculado por el equipo que graba con SU reloj. */
+  remainingSeconds: number
+}
+
+/** GET /schedule. `now` es el reloj del equipo que graba; `utcOffsetMinutes`, su desfase (para avisar si el navegador está en otra zona). */
+export interface ScheduleList { now: string; utcOffsetMinutes: number; jobs: ScheduledTask[]; active: ActiveTask[] }
+
+/** Lo que se envía al crear o editar. `date` solo con «Once»; `weekdays` solo con «Weekly». */
+export interface TaskDraft {
+  channelId: string
+  title: string
+  recurrence: Recurrence
+  date: string | null
+  startTime: string
+  endTime: string
+  weekdays: Weekday[]
+  segmentMinutes: number | null
+  operator: string | null
 }
 
 export type ProtectionLevel = 'None' | 'Important' | 'Protected'

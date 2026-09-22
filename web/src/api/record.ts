@@ -1,6 +1,7 @@
 import { api } from './client'
 import type {
-  ChannelStatus, EventEntry, LicenseInfo, ProtectionLevel, RecordingSummary, Severity, StorageSettings, StorageSnapshot,
+  ActiveTask, ChannelStatus, EventEntry, LicenseInfo, ProtectionLevel, RecordingSummary, ScheduleList, ScheduledTask, Severity,
+  StopResult, StorageSettings, StorageSnapshot, TaskDraft,
 } from './types'
 
 export const EMPTY_GUID = '00000000-0000-0000-0000-000000000000'
@@ -17,7 +18,32 @@ export const startRecording = (id: string, operator: string | null) =>
   api.post<{ sessionId: string }>(`/channels/${id}/recording/start`, { profileId: EMPTY_GUID, operator: operator || null })
     .then(r => r.data)
 
-export const stopRecording = (id: string) => api.post(`/channels/${id}/recording/stop`).then(() => undefined)
+/**
+ * Detiene la grabación. Con `name`, la aplicación guarda el archivo con ese nombre (como su diálogo al detener una
+ * grabación manual; si ya existe añade « 1», « 2»…) y contesta qué pasó. Sin nombre contesta 204: devuelve null y el
+ * archivo queda con el temporal `{canal}_{fecha_hora}`.
+ */
+export const stopRecording = (id: string, name?: string | null, operator?: string | null) => {
+  const clean = name?.trim()
+  return api
+    .post<StopResult | ''>(`/channels/${id}/recording/stop`, clean ? { name: clean, operator: operator?.trim() || null } : undefined)
+    .then(r => (r.status === 204 || !r.data ? null : r.data))
+}
+
+// ---------- Programación (tareas automáticas) ----------
+export const getSchedule = (channel?: string) =>
+  api.get<ScheduleList>('/schedule', { params: { channel: channel || undefined } }).then(r => r.data)
+export const getActiveTasks = () => api.get<ActiveTask[]>('/schedule/active').then(r => r.data)
+/** Crear o editar (con `id`). Devuelve la tarea guardada y los avisos que no impiden guardar. */
+export const saveTask = (draft: TaskDraft, id?: string) =>
+  (id ? api.put<{ job: ScheduledTask; notes: string[] }>(`/schedule/${id}`, draft) : api.post<{ job: ScheduledTask; notes: string[] }>('/schedule', draft))
+    .then(r => r.data)
+export const setTaskEnabled = (id: string, enabled: boolean, operator: string | null) =>
+  api.post<ScheduledTask>(`/schedule/${id}/enabled`, { enabled, operator }).then(r => r.data)
+export const deleteTask = (id: string, operator: string | null) =>
+  api.delete(`/schedule/${id}`, { params: { operator: operator || undefined } }).then(() => undefined)
+/** Salta la grabación programada EN CURSO de un canal: la detiene ya y solo esa ocurrencia; las siguientes siguen. */
+export const skipScheduled = (channelId: string) => api.post(`/channels/${channelId}/schedule/skip`).then(() => undefined)
 
 export interface RecordingsFilter { channel?: string; days?: number }
 export const getRecordings = (f: RecordingsFilter) =>

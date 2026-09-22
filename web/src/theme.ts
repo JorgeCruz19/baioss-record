@@ -219,6 +219,15 @@ export function buildTheme(mode: Mode): Theme {
             },
           },
           thumb: { width: 18, height: 18, boxShadow: '0 1px 2px rgba(0,0,0,0.25)' },
+          // Tamaño PEQUEÑO a medida. Sin esto, los estilos de MUI para size="small" (selectores anidados, más
+          // específicos que estos) le ponían relleno 4 px y bolita de 16 px sobre el diseño de 24 px de alto: la bolita
+          // quedaba a 7 px del borde de arriba y a 1 del de abajo, visiblemente descentrada.
+          sizeSmall: {
+            width: 34, height: 20, padding: 0, margin: 6,
+            '& .MuiSwitch-switchBase': { padding: 0, margin: 2, '&.Mui-checked': { transform: 'translateX(14px)' } },
+            '& .MuiSwitch-thumb': { width: 16, height: 16 },
+            '& .MuiSwitch-track': { borderRadius: 10 },
+          },
           track: { borderRadius: 12, backgroundColor: alpha(t.ink, dark ? 0.28 : 0.2), opacity: 1 },
         },
       },

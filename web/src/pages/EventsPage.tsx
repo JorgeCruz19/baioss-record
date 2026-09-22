@@ -16,20 +16,21 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded'
-import { useChannels, useEvents } from '../hooks/queries'
+import { useChannels, useEvents, useFirstLoad } from '../hooks/queries'
 import { ChannelBadge, ConnectionError, EmptyState, PageHeader, RowsSkeleton } from '../components/common'
 import {
-  categoryLabel, categoryLabels, dayKey, dayLabel, describeEvent, formatClock, formatDate, formatRelative, formatTime, payloadRows, severityLabel,
+  CATEGORIES, categoryLabel, dayKey, dayLabel, describeEvent, formatClock, formatDate, formatRelative, formatTime, payloadRows, severityLabel,
 } from '../api/format'
 import type { EventEntry, Severity } from '../api/types'
 import { toneColor, toneTint, type Tone } from '../theme'
+import { plural, useT, type Key } from '../i18n'
 
 type Level = '' | 'Warning' | 'Error'
 
-const periods: Array<{ days: number; label: string }> = [
-  { days: 1, label: 'Últimas 24 horas' },
-  { days: 7, label: 'Últimos 7 días' },
-  { days: 30, label: 'Últimos 30 días' },
+const periods: Array<{ days: number; label: Key }> = [
+  { days: 1, label: 'period.day' },
+  { days: 7, label: 'period.week' },
+  { days: 30, label: 'period.month' },
 ]
 
 function severityTone(s: Severity): Tone {
@@ -41,11 +42,11 @@ function eventIcon(e: EventEntry): ReactNode {
   const c = e.category
   if (c === 'RecordingStarted' || c === 'RecordingResumed' || c === 'RecordingRecovered') return <FiberManualRecordIcon />
   if (c === 'RecordingStopped' || c === 'RecordingPaused') return <StopRoundedIcon />
-  if (c === 'SegmentCompleted' || c === 'RecordingFileUnverified') return <MovieOutlinedIcon />
+  if (c === 'SegmentCompleted' || c === 'RecordingFileUnverified' || c === 'RecordingRenamed') return <MovieOutlinedIcon />
   if (c.startsWith('Storage')) return <SdStorageOutlinedIcon />
   if (c.startsWith('Signal')) return <SensorsRoundedIcon />
   if (c.startsWith('Audio')) return <GraphicEqRoundedIcon />
-  if (c.startsWith('Scheduled')) return <ScheduleRoundedIcon />
+  if (c.startsWith('Schedule')) return <ScheduleRoundedIcon /> // ScheduledRecordingSkipped y ScheduleChanged
   if (c === 'RecordingPurged' || c === 'RetentionSkipped') return <AutoDeleteOutlinedIcon />
   if (e.severity === 'Critical' || e.severity === 'Error') return <ErrorOutlineRoundedIcon />
   if (e.severity === 'Warning') return <WarningAmberRoundedIcon />
@@ -53,17 +54,19 @@ function eventIcon(e: EventEntry): ReactNode {
 }
 
 function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey: (id: string) => string | undefined; open: boolean; onToggle: () => void }) {
+  const { t, lang } = useT()
   const tone = severityTone(e.severity)
   const description = describeEvent(e)
   const key = e.channelId ? channelKey(e.channelId) : undefined
-  const details = useMemo(() => (open ? payloadRows(e, channelKey) : []), [open, e, channelKey])
+  // `lang` está en las dependencias a propósito: las filas del detalle se traducen al abrirlas.
+  const details = useMemo(() => (open ? payloadRows(e, channelKey) : []), [open, e, channelKey, lang])
 
   return (
     <Box sx={{ borderBottom: 1, borderColor: 'divider', '&:last-of-type': { borderBottom: 0 } }}>
       <ButtonBase
         onClick={onToggle}
         aria-expanded={open}
-        sx={t => ({
+        sx={th => ({
           display: 'flex',
           alignItems: 'center',
           gap: 1.75,
@@ -72,21 +75,21 @@ function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey
           py: 1.5,
           textAlign: 'left',
           transition: 'background-color .15s',
-          '&:hover': { bgcolor: t.palette.action.hover },
-          '&.Mui-focusVisible': { bgcolor: t.palette.action.selected },
+          '&:hover': { bgcolor: th.palette.action.hover },
+          '&.Mui-focusVisible': { bgcolor: th.palette.action.selected },
         })}
       >
         <Box
           aria-hidden
-          sx={t => ({
+          sx={th => ({
             display: 'grid',
             placeItems: 'center',
             flexShrink: 0,
             width: 34,
             height: 34,
             borderRadius: '50%',
-            bgcolor: tone === 'neutral' ? t.palette.action.hover : toneTint(t, tone),
-            '& svg': { fontSize: 17, color: tone === 'neutral' ? t.palette.text.secondary : toneColor(t, tone) },
+            bgcolor: tone === 'neutral' ? th.palette.action.hover : toneTint(th, tone),
+            '& svg': { fontSize: 17, color: tone === 'neutral' ? th.palette.text.secondary : toneColor(th, tone) },
           })}
         >
           {eventIcon(e)}
@@ -97,7 +100,7 @@ function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey
             {categoryLabel(e.category)}
             {tone !== 'neutral' && (
               <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1, fontWeight: 500 }}>
-                {severityLabel[e.severity]}
+                {severityLabel(e.severity)}
               </Typography>
             )}
           </Typography>
@@ -121,7 +124,7 @@ function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey
       <Collapse in={open} unmountOnExit>
         <Box sx={{ pl: { xs: 2.5, sm: 8.5 }, pr: 2.5, pb: 2 }}>
           <Box sx={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', columnGap: 2, rowGap: 0.5 }}>
-            <Typography variant="caption" color="text.secondary">Hora</Typography>
+            <Typography variant="caption" color="text.secondary">{t('activity.time')}</Typography>
             <Typography variant="caption" sx={{ fontVariantNumeric: 'tabular-nums' }}>{formatClock(e.timestamp)}</Typography>
             {details.map(row => (
               <Fragment key={row.label + row.value}>
@@ -131,7 +134,7 @@ function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey
             ))}
             {details.length === 0 && (
               <>
-                <Typography variant="caption" color="text.secondary">Detalle</Typography>
+                <Typography variant="caption" color="text.secondary">{t('activity.detail')}</Typography>
                 <Typography variant="caption" sx={{ wordBreak: 'break-word' }}>{e.message}</Typography>
               </>
             )}
@@ -143,6 +146,7 @@ function EventRow({ e, channelKey, open, onToggle }: { e: EventEntry; channelKey
 }
 
 export default function EventsPage() {
+  const { t, lang } = useT()
   const [days, setDays] = useState(7)
   const [channel, setChannel] = useState('')
   const [level, setLevel] = useState<Level>('')
@@ -152,16 +156,18 @@ export default function EventsPage() {
 
   const channels = useChannels()
   const events = useEvents({ days, channel, severity: level, category, take: 1000 })
+  const firstLoad = useFirstLoad(events)
   const keyMap = useMemo(() => new Map((channels.data ?? []).map(c => [c.channelId, c.key])), [channels.data])
   const channelKey = useMemo(() => (id: string) => keyMap.get(id), [keyMap])
 
-  // La búsqueda es local (sobre lo ya cargado): título, frase, operador y texto original.
+  // La búsqueda es local (sobre lo ya cargado): título, frase, operador y texto original. Depende del idioma porque
+  // busca en los textos traducidos.
   const rows = useMemo(() => {
     const all = events.data ?? []
     const q = search.trim().toLowerCase()
     if (!q) return all
     return all.filter(e => [categoryLabel(e.category), e.category, describeEvent(e), e.operator ?? '', e.message].join(' ').toLowerCase().includes(q))
-  }, [events.data, search])
+  }, [events.data, search, lang])
 
   // Agrupadas por día (la API ya las entrega de la más reciente a la más antigua).
   const groups = useMemo(() => {
@@ -173,60 +179,58 @@ export default function EventsPage() {
       else out.push({ key: k, label: dayLabel(e.timestamp), items: [e] })
     }
     return out
-  }, [rows])
+  }, [rows, lang])
 
   const filtering = Boolean(channel || level || category || search.trim())
 
   return (
     <Box>
       <PageHeader
-        title="Actividad"
-        subtitle={events.data ? `${rows.length} ${rows.length === 1 ? 'entrada' : 'entradas'} · quién grabó qué, cuándo y por qué se cortó` : 'El registro de lo que ocurre en el equipo'}
+        title={t('nav.activity')}
+        subtitle={events.data ? `${plural(t, rows.length, 'unit.entry', 'unit.entries')} · ${t('activity.subtitleTail')}` : t('activity.subtitleIdle')}
       >
-        <ToggleButtonGroup exclusive size="small" value={level} onChange={(_, v: Level | null) => { if (v !== null) setLevel(v) }} aria-label="Importancia">
-          <ToggleButton value="">Todo</ToggleButton>
-          <ToggleButton value="Warning">Avisos</ToggleButton>
-          <ToggleButton value="Error">Errores</ToggleButton>
+        <ToggleButtonGroup exclusive size="small" value={level} onChange={(_, v: Level | null) => { if (v !== null) setLevel(v) }} aria-label={t('activity.importance')}>
+          <ToggleButton value="">{t('activity.all')}</ToggleButton>
+          <ToggleButton value="Warning">{t('activity.warnings')}</ToggleButton>
+          <ToggleButton value="Error">{t('activity.errors')}</ToggleButton>
         </ToggleButtonGroup>
       </PageHeader>
 
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mb: 2.5 }}>
         <TextField
           size="small"
-          placeholder="Buscar en la actividad"
+          placeholder={t('activity.search')}
           value={search}
           onChange={e => setSearch(e.target.value)}
           sx={{ flexGrow: 1, minWidth: 220 }}
           slotProps={{
-            htmlInput: { 'aria-label': 'Buscar en la actividad' },
+            htmlInput: { 'aria-label': t('activity.search') },
             input: { startAdornment: <InputAdornment position="start"><SearchRoundedIcon fontSize="small" /></InputAdornment> },
           }}
         />
-        <Select size="small" displayEmpty value={category} onChange={e => setCategory(e.target.value)} sx={{ minWidth: 210 }} inputProps={{ 'aria-label': 'Tipo de evento' }}>
-          <MenuItem value="">Todos los eventos</MenuItem>
-          {Object.entries(categoryLabels).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+        <Select size="small" displayEmpty value={category} onChange={e => setCategory(e.target.value)} sx={{ minWidth: 210 }} inputProps={{ 'aria-label': t('activity.eventType') }}>
+          <MenuItem value="">{t('activity.allEvents')}</MenuItem>
+          {CATEGORIES.map(c => <MenuItem key={c} value={c}>{categoryLabel(c)}</MenuItem>)}
         </Select>
-        <Select size="small" displayEmpty value={channel} onChange={e => setChannel(e.target.value)} sx={{ minWidth: 170 }} inputProps={{ 'aria-label': 'Canal' }}>
-          <MenuItem value="">Todos los canales</MenuItem>
-          {(channels.data ?? []).map(c => <MenuItem key={c.channelId} value={c.channelId}>Canal {c.key}</MenuItem>)}
+        <Select size="small" displayEmpty value={channel} onChange={e => setChannel(e.target.value)} sx={{ minWidth: 170 }} inputProps={{ 'aria-label': t('filter.channel') }}>
+          <MenuItem value="">{t('filter.allChannels')}</MenuItem>
+          {(channels.data ?? []).map(c => <MenuItem key={c.channelId} value={c.channelId}>{t('unit.channelKey', { key: c.key })}</MenuItem>)}
         </Select>
-        <Select size="small" value={days} onChange={e => setDays(Number(e.target.value))} sx={{ minWidth: 170 }} inputProps={{ 'aria-label': 'Periodo' }}>
-          {periods.map(p => <MenuItem key={p.days} value={p.days}>{p.label}</MenuItem>)}
+        <Select size="small" value={days} onChange={e => setDays(Number(e.target.value))} sx={{ minWidth: 170 }} inputProps={{ 'aria-label': t('filter.period') }}>
+          {periods.map(p => <MenuItem key={p.days} value={p.days}>{t(p.label)}</MenuItem>)}
         </Select>
       </Box>
 
-      {events.isPending ? (
+      {firstLoad.loading ? (
         <Card><RowsSkeleton rows={7} /></Card>
       ) : !events.data ? (
-        <ConnectionError error={events.error} onRetry={() => void events.refetch()} />
+        <ConnectionError error={firstLoad.error} onRetry={() => void events.refetch()} />
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState
             icon={<HistoryRoundedIcon />}
-            title={filtering ? 'Nada coincide con estos filtros' : 'Sin actividad en este periodo'}
-            description={filtering
-              ? 'Prueba a ampliar el periodo o a quitar algún filtro.'
-              : 'Aquí aparecerán los inicios y paradas de grabación, los avisos de disco y de señal, y cualquier fallo.'}
+            title={t(filtering ? 'activity.emptyFilteredTitle' : 'activity.emptyTitle')}
+            description={t(filtering ? 'activity.emptyFilteredBody' : 'activity.emptyBody')}
           />
         </Card>
       ) : (

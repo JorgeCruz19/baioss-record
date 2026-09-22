@@ -1,6 +1,10 @@
 import { AlarmType, RecordingState, SignalState, StorageHealth } from './types'
 import type { EventEntry, FrameRate, ProtectionLevel, Severity, StopReason, Timecode, Trigger } from './types'
+import { LOCALES, getLang, tr, type Key } from '../i18n'
 
+// Cifras, fechas y etiquetas en el idioma vigente. Se llaman al pintar desde componentes que ya se vuelven a pintar al
+// cambiar de idioma (usan useT()), así que leer aquí el idioma «actual» es coherente con lo que hay en pantalla.
+const locale = () => LOCALES[getLang()]
 const pad = (n: number) => String(Math.max(0, Math.floor(n))).padStart(2, '0')
 
 // ---------------------------------------------------------------- cifras
@@ -11,15 +15,17 @@ export function formatBytes(bytes: number): string {
   let i = 0
   let v = bytes
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-  return `${v.toLocaleString('es-ES', { maximumFractionDigits: i >= 3 ? 1 : 0 })} ${units[i]}`
+  return `${v.toLocaleString(locale(), { maximumFractionDigits: i >= 3 ? 1 : 0 })} ${units[i]}`
 }
 
 export function formatBitrate(bps: number): string {
   if (!bps) return '—'
   return bps >= 1_000_000
-    ? `${(bps / 1_000_000).toLocaleString('es-ES', { maximumFractionDigits: 1 })} Mb/s`
+    ? `${(bps / 1_000_000).toLocaleString(locale(), { maximumFractionDigits: 1 })} Mb/s`
     : `${Math.round(bps / 1000)} kb/s`
 }
+
+export const formatInt = (n: number): string => n.toLocaleString(locale())
 
 export function formatFps(fr: FrameRate | null | undefined): string {
   if (!fr || !fr.denominator) return '—'
@@ -40,7 +46,7 @@ export function formatDuration(totalSeconds: number): string {
 
 const TIMESPAN = /^(?:(\d+)\.)?(\d+):(\d+):(\d+)/
 
-/** TimeSpan de .NET («1.02:03:04.5» o «02:03:04») → «1 d 2 h 3 min». */
+/** TimeSpan de .NET («1.02:03:04.5» o «02:03:04») → «1 d 2 h 3 min» (las unidades son iguales en los dos idiomas). */
 export function formatTimeSpan(ts: string | null | undefined): string {
   if (!ts) return '—'
   const m = TIMESPAN.exec(ts)
@@ -74,28 +80,34 @@ const valid = (iso: string | null | undefined): Date | null => {
 
 export function formatDate(iso: string | null | undefined): string {
   const d = valid(iso)
-  return d ? d.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'medium' }) : '—'
+  return d ? d.toLocaleString(locale(), { dateStyle: 'short', timeStyle: 'medium' }) : '—'
 }
 
-/** «14 sept 2026». */
+/** «14 sept 2026» / «14 Sept 2026». */
 export function formatDay(iso: string | null | undefined): string {
   const d = valid(iso)
-  return d ? d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  return d ? d.toLocaleDateString(locale(), { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 }
 
 /** «22:37». */
 export function formatTime(iso: string | null | undefined): string {
   const d = valid(iso)
-  return d ? d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '—'
+  return d ? d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) : '—'
 }
 
 /** «22:37:58». */
 export function formatClock(iso: string | null | undefined): string {
   const d = valid(iso)
-  return d ? d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'
+  return d ? d.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'
 }
 
-const rtf = new Intl.RelativeTimeFormat('es', { numeric: 'auto' })
+const rtfByLang = new Map<string, Intl.RelativeTimeFormat>()
+function rtf(): Intl.RelativeTimeFormat {
+  const lang = getLang()
+  let f = rtfByLang.get(lang)
+  if (!f) { f = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' }); rtfByLang.set(lang, f) }
+  return f
+}
 
 /** «ahora», «hace 5 minutos», «ayer»… y, pasada una semana, la fecha. */
 export function formatRelative(iso: string | null | undefined): string {
@@ -103,10 +115,10 @@ export function formatRelative(iso: string | null | undefined): string {
   if (!d) return ''
   const diff = (d.getTime() - Date.now()) / 1000
   const abs = Math.abs(diff)
-  if (abs < 45) return 'ahora'
-  if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute')
-  if (abs < 86_400) return rtf.format(Math.round(diff / 3600), 'hour')
-  if (abs < 7 * 86_400) return rtf.format(Math.round(diff / 86_400), 'day')
+  if (abs < 45) return tr('relative.now')
+  if (abs < 3600) return rtf().format(Math.round(diff / 60), 'minute')
+  if (abs < 86_400) return rtf().format(Math.round(diff / 3600), 'hour')
+  if (abs < 7 * 86_400) return rtf().format(Math.round(diff / 86_400), 'day')
   return formatDay(iso)
 }
 
@@ -123,119 +135,104 @@ export function dayLabel(iso: string): string {
   const today = new Date()
   const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
   const days = Math.round((startOf(today) - startOf(d)) / 86_400_000)
-  if (days === 0) return 'Hoy'
-  if (days === 1) return 'Ayer'
-  const text = d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
+  if (days === 0) return tr('day.today')
+  if (days === 1) return tr('day.yesterday')
+  const text = d.toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' })
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 // ---------------------------------------------------------------- etiquetas
 
-export const recordingStateLabel: Record<RecordingState, string> = {
-  [RecordingState.Idle]: 'Inactivo',
-  [RecordingState.Starting]: 'Iniciando…',
-  [RecordingState.Recording]: 'Grabando',
-  [RecordingState.Paused]: 'En pausa',
-  [RecordingState.Stopping]: 'Deteniendo…',
-  [RecordingState.Error]: 'Error',
-  [RecordingState.Recovering]: 'Recuperando…',
+const stateKeys: Record<RecordingState, Key> = {
+  [RecordingState.Idle]: 'state.idle',
+  [RecordingState.Starting]: 'state.starting',
+  [RecordingState.Recording]: 'state.recording',
+  [RecordingState.Paused]: 'state.paused',
+  [RecordingState.Stopping]: 'state.stopping',
+  [RecordingState.Error]: 'state.error',
+  [RecordingState.Recovering]: 'state.recovering',
 }
+export const recordingStateLabel = (s: RecordingState): string => tr(stateKeys[s] ?? 'state.unknown')
 
-export const signalLabel: Record<SignalState, string> = {
-  [SignalState.NoSignal]: 'Sin señal',
-  [SignalState.Unstable]: 'Señal inestable',
-  [SignalState.Locked]: 'Señal OK',
+const signalKeys: Record<SignalState, Key> = {
+  [SignalState.NoSignal]: 'signal.none',
+  [SignalState.Unstable]: 'signal.unstable',
+  [SignalState.Locked]: 'signal.ok',
 }
+export const signalLabel = (s: SignalState): string => tr(signalKeys[s] ?? 'signal.label')
 
-export const alarmLabel: Record<AlarmType, string> = {
-  [AlarmType.SignalLoss]: 'Pérdida de señal',
-  [AlarmType.VideoBlack]: 'Vídeo en negro',
-  [AlarmType.VideoFreeze]: 'Vídeo congelado',
-  [AlarmType.AudioSilence]: 'Silencio de audio',
-  [AlarmType.DiskLow]: 'Disco bajo',
-  [AlarmType.DiskCritical]: 'Disco crítico',
-  [AlarmType.Slate]: 'Carta de ajuste',
-  [AlarmType.EncoderFallback]: 'Codificador alternativo',
-  [AlarmType.FramesDropped]: 'Cuadros perdidos',
-  [AlarmType.RecordingUnverified]: 'Grabación sin verificar',
-  [AlarmType.DiskEmergency]: 'Disco casi lleno',
-  [AlarmType.DiskStalled]: 'Disco no responde',
+const alarmKeys: Record<AlarmType, Key> = {
+  [AlarmType.SignalLoss]: 'alarm.signalLoss',
+  [AlarmType.VideoBlack]: 'alarm.videoBlack',
+  [AlarmType.VideoFreeze]: 'alarm.videoFreeze',
+  [AlarmType.AudioSilence]: 'alarm.audioSilence',
+  [AlarmType.DiskLow]: 'alarm.diskLow',
+  [AlarmType.DiskCritical]: 'alarm.diskCritical',
+  [AlarmType.Slate]: 'alarm.slate',
+  [AlarmType.EncoderFallback]: 'alarm.encoderFallback',
+  [AlarmType.FramesDropped]: 'alarm.framesDropped',
+  [AlarmType.RecordingUnverified]: 'alarm.recordingUnverified',
+  [AlarmType.DiskEmergency]: 'alarm.diskEmergency',
+  [AlarmType.DiskStalled]: 'alarm.diskStalled',
 }
+/** Etiqueta de una alarma, o `fallback` (el texto de la aplicación) si es un tipo que el panel no conoce. */
+export const alarmLabel = (a: AlarmType, fallback: string): string => (alarmKeys[a] ? tr(alarmKeys[a]) : fallback)
 
-export const healthLabel: Record<StorageHealth, string> = {
-  [StorageHealth.Unknown]: 'Sin medir',
-  [StorageHealth.Ok]: 'Con espacio',
-  [StorageHealth.Warning]: 'Aviso',
-  [StorageHealth.Critical]: 'Crítico',
-  [StorageHealth.Emergency]: 'Casi lleno',
+const healthKeys: Record<StorageHealth, Key> = {
+  [StorageHealth.Unknown]: 'health.unknown',
+  [StorageHealth.Ok]: 'health.ok',
+  [StorageHealth.Warning]: 'health.warning',
+  [StorageHealth.Critical]: 'health.critical',
+  [StorageHealth.Emergency]: 'health.emergency',
 }
+export const healthLabel = (h: StorageHealth): string => tr(healthKeys[h] ?? 'health.unknown')
 
-export const triggerLabel: Record<Trigger, string> = {
-  Unknown: 'Sin registrar', Manual: 'Manual', Scheduled: 'Programada', Api: 'API',
-}
+const triggerKeys: Record<Trigger, Key> = { Unknown: 'trigger.unknown', Manual: 'trigger.manual', Scheduled: 'trigger.scheduled', Api: 'trigger.api' }
+export const triggerLabel = (t: Trigger): string => (triggerKeys[t] ? tr(triggerKeys[t]) : t)
 
-export const stopReasonLabel: Record<StopReason, string> = {
-  Unknown: 'Sin registrar',
-  Operator: 'La detuvo el operador',
-  Api: 'Detenida por API',
-  ScheduledEnd: 'Fin de la programación',
-  ScheduledSkip: 'Saltada por el operador',
-  DiskFull: 'Disco lleno',
-  Shutdown: 'Cierre de la aplicación',
-  Error: 'Error',
+const stopReasonKeys: Record<StopReason, Key> = {
+  Unknown: 'stopReason.unknown',
+  Operator: 'stopReason.operator',
+  Api: 'stopReason.api',
+  ScheduledEnd: 'stopReason.scheduledEnd',
+  ScheduledSkip: 'stopReason.scheduledSkip',
+  DiskFull: 'stopReason.diskFull',
+  Shutdown: 'stopReason.shutdown',
+  Error: 'stopReason.error',
 }
+export const stopReasonLabel = (r: StopReason): string => (stopReasonKeys[r] ? tr(stopReasonKeys[r]) : r)
 
 /** Motivos de fin que NO son una parada normal: se destacan en la lista de grabaciones. */
 export const abnormalStop: ReadonlySet<StopReason> = new Set<StopReason>(['DiskFull', 'Shutdown', 'Error'])
 
-export const protectionLabel: Record<ProtectionLevel, string> = {
-  None: 'Normal', Important: 'Importante', Protected: 'Protegida',
-}
+const protectionKeys: Record<ProtectionLevel, Key> = { None: 'protection.none', Important: 'protection.important', Protected: 'protection.protected' }
+export const protectionLabel = (l: ProtectionLevel): string => tr(protectionKeys[l])
+const protectionHintKeys: Record<ProtectionLevel, Key> = { None: 'protection.noneHint', Important: 'protection.importantHint', Protected: 'protection.protectedHint' }
+export const protectionHint = (l: ProtectionLevel): string => tr(protectionHintKeys[l])
 
-export const protectionHint: Record<ProtectionLevel, string> = {
-  None: 'La limpieza automática puede borrarla',
-  Important: 'Destacada; no se borra sola',
-  Protected: 'No se borra nunca automáticamente',
-}
+const severityKeys: Record<Severity, Key> = { Debug: 'severity.debug', Info: 'severity.info', Warning: 'severity.warning', Error: 'severity.error', Critical: 'severity.critical' }
+export const severityLabel = (s: Severity): string => (severityKeys[s] ? tr(severityKeys[s]) : s)
 
-export const severityLabel: Record<Severity, string> = {
-  Debug: 'Depuración', Info: 'Información', Warning: 'Aviso', Error: 'Error', Critical: 'Crítico',
-}
-
-/** Nombre legible de las categorías (nombres de evento de dominio) del registro de actividad. */
-export const categoryLabels: Record<string, string> = {
-  RecordingStarted: 'Grabación iniciada',
-  RecordingStopped: 'Grabación detenida',
-  RecordingStartFailed: 'No se pudo iniciar la grabación',
-  RecordingInterrupted: 'Grabación interrumpida',
-  RecordingRecovered: 'Grabación recuperada',
-  RecordingFileUnverified: 'Archivo sin verificar',
-  RecordingPaused: 'Grabación en pausa',
-  RecordingResumed: 'Grabación reanudada',
-  SegmentCompleted: 'Segmento cerrado',
-  ScheduledRecordingSkipped: 'Grabación programada omitida',
-  OrphanSessionsClosed: 'Sesiones sin cerrar recuperadas',
-  EncoderFailed: 'Fallo del codificador',
-  SignalLocked: 'Señal detectada',
-  SignalLost: 'Señal perdida',
-  AudioSilenceDetected: 'Silencio de audio',
-  AudioClippingDetected: 'Audio saturado',
-  StorageLow: 'Queda poco espacio',
-  StorageEmergencyEntered: 'Disco casi lleno',
-  StorageEmergencyCleared: 'El disco vuelve a tener espacio',
-  StorageStalled: 'El disco no responde',
-  StorageStallCleared: 'El disco responde de nuevo',
-  RecordingPurged: 'Grabación limpiada',
-  RetentionSkipped: 'Limpieza omitida',
-  PerformanceDegraded: 'Rendimiento degradado',
-}
-export const categoryLabel = (c: string) => categoryLabels[c] ?? c
+/** Categorías (nombres de evento de dominio) del registro de actividad que el panel sabe nombrar, en este orden. */
+export const CATEGORIES = [
+  'RecordingStarted', 'RecordingStopped', 'RecordingRenamed', 'RecordingStartFailed', 'RecordingInterrupted', 'RecordingRecovered',
+  'RecordingFileUnverified', 'RecordingPaused', 'RecordingResumed', 'SegmentCompleted', 'ScheduledRecordingSkipped', 'ScheduleChanged',
+  'OrphanSessionsClosed', 'EncoderFailed', 'SignalLocked', 'SignalLost', 'AudioSilenceDetected', 'AudioClippingDetected', 'StorageLow',
+  'StorageEmergencyEntered', 'StorageEmergencyCleared', 'StorageStalled', 'StorageStallCleared', 'RecordingPurged', 'RetentionSkipped',
+  'PerformanceDegraded',
+] as const
+export type Category = (typeof CATEGORIES)[number]
+const isKnownCategory = (c: string): c is Category => (CATEGORIES as readonly string[]).includes(c)
+/** Nombre legible de una categoría; una que el panel no conozca se muestra con su nombre técnico. */
+export const categoryLabel = (c: string): string => (isKnownCategory(c) ? tr(`category.${c}`) : c)
 
 // ---------------------------------------------------------------- actividad: del payload a una frase
 
 // En el payload (JSON del evento de dominio, claves en PascalCase) los enums van como ENTEROS.
 const triggerByInt: Trigger[] = ['Unknown', 'Manual', 'Scheduled', 'Api']
 const stopReasonByInt: StopReason[] = ['Unknown', 'Operator', 'Api', 'ScheduledEnd', 'ScheduledSkip', 'DiskFull', 'Shutdown', 'Error']
+const changeKeys: Key[] = ['change.unknown', 'change.created', 'change.updated', 'change.deleted', 'change.paused', 'change.resumed']
+const taskChangeKeys: Key[] = ['change.unknown', 'taskChange.created', 'taskChange.updated', 'taskChange.deleted', 'taskChange.paused', 'taskChange.resumed']
 
 export type Payload = Record<string, unknown>
 
@@ -250,7 +247,7 @@ export function parsePayload(e: EventEntry): Payload | null {
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+const files = (n: number) => `${n} ${tr(n === 1 ? 'unit.file' : 'unit.files')}`
 const join = (...parts: Array<string | null | undefined | false>) => parts.filter(Boolean).join(' · ')
 
 /** Una frase corta que cuenta el evento con sus datos, en vez del volcado técnico que guarda la aplicación. */
@@ -261,20 +258,28 @@ export function describeEvent(e: EventEntry): string {
     case 'RecordingStarted': {
       const trigger = num(p.Trigger)
       return join(
-        trigger !== null && triggerByInt[trigger] ? `Origen: ${triggerLabel[triggerByInt[trigger]]}` : null,
+        trigger !== null && triggerByInt[trigger] ? tr('describe.origin', { trigger: triggerLabel(triggerByInt[trigger]) }) : null,
         str(p.ScheduledJobTitle) && `«${str(p.ScheduledJobTitle)}»`,
         str(p.RecordingName),
       )
     }
+    case 'RecordingRenamed': {
+      const n = num(p.Files)
+      return join(
+        str(p.FileName) && `«${str(p.FileName)}»`,
+        str(p.PreviousFileName) && tr('describe.before', { name: str(p.PreviousFileName)! }),
+        n !== null && n > 1 && files(n),
+      )
+    }
     case 'RecordingStopped': {
       const reason = num(p.Reason)
-      const files = num(p.Files)
+      const n = num(p.Files)
       const bytes = num(p.TotalBytes)
       return join(
         str(p.Duration) && timeSpanToClock(str(p.Duration)),
-        files !== null && plural(files, 'archivo', 'archivos'),
+        n !== null && files(n),
         bytes !== null && formatBytes(bytes),
-        reason !== null && stopReasonByInt[reason] ? stopReasonLabel[stopReasonByInt[reason]] : null,
+        reason !== null && stopReasonByInt[reason] ? stopReasonLabel(stopReasonByInt[reason]) : null,
       )
     }
     case 'RecordingStartFailed':
@@ -282,50 +287,63 @@ export function describeEvent(e: EventEntry): string {
     case 'RetentionSkipped':
       return str(p.Reason) ?? ''
     case 'RecordingInterrupted':
-      return join(str(p.Reason), num(p.ExitCode) !== null && `código ${num(p.ExitCode)}`)
+      return join(str(p.Reason), num(p.ExitCode) !== null && tr('describe.exitCode', { n: num(p.ExitCode)! }))
     case 'RecordingFileUnverified':
     case 'SegmentCompleted': {
       const size = num(p.SizeBytes)
       return join(str(p.FilePath) && fileName(str(p.FilePath)!), size !== null && formatBytes(size))
     }
+    case 'ScheduleChanged': {
+      const change = num(p.Change) ?? 0
+      return join(change > 0 && taskChangeKeys[change] ? tr(taskChangeKeys[change]) : null, str(p.ScheduledJobTitle) && `«${str(p.ScheduledJobTitle)}»`)
+    }
     case 'ScheduledRecordingSkipped':
       return join(str(p.ScheduledJobTitle) && `«${str(p.ScheduledJobTitle)}»`, str(p.Reason))
-    case 'OrphanSessionsClosed':
-      return num(p.Count) !== null ? plural(num(p.Count)!, 'sesión cerrada al arrancar', 'sesiones cerradas al arrancar') : ''
+    case 'OrphanSessionsClosed': {
+      const n = num(p.Count)
+      return n !== null ? `${n} ${tr(n === 1 ? 'describe.sessionClosed' : 'describe.sessionsClosed')}` : ''
+    }
     case 'RecordingRecovered':
-      return num(p.Attempt) !== null ? `Intento ${num(p.Attempt)}` : ''
+      return num(p.Attempt) !== null ? tr('describe.attempt', { n: num(p.Attempt)! }) : ''
     case 'StorageLow': {
       const free = num(p.FreeBytes)
-      return join(free !== null && `${formatBytes(free)} libres`, str(p.EstimatedRemaining) && `quedan ≈ ${formatTimeSpan(str(p.EstimatedRemaining))}`)
+      return join(
+        free !== null && tr('storage.free', { bytes: formatBytes(free) }),
+        str(p.EstimatedRemaining) && tr('describe.remainingApprox', { time: formatTimeSpan(str(p.EstimatedRemaining)) }),
+      )
     }
     case 'StorageEmergencyEntered':
     case 'StorageEmergencyCleared': {
       const used = num(p.UsedPercent)
       const free = num(p.FreeBytes)
-      return join(str(p.Volume) && used !== null && `${str(p.Volume)} al ${Math.round(used)} %`, free !== null && `${formatBytes(free)} libres`)
+      return join(
+        str(p.Volume) && used !== null && tr('describe.volumeAt', { volume: str(p.Volume)!, percent: Math.round(used) }),
+        free !== null && tr('storage.free', { bytes: formatBytes(free) }),
+      )
     }
     case 'StorageStalled':
-      return str(p.Volume) ? `${str(p.Volume)} no acepta escrituras; la grabación espera sin cortar` : ''
+      return str(p.Volume) ? tr('describe.stalled', { volume: str(p.Volume)! }) : ''
     case 'StorageStallCleared':
-      return join(str(p.Volume), str(p.Duration) && `tras ${formatTimeSpan(str(p.Duration))}`)
+      return join(str(p.Volume), str(p.Duration) && tr('describe.after', { time: formatTimeSpan(str(p.Duration)) }))
     case 'RecordingPurged':
-      return join(num(p.Files) !== null && plural(num(p.Files)!, 'archivo', 'archivos'), str(p.Reason))
+      return join(num(p.Files) !== null && files(num(p.Files)!), str(p.Reason))
     case 'AudioSilenceDetected':
-      return str(p.ForDuration) ? `Durante ${formatTimeSpan(str(p.ForDuration))}` : ''
+      return str(p.ForDuration) ? tr('describe.during', { time: formatTimeSpan(str(p.ForDuration)) }) : ''
     case 'AudioClippingDetected':
-      return num(p.PeakDb) !== null ? `Pico de ${num(p.PeakDb)!.toFixed(1)} dBFS` : ''
+      return num(p.PeakDb) !== null ? tr('describe.peak', { db: num(p.PeakDb)!.toFixed(1) }) : ''
     default:
       return ''
   }
 }
 
-const fieldLabels: Record<string, string> = {
-  ChannelId: 'Canal', SessionId: 'Sesión', Operator: 'Operador', Trigger: 'Origen', Reason: 'Motivo', Duration: 'Duración',
-  Files: 'Archivos', TotalBytes: 'Tamaño', FilePath: 'Archivo', SizeBytes: 'Tamaño', ExitCode: 'Código de salida',
-  ScheduledJobTitle: 'Tarea programada', ScheduledJobId: 'Id. de la tarea', RecordingName: 'Nombre', Volume: 'Disco',
-  FreeBytes: 'Espacio libre', UsedPercent: 'Ocupación', EstimatedRemaining: 'Tiempo restante', Index: 'Segmento',
-  Count: 'Cantidad', Attempt: 'Intento', Occurrence: 'Ocurrencia', Action: 'Acción', ForDuration: 'Duración',
-  PeakDb: 'Pico', Resource: 'Recurso', Value: 'Valor',
+const fieldKeys: Record<string, Key> = {
+  ChannelId: 'field.channel', SessionId: 'field.session', Operator: 'field.operator', Trigger: 'field.trigger', Reason: 'field.reason',
+  Duration: 'field.duration', Files: 'field.files', TotalBytes: 'field.size', FilePath: 'field.file', SizeBytes: 'field.size',
+  ExitCode: 'field.exitCode', ScheduledJobTitle: 'field.scheduledJob', ScheduledJobId: 'field.scheduledJobId', RecordingName: 'field.name',
+  Volume: 'field.volume', FreeBytes: 'field.freeBytes', UsedPercent: 'field.usedPercent', EstimatedRemaining: 'field.remaining',
+  Index: 'field.segment', Count: 'field.count', Attempt: 'field.attempt', Occurrence: 'field.occurrence', Action: 'field.action',
+  ForDuration: 'field.duration', PeakDb: 'field.peak', Resource: 'field.resource', Value: 'field.value', FileName: 'field.file',
+  PreviousFileName: 'field.previousName', Change: 'field.change',
 }
 
 /** Los campos del evento como filas «etiqueta → valor», ya formateados, para el detalle de una entrada. */
@@ -336,10 +354,11 @@ export function payloadRows(e: EventEntry, channelKey: (id: string) => string | 
   for (const [key, raw] of Object.entries(p)) {
     if (key === 'OccurredAt' || raw === null || raw === undefined || raw === '') continue
     let value: string
-    if (key === 'ChannelId' && typeof raw === 'string') value = channelKey(raw) ? `Canal ${channelKey(raw)}` : raw
-    else if (key === 'Trigger' && typeof raw === 'number') value = triggerByInt[raw] ? triggerLabel[triggerByInt[raw]] : String(raw)
-    else if (key === 'Reason' && typeof raw === 'number') value = stopReasonByInt[raw] ? stopReasonLabel[stopReasonByInt[raw]] : String(raw)
-    else if (key === 'Action' && typeof raw === 'number') value = raw === 1 ? 'Archivar' : 'Borrar'
+    if (key === 'ChannelId' && typeof raw === 'string') value = channelKey(raw) ? tr('unit.channelKey', { key: channelKey(raw)! }) : raw
+    else if (key === 'Trigger' && typeof raw === 'number') value = triggerByInt[raw] ? triggerLabel(triggerByInt[raw]) : String(raw)
+    else if (key === 'Reason' && typeof raw === 'number') value = stopReasonByInt[raw] ? stopReasonLabel(stopReasonByInt[raw]) : String(raw)
+    else if (key === 'Action' && typeof raw === 'number') value = tr(raw === 1 ? 'action.archive' : 'action.deleteVerb')
+    else if (key === 'Change' && typeof raw === 'number') value = changeKeys[raw] ? tr(changeKeys[raw]) : String(raw)
     else if (key.endsWith('Bytes') && typeof raw === 'number') value = formatBytes(raw)
     else if (key === 'UsedPercent' && typeof raw === 'number') value = `${Math.round(raw)} %`
     else if (key === 'PeakDb' && typeof raw === 'number') value = `${raw.toFixed(1)} dBFS`
@@ -348,7 +367,7 @@ export function payloadRows(e: EventEntry, channelKey: (id: string) => string | 
     else if (key === 'Occurrence' && typeof raw === 'string') value = formatDate(raw)
     else if (key === 'Index' && typeof raw === 'number') value = String(raw + 1)
     else value = typeof raw === 'object' ? JSON.stringify(raw) : String(raw)
-    rows.push({ label: fieldLabels[key] ?? key, value })
+    rows.push({ label: fieldKeys[key] ? tr(fieldKeys[key]) : key, value })
   }
   return rows
 }

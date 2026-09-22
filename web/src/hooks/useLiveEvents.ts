@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { wsEventsUrl } from '../api/client'
+import { useConnection } from '../api/connection'
 
 /**
  * Se suscribe al WebSocket de eventos del Record (/ws/events). Los mensajes no llevan el tipo de evento (solo sus
@@ -11,6 +12,8 @@ import { wsEventsUrl } from '../api/client'
 export function useLiveEvents(): { connected: boolean } {
   const qc = useQueryClient()
   const [connected, setConnected] = useState(false)
+  // Cambiar de Record en el panel (IP/puerto) rehace el socket contra la dirección nueva.
+  const { baseUrl } = useConnection()
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -27,6 +30,7 @@ export function useLiveEvents(): { connected: boolean } {
         void qc.invalidateQueries({ queryKey: ['recordings'] })
         void qc.invalidateQueries({ queryKey: ['events'] })
         void qc.invalidateQueries({ queryKey: ['storage'] })
+        void qc.invalidateQueries({ queryKey: ['schedule'] }) // alta/baja de tareas, arranque y fin de las programadas
       }, 300)
     }
 
@@ -50,9 +54,12 @@ export function useLiveEvents(): { connected: boolean } {
       closed = true
       window.clearTimeout(reconnectTimer)
       window.clearTimeout(flushTimer)
-      ws?.close()
+      // Sin manejadores ANTES de cerrar: el «close» del socket viejo llega tarde y, al cambiar de Record, marcaba
+      // «reconectando…» cuando el socket nuevo ya estaba abierto.
+      if (ws) { ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null; ws.close() }
+      setConnected(false)
     }
-  }, [qc])
+  }, [qc, baseUrl])
 
   return { connected }
 }

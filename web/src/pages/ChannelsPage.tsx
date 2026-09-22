@@ -3,19 +3,20 @@ import { Box, Card, FormControlLabel, InputAdornment, MenuItem, Select, Skeleton
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded'
 import VideocamOffOutlinedIcon from '@mui/icons-material/VideocamOffOutlined'
 import WifiOffRoundedIcon from '@mui/icons-material/WifiOffRounded'
-import { useChannels, useLicense, useRecordings } from '../hooks/queries'
+import { useActiveTasks, useChannels, useFirstLoad, useLicense, useRecordings } from '../hooks/queries'
+import { useOperator } from '../hooks/useOperator'
 import { DEFAULT_PREVIEW_RATE, PREVIEW_RATES, type PreviewRate } from '../hooks/useChannelPreview'
 import ChannelCard from '../components/ChannelCard'
 import { ConnectionError, EmptyState, PageHeader } from '../components/common'
 import { RecordingState } from '../api/types'
 import { toneColor, toneTint } from '../theme'
+import { plural, useT, type Key } from '../i18n'
 
-const OPERATOR_KEY = 'baioss.operator'
 const PREVIEW_KEY = 'baioss.preview'
 const PREVIEW_FPS_KEY = 'baioss.previewFps'
 
 /** Lo que el operador elige es un compromiso entre fluidez y consumo: se dice en palabras, no solo con el número. */
-const rateLabel: Record<PreviewRate, string> = { 1: '1 imagen/s · mínimo', 5: '5 imágenes/s', 10: '10 imágenes/s · fluido' }
+const rateKeys: Record<PreviewRate, Key> = { 1: 'rate.1', 5: 'rate.5', 10: 'rate.10' }
 
 function CardSkeleton() {
   return (
@@ -35,14 +36,11 @@ function CardSkeleton() {
 }
 
 export default function ChannelsPage() {
+  const { t } = useT()
   const channels = useChannels()
+  const first = useFirstLoad(channels)
   const license = useLicense()
-  const [operator, setOperator] = useState(() => {
-    try { return localStorage.getItem(OPERATOR_KEY) ?? '' } catch { return '' }
-  })
-  useEffect(() => {
-    try { localStorage.setItem(OPERATOR_KEY, operator) } catch { /* sin almacenamiento local: no pasa nada */ }
-  }, [operator])
+  const [operator, setOperator] = useOperator()
 
   // Vista previa de baja resolución: encendida por defecto; quien vaya justo de red la apaga y se recuerda.
   const [showPreview, setShowPreview] = useState(() => {
@@ -72,21 +70,25 @@ export default function ChannelsPage() {
     [recordings.data],
   )
 
+  // La tarea automática que cada canal tiene EN MARCHA (si la hay). Las demás se gestionan en «Programación».
+  const activeTasks = useActiveTasks()
+  const activeByChannel = useMemo(() => new Map((activeTasks.data ?? []).map(a => [a.channelId, a])), [activeTasks.data])
+
   const recordingCount = list.filter(c => c.recordingState === RecordingState.Recording || c.recordingState === RecordingState.Paused).length
   const subtitle = !channels.data
-    ? 'Estado de cada canal, en vivo'
-    : `${list.length} ${list.length === 1 ? 'canal' : 'canales'} · ${recordingCount === 0 ? 'ninguno grabando' : `${recordingCount} grabando`}`
+    ? t('channels.subtitleIdle')
+    : `${plural(t, list.length, 'unit.channel', 'unit.channels')} · ${recordingCount === 0 ? t('channels.noneRecording') : t('channels.nRecording', { n: recordingCount })}`
   // La licencia solo bloquea si la aplicación dice expresamente que no se puede grabar.
   const canRecord = license.data ? license.data.canStartRecording : true
 
   return (
     <Box>
-      <PageHeader title="Canales" subtitle={subtitle}>
-        <Tooltip title="Imagen de baja resolución (320 px) que la aplicación envía al ritmo elegido. Se pausa sola con la pestaña oculta o la tarjeta fuera de pantalla.">
+      <PageHeader title={t('nav.channels')} subtitle={subtitle}>
+        <Tooltip title={t('channels.previewTooltip')}>
           <FormControlLabel
             sx={{ mr: 0.5 }}
             control={<Switch size="small" checked={showPreview} onChange={e => setShowPreview(e.target.checked)} />}
-            label={<Typography variant="body2">Vista previa</Typography>}
+            label={<Typography variant="body2">{t('channels.preview')}</Typography>}
           />
         </Tooltip>
         <Select
@@ -94,20 +96,20 @@ export default function ChannelsPage() {
           value={previewFps}
           disabled={!showPreview}
           onChange={e => setPreviewFps(Number(e.target.value) as PreviewRate)}
-          inputProps={{ 'aria-label': 'Ritmo de la vista previa' }}
+          inputProps={{ 'aria-label': t('channels.previewRate') }}
           sx={{ minWidth: 176 }}
         >
-          {PREVIEW_RATES.map(r => <MenuItem key={r} value={r}>{rateLabel[r]}</MenuItem>)}
+          {PREVIEW_RATES.map(r => <MenuItem key={r} value={r}>{t(rateKeys[r])}</MenuItem>)}
         </Select>
-        <Tooltip title="Tu nombre queda en la auditoría como quien inició la grabación.">
+        <Tooltip title={t('operator.tooltipRecord')}>
           <TextField
             size="small"
-            placeholder="Tu nombre"
+            placeholder={t('operator.placeholder')}
             value={operator}
             onChange={e => setOperator(e.target.value)}
             sx={{ width: 220 }}
             slotProps={{
-              htmlInput: { 'aria-label': 'Operador', maxLength: 60 },
+              htmlInput: { 'aria-label': t('operator.aria'), maxLength: 60 },
               input: { startAdornment: <InputAdornment position="start"><PersonOutlineRoundedIcon fontSize="small" /></InputAdornment> },
             }}
           />
@@ -117,26 +119,22 @@ export default function ChannelsPage() {
       {channels.isError && channels.data && (
         <Box
           role="status"
-          sx={t => ({ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2, px: 2, py: 1.25, borderRadius: 3, bgcolor: toneTint(t, 'warning') })}
+          sx={th => ({ display: 'flex', alignItems: 'center', gap: 1.25, mb: 2, px: 2, py: 1.25, borderRadius: 3, bgcolor: toneTint(th, 'warning') })}
         >
-          <WifiOffRoundedIcon sx={t => ({ fontSize: 18, color: toneColor(t, 'warning') })} />
-          <Typography variant="body2">Se perdió la conexión con la aplicación. Ves los últimos datos recibidos; se reintenta solo.</Typography>
+          <WifiOffRoundedIcon sx={th => ({ fontSize: 18, color: toneColor(th, 'warning') })} />
+          <Typography variant="body2">{t('channels.lostConnection')}</Typography>
         </Box>
       )}
 
-      {channels.isPending ? (
+      {first.loading ? (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' }, gap: 2.5 }}>
           <CardSkeleton /><CardSkeleton />
         </Box>
       ) : !channels.data ? (
-        <ConnectionError error={channels.error} onRetry={() => void channels.refetch()} />
+        <ConnectionError error={first.error} onRetry={() => void channels.refetch()} />
       ) : list.length === 0 ? (
         <Card>
-          <EmptyState
-            icon={<VideocamOffOutlinedIcon />}
-            title="Todavía no hay canales"
-            description="Los canales se configuran en la aplicación de escritorio. En cuanto tenga alguno, aparecerá aquí."
-          />
+          <EmptyState icon={<VideocamOffOutlinedIcon />} title={t('channels.emptyTitle')} description={t('channels.emptyBody')} />
         </Card>
       ) : (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' }, gap: 2.5 }}>
@@ -149,6 +147,7 @@ export default function ChannelsPage() {
               showPreview={showPreview}
               previewFps={previewFps}
               recordingSince={ch.sessionId ? startedAt.get(ch.sessionId) : undefined}
+              activeTask={activeByChannel.get(ch.channelId)}
             />
           ))}
         </Box>
