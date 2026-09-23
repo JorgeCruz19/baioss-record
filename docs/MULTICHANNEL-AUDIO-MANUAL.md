@@ -81,7 +81,7 @@ Open the preset the channel uses (**✎ Edit**, or **＋ New** starting from an 
 
 | Mode | What it produces | When to use it | Formats |
 |---|---|---|---|
-| **Single** | A single track with the selection. With one pair → stereo. With *All pairs* and a **5.1 / 7.1** preset → the first 6 or 8 channels form that track. | The usual: one stereo. Or a 5.1 embedded in channels 1-6. | All |
+| **Single** | A single track with the selection. With one pair → stereo. With several pairs and a **stereo** preset (what every factory preset carries) → **one stereo track per pair**, just like *PairsAsTracks*: a stereo track cannot carry more than one pair, and what was chosen in the input is not thrown away. With *All pairs* and a **5.1 / 7.1** preset → the first 6 or 8 channels form that track. | The usual: one stereo. Or a 5.1 embedded in channels 1-6. | All |
 | **PairsAsTracks** | **One stereo track per recorded pair**, each with its name ("Channels 1-2", "Channels 3-4"…). Nothing is mixed. | Programme + international + languages, each in its own track, ready for the editor. Needs *All pairs*. | All. With AAC (MP4/MOV/TS) each track adds bitrate; with PCM (MXF/MKV) nothing is lost. |
 | **Multichannel** | **Every channel in a single** uncompressed multichannel **track**. | Preserving the whole SDI for post-production. Needs *All pairs*. | **PCM only: MXF, MKV, AVI or WAV**, up to 16 channels. With a lossy codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores **one stereo track per pair**, just like *PairsAsTracks* (see the note below). |
 
@@ -122,11 +122,13 @@ In the **AUDIO dBFS** strip of the channel panel:
   - Grey label = that pair is **only metered** (it does not go into the file). It lets you see at a glance whether
     sound is arriving on a pair you are not recording, for example if you picked the wrong pair.
   - Hovering over it says so in words ("Channels 3-4: not recorded (metered only)").
+  - The header of the strip says how many **tracks** will go into the file with the current input and preset ("All 16
+    channels · PCM · 8 tracks", "Pair 3-4 of 8 · PCM · 1 stereo track", "1 5.1 track", "1 track · 16 channels"). If it
+    is not what you expected, check *Audio tracks* in the preset: no need to record and open the file to find out.
 - The **silence alarm** watches the recorded pair, not the rest: an empty pair you are not recording triggers nothing.
 
-In the **web client** (its interface is in Spanish) the *Audio · 8 canales de la fuente* block shows the same grid per
-pair, with the red mark on the recorded ones and the legend "● se graba · el resto solo se mide" (recorded · the rest
-is only metered).
+In the **web client** the *Audio · 8 source channels · 4 tracks* block shows the same grid per pair, with the red mark
+on the recorded ones, the tracks that will go into the file and the legend "● recorded · the rest is only metered".
 
 ---
 
@@ -138,7 +140,8 @@ is only metered).
 panel: "Pair 3-4 of 8 · PCM".
 
 **Programme and international sound in separate tracks.** Inputs → *All pairs* → Apply. Preset → *Audio tracks* =
-**PairsAsTracks** (ideally MXF/MKV with PCM). The file carries "Channels 1-2", "Channels 3-4", …
+**PairsAsTracks** (ideally MXF/MKV with PCM). The file carries "Channels 1-2", "Channels 3-4", … With a stereo preset
+left on *Single* (the factory value) the result is the same: one track per pair.
 
 **Preserving all the SDI audio for post-production.** Inputs → *All pairs*. MXF or MKV preset with *Audio tracks* =
 **Multichannel**: one PCM track with the 8 or 16 channels.
@@ -164,6 +167,11 @@ Apply. There is no *Card audio*: the channels come from the source.
   change. The new pair is applied when the input reconnects (Apply) and takes effect in the next recording.
 - **You chose *Multichannel* and the MP4 has several stereo tracks instead of one multichannel track.** That is
   expected with AAC (see the note in section 4). For a single track with the 8 or 16 channels use MXF or MKV (PCM).
+- **You chose *All pairs* and the file has a single stereo track.** Until 2026-09-22 this happened with the preset on
+  *Single* (the factory value): only pair 1-2 was saved even though the meters marked every pair as recorded. Now
+  *Single* with stereo and several pairs saves one track per pair, and the header of the audio strip says how many
+  tracks will go into the file. If you see "1 track" with several pairs chosen, the preset carries mono, 5.1/7.1 or
+  MP3, which are a single track on purpose.
 - **"Measure audio" does not open the card even though it is free.** If your signal needs a specific *Mode / format*,
   choose it before measuring: the measurement opens the card with that same mode.
 

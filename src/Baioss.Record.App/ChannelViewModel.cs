@@ -432,10 +432,11 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Nombre de la ENTRADA activa (fuente asignada): se muestra en el preview.
         InputText = string.IsNullOrWhiteSpace(status.InputName) ? "—" : status.InputName;
 
-        // Resumen de audio bajo el preview: lo elegido si la fuente trae más de un estéreo («Par 3-4 de 8 · PCM»);
-        // si no, «N canales · PCM» con señal y audio; sin audio, «Sin audio».
+        // Resumen de audio en la cabecera de la franja: lo elegido si la fuente trae más de un estéreo y, con ello, las
+        // pistas que irán al archivo («Los 16 canales · PCM · 8 pistas», «Par 3-4 de 8 · PCM · 1 pista estéreo»); si no,
+        // «N canales · PCM» con señal y audio; sin audio, «Sin audio».
         AudioFormatText = status.Signal is { HasAudio: true } sig && (sig.AudioSelectionLabel is not null || sig.AudioLayout is not null)
-            ? $"{sig.AudioSelectionLabel ?? ChannelCountText(sig.AudioLayout!.Value)} · PCM"
+            ? $"{sig.AudioSelectionLabel ?? ChannelCountText(sig.AudioLayout!.Value)} · PCM{(sig.AudioTracksLabel is { Length: > 0 } tracks ? $" · {tracks}" : "")}"
             : Loc.T("Ch_NoAudio");
 
         IsRecording = status.RecordingState is RecordingState.Recording or RecordingState.Paused;

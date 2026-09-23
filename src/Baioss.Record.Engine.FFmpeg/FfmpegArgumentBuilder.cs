@@ -727,8 +727,12 @@ public sealed class FfmpegArgumentBuilder
            ?? DefaultPixelFormat(p.VideoCodec)
            ?? "nv12";
 
-    /// <summary>Un flujo de audio de la grabación: el <c>pan</c> que lo produce y, si lleva título de pista, cuál.</summary>
-    internal sealed record AudioRoute(string Pan, string? Title);
+    /// <summary>
+    /// Un flujo de audio de la grabación: el <c>pan</c> que lo produce, si lleva título de pista cuál, qué canales de la
+    /// fuente (0-based) van dentro y con qué distribución (null = pista PCM sin nombre). Con los canales y la distribución
+    /// <see cref="AudioTrackPlan"/> le cuenta al operador qué pares acaban de verdad en el archivo y cuántas pistas.
+    /// </summary>
+    internal sealed record AudioRoute(string Pan, string? Title, IReadOnlyList<int> Channels, AudioLayout? Layout = null);
 
     /// <summary>
     /// Flujos de audio de la GRABACIÓN según el modo de pistas del perfil, o <c>null</c> si la fuente entrega 2 canales
@@ -742,6 +746,11 @@ public sealed class FfmpegArgumentBuilder
     /// El modo pedido se AJUSTA a lo que el códec y el contenedor pueden llevar sin estropear el audio (medido con el
     /// FFmpeg empaquetado, auditoría 2026-09-18):
     /// <list type="bullet">
+    ///   <item>Single con estéreo (lo que trae todo preset por defecto) y VARIOS pares elegidos en la entrada («Todos los
+    ///   pares») → una pista estéreo por par, como PairsAsTracks: una pista estéreo no puede llevar más de un par, y lo
+    ///   que el operador eligió en la entrada manda. Antes se guardaba SOLO el primer par, en silencio, mientras los
+    ///   medidores marcaban todos como grabados (lo vio el operador al abrir el archivo, 2026-09-22). Mono, 5.1 y 7.1
+    ///   sí son una decisión del preset y se respetan (los primeros canales elegidos forman esa pista).</item>
     ///   <item>Multichannel con un códec con pérdida → una pista estéreo por par. Una pista 5.1/7.1 en AAC o FDK-AAC
     ///   codifica el canal 4 como LFE (banda limitada): un tono de 1,2 kHz ahí salía a −89 dB; FDK con «quad» lo
     ///   rematriza a 5.0; y MP2/MP3, que solo admiten estéreo, MEZCLAN los ocho canales sin dar error.</item>
@@ -758,6 +767,8 @@ public sealed class FfmpegArgumentBuilder
 
         bool pcm = FfmpegCodecMap.IsPcmAudio(profile.AudioCodec, profile.Container);
         var mode = profile.AudioTracks;
+        if (mode is AudioTrackMode.Single && profile.AudioLayout == AudioLayout.Stereo && channels.Count > 2)
+            mode = AudioTrackMode.PairsAsTracks;
         if (mode is AudioTrackMode.Multichannel && !pcm) mode = AudioTrackMode.PairsAsTracks;
         if (mode is AudioTrackMode.PairsAsTracks && FfmpegCodecMap.SingleAudioStream(profile.Container))
             mode = pcm ? AudioTrackMode.Multichannel : AudioTrackMode.Single;
@@ -777,18 +788,21 @@ public sealed class FfmpegArgumentBuilder
                     string title = paired
                         ? Localizer.F("Audio_TrackTitle", string.Create(CultureInfo.InvariantCulture, $"{a + 1}-{b + 1}"))
                         : Localizer.F("Audio_TrackTitleOne", a + 1);
-                    routes.Add(new AudioRoute(string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{a}|c1=c{b}"), title));
+                    routes.Add(new AudioRoute(string.Create(CultureInfo.InvariantCulture, $"pan=stereo|c0=c{a}|c1=c{b}"), title,
+                        paired ? new[] { a, b } : new[] { a }, AudioLayout.Stereo));
                 }
                 return routes;
             }
             case AudioTrackMode.Multichannel:
-                return new[] { new AudioRoute(MultichannelPan(channels), null) };
+                return new[] { new AudioRoute(MultichannelPan(channels), null, channels) };
             default:
             {
                 var layout = profile.AudioLayout;
                 if (LayoutChannels(layout) > FfmpegCodecMap.MaxAudioChannels(profile.AudioCodec, profile.Container))
                     layout = AudioLayout.Stereo;
-                return new[] { new AudioRoute(PanFilter(layout, channels), null) };
+                // Los canales que ese pan usa de verdad: mono y estéreo, los dos primeros; 5.1 y 7.1, los seis u ocho primeros.
+                var used = channels.Take(Math.Max(2, LayoutChannels(layout))).ToArray();
+                return new[] { new AudioRoute(PanFilter(layout, channels), null, used, layout) };
             }
         }
     }

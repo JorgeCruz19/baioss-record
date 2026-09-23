@@ -129,7 +129,9 @@ public enum AudioLayout
 /// </summary>
 public enum AudioTrackMode
 {
-    /// <summary>Una pista con la distribución del preset (estéreo del par elegido, 5.1 con los primeros seis…). Lo de siempre.</summary>
+    /// <summary>Una pista con la distribución del preset (estéreo del par elegido, 5.1 con los primeros seis…). Lo de siempre.
+    /// Con estéreo y VARIOS pares elegidos en la entrada equivale a <see cref="PairsAsTracks"/>: una pista estéreo no puede
+    /// llevar más de un par y lo elegido no se tira.</summary>
     Single = 0,
     /// <summary>Una pista ESTÉREO por cada par elegido: programa, internacional, idiomas… separados y sin mezclar.</summary>
     PairsAsTracks = 1,

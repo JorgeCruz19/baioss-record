@@ -19,9 +19,14 @@ public sealed record SignalInfo(
     // algo que elegir entre ellos, la etiqueta legible de lo elegido («Par 3-4 de 8»). Para la UI y la API.
     int AudioChannels = 2,
     string? AudioSelectionLabel = null,
-    // Pares (1-based) que se graban de esos canales («1,3» = canales 1-2 y 5-6); null cuando no hay nada que elegir.
-    // Los medidores miden TODOS los canales capturados: con esto la UI/API marcan cuáles van al archivo.
-    IReadOnlyList<int>? AudioSelectedPairs = null)
+    // Pares (1-based) que van al archivo («1,3» = canales 1-2 y 5-6); null cuando no hay nada que elegir. La fuente pone
+    // los elegidos en la entrada; el motor del canal los ajusta a lo que el preset guarda de verdad (un 5.1 se queda con
+    // los tres primeros, un MP3 con el primero…). Los medidores miden TODOS los canales capturados: con esto la UI/API
+    // marcan cuáles acaban en el archivo.
+    IReadOnlyList<int>? AudioSelectedPairs = null,
+    // Cuántas pistas de audio llevará el archivo, en palabras y en el idioma de la aplicación («8 pistas», «1 pista 5.1»,
+    // «1 pista · 16 canales»); lo pone el motor del canal con una fuente multicanal. Null con estéreo.
+    string? AudioTracksLabel = null)
 {
     public static readonly SignalInfo None =
         new(SignalState.NoSignal, null, null, null, false, null, null);

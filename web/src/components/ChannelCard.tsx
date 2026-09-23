@@ -371,7 +371,9 @@ export default function ChannelCard({ ch, operator, recordingSince, canRecord, s
 
       <Box>
         <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
-          {pairs.length > 0 ? t('audio.titleN', { n: allMeters.length }) : t('audio.title')}
+          {pairs.length > 0
+            ? [t('audio.titleN', { n: allMeters.length }), ch.signal.audioTracksLabel].filter(Boolean).join(' · ')
+            : t('audio.title')}
         </Typography>
         {pairs.length === 0 ? (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>

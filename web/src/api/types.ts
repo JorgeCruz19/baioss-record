@@ -45,6 +45,8 @@ export interface SignalInfo {
   audioSelectionLabel: string | null
   /** Pares (1-based) que van al archivo; los medidores (`audio`) traen TODOS los canales capturados. */
   audioSelectedPairs: number[] | null
+  /** Pistas de audio que llevará el archivo, en palabras («8 pistas»; en el idioma de la aplicación); null con estéreo. */
+  audioTracksLabel?: string | null
 }
 
 export interface RecorderStats {

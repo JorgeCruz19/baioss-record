@@ -80,7 +80,7 @@ Abre el preset que use el canal (**✎ Editar**, o **＋ Nuevo** a partir de uno
 
 | Modo | Qué produce | Cuándo usarlo | Formatos |
 |---|---|---|---|
-| **Single** | Una sola pista con lo elegido. Con un par → estéreo. Con *Todos los pares* y un preset **5.1 / 7.1** → los primeros 6 u 8 canales forman esa pista. | Lo de siempre: un estéreo. O un 5.1 embebido en los canales 1-6. | Todos |
+| **Single** | Una sola pista con lo elegido. Con un par → estéreo. Con *Todos los pares* y un preset **5.1 / 7.1** → los primeros 6 u 8 canales forman esa pista. Con varios pares y un preset **estéreo** (lo que trae todo preset de fábrica) → **una pista estéreo por par**, igual que *PairsAsTracks*: una pista estéreo no puede llevar más de un par, y lo elegido en la entrada no se tira. | Lo de siempre: un estéreo. O un 5.1 embebido en los canales 1-6. | Todos |
 | **PairsAsTracks** | **Una pista estéreo por cada par** grabado, cada una con su nombre («Canales 1-2», «Canales 3-4»…). Nada se mezcla. | Programa + internacional + idiomas, cada uno en su pista, listo para el editor. Necesita *Todos los pares*. | Todos. Con AAC (MP4/MOV/TS) cada pista suma bitrate; con PCM (MXF/MKV) no pierde nada. |
 | **Multichannel** | **Todos los canales en una sola pista** multicanal, sin compresión. | Conservar el SDI entero para postproducción. Necesita *Todos los pares*. | **Solo con PCM: MXF, MKV, AVI o WAV**, hasta 16 canales. Con un códec con pérdida (AAC en MP4/MOV/TS, Opus, MP2, MP3) el programa guarda **una pista estéreo por par**, igual que *PairsAsTracks* (ver la nota de abajo). |
 
@@ -121,10 +121,13 @@ En la franja **AUDIO dBFS** del panel del canal:
   - Etiqueta gris = ese par **solo se mide** (no va al archivo). Sirve para ver de un vistazo si llega sonido por un par
     que no estás grabando, por ejemplo si te has equivocado de par.
   - Al pasar el ratón, el texto lo dice en palabras («Canales 3-4: no se graban (solo se miden)»).
+  - La cabecera de la franja dice cuántas **pistas** irán al archivo con la entrada y el preset actuales («Los 16 canales
+    · PCM · 8 pistas», «Par 3-4 de 8 · PCM · 1 pista estéreo», «1 pista 5.1», «1 pista · 16 canales»). Si no es lo que
+    esperabas, revisa *Pistas de audio* en el preset: no hace falta grabar y abrir el archivo para saberlo.
 - La **alarma de silencio** vigila el par que se graba, no el resto: un par vacío que no grabas no dispara nada.
 
-En el **cliente web** el bloque *Audio · 8 canales de la fuente* muestra la misma rejilla por pares, con la marca roja en
-los que se graban y la leyenda «● se graba · el resto solo se mide».
+En el **cliente web** el bloque *Audio · 8 canales de la fuente · 4 pistas* muestra la misma rejilla por pares, con la
+marca roja en los que se graban, las pistas que irán al archivo y la leyenda «● se graba · el resto solo se mide».
 
 ---
 
@@ -136,7 +139,8 @@ los que se graban y la leyenda «● se graba · el resto solo se mide».
 «Par 3-4 de 8 · PCM».
 
 **Programa e internacional en pistas separadas.** Entradas → *Todos los pares* → Aplicar. Preset → *Pistas de audio* =
-**PairsAsTracks** (idealmente MXF/MKV con PCM). El archivo lleva «Canales 1-2», «Canales 3-4», …
+**PairsAsTracks** (idealmente MXF/MKV con PCM). El archivo lleva «Canales 1-2», «Canales 3-4», … Con el preset estéreo
+en *Single* (el valor de fábrica) sale lo mismo: una pista por par.
 
 **Conservar todo el audio del SDI para postproducción.** Entradas → *Todos los pares*. Preset MXF o MKV con
 *Pistas de audio* = **Multichannel**: una pista PCM con los 8 o 16 canales.
@@ -162,6 +166,11 @@ Aplicar. No hay *Audio de la tarjeta*: los canales los pone la fuente.
   aplica al reconectar la entrada (Aplicar) y entra en la siguiente grabación.
 - **Elegiste *Multichannel* y el MP4 trae varias pistas estéreo en vez de una multicanal.** Es lo esperado con AAC (ver la
   nota del punto 4). Para una sola pista con los 8 o 16 canales usa MXF o MKV (PCM).
+- **Elegiste *Todos los pares* y el archivo trae una sola pista estéreo.** Hasta el 22/09/2026 pasaba con el preset en
+  *Single* (el valor de fábrica): se guardaba solo el par 1-2 aunque los medidores marcaran todos los pares como grabados.
+  Ahora *Single* con estéreo y varios pares guarda una pista por par, y la cabecera de la franja de audio dice cuántas
+  pistas irán al archivo. Si ves «1 pista» con varios pares elegidos, el preset lleva mono, 5.1/7.1 o MP3, que sí son una
+  sola pista a propósito.
 - **«Medir audio» no abre la tarjeta aunque está libre.** Si tu señal necesita un *Modo / formato* concreto, elígelo antes
   de medir: la medida abre la tarjeta con ese mismo modo.
 

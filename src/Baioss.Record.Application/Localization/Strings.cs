@@ -185,6 +185,12 @@ public static class Strings
         ["Audio_AllChannels"] = "Los {0} canales",
         ["Audio_TrackTitle"] = "Canales {0}",
         ["Audio_TrackTitleOne"] = "Canal {0}",
+        // Pistas que llevará el archivo (cabecera de la franja de audio con una fuente multicanal)
+        ["Audio_Tracks_Many"] = "{0} pistas",
+        ["Audio_Tracks_OneStereo"] = "1 pista estéreo",
+        ["Audio_Tracks_Mono"] = "1 pista mono",
+        ["Audio_Tracks_Surround"] = "1 pista {0}",
+        ["Audio_Tracks_Multichannel"] = "1 pista · {0} canales",
         // Asistente «Medir audio» (gestor de entradas).
         ["In_DetectAudio"] = "🎧 Medir audio",
         ["In_ProbeSilence"] = "silencio",
@@ -553,7 +559,7 @@ public static class Strings
         ["PreEd_IntraHint"] = "(solo ProRes / DNxHR)",
         ["PreEd_AudioChannels"] = "Canales",
         ["PreEd_AudioTracks"] = "Pistas de audio",
-        ["PreEd_AudioTracksHint"] = "Con fuentes de 8/16 canales: Single = una pista con lo elegido · PairsAsTracks = una pista estéreo por par · Multichannel = todos los canales en una pista PCM (MXF/MKV/AVI/WAV); con AAC, Opus o MP2 se guarda una pista por par",
+        ["PreEd_AudioTracksHint"] = "Con fuentes de 8/16 canales: Single = una pista con lo elegido (estéreo del par elegido; con varios pares, una pista estéreo por par; 5.1/7.1 con los primeros canales) · PairsAsTracks = una pista estéreo por par · Multichannel = todos los canales en una pista PCM (MXF/MKV/AVI/WAV); con AAC, Opus o MP2 se guarda una pista por par",
         ["PreEd_AudioOnly"] = "Solo audio",
 
         // --- Diálogos de la aplicación ---
@@ -738,6 +744,12 @@ public static class Strings
         ["Audio_AllChannels"] = "All {0} channels",
         ["Audio_TrackTitle"] = "Channels {0}",
         ["Audio_TrackTitleOne"] = "Channel {0}",
+        // Tracks the file will carry (audio strip header with a multichannel source)
+        ["Audio_Tracks_Many"] = "{0} tracks",
+        ["Audio_Tracks_OneStereo"] = "1 stereo track",
+        ["Audio_Tracks_Mono"] = "1 mono track",
+        ["Audio_Tracks_Surround"] = "1 {0} track",
+        ["Audio_Tracks_Multichannel"] = "1 track · {0} channels",
         // "Measure audio" assistant (inputs manager).
         ["In_DetectAudio"] = "🎧 Measure audio",
         ["In_ProbeSilence"] = "silence",
@@ -1106,7 +1118,7 @@ public static class Strings
         ["PreEd_IntraHint"] = "(ProRes / DNxHR only)",
         ["PreEd_AudioChannels"] = "Channels",
         ["PreEd_AudioTracks"] = "Audio tracks",
-        ["PreEd_AudioTracksHint"] = "With 8/16-channel sources: Single = one track with the selection · PairsAsTracks = one stereo track per pair · Multichannel = all channels in one PCM track (MXF/MKV/AVI/WAV); with AAC, Opus or MP2 one track per pair is stored",
+        ["PreEd_AudioTracksHint"] = "With 8/16-channel sources: Single = one track with the selection (stereo of the chosen pair; with several pairs, one stereo track per pair; 5.1/7.1 with the first channels) · PairsAsTracks = one stereo track per pair · Multichannel = all channels in one PCM track (MXF/MKV/AVI/WAV); with AAC, Opus or MP2 one track per pair is stored",
         ["PreEd_AudioOnly"] = "Audio only",
 
         // --- Application dialogs ---

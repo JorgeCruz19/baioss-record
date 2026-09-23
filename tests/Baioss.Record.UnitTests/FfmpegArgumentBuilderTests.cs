@@ -669,6 +669,116 @@ public class FfmpegArgumentBuilderTests : IDisposable
         finally { Localizer.Language = previous; }
     }
 
+    // --- Single + estéreo con varios pares elegidos: una pista estéreo no puede llevar más de un par (2026-09-22) ---
+
+    [Fact]
+    public void BuildLive_Single_Stereo_WithAllPairsChosen_StoresOneStereoTrackPerPair()
+    {
+        // Todo preset trae Single + estéreo de fábrica; la entrada dice «Todos los pares». Antes se guardaba SOLO el par
+        // 1-2, en silencio, mientras los medidores marcaban los ocho pares como grabados: el operador lo vio en el archivo.
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 16, pairs: "all");
+
+        Assert.Contains("[0:a:0]asplit=9[m0][r1][r2][r3][r4][r5][r6][r7][r8];[m0]ebur128=peak=true[amout]", joined);
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1]", joined);
+        Assert.Contains("[r8]pan=stereo|c0=c14|c1=c15[arec8]", joined);
+        Assert.Contains("-map [vmain] -map [arec1] -map [arec2] -map [arec3] -map [arec4] -map [arec5] -map [arec6] -map [arec7] -map [arec8]", joined);
+        Assert.Contains("-metadata:s:a:0 title=Canales 1-2", joined);
+        Assert.Contains("-metadata:s:a:7 title=Canales 15-16", joined);
+        Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Single_Stereo_WithTwoPairsChosen_StoresBoth()
+        => Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c4|c1=c5[arec2]",
+            BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: "1,3"));
+
+    [Fact]
+    public void BuildLive_Single_Surround_WithAllPairsChosen_IsStillOneSurroundTrack()
+    {
+        // 5.1 sí es una decisión del preset (un 5.1 embebido en los canales 1-6): se respeta, con los seis primeros.
+        var profile = SoftwareMp4();
+        profile.AudioLayout = AudioLayout.Surround51;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
+
+        Assert.Contains("[0:a:0]asplit=2[m0][r1]", joined);
+        Assert.Contains("[r1]pan=5.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5[arec1]", joined);
+        Assert.DoesNotContain("[arec2]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Single_Mono_WithAllPairsChosen_IsStillOneMonoTrack()
+    {
+        var profile = SoftwareMp4();
+        profile.AudioLayout = AudioLayout.Mono;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
+
+        Assert.Contains("[r1]pan=mono|c0=0.5*c0+0.5*c1[arec1]", joined);
+        Assert.DoesNotContain("[arec2]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_Single_Stereo_WithAllPairsChosen_IntoMp3_StillKeepsOnlyTheFirstPair()
+    {
+        // MP3 solo admite un flujo estéreo: la promoción a «una pista por par» no puede saltarse el contenedor.
+        var profile = SoftwareMp4();
+        profile.AudioOnly = true;
+        profile.Container = ContainerFormat.Mp3Audio;
+        profile.AudioCodec = AudioCodec.Mp3;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
+
+        Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1]", joined);
+        Assert.DoesNotContain("[arec2]", joined);
+    }
+
+    [Fact]
+    public void AudioTrackPlan_TellsWhichPairsReachTheFile_AndHowManyTracks()
+    {
+        // Single + estéreo + todos los pares: una pista por par, y todos los pares van al archivo.
+        var all = AudioTrackPlan.For(MultichannelSource(16, "all"), SoftwareMp4())!;
+        Assert.Equal(Enumerable.Range(1, 8), all.Pairs);
+        Assert.Equal(8, all.Tracks);
+        Assert.Equal("8 pistas", all.Label);
+
+        // Single + 5.1: al archivo van SOLO los tres primeros pares aunque la entrada eligiera todos (esto es lo que la
+        // UI/API tienen que marcar; antes marcaban los ocho).
+        var surround = SoftwareMp4();
+        surround.AudioLayout = AudioLayout.Surround51;
+        var plan51 = AudioTrackPlan.For(MultichannelSource(16, "all"), surround)!;
+        Assert.Equal(new[] { 1, 2, 3 }, plan51.Pairs);
+        Assert.Equal(1, plan51.Tracks);
+        Assert.Equal("1 pista 5.1", plan51.Label);
+
+        // Multichannel en MXF (PCM): todos en una sola pista sin nombre.
+        var mxf = SoftwareMp4();
+        mxf.Container = ContainerFormat.Mxf;
+        mxf.AudioCodec = AudioCodec.Pcm;
+        mxf.AudioTracks = AudioTrackMode.Multichannel;
+        var multi = AudioTrackPlan.For(MultichannelSource(16, "all"), mxf)!;
+        Assert.Equal(Enumerable.Range(1, 8), multi.Pairs);
+        Assert.Equal("1 pista · 16 canales", multi.Label);
+
+        // Un solo par elegido: una pista estéreo con ese par.
+        var one = AudioTrackPlan.For(MultichannelSource(8, "3"), SoftwareMp4())!;
+        Assert.Equal(new[] { 3 }, one.Pairs);
+        Assert.Equal("1 pista estéreo", one.Label);
+
+        // PairsAsTracks a MP3: solo el primer par elegido.
+        var mp3 = SoftwareMp4();
+        mp3.AudioOnly = true;
+        mp3.Container = ContainerFormat.Mp3Audio;
+        mp3.AudioCodec = AudioCodec.Mp3;
+        mp3.AudioTracks = AudioTrackMode.PairsAsTracks;
+        Assert.Equal(new[] { 2 }, AudioTrackPlan.For(MultichannelSource(8, "2,3"), mp3)!.Pairs);
+
+        // En inglés, en inglés. Fuente estéreo: nada que contar.
+        Localizer.Language = AppLanguage.English;
+        Assert.Equal("8 tracks", AudioTrackPlan.For(MultichannelSource(16, "all"), SoftwareMp4())!.Label);
+        Assert.Null(AudioTrackPlan.For(MultichannelSource(2, null), SoftwareMp4()));
+    }
+
     [Theory]
     [InlineData(4, "pan=4c|c0=c0|c1=c1|c2=c4|c3=c5")]
     [InlineData(2, "pan=stereo|c0=c0|c1=c1")]

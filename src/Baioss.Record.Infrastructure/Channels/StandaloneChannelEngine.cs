@@ -13,6 +13,7 @@ using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Recording;
 using Baioss.Record.Application.Storage;
+using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Preview;
 using Baioss.Record.Infrastructure.Storage;
 
@@ -168,7 +169,13 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             lock (_alarmLock) alarms = _alarms.Values.ToArray();
             var profile = _profile;
             var session = _session; // una sola lectura del campo volatile: Id y Trigger de la MISMA sesión
-            return new(ChannelId, _key, _engine.State, _source.CurrentSignal, _engine.Stats, session?.Id, _audio, alarms, _storage,
+            var signal = _source.CurrentSignal;
+            // Fuente multicanal: qué pares van al archivo y cuántas pistas lo dicen las RUTAS de la grabación, no la entrada
+            // (el preset puede quedarse con menos de lo elegido: 5.1 con los seis primeros, mono, MP3…). Así los medidores
+            // de la aplicación y del panel web marcan lo que acaba en el archivo, y no hay que abrirlo para descubrirlo.
+            if (signal.AudioSelectedPairs is not null && profile is not null && AudioTrackPlan.For(_source, profile) is { } plan)
+                signal = signal with { AudioSelectedPairs = plan.Pairs, AudioTracksLabel = plan.Label };
+            return new(ChannelId, _key, _engine.State, signal, _engine.Stats, session?.Id, _audio, alarms, _storage,
                 _source.Definition.Name, RecordingProfileSummary.DisplayName(profile), RecordingProfileSummary.Describe(profile),
                 session?.Trigger);
         }

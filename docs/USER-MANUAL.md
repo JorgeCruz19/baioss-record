@@ -85,7 +85,8 @@ Each panel shows you, from top to bottom:
 - **Audio strip:** the **sound meters** (left "L" and right "R"), with their level in dBFS. If the sound clips, a red **"CLIP"** warning appears.
   With an 8- or 16-channel input (DeckLink or NDI) a **mini meter per pair** ("1-2", "3-4"…) also appears: the pair being
   recorded carries a red dot and a bold label; the others are only metered, so you can see at a glance what each SDI pair
-  carries. The large L/R meters show the first recorded pair.
+  carries. The large L/R meters show the first recorded pair, and the header of the strip says how many tracks will go
+  into the file ("All 16 channels · PCM · 8 tracks").
 
 - **Recording buttons (transport):**
   - **● Record:** starts recording by hand.

@@ -85,7 +85,8 @@ Cada panel te muestra, de arriba a abajo:
 - **Franja de audio:** los **medidores de sonido** (izquierda "L" y derecha "R"), con su nivel en dBFS. Si el sonido satura, aparece un aviso rojo **"CLIP"**.
   Con una entrada de 8 o 16 canales (DeckLink o NDI) aparece además un **mini medidor por cada par** («1-2», «3-4»…): el
   par que se graba lleva un punto rojo y la etiqueta en negrita; los demás solo se miden, para ver de un vistazo qué trae
-  cada par del SDI. Los medidores grandes L/R muestran el primer par que se graba.
+  cada par del SDI. Los medidores grandes L/R muestran el primer par que se graba, y la cabecera de la franja dice cuántas
+  pistas irán al archivo («Los 16 canales · PCM · 8 pistas»).
 
 - **Botones de grabación (transporte):**
   - **● Grabar:** empieza a grabar a mano.
