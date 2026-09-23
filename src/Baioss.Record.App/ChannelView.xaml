@@ -266,7 +266,8 @@
                     <Grid Margin="12">
                         <TextBlock Text="{loc:T Ch_Pgm}" FontSize="11" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"
                                    HorizontalAlignment="Left" VerticalAlignment="Top"/>
-                        <!-- Abajo-izquierda (arriba del audio): ENTRADA activa (fuente) + «frame N» al grabar / formato en reposo. -->
+                        <!-- Abajo-izquierda (arriba del audio): ENTRADA activa (fuente), debajo el PRESET vigente y luego
+                             «frame N» al grabar / formato en reposo. -->
                         <StackPanel HorizontalAlignment="Left" VerticalAlignment="Bottom">
                             <!-- Badge de la entrada: fondo semitransparente para leerse sobre el vídeo. -->
                             <Border Background="#B3000000" CornerRadius="4" Padding="7,3" HorizontalAlignment="Left" Margin="0,0,0,4">
@@ -275,6 +276,18 @@
                                                VerticalAlignment="Center" Margin="0,0,5,0"/>
                                     <TextBlock Text="{Binding InputText}" FontSize="12" FontWeight="SemiBold" Foreground="White"
                                                TextTrimming="CharacterEllipsis" MaxWidth="220" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                            <!-- Preset de grabación vigente: con qué se grabará al pulsar Grabar. Se cambia en «Presets de
+                                 grabación»; el tooltip da el nombre completo y el resumen técnico. Mismo ancho máximo que el
+                                 badge de la entrada para no pisar el timecode de la derecha en columnas estrechas. -->
+                            <Border Background="#B3000000" CornerRadius="4" Padding="7,3" HorizontalAlignment="Left" Margin="0,0,0,4"
+                                    ToolTip="{Binding PresetToolTip}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,6,0"/>
+                                    <TextBlock Text="{Binding PresetText}" FontSize="11" FontWeight="SemiBold" Foreground="White"
+                                               TextTrimming="CharacterEllipsis" MaxWidth="180" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
                             <TextBlock Text="{Binding FrameCount, StringFormat=frame {0}}" FontFamily="Consolas" FontSize="12"
@@ -395,41 +408,19 @@
                 </StackPanel>
             </Border>
 
-            <!-- Transporte: controles de grabación y, a su lado, el preset vigente. El badge de estado (Grabando/Inactivo)
-                 se muestra flotando sobre el preview, no aquí. Es un WrapPanel a propósito: con cuatro canales en pantalla
-                 y «Detener grabación automática» a la vista, el badge del preset no cabía en la fila y se CORTABA por el
-                 borde de la tarjeta; ahora pasa a una segunda línea cuando no hay sitio. -->
-            <WrapPanel Grid.Row="4" Margin="0,10,0,0" Orientation="Horizontal">
-                <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
-                    <Button Content="{loc:T Ch_Record}"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
-                    <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
-                    <Button Content="{loc:T Ch_Stop}"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
-                            Visibility="{Binding ShowStopButton, Converter={StaticResource BoolToVis}}"/>
-                    <!-- Solo con una grabación PROGRAMADA en curso: la salta (esta ocurrencia) sin afectar a las siguientes. -->
-                    <Button Content="{loc:T Ch_SkipScheduled}" Command="{Binding SkipScheduledRecordingCommand}"
-                            Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
-                            Foreground="#10131A" FontWeight="Bold"
-                            Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
-                </StackPanel>
-                <!-- Preset de grabación vigente: con qué se grabará al pulsar Grabar. Se cambia en «Presets de grabación»;
-                     el tooltip da el nombre completo y el resumen técnico (códec · tasa · tamaño · contenedor). Rejilla
-                     (no StackPanel horizontal) para que el nombre reciba el ancho disponible y, si ni solo en su línea
-                     cabe, se recorte con puntos suspensivos en vez de desbordar. -->
-                <Border VerticalAlignment="Center" Margin="0,4,0,0" MaxWidth="360"
-                        Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
-                        CornerRadius="12" Padding="10,4" ToolTip="{Binding PresetToolTip}">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,7,0"/>
-                        <TextBlock Grid.Column="1" Text="{Binding PresetText}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis"/>
-                    </Grid>
-                </Border>
-            </WrapPanel>
+            <!-- Transporte: controles de grabación. El badge de estado (Grabando/Inactivo) y el preset vigente van
+                 flotando sobre el preview, no aquí: así «Detener grabación automática» nunca les quita sitio. -->
+            <StackPanel Grid.Row="4" Margin="0,10,0,0" Orientation="Horizontal">
+                <Button Content="{loc:T Ch_Record}"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
+                <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
+                <Button Content="{loc:T Ch_Stop}"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
+                        Visibility="{Binding ShowStopButton, Converter={StaticResource BoolToVis}}"/>
+                <!-- Solo con una grabación PROGRAMADA en curso: la salta (esta ocurrencia) sin afectar a las siguientes. -->
+                <Button Content="{loc:T Ch_SkipScheduled}" Command="{Binding SkipScheduledRecordingCommand}"
+                        Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
+                        Foreground="#10131A" FontWeight="Bold"
+                        Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
+            </StackPanel>
 
             <!-- Programación: en el panel solo se muestra la grabación EN CURSO (alto fijo, uniforme entre
                  canales); el botón abre una ventana con toda la programación de hoy del canal. -->
