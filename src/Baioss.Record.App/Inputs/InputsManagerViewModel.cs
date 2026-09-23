@@ -121,6 +121,9 @@ public sealed partial class ChannelInputRow : ObservableObject
     /// <summary>Resultado de «Medir audio» en palabras («1-2: −8 dB · 3-4: silencio · …»), vacío hasta que se mida.</summary>
     [ObservableProperty] private string _audioProbeText = "";
 
+    /// <summary>Resultado de «Detectar señal» («1920×1080 · 59.94i → Hi59»), vacío hasta que se detecte.</summary>
+    [ObservableProperty] private string _signalProbeText = "";
+
     /// <summary>Entrada ACTUALMENTE asignada al canal (para que el operador sepa qué está activo). Se
     /// actualiza al aplicar una nueva.</summary>
     [ObservableProperty] private string _currentInput = "—";
@@ -161,15 +164,23 @@ public sealed partial class ChannelInputRow : ObservableObject
     /// <summary>«Medir audio» sirve para DeckLink (y para el archivo demo, que permite probar el asistente sin tarjeta).</summary>
     public bool CanProbeAudio => SelectedDevice?.Type is InputType.DecklinkSdi or InputType.File;
 
+    /// <summary>«Detectar señal» solo tiene sentido con una DeckLink: es la tarjeta la que detecta el modo de la señal.</summary>
+    public bool CanDetectSignal => SelectedDevice?.Type is InputType.DecklinkSdi;
+
     partial void OnSelectedDeviceChanged(InputDeviceOption? value)
     {
         SelectedFormat = Formats.FirstOrDefault(); // por defecto, "Automático"
         AudioProbeText = "";                       // la medida era de la entrada anterior
+        SignalProbeText = "";
         OnPropertyChanged(nameof(CanProbeAudio));
+        OnPropertyChanged(nameof(CanDetectSignal));
     }
 
     [RelayCommand]
     private Task DetectAudio() => _owner.ProbeAudioAsync(this);
+
+    [RelayCommand]
+    private Task DetectSignal() => _owner.DetectSignalAsync(this);
 
     // Al cambiar los canales pedidos cambian los pares posibles: conserva el par si sigue existiendo; si no, el 1-2.
     partial void OnSelectedAudioChannelsChanged(AudioChannelsOption value)
@@ -241,7 +252,7 @@ public sealed partial class InputsManagerViewModel : ObservableObject
 
         AudioDevices.Add(InputDeviceOption.NoAudio);
         SeedFileOption();
-        foreach (var c in channels) Channels.Add(new ChannelInputRow(c.Key, c.ChannelId, c.InputText, this));
+        foreach (var c in channels) Channels.Add(new ChannelInputRow(c.Key, c.ChannelId, CurrentInputText(c), this));
 
         StatusMessage = canRebind
             ? Loc.T("In_Msg_PressDetect")
@@ -259,6 +270,12 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             Id = StableGuid("input:File:" + _clipPath),
         });
     }
+
+    /// <summary>«DeckLink — DeckLink Duo (1) · 1920×1080 · 59.94i»: la entrada activa del canal y, si ya sabe el formato de
+    /// su señal (modo fijo, o el que la tarjeta detectó en autodetección), el formato. Así se ve qué detectó la tarjeta sin
+    /// tener que liberarla para «Detectar señal».</summary>
+    private static string CurrentInputText(ChannelViewModel c)
+        => c.FormatText is { Length: > 0 } format && format != "—" ? $"{c.InputText} · {format}" : c.InputText;
 
     [RelayCommand]
     private async Task DetectAsync()
@@ -305,6 +322,58 @@ public sealed partial class InputsManagerViewModel : ObservableObject
             StatusMessage = cards == 0
                 ? Loc.T("In_Msg_NothingFound")
                 : Loc.F("In_Msg_Found", cards, AudioDevices.Count - 1) + modesHint;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = Loc.F("In_Msg_DetectError", ex.Message);
+        }
+        finally { IsBusy = false; }
+    }
+
+    /// <summary>
+    /// «Detectar señal»: pregunta a la tarjeta qué señal tiene conectada (la autodetección de FFmpeg, hasta 3 s) y deja
+    /// SELECCIONADO en el desplegable el modo que corresponde, para fijarlo al pulsar Aplicar. Es la forma de ver qué
+    /// detecta la tarjeta sin grabar, y de dejar el modo fijo donde la autodetección al abrir falla o tarda. Exige la
+    /// tarjeta LIBRE (DeckLink es exclusiva): si un canal la está usando se avisa, en vez de abrir un ffmpeg que
+    /// fallaría con el mismo mensaje que «sin señal».
+    /// </summary>
+    internal async Task DetectSignalAsync(ChannelInputRow row)
+    {
+        if (IsBusy) return;
+        if (row.SelectedDevice is null || !row.CanDetectSignal) { StatusMessage = Loc.F("In_Msg_PickVideo", row.Key); return; }
+        var device = row.SelectedDevice;
+        var user = Channels.FirstOrDefault(c => c.CurrentInput.StartsWith(device.Label, StringComparison.Ordinal));
+        if (user is not null) { StatusMessage = Loc.F("In_Msg_SignalBusy", row.Key, device.Label, user.Key); return; }
+
+        IsBusy = true;
+        StatusMessage = Loc.F("In_Msg_SignalDetecting", row.Key, device.Label);
+        try
+        {
+            var result = await _devices.DetectVideoModeAsync(InputType.DecklinkSdi, device.DeviceId ?? device.Label);
+            if (result.Mode is not { } mode)
+            {
+                bool busy = result.Outcome == VideoModeDetectionOutcome.DeviceBusy;
+                row.SignalProbeText = Loc.T(busy ? "In_SignalBusy" : "In_SignalNone");
+                StatusMessage = result.Outcome switch
+                {
+                    VideoModeDetectionOutcome.DeviceBusy => Loc.F("In_Msg_SignalBusyOther", row.Key, device.Label),
+                    VideoModeDetectionOutcome.NoSignal => Loc.F("In_Msg_SignalNotDetected", row.Key, device.Label),
+                    _ => Loc.F("In_Msg_SignalFailed", row.Key, device.Label),
+                };
+                return;
+            }
+            var match = VideoModes.FindMatch(row.Formats, mode);
+            if (match is not null)
+            {
+                row.SelectedFormat = match;
+                row.SignalProbeText = $"{mode.Label} → {match.Code}";
+                StatusMessage = Loc.F("In_Msg_SignalDetected", row.Key, mode.Label, match.Code);
+            }
+            else
+            {
+                row.SignalProbeText = mode.Label;
+                StatusMessage = Loc.F("In_Msg_SignalDetectedNoMode", row.Key, mode.Label);
+            }
         }
         catch (Exception ex)
         {

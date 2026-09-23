@@ -106,6 +106,63 @@ public class CaptureDeviceTests
         Assert.DoesNotContain(formats, f => f.Code == "format_code");
     }
 
+    // Salida REAL de `ffmpeg -sources decklink` con una DeckLink Duo 2 (2026-09-22): id único de la tarjeta, nombre
+    // visible entre corchetes y tipos. Antes el parser solo entendía las comillas simples del -list_devices deprecado.
+    private const string DecklinkSourcesSample = """
+        Auto-detected sources for decklink:
+          81:d88ca1e0:00000000 [DeckLink Duo (1)] (none)
+          81:d88ca1e1:00000000 [DeckLink Duo (2)] (none)
+          81:d88ca1e2:00000000 [DeckLink Duo (3)] (none)
+          81:d88ca1e3:00000000 [DeckLink Duo (4)] (none)
+        """;
+
+    [Fact]
+    public void ParseDecklink_ReadsTheModernSourcesListing_ByDisplayName()
+    {
+        var devices = FfmpegDeviceEnumerator.ParseDecklink(DecklinkSourcesSample);
+
+        Assert.Equal(new[] { "DeckLink Duo (1)", "DeckLink Duo (2)", "DeckLink Duo (3)", "DeckLink Duo (4)" }, devices.Select(d => d.Name));
+        Assert.All(devices, d => Assert.Equal(d.Name, d.Uri)); // -i por nombre visible, como las entradas ya guardadas
+        Assert.All(devices, d => Assert.Equal(InputType.DecklinkSdi, d.Type));
+        // Un «*» delante (predeterminado) y líneas de log con corchetes no confunden al parser.
+        var withDefault = FfmpegDeviceEnumerator.ParseDecklink("[decklink @ 0x1] algo\n* 81:d88ca1e0:00000000 [DeckLink Duo (1)] (none)\n");
+        Assert.Equal("DeckLink Duo (1)", Assert.Single(withDefault).Name);
+    }
+
+    // Salida REAL de `-list_formats 1` de esa Duo 2 (prefijo «[in#0 @ …]» solo en la primera línea, 16 modos).
+    private const string DecklinkDuo2FormatsSample = """
+        [in#0 @ 000002757f666f40] Supported formats for 'DeckLink Duo (1)':
+                format_code     description
+                ntsc            720x486 at 30000/1001 fps (interlaced, lower field first)
+                pal             720x576 at 25000/1000 fps (interlaced, upper field first)
+                23ps            1920x1080 at 24000/1001 fps
+                24ps            1920x1080 at 24000/1000 fps
+                Hp25            1920x1080 at 25000/1000 fps
+                Hp29            1920x1080 at 30000/1001 fps
+                Hp30            1920x1080 at 30000/1000 fps
+                Hp50            1920x1080 at 50000/1000 fps
+                Hp59            1920x1080 at 60000/1001 fps
+                Hp60            1920x1080 at 60000/1000 fps
+                Hi50            1920x1080 at 25000/1000 fps (interlaced, upper field first)
+                Hi59            1920x1080 at 30000/1001 fps (interlaced, upper field first)
+                Hi60            1920x1080 at 30000/1000 fps (interlaced, upper field first)
+                hp50            1280x720 at 50000/1000 fps
+                hp59            1280x720 at 60000/1001 fps
+                hp60            1280x720 at 60000/1000 fps
+        """;
+
+    [Fact]
+    public void ParseDecklinkFormats_ReadsTheRealDuo2Listing()
+    {
+        var formats = FfmpegDeviceEnumerator.ParseDecklinkFormats(DecklinkDuo2FormatsSample);
+
+        Assert.Equal(16, formats.Count);
+        Assert.Equal("1920×1080 · 59.94i", formats.Single(f => f.Code == "Hi59").Description);
+        Assert.Equal("1920×1080 · 29.97p", formats.Single(f => f.Code == "Hp29").Description);
+        Assert.Equal("1920×1080 · 23.98p", formats.Single(f => f.Code == "23ps").Description);
+        Assert.Equal("1280×720 · 59.94p", formats.Single(f => f.Code == "hp59").Description);
+    }
+
     [Fact]
     public void ParseDecklink_ExtractsQuotedDeviceNames()
     {

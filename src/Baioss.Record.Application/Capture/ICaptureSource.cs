@@ -1,6 +1,7 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
+using Baioss.Record.Application.Localization;
 
 namespace Baioss.Record.Application.Capture;
 
@@ -72,6 +73,24 @@ public interface ICaptureSource : IAsyncDisposable
     /// </summary>
     bool SelfReportsRecovery => false;
 
+    /// <summary>
+    /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
+    /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
+    /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal
+    /// —antes el panel decía «—» con la tarjeta capturando— y pasa a SIN SEÑAL cuando la tarjeta no detecta nada, en
+    /// vez de fingir «SEÑAL OK» con el preview en negro. Las demás fuentes lo ignoran.
+    /// </summary>
+    void ReportDetectedMode(DetectedVideoMode? mode) { }
+
+    /// <summary>
+    /// El motor le cuenta a la fuente si FFmpeg consiguió ABRIR el dispositivo («Input #0, decklink, from…», ya hay
+    /// captura) o si la tarjeta estaba en uso por otro proceso («Cannot enable video input»: otro programa, u otro canal
+    /// con la misma entrada). Con un modo fijo no hay autodetección y esto es lo único que dice si el canal ve algo: sin
+    /// ello el panel fingía «SEÑAL OK» con el preview en negro mientras otro programa tenía la tarjeta. Las demás fuentes
+    /// lo ignoran.
+    /// </summary>
+    void ReportDeviceOpen(bool opened) { }
+
     Task OpenAsync(CancellationToken ct = default);
     Task CloseAsync(CancellationToken ct = default);
 
@@ -106,8 +125,9 @@ public sealed record DeviceFormat(string Code, string Description)
     /// <summary>True si el modo es entrelazado.</summary>
     public bool Interlaced { get; init; }
 
-    /// <summary>La caja del combo cae a <c>ToString()</c>: mostramos la etiqueta legible, no el record crudo.</summary>
-    public override string ToString() => Description;
+    /// <summary>La caja del combo cae a <c>ToString()</c>: mostramos la etiqueta legible, no el record crudo. La opción
+    /// de autodetección se traduce al idioma de la aplicación (la descripción del record es solo un respaldo).</summary>
+    public override string ToString() => Code.Length == 0 ? Localizer.T("In_FormatAuto") : Description;
 }
 
 /// <summary>Enumera dispositivos físicos disponibles (DeckLink, DirectShow, NDI sources…).</summary>
@@ -132,6 +152,15 @@ public interface IDeviceEnumerator
     /// </summary>
     Task<AudioProbe?> MeasureAudioAsync(InputType type, string deviceId, int channels, string? formatCode = null, CancellationToken ct = default)
         => Task.FromResult<AudioProbe?>(null);
+
+    /// <summary>
+    /// Pregunta a la tarjeta (DeckLink) qué señal tiene conectada AHORA: abre el dispositivo en autodetección unos
+    /// segundos y devuelve el modo que detectó o, si no detectó nada, POR QUÉ: la tarjeta en uso por otro proceso (se
+    /// distingue abriendo un instante con un modo fijo) o libre pero sin señal / sin detección de formato. Requiere el
+    /// dispositivo LIBRE, como <see cref="MeasureAudioAsync"/>.
+    /// </summary>
+    Task<VideoModeDetection> DetectVideoModeAsync(InputType type, string deviceId, CancellationToken ct = default)
+        => Task.FromResult(VideoModeDetection.Failed);
 }
 
 /// <summary>Resultado de medir el audio de un dispositivo: canales abiertos y pico (dBFS) de cada uno, en orden.</summary>

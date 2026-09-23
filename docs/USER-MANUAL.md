@@ -135,7 +135,13 @@ This is where you decide **which video source is connected to each channel**.
 2. On the channel's row, choose:
    - **Video input:** the source (the card or camera).
    - **Audio (DirectShow):** the microphone/sound input, if your source needs one.
-   - **Mode / format (DeckLink):** the resolution and rate of the SDI signal (for example "1080i 59.94").
+   - **Mode / format (DeckLink):** the resolution and rate of the SDI signal (for example "1080i 59.94"). With
+     **Automatic** the card itself detects the signal when the input opens: the channel panel shows the detected format
+     ("1920×1080 · 59.94i") and, if the card detects nothing, it shows **NO SIGNAL** (no signal or cable, or a
+     card/connector that does not autodetect) instead of a black picture with no explanation. Press **📡 Detect signal**
+     (with the card free, no channel using it) to see what signal the card detects: the matching mode is selected and,
+     on **Apply**, fixed; the safest choice where autodetection fails or is slow. If another program (or another
+     channel) holds the card, it says so; and the channel shows **NO SIGNAL** while another process holds it, in any mode.
    - **Card audio (DeckLink):** how many embedded audio channels to request from the card. **Automatic** asks for as
      many as the card allows (16, falling back to 8 or 2). If you know what your signal carries, you can fix 2, 8 or 16.
    - **Pair to record (DeckLink and NDI):** which pair of SDI channels goes into the recording (pair 1-2, 3-4, 5-6…) or

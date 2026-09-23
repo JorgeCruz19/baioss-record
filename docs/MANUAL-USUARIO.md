@@ -136,7 +136,13 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
 2. En la fila del canal, elige:
    - **Entrada de vídeo:** la fuente (la tarjeta o cámara).
    - **Audio (DirectShow):** el micrófono/entrada de sonido, si tu fuente lo necesita.
-   - **Modo / formato (DeckLink):** la resolución y cadencia de la señal SDI (por ejemplo "1080i 59.94").
+   - **Modo / formato (DeckLink):** la resolución y cadencia de la señal SDI (por ejemplo "1080i 59.94"). Con
+     **Automático** es la tarjeta la que detecta la señal al abrir la entrada: el panel del canal enseña el formato
+     detectado («1920×1080 · 59.94i») y, si la tarjeta no detecta nada, marca **SIN SEÑAL** (sin señal o cable, o una
+     tarjeta/conector que no autodetecta) en vez de una imagen negra sin explicación. Pulsa **📡 Detectar señal** (con la
+     tarjeta libre, sin ningún canal usándola) para ver qué señal detecta la tarjeta: el modo que corresponde queda
+     seleccionado y, al **Aplicar**, fijo; es lo más seguro donde la autodetección falla o tarda. Si otro programa (u
+     otro canal) tiene la tarjeta, lo dice; y el canal marca **SIN SEÑAL** mientras otro proceso la tenga, con cualquier modo.
    - **Audio de la tarjeta (DeckLink):** cuántos canales de audio embebido se le piden a la tarjeta. **Automático** pide
      los máximos que admita (16, y si no puede, 8 o 2). Si sabes lo que trae tu señal, puedes fijar 2, 8 o 16.
    - **Par a grabar (DeckLink y NDI):** qué par de canales del SDI va a la grabación (par 1-2, 3-4, 5-6…) o **Todos los

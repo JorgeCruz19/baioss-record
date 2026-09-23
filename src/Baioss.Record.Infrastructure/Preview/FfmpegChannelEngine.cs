@@ -114,6 +114,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _audioFallbackPending;
     /// <summary>Fuente para la que ya se registró que rechaza el recuento FIJO de canales (evita repetir el error en cada relanzamiento).</summary>
     private ICaptureSource? _audioRejectLoggedFor;
+    // Fuente para la que ya se avisó de que la tarjeta no autodetecta la señal (el supervisor relanza y la línea vuelve).
+    private ICaptureSource? _autodetectLoggedFor;
+    // Ídem para «la tarjeta está en uso por otro proceso».
+    private ICaptureSource? _deviceBusyLoggedFor;
 
     // Recuperación tras la CAÍDA del proceso de grabación (N1): el supervisor ya NO relanza el mismo argv —que
     // reabriría el archivo con -y y lo truncaría—; el motor reconstruye en una PIEZA NUEVA vía ReplaceProcessAsync,
@@ -608,6 +612,38 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnLog(object? sender, string line)
     {
+        // DeckLink en autodetección: FFmpeg cuenta al abrir qué modo detectó la tarjeta («Found Decklink mode 1920 x 1080
+        // with rate 29.97(i)») o que no detectó nada. Se lo pasa a la fuente, que lo publica en su señal: el panel enseña
+        // el formato real (antes decía «—» con la tarjeta capturando) y pasa a SIN SEÑAL cuando no hay nada que
+        // detectar, en vez de fingir «SEÑAL OK» con el preview en negro mientras el supervisor relanza el proceso.
+        if (_source is { } src)
+        {
+            if (DecklinkModeParser.TryParseFoundMode(line) is { } mode) { src.ReportDetectedMode(mode); return; }
+            if (DecklinkModeParser.IsAutodetectFailure(line))
+            {
+                if (!ReferenceEquals(_autodetectLoggedFor, src))
+                {
+                    _autodetectLoggedFor = src;
+                    _log.LogWarning("Canal {Key}: la tarjeta no autodetectó la señal ({Line}). Sin señal o cable, tarjeta en uso, o tarjeta/conector sin autodetección: fija el modo en Entradas → Modo/formato (o pulsa «Detectar señal»).", _channelKey, line.Trim());
+                }
+                src.ReportDetectedMode(null);
+                return;
+            }
+            // Con modo fijo no hay autodetección: «Cannot enable video input» = la tarjeta la tiene otro proceso (otro
+            // programa, u otro canal con la misma entrada), e «Input #0, decklink, from…» = el dispositivo abrió y captura.
+            if (DecklinkModeParser.IsDeviceBusy(line))
+            {
+                if (!ReferenceEquals(_deviceBusyLoggedFor, src))
+                {
+                    _deviceBusyLoggedFor = src;
+                    _log.LogWarning("Canal {Key}: la tarjeta está en uso por otro proceso ({Line}): otro programa (Media Express, OBS…) u otro canal con la misma entrada. Se reintenta hasta que quede libre.", _channelKey, line.Trim());
+                }
+                src.ReportDeviceOpen(false);
+                return;
+            }
+            if (DecklinkModeParser.IsInputOpened(line)) { src.ReportDeviceOpen(true); return; }
+        }
+
         // La tarjeta no admite los canales de audio pedidos (DeckLink): baja un escalón y reconstruye. Solo tiene
         // sentido con más de 2 canales pedidos; con 2, ese mensaje sería otro fallo (entrada de audio en uso, etc.).
         if (!_audioFallbackPending && _source is { AudioChannelCount: > 2 } &&

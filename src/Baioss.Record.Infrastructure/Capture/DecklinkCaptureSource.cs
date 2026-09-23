@@ -53,8 +53,9 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         // LIMITACIÓN CONOCIDA (lock optimista FIJO): DeckLink es un dispositivo EXCLUSIVO; FFmpeg abre el
         // driver/tarjeta UNA sola vez. A diferencia de NDI —que tiene un receptor propio capaz de medir la
         // ausencia de frames y reportar presencia (patrón C3)—, aquí no hay forma de sondear la señal sin un
-        // segundo proceso que compita por el dispositivo. En consecuencia: (1) SignalChanged NO se vuelve a
-        // emitir tras OpenAsync; (2) la pérdida de señal SDI en caliente NO se detecta de forma proactiva: solo
+        // segundo proceso que compita por el dispositivo. En consecuencia: (1) tras OpenAsync SignalChanged solo se
+        // re-emite con lo que FFmpeg cuenta al abrir (ReportDetectedMode: modo detectado, o «sin señal» en
+        // autodetección); (2) la pérdida de señal SDI en caliente NO se detecta de forma proactiva: solo
         // la capta el watchdog del motor (negros/congelados → carta de ajuste a los ~15 s). Sin hardware DeckLink
         // no es validable un sondeo en vivo, así que se DOCUMENTA la limitación en lugar de añadir código no
         // comprobable. (Auditoría 24/7, #33.)
@@ -95,10 +96,45 @@ public sealed class DecklinkCaptureSource(InputSource definition) : ICaptureSour
         return args;
     }
 
+    /// <summary>True si la entrada deja que la tarjeta detecte el modo (sin <c>format_code</c>).</summary>
+    private bool Autodetects => !Definition.Parameters.TryGetValue("format_code", out var code) || string.IsNullOrWhiteSpace(code);
+
     /// <summary>
-    /// Propaga un cambio de señal (presencia/ausencia/formato). SIN CONSUMIDOR ACTIVO hoy: existe para el día
-    /// que se implemente un sondeo fiable de presencia DeckLink. Por ahora <see cref="OpenAsync"/> marca un
-    /// lock optimista y esto NO se llama (el dispositivo es exclusivo y no admite sondeo concurrente). (#33.)
+    /// Lo que FFmpeg contó al abrir la tarjeta (lo trae el motor desde su stderr). En autodetección: el modo detectado
+    /// pasa a la señal (formato a la vista en el panel y en la API, resolución/tasa para la sesión) y un fallo de
+    /// autodetección la deja en SIN SEÑAL —no hay imagen que grabar y el supervisor está relanzando— hasta que la
+    /// tarjeta detecte algo. Con un modo FIJO se ignora: FFmpeg no autodetecta, y «Found Decklink mode…» es el modo
+    /// pedido, se corresponda o no con la señal. Solo emite si algo cambió (el supervisor relanza y la línea vuelve).
+    /// </summary>
+    public void ReportDetectedMode(DetectedVideoMode? mode)
+    {
+        if (!Autodetects) return;
+        var current = CurrentSignal;
+        var next = mode is null
+            ? current with { State = SignalState.NoSignal, Resolution = null, FrameRate = null, FormatLabel = null }
+            : current with { State = SignalState.Locked, Resolution = mode.Resolution, FrameRate = mode.FrameRate, FormatLabel = mode.Label };
+        if (next.State == current.State && next.FormatLabel == current.FormatLabel) return;
+        RaiseSignal(next);
+    }
+
+    /// <summary>
+    /// FFmpeg abrió el dispositivo (hay captura) o la tarjeta estaba en uso por otro proceso. En ambos modos: con modo
+    /// fijo no hay autodetección y esto es lo único que dice si el canal ve algo; con la tarjeta ocupada el panel marca
+    /// SIN SEÑAL en vez de «SEÑAL OK» con el preview en negro, y vuelve a SEÑAL OK cuando el dispositivo abre. Se
+    /// conserva el formato (el fijo, o el último detectado) para que se vea con qué modo se intenta.
+    /// </summary>
+    public void ReportDeviceOpen(bool opened)
+    {
+        var current = CurrentSignal;
+        var state = opened ? SignalState.Locked : SignalState.NoSignal;
+        if (current.State == state) return;
+        RaiseSignal(current with { State = state });
+    }
+
+    /// <summary>
+    /// Propaga un cambio de señal (presencia/ausencia/formato). Lo usa <see cref="ReportDetectedMode"/> con lo que
+    /// FFmpeg cuenta al abrir la tarjeta; sigue SIN haber sondeo de presencia en caliente (el dispositivo es exclusivo
+    /// y no admite sondeo concurrente). (#33.)
     /// </summary>
     internal void RaiseSignal(SignalInfo info)
     {

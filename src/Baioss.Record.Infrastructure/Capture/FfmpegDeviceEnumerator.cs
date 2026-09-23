@@ -8,6 +8,7 @@ using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Engine.FFmpeg;
 
 namespace Baioss.Record.Infrastructure.Capture;
 
@@ -42,6 +43,28 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         return ParseDecklinkFormats(output);
     }
 
+    public async Task<VideoModeDetection> DetectVideoModeAsync(InputType type, string deviceId, CancellationToken ct = default)
+    {
+        if (type is not InputType.DecklinkSdi || string.IsNullOrWhiteSpace(deviceId)) return VideoModeDetection.Failed;
+        // Sin -format_code FFmpeg pide a la tarjeta que detecte la señal (espera hasta 3 s) y cuenta el modo con «Found
+        // Decklink mode…»; -t 0.1 captura un instante y sale. Con la tarjeta en uso, sin señal o sin detección de
+        // formato dice «Cannot Autodetect input stream or No signal», que no distingue los tres casos.
+        var auto = await RunAsync(new[]
+        {
+            "-hide_banner", "-nostats", "-f", "decklink", "-draw_bars", "false", "-t", "0.1", "-i", deviceId, "-f", "null", "-",
+        }, ct).ConfigureAwait(false);
+        if (DecklinkModeParser.ParseOutput(auto) is { } mode) return new VideoModeDetection(VideoModeDetectionOutcome.Detected, mode);
+
+        // Para distinguirlos se abre un instante con un modo FIJO (NTSC: el mismo con el que la propia autodetección de
+        // FFmpeg enciende la entrada). Ocupada → «Cannot enable video input»; libre → abre aunque la señal no coincida
+        // (cuadros sin fuente) → es que no hay señal o la tarjeta no detecta. Medido en una Duo 2 con la aplicación capturando.
+        var fixedMode = await RunAsync(new[]
+        {
+            "-hide_banner", "-nostats", "-f", "decklink", "-draw_bars", "false", "-format_code", "ntsc", "-t", "0.1", "-i", deviceId, "-f", "null", "-",
+        }, ct).ConfigureAwait(false);
+        return DecklinkModeParser.Classify(auto, fixedMode);
+    }
+
     /// <summary>
     /// Mide ~3 s el audio embebido de una DeckLink (o de un archivo, para pruebas) con <c>astats</c> y devuelve el pico
     /// por canal. Con <paramref name="channels"/> = 0 pide 16 y baja a 8 y a 2 si la tarjeta responde «Cannot enable
@@ -54,7 +77,10 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         var candidates = channels > 0 ? new[] { channels } : new[] { 16, 8, 2 };
         foreach (var n in candidates)
         {
-            var args = new List<string> { "-hide_banner" };
+            // -nostats: la línea de progreso de FFmpeg («size=N/A time=… speed=1x») se mezclaba con las de astats en el
+            // mismo stderr (visto en una Duo 2 real: «Channel: 12x elapsed=…» en consola). El parser lo aguanta, pero
+            // sin progreso no hay nada que mezclar.
+            var args = new List<string> { "-hide_banner", "-nostats" };
             if (type is InputType.DecklinkSdi)
             {
                 args.AddRange(new[] { "-f", "decklink", "-draw_bars", "false" });
@@ -117,12 +143,15 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
 
     private async Task<IReadOnlyList<InputSource>> DiscoverDecklinkAsync(CancellationToken ct)
     {
-        // '-sources decklink' es el comando moderno; si el build no lo soporta o no devuelve nombres
-        // entre comillas simples, se recurre al clásico '-list_devices' (su salida por stderr es estable).
-        var output = await RunAsync(new[] { "-hide_banner", "-sources", "decklink" }, ct);
-        if (!output.Contains('\''))
-            output = await RunAsync(new[] { "-hide_banner", "-f", "decklink", "-list_devices", "1", "-i", "dummy" }, ct);
-        return ParseDecklink(output);
+        // '-sources decklink' es el comando moderno: «81:d88ca1e0:00000000 [DeckLink Duo (1)] (none)» —id único de la
+        // tarjeta, nombre visible entre corchetes, tipos—; FFmpeg acepta en -i tanto el nombre como el id, y se usa el
+        // nombre (es lo que ve el operador y lo que llevan las entradas guardadas). Si este build no lo trae o no
+        // lista nada, el clásico '-list_devices' (deprecado, pero sigue imprimiendo los nombres entre comillas simples).
+        // Antes solo se entendía el formato con comillas: con un FFmpeg reciente se iba SIEMPRE por el camino deprecado.
+        var found = ParseDecklink(await RunAsync(new[] { "-hide_banner", "-sources", "decklink" }, ct));
+        if (found.Count == 0)
+            found = ParseDecklink(await RunAsync(new[] { "-hide_banner", "-f", "decklink", "-list_devices", "1", "-i", "dummy" }, ct));
+        return found;
     }
 
     // --- Parseo de la salida de FFmpeg (puro y testeable, sin lanzar procesos) ---
@@ -147,12 +176,19 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         return list.Distinct(StringComparer.Ordinal).ToList();
     }
 
-    /// <summary>Extrae los nombres de dispositivos DeckLink (entre comillas simples) de la salida de FFmpeg.</summary>
+    /// <summary>
+    /// Extrae los nombres de dispositivos DeckLink de la salida de FFmpeg: la moderna de <c>-sources decklink</c>
+    /// («81:d88ca1e0:00000000 [DeckLink Duo (1)] (none)», el nombre entre corchetes) o la clásica de
+    /// <c>-list_devices</c> (el nombre entre comillas simples). Si la moderna trae algo, manda ella.
+    /// </summary>
     public static IReadOnlyList<InputSource> ParseDecklink(string output)
     {
         var list = new List<InputSource>();
-        foreach (Match m in DecklinkDeviceRegex().Matches(output))
-            list.Add(MakeSource(InputType.DecklinkSdi, m.Groups["name"].Value));
+        foreach (Match m in DecklinkSourceRegex().Matches(output))
+            list.Add(MakeSource(InputType.DecklinkSdi, m.Groups["name"].Value.Trim()));
+        if (list.Count == 0)
+            foreach (Match m in DecklinkDeviceRegex().Matches(output))
+                list.Add(MakeSource(InputType.DecklinkSdi, m.Groups["name"].Value));
         return Dedupe(list);
     }
 
@@ -199,22 +235,10 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
         };
     }
 
+    /// <summary>La MISMA etiqueta que lleva el modo detectado en la señal (<see cref="VideoModes.Label"/>): así el gestor
+    /// de entradas y el panel del canal dicen lo mismo, y «Detectar señal» puede casar lo detectado con esta lista.</summary>
     private static string? FriendlyLabel(Resolution? res, FrameRate? fr, bool interlaced)
-    {
-        if (res is not { } r || fr is not { } f) return null;
-        double display = interlaced ? f.Value * 2 : f.Value; // entrelazado → tasa de campos (59.94i, 50i)
-        char scan = interlaced ? 'i' : 'p';
-        return $"{r.Width}×{r.Height} · {FormatRate(display)}{scan}";
-    }
-
-    /// <summary>"59.94", "29.97", "23.98" o entero exacto ("25", "50", "60").</summary>
-    private static string FormatRate(double v)
-    {
-        double rounded = Math.Round(v);
-        return Math.Abs(v - rounded) < 0.02
-            ? ((int)rounded).ToString(CultureInfo.InvariantCulture)
-            : v.ToString("0.00", CultureInfo.InvariantCulture);
-    }
+        => res is { } r && fr is { } f ? VideoModes.Label(r, f, interlaced) : null;
 
     private static InputSource MakeSource(InputType type, string name) => new()
     {
@@ -288,6 +312,12 @@ public sealed partial class FfmpegDeviceEnumerator(IFfmpegLocator locator) : IDe
     // decklink: líneas con el nombre entre comillas simples, p. ej.  'DeckLink Mini Recorder'
     [GeneratedRegex("'(?<name>[^']+)'")]
     private static partial Regex DecklinkDeviceRegex();
+
+    // -sources decklink:  "  81:d88ca1e0:00000000 [DeckLink Duo (1)] (none)"  (un «*» delante marca el predeterminado).
+    // El id va sin espacios ni corchetes; el nombre visible, entre corchetes. Las líneas de log ("[decklink @ …]") no
+    // casan: empiezan por el corchete, sin id delante.
+    [GeneratedRegex(@"^\s*\*?\s*[^\s\[\]'\r\n]+\s+\[(?<name>[^\]\r\n]+)\]", RegexOptions.Multiline)]
+    private static partial Regex DecklinkSourceRegex();
 
     // decklink -list_formats:  "[... @ ...]    Hp50   1920x1080 at 50/1 fps"  → code=Hp50, desc=1920x1080…
     // Se ancla en la forma de la descripción (WxH … fps), no en el corchete del prefijo de log: así

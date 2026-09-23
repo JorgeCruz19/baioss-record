@@ -198,6 +198,18 @@ public static class Strings
         ["In_Msg_AudioProbeNone"] = "No se pudo medir el audio de «{0}». Si un canal ya está usando esa tarjeta, asígnale otra entrada antes de medir; también puede que no haya señal.",
         ["In_Msg_AudioProbe"] = "Canal {0}: la tarjeta entrega {1} canales; con sonido: pares {2}. A grabar: {3} (pulsa Aplicar para guardarlo).",
         ["In_Msg_AudioProbeSilent"] = "Canal {0}: la tarjeta entrega {1} canales, pero ninguno tiene sonido ahora mismo (un par callado no es un par ausente). Se mantiene: {2}.",
+        // Asistente «Detectar señal» (gestor de entradas): qué modo detecta la tarjeta DeckLink en la señal.
+        ["In_FormatAuto"] = "Automático (autodetección)",
+        ["In_DetectSignal"] = "📡 Detectar señal",
+        ["In_SignalNone"] = "sin señal detectada",
+        ["In_Msg_SignalDetecting"] = "Canal {0}: preguntando a «{1}» qué señal tiene (unos segundos)…",
+        ["In_Msg_SignalBusy"] = "Canal {0}: «{1}» está en uso por el canal {2}; asígnale otra entrada antes de detectar (la tarjeta es exclusiva). El panel de ese canal ya enseña el formato que detectó.",
+        ["In_Msg_SignalDetected"] = "Canal {0}: la tarjeta detecta {1}; modo {2} seleccionado. Pulsa Aplicar para fijarlo (con «Automático» la tarjeta lo detecta sola al abrir, si puede).",
+        ["In_Msg_SignalDetectedNoMode"] = "Canal {0}: la tarjeta detecta {1}, pero no coincide con ningún modo de la lista; se mantiene «Automático».",
+        ["In_SignalBusy"] = "tarjeta en uso",
+        ["In_Msg_SignalBusyOther"] = "Canal {0}: «{1}» está en uso por otro programa (o por otro canal con la misma entrada): ciérralo o cambia esa entrada y vuelve a intentarlo.",
+        ["In_Msg_SignalNotDetected"] = "Canal {0}: «{1}» está libre pero no detectó ninguna señal: comprueba el cable y la fuente; si la señal está bien, esta tarjeta o conector no autodetecta y hay que elegir el modo a mano.",
+        ["In_Msg_SignalFailed"] = "Canal {0}: no se pudo consultar «{1}» (¿FFmpeg?); revisa el registro.",
 
         // --- Reasignación de entrada (mensajes que acaban en la ventana de Entradas) ---
         ["Rebind_Err_Simulated"] = "La reasignación de entrada no está disponible (modo de demostración).",
@@ -757,6 +769,18 @@ public static class Strings
         ["In_Msg_AudioProbeNone"] = "Could not measure the audio of «{0}». If a channel is already using that card, assign it another input before measuring; the card may also have no signal.",
         ["In_Msg_AudioProbe"] = "Channel {0}: the card delivers {1} channels; with sound: pairs {2}. To record: {3} (press Apply to save it).",
         ["In_Msg_AudioProbeSilent"] = "Channel {0}: the card delivers {1} channels, but none has sound right now (a quiet pair is not an absent pair). Keeping: {2}.",
+        // "Detect signal" assistant (inputs manager): which mode the DeckLink card detects in the signal.
+        ["In_FormatAuto"] = "Automatic (autodetect)",
+        ["In_DetectSignal"] = "📡 Detect signal",
+        ["In_SignalNone"] = "no signal detected",
+        ["In_Msg_SignalDetecting"] = "Channel {0}: asking «{1}» what signal it has (a few seconds)…",
+        ["In_Msg_SignalBusy"] = "Channel {0}: «{1}» is in use by channel {2}; assign it another input before detecting (the card is exclusive). That channel's panel already shows the format it detected.",
+        ["In_Msg_SignalDetected"] = "Channel {0}: the card detects {1}; mode {2} selected. Press Apply to fix it (with \"Automatic\" the card detects it by itself when opening, if it can).",
+        ["In_Msg_SignalDetectedNoMode"] = "Channel {0}: the card detects {1}, but it matches no mode in the list; keeping \"Automatic\".",
+        ["In_SignalBusy"] = "card in use",
+        ["In_Msg_SignalBusyOther"] = "Channel {0}: «{1}» is in use by another program (or by another channel with the same input): close it or change that input and try again.",
+        ["In_Msg_SignalNotDetected"] = "Channel {0}: «{1}» is free but detected no signal: check the cable and the source; if the signal is fine, this card or connector does not autodetect and the mode must be chosen by hand.",
+        ["In_Msg_SignalFailed"] = "Channel {0}: could not query «{1}» (FFmpeg?); check the log.",
 
         // --- Input rebinding (messages that end up in the Inputs window) ---
         ["Rebind_Err_Simulated"] = "Changing the input is not available (demonstration mode).",
