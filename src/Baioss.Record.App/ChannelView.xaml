@@ -320,14 +320,16 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <!-- Medidores principales: el par que se graba (con una fuente estéreo, los dos canales de siempre). -->
-                        <StackPanel Grid.Column="0" Margin="0,0,14,0" VerticalAlignment="Center">
+                        <!-- Medidores principales: el par que se graba (con una fuente estéreo, los dos canales de siempre).
+                             Ancho FIJO para las cifras: con columnas Auto, al pasar de «-16.7» a «-9.9» la columna se
+                             estrechaba y las barras y los pares de la derecha saltaban de sitio con cada variación. -->
+                        <StackPanel Grid.Column="0" Width="46" Margin="0,0,10,0" VerticalAlignment="Center">
                             <TextBlock Text="{Binding LeftPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
                                        HorizontalAlignment="Center"/>
                             <TextBlock Text="L" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
                                        HorizontalAlignment="Center"/>
                         </StackPanel>
-                        <StackPanel Grid.Column="1" Margin="0,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Grid.Column="1" Width="46" Margin="0,0,12,0" VerticalAlignment="Center">
                             <TextBlock Text="{Binding RightPeakDb}" FontFamily="Consolas" FontSize="15" FontWeight="Bold"
                                        HorizontalAlignment="Center"/>
                             <TextBlock Text="R" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
@@ -393,26 +395,12 @@
                 </StackPanel>
             </Border>
 
-            <!-- Transporte: controles de grabación. El badge de estado (Grabando/Inactivo) se muestra
-                 flotando sobre el preview, no aquí, para no solaparse con «Detener grabación automática». -->
-            <Grid Grid.Row="4" Margin="0,10,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <!-- Preset de grabación vigente: con qué se grabará al pulsar Grabar. Se cambia en «Presets de grabación»;
-                     el tooltip da el resumen técnico (códec · tasa · tamaño · contenedor). -->
-                <Border Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="12,0,0,0"
-                        Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
-                        CornerRadius="12" Padding="10,4" ToolTip="{Binding PresetToolTip}">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,7,0"/>
-                        <TextBlock Text="{Binding PresetText}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" MaxWidth="260"/>
-                    </StackPanel>
-                </Border>
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
+            <!-- Transporte: controles de grabación y, a su lado, el preset vigente. El badge de estado (Grabando/Inactivo)
+                 se muestra flotando sobre el preview, no aquí. Es un WrapPanel a propósito: con cuatro canales en pantalla
+                 y «Detener grabación automática» a la vista, el badge del preset no cabía en la fila y se CORTABA por el
+                 borde de la tarjeta; ahora pasa a una segunda línea cuando no hay sitio. -->
+            <WrapPanel Grid.Row="4" Margin="0,10,0,0" Orientation="Horizontal">
+                <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
                     <Button Content="{loc:T Ch_Record}"   Command="{Binding StartCommand}"  Style="{StaticResource StartButton}"/>
                     <!-- «Detener» SOLO para grabaciones manuales; en las programadas se usa «Detener grabación automática». -->
                     <Button Content="{loc:T Ch_Stop}"  Command="{Binding StopCommand}"   Style="{StaticResource StopButton}"
@@ -423,7 +411,25 @@
                             Foreground="#10131A" FontWeight="Bold"
                             Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
-            </Grid>
+                <!-- Preset de grabación vigente: con qué se grabará al pulsar Grabar. Se cambia en «Presets de grabación»;
+                     el tooltip da el nombre completo y el resumen técnico (códec · tasa · tamaño · contenedor). Rejilla
+                     (no StackPanel horizontal) para que el nombre reciba el ancho disponible y, si ni solo en su línea
+                     cabe, se recorte con puntos suspensivos en vez de desbordar. -->
+                <Border VerticalAlignment="Center" Margin="0,4,0,0" MaxWidth="360"
+                        Background="#12161E" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
+                        CornerRadius="12" Padding="10,4" ToolTip="{Binding PresetToolTip}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,7,0"/>
+                        <TextBlock Grid.Column="1" Text="{Binding PresetText}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis"/>
+                    </Grid>
+                </Border>
+            </WrapPanel>
 
             <!-- Programación: en el panel solo se muestra la grabación EN CURSO (alto fijo, uniforme entre
                  canales); el botón abre una ventana con toda la programación de hoy del canal. -->
