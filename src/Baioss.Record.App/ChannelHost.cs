@@ -61,6 +61,9 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
     /// <summary>Se eleva (channelId) tras reconstruir un canal; la UI reemplaza su ViewModel.</summary>
     public event Action<Guid>? ChannelRebound;
 
+    /// <summary>True si algún canal tiene asignada esa entrada ahora mismo (p. ej. para no borrar una fuente de red en uso).</summary>
+    public bool IsSourceInUse(Guid sourceId) => _sources.Values.Any(s => s.Id == sourceId);
+
     public ChannelHost(IServiceProvider sp, PreviewCatalog previews, ChannelCompositionContext ctx)
     {
         _sp = sp;

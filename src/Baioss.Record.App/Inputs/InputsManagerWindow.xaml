@@ -9,8 +9,13 @@
         <!-- Cabecera + Detectar -->
         <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="{loc:T In_Detect}" VerticalAlignment="Center"
-                        Command="{Binding DetectCommand}" IsEnabled="{Binding CanRebind}" Style="{StaticResource TransportButton}"/>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Fuentes de red (SRT/RTMP): se crean aquí y luego aparecen en «Entrada de vídeo» como un dispositivo más. -->
+                    <Button Content="{loc:T In_NetworkSources}" Command="{Binding OpenNetworkSourcesCommand}"
+                            IsEnabled="{Binding CanManageNetwork}" Style="{StaticResource TransportButton}" Margin="0,0,8,0"/>
+                    <Button Content="{loc:T In_Detect}" Command="{Binding DetectCommand}" IsEnabled="{Binding CanRebind}"
+                            Style="{StaticResource TransportButton}"/>
+                </StackPanel>
                 <StackPanel>
                     <TextBlock Text="{loc:T In_Header}" FontSize="14" FontWeight="Bold"
                                Foreground="{StaticResource TextPrimaryBrush}"/>

@@ -55,13 +55,16 @@ public sealed partial class ShellViewModel : ObservableObject
 
     /// <summary>Acceso a la API de esta ejecución (dirección, puerto, webs permitidas): lo edita la ventana de Configuración.</summary>
     private readonly ApiAccessState? _apiAccess;
+    /// <summary>Repositorio de entradas, para el diálogo «Fuentes de red» del gestor de entradas (null en modo simulado).</summary>
+    private readonly IInputSourceRepository? _inputSources;
 
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
         IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, IEventLogRepository events,
-        ILicenseService? license = null, ApiAccessState? apiAccess = null)
+        ILicenseService? license = null, ApiAccessState? apiAccess = null, IInputSourceRepository? inputSources = null)
     {
         _apiAccess = apiAccess;
+        _inputSources = inputSources;
         _host = host;
         _previews = previews;
         _presetStore = presetStore;
@@ -266,13 +269,34 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand]
     private void OpenInputs()
     {
-        var viewModel = new InputsManagerViewModel(_devices, Channels.ToList(), _host.CanRebind, _host.DemoClipPath, RebindAsync);
+        var viewModel = new InputsManagerViewModel(_devices, Channels.ToList(), _host.CanRebind, _host.DemoClipPath, RebindAsync,
+            _inputSources is null ? null : ListNetworkSourcesAsync,
+            _inputSources is null ? null : ManageNetworkSourcesAsync);
         var window = new InputsManagerWindow
         {
             DataContext = viewModel,
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();
+        _ = viewModel.LoadAsync(); // fuentes de red guardadas → desplegables
+    }
+
+    private async Task<IReadOnlyList<InputSource>> ListNetworkSourcesAsync()
+        => (await _inputSources!.ListAsync()).Where(s => NetworkInput.IsNetworkType(s.Type)).ToList();
+
+    /// <summary>Diálogo modal «Fuentes de red»; devuelve true si se guardó o eliminó algo.</summary>
+    private async Task<bool> ManageNetworkSourcesAsync()
+    {
+        var thisHost = ApiAccessViewModel.LocalIPv4().FirstOrDefault() ?? Loc.T("Net_ThisHost");
+        var viewModel = new NetworkSourcesViewModel(_inputSources!, _host.IsSourceInUse, thisHost);
+        await viewModel.LoadAsync();
+        var window = new NetworkSourcesWindow
+        {
+            DataContext = viewModel,
+            Owner = System.Windows.Application.Current?.MainWindow,
+        };
+        window.ShowDialog();
+        return viewModel.Changed;
     }
 
     [RelayCommand]
