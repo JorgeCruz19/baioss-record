@@ -400,6 +400,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_supervisor is not null)
         {
             _supervisor.Crashed -= OnRecordingProcessDied;
+            _supervisor.Restarted -= OnSupervisorRestarted;
             _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
             await _supervisor.DisposeAsync().ConfigureAwait(false);
             _supervisor = null;
@@ -486,6 +487,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // lo truncaría): su caída la gestiona el motor en una PIEZA NUEVA (OnRecordingProcessDied). El PREVIEW
             // (sin archivo) y la carta de ajuste (bars generadas; truncarlas es cosmético) sí se auto-relanzan. (N1.)
             RestartInternally = !recording || slate,
+            // Entradas de red: el proceso lee del relé de un receptor permanente; cuando el emisor cierra, el relé cierra y
+            // FFmpeg sale con 0 → en preview se relanza y espera al flujo siguiente; y mientras espera no produce progreso
+            // (no está colgado). En grabación esa salida limpia la recupera el motor en una pieza nueva (Completed).
+            RestartOnCleanExit = !recording && !slate && _source?.RestartsAfterEndOfStream == true,
+            IgnoreStallUntilFirstProgress = !slate && _source?.WaitsForPeer == true,
             // #55: sonda para que el watchdog detecte un archivo que NO crece aunque FFmpeg reporte progreso
             // (encoder colgado / escritura muerta). Solo en grabación; negativo si está pausado (no evaluable).
             RecordedBytesProbe = recording ? () => _state == RecordingState.Paused ? -1L : CurrentSessionBytes() : (Func<long>?)null,
@@ -499,6 +505,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _supervisor.LogLine += OnLog;
         _supervisor.Crashed += OnRecordingProcessDied;
         _supervisor.Completed += OnRecordingProcessCompleted; // salida LIMPIA inesperada durante grabación (N6)
+        _supervisor.Restarted += OnSupervisorRestarted;         // el preview se relanza: la fuente dejó de entregar
         await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
     }
 
@@ -608,6 +615,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
         catch { /* carpeta inaccesible momentáneamente */ }
         return 0;
+    }
+
+    /// <summary>
+    /// El supervisor relanzó el proceso de PREVIEW tras una salida inesperada (o un fin de flujo de una fuente de red):
+    /// hasta que el nuevo proceso abra la entrada no hay captura. En grabación no se toca nada: esa caída ya la cuenta
+    /// OnRecordingProcessDied (auditoría RecordingInterrupted + pieza nueva o carta de ajuste).
+    /// </summary>
+    private void OnSupervisorRestarted(object? sender, int restartCount)
+    {
+        if (_state == RecordingState.Idle && !_slate) _source?.ReportDeviceOpen(false);
     }
 
     private void OnLog(object? sender, string line)
@@ -877,7 +894,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Canal {Key}: fallo al recuperar la grabación tras la caída; se reintentará con backoff.", _channelKey);
+                // Una fuente que se auto-reporta y sigue SIN SEÑAL (el emisor de red no ha vuelto) no puede reconstruirse
+                // todavía: no es un error, es la espera normal; se reintenta con backoff hasta que la señal vuelva.
+                if (_source is { SelfReportsRecovery: true, CurrentSignal.State: SignalState.NoSignal })
+                    _log.LogWarning("Canal {Key}: la fuente sigue sin señal; la grabación continuará en una pieza nueva cuando vuelva.", _channelKey);
+                else
+                    _log.LogError(ex, "Canal {Key}: fallo al recuperar la grabación tras la caída; se reintentará con backoff.", _channelKey);
                 retry = !_disposed && _state is (RecordingState.Recording or RecordingState.Starting);
             }
             finally { _gate.Release(); }
@@ -1325,6 +1347,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_supervisor is not null)
         {
             _supervisor.Crashed -= OnRecordingProcessDied;
+            _supervisor.Restarted -= OnSupervisorRestarted;
             _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
             await _supervisor.DisposeAsync().ConfigureAwait(false);
         }

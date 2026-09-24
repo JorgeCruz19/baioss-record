@@ -75,6 +75,9 @@ public static class DependencyInjection
             services.AddSingleton<IFfmpegLocator>(_ => new FfmpegLocator(ffmpegDirectoryOrExe) { FaststartMaxBytes = faststartMaxBytes });
             // Enumeración real de dispositivos (DeckLink/DirectShow) vía FFmpeg: sustituye al fallback.
             services.AddSingleton<IDeviceEnumerator, FfmpegDeviceEnumerator>();
+            // Entradas de red (SRT escucha/llamada, RTMP servidor/cliente): su receptor permanente es un FFmpeg, así que
+            // solo existen con FFmpeg (sin él, el tipo queda «no soportado», como el resto en modo simulado).
+            services.AddSingleton<ICaptureSourceFactory, NetworkStreamCaptureSourceFactory>();
         }
 
         return services;

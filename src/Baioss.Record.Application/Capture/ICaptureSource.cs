@@ -74,6 +74,20 @@ public interface ICaptureSource : IAsyncDisposable
     bool SelfReportsRecovery => false;
 
     /// <summary>
+    /// True si es NORMAL que FFmpeg se quede esperando sin producir nada: una entrada de red en escucha (SRT
+    /// <c>listener</c>, servidor RTMP) aguarda al emisor todo el tiempo que haga falta. El vigilante del supervisor
+    /// no debe tomar esa espera por un proceso colgado (solo vigila el estancamiento una vez llegó el primer progreso).
+    /// </summary>
+    bool WaitsForPeer => false;
+
+    /// <summary>
+    /// True si un FIN DE FLUJO no es el fin de la fuente: cuando el emisor de un flujo de red cierra, FFmpeg termina
+    /// limpiamente (código 0) y hay que volver a abrir para esperar al siguiente. Con un archivo o un dispositivo, un
+    /// código 0 en el preview solo ocurre al detener, y el supervisor no relanza.
+    /// </summary>
+    bool RestartsAfterEndOfStream => false;
+
+    /// <summary>
     /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
     /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
     /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal

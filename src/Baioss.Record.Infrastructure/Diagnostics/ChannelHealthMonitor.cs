@@ -100,7 +100,7 @@ public sealed class ChannelHealthMonitor : BackgroundService
         if (anyStress)
         {
             _healthyTicks = 0;
-            _log.LogWarning("{Line}  ← frames perdidos o fps por debajo del objetivo: el disco/CPU/GPU no da abasto para todos los canales.", line);
+            _log.LogWarning("{Line}  ← frames perdidos o fps por debajo del objetivo: el disco/CPU/GPU no da abasto para todos los canales o, con una entrada de red, el emisor/la red entregan menos cuadros de los nominales.", line);
         }
         else if (_healthyTicks++ % Math.Max(1, HealthyLogEvery) == 0)
         {
