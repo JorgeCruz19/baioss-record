@@ -40,7 +40,7 @@ Cuatro fases. Cada una es un incremento desplegable; la estabilidad 24/7 se cuid
 - Roles (Admin/Supervisor/Operador), login, auditoría completa.
 - PostgreSQL; gestión de almacenamiento (auto-delete, retención 7/30/90/custom, archivado).
 - Dashboard de rendimiento (CPU/RAM/GPU/VRAM/Disco/Red + métricas por canal).
-- NDI (entrada y salida), SRT listener/caller, RTP/MPEG-TS.
+- NDI (entrada y salida), RTP/MPEG-TS. SRT (escucha/llamada) y RTMP (servidor/cliente) como ENTRADAS: hecho (2026-09-23, Entradas → Fuentes de red).
 - AV1 NVENC; ProRes/DNxHD/DNxHR para flujos de post.
 - Multi-monitor, docking panels, layouts guardables.
 - Servicio Windows headless (operación sin sesión interactiva).

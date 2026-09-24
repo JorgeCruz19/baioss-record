@@ -129,6 +129,8 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
 - **DeckLink (SDI):** tarjetas de captura profesionales Blackmagic. Es la entrada típica de broadcast.
 - **Cámara / capturadora USB (DirectShow):** webcams, capturadoras HDMI-USB, etc.
 - **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red).
+- **Flujo de red (SRT o RTMP):** una señal que llega por la red desde un codificador, OBS, vMix o un servidor (ver
+  «Fuentes de red» más abajo).
 - **Clip de demostración:** un vídeo de ejemplo que trae el programa (útil para pruebas).
 
 **Cómo asignar una entrada a un canal:**
@@ -156,6 +158,41 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
 3. Pulsa **Aplicar**. El canal se reconecta a la nueva fuente en caliente (suelta la anterior y abre la nueva).
 
 > **Nota:** No se puede cambiar la entrada de un canal **mientras está grabando**. Detén la grabación primero.
+
+**Fuentes de red (SRT y RTMP).** Pulsa **🌐 Fuentes de red…** para crear, editar o eliminar flujos que llegan por la
+red; después aparecen en la lista **Entrada de vídeo** como «SRT — nombre» o «RTMP — nombre» y se asignan como cualquier
+otra entrada. El flujo se graba con el preset del canal, como las demás entradas.
+
+- **SRT, escuchar:** este equipo espera al emisor. Elige un puerto (por ejemplo 9000) y, si quieres, una contraseña
+  (de 10 a 64 caracteres, la misma en el emisor) y la latencia (120 ms en red local; 300 a 1000 por Internet). El
+  diálogo te enseña la URL exacta que hay que poner en OBS, vMix o el codificador
+  («srt://IP-de-este-equipo:9000?mode=caller&latency=120000…»).
+- **SRT, llamar:** este equipo se conecta a un emisor o servidor que escucha: IP o nombre, puerto y, si los pide,
+  contraseña y Stream ID.
+- **RTMP, recibir:** este equipo hace de servidor: puerto (1935 por defecto) y, si el emisor la usa, «aplicación/clave»
+  (por ejemplo `live/estudio1`). En el emisor: servidor `rtmp://IP-de-este-equipo:1935/live` y clave `estudio1`; si
+  el emisor solo admite `rtmp://IP:puerto`, deja la aplicación/clave vacía. Acepta un emisor a la vez y no comprueba la
+  clave (entra cualquier emisor que llegue al puerto): limita el acceso con el firewall.
+- **RTMP, tirar:** este equipo se conecta a un servidor RTMP y graba lo que emite: pega la URL completa
+  (`rtmp://servidor/aplicación/clave`, también `rtmps://`, o solo `rtmp://IP:puerto` en los dispositivos que sirven
+  sin aplicación ni clave).
+
+El programa mantiene la conexión con el emisor mientras la entrada esté asignada: **Grabar y Detener no cortan esa
+conexión** (OBS, vMix o el codificador no ven ningún corte) y la grabación arranca con los últimos ~2 s ya recibidos,
+así que nunca pierde el principio. Si el emisor entrega el audio y el vídeo con relojes distintos (pasa con algunos
+servidores: el audio llega marcado horas antes o después que el vídeo), el programa lo detecta, lo anota en el registro
+y realinea el audio al vídeo por orden de llegada (mide durante los primeros 2,5 s de conexión, pasada la ráfaga de caché
+que envían los servidores); sin esto la grabación saldría sin audio o con el audio desplazado. Si aun así notas los labios
+desincronizados con una fuente concreta, usa **Retardo de audio (ms)** en esa fuente: positivo retrasa el audio, negativo
+lo adelanta; prueba de 50 en 50 ms y vuelve a asignar la fuente al canal para aplicarlo. Si
+el preview se ve a saltos o congelado con una entrada de red, mira el registro: suele ser que el emisor o la red
+entregan menos cuadros de los nominales (el programa lo indica en la línea de «Salud grabación»).
+
+También puedes **pegar una URL** de otro programa y pulsar **Rellenar**. Mientras no llega el emisor, el canal marca
+**SIN SEÑAL** («Esperando al emisor» o «Conectando…») y el botón Grabar queda desactivado; en cuanto conecta pasa a
+SEÑAL OK y se ve el formato real. Si el emisor se va a mitad de una grabación, el programa cierra la pieza y sigue en una
+nueva cuando vuelve. Si el emisor está en otro equipo, abre el puerto en el cortafuegos de Windows (UDP para SRT, TCP
+para RTMP).
 
 > **Sobre el audio embebido:** la tarjeta no puede saber cuántos canales trae la señal; se le pide un número y entrega
 > ese número (los que no existen llegan en silencio). Por eso la elección se hace aquí, al configurar la entrada, y no

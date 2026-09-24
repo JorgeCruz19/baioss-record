@@ -128,6 +128,8 @@ This is where you decide **which video source is connected to each channel**.
 - **DeckLink (SDI):** professional Blackmagic capture cards. This is the typical broadcast input.
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
 - **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network).
+- **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see
+  "Network sources" below).
 - **Demonstration clip:** a sample video that ships with the program (handy for testing).
 
 **How to assign an input to a channel:**
@@ -155,6 +157,41 @@ This is where you decide **which video source is connected to each channel**.
 3. Press **Apply**. The channel reconnects to the new source live (it releases the previous one and opens the new one).
 
 > **Note:** a channel's input cannot be changed **while it is recording**. Stop the recording first.
+
+**Network sources (SRT and RTMP).** Press **🌐 Network sources…** to create, edit or delete streams that arrive over
+the network; they then appear in the **Video input** list as "SRT — name" or "RTMP — name" and are assigned like any
+other input. The stream is recorded with the channel's preset, like every other input.
+
+- **SRT, listen:** this computer waits for the sender. Choose a port (for example 9000) and, optionally, a passphrase
+  (10 to 64 characters, the same on the sender) and the latency (120 ms on a LAN; 300 to 1000 over the Internet). The
+  dialog shows the exact URL to type into OBS, vMix or the encoder
+  ("srt://this-computer-IP:9000?mode=caller&latency=120000…").
+- **SRT, call:** this computer connects to a sender or server that listens: IP or name, port and, if required,
+  passphrase and Stream ID.
+- **RTMP, receive:** this computer acts as the server: port (1935 by default) and, if the sender uses one,
+  "application/key" (for example `live/studio1`). On the sender: server `rtmp://this-computer-IP:1935/live` and key
+  `studio1`; if the sender only accepts `rtmp://IP:port`, leave the application/key empty. One sender at a time, and
+  the key is not checked (any sender that reaches the port gets in): restrict access with the firewall.
+- **RTMP, pull:** this computer connects to an RTMP server and records what it streams: paste the full URL
+  (`rtmp://server/application/key`, `rtmps://` too, or just `rtmp://IP:port` for devices that serve without an
+  application or key).
+
+The program keeps the connection with the sender for as long as the input is assigned: **Record and Stop do not drop
+that connection** (OBS, vMix or the encoder see no interruption) and the recording starts with the last ~2 s already
+received, so it never misses the beginning. If the sender delivers audio and video with different clocks (some servers
+do: the audio arrives stamped hours before or after the video), the program detects it, notes it in the log and
+realigns the audio to the video by arrival order (it measures during the first 2.5 s of the connection, once the cache
+burst that servers send is over); without this the recording would have no audio or a shifted one. If lips still look out
+of sync with a particular source, use **Audio delay (ms)** on that source: positive delays the audio, negative advances
+it; try steps of 50 ms and assign the source to the channel again to apply it. If
+the preview looks jerky or frozen with a network input, check the log: usually the sender or the network deliver fewer
+frames than nominal (the program says so in the "Salud grabación" line).
+
+You can also **paste a URL** from another program and press **Fill in**. Until the sender arrives, the channel shows
+**NO SIGNAL** ("Waiting for the sender" or "Connecting…") and the Record button stays disabled; as soon as it connects
+it turns to SIGNAL OK and the real format is shown. If the sender drops out in the middle of a recording, the program
+closes the piece and continues in a new one when it returns. If the sender is on another computer, open the port in the
+Windows firewall (UDP for SRT, TCP for RTMP).
 
 > **About embedded audio:** the card cannot tell how many channels the signal carries; you ask for a number and it
 > delivers that number (missing channels arrive as silence). That is why the choice is made here, when configuring the
