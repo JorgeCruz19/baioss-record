@@ -8,7 +8,7 @@ namespace Baioss.Record.App;
 /// Título · Segmento. La abre el botón «Mostrar programación» del panel; el panel solo enseña la
 /// grabación en curso. La fila EN CURSO va resaltada (verde), igual que en el panel.
 /// </summary>
-public partial class ChannelScheduleWindow : Window
+public partial class ChannelScheduleWindow : SecondaryWindow
 {
     public ChannelScheduleWindow(string channelKey, IReadOnlyList<TodayTaskRow> rows)
     {

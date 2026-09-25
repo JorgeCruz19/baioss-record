@@ -238,7 +238,9 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
 
     private static bool ShowEditor(EncodingPreset preset)
     {
-        var window = new PresetEditorWindow { DataContext = new PresetEditorViewModel(preset), Owner = System.Windows.Application.Current?.MainWindow };
+        // Dueño = la ventana de Presets (la activa), no la principal: con la principal como dueña, al cerrar después
+        // «Presets» Windows activaba otra aplicación y la app quedaba detrás (medido 2026-09-24).
+        var window = new PresetEditorWindow { DataContext = new PresetEditorViewModel(preset), Owner = SecondaryWindow.ActiveOwner() };
         return window.ShowDialog() == true;
     }
 }

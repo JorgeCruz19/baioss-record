@@ -3,7 +3,7 @@ using System.Windows;
 namespace Baioss.Record.App.Presets;
 
 /// <summary>Diálogo de edición de un preset personalizado. DataContext = PresetEditorViewModel.</summary>
-public partial class PresetEditorWindow : Window
+public partial class PresetEditorWindow : SecondaryWindow
 {
     public PresetEditorWindow() => InitializeComponent();
 

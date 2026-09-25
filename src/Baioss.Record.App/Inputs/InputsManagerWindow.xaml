@@ -1,6 +1,7 @@
-<Window x:Class="Baioss.Record.App.Inputs.InputsManagerWindow"
+<app:SecondaryWindow x:Class="Baioss.Record.App.Inputs.InputsManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Baioss.Record.App"
         xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
         Title="{loc:T In_Title}" Height="720" Width="1280"
         Icon="/Assets/icon.ico"
@@ -141,4 +142,4 @@
             </StackPanel>
         </ScrollViewer>
     </DockPanel>
-</Window>
+</app:SecondaryWindow>

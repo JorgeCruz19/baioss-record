@@ -4,7 +4,7 @@ namespace Baioss.Record.App.Storage;
 
 /// <summary>Ventana de ajustes de almacenamiento (retención + alertas + emergencia). El
 /// <see cref="StorageSettingsViewModel"/> se inyecta como DataContext desde el shell.</summary>
-public partial class StorageSettingsWindow : Window
+public partial class StorageSettingsWindow : SecondaryWindow
 {
     public StorageSettingsWindow() => InitializeComponent();
 

@@ -4,7 +4,7 @@ namespace Baioss.Record.App.Recordings;
 
 /// <summary>Ventana del historial de grabaciones (lista + marcado de protección). El <see cref="RecordingsViewModel"/>
 /// se inyecta como DataContext desde el shell al abrirla.</summary>
-public partial class RecordingsWindow : Window
+public partial class RecordingsWindow : SecondaryWindow
 {
     public RecordingsWindow()
     {
