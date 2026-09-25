@@ -4,7 +4,7 @@ namespace Baioss.Record.App.Audit;
 
 /// <summary>Ventana del registro de actividad (auditoría). El <see cref="AuditViewModel"/> se inyecta como
 /// DataContext desde el shell al abrirla.</summary>
-public partial class AuditWindow : Window
+public partial class AuditWindow : SecondaryWindow
 {
     public AuditWindow()
     {

@@ -139,8 +139,13 @@
                                         </ControlTemplate>
                                     </ToggleButton.Template>
                                 </ToggleButton>
+                                <!-- ContentTemplateSelector + ContentStringFormat como en la plantilla de Windows: con
+                                     DisplayMemberPath, WPF pone un selector de plantilla en ItemTemplateSelector y, sin
+                                     enlazarlo aquí, la caja mostraba el nombre de la clase («Baioss.Record.App.Chan…»). -->
                                 <ContentPresenter Content="{TemplateBinding SelectionBoxItem}"
                                                   ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
                                                   IsHitTestVisible="False" Margin="10,0,26,0" VerticalAlignment="Center"/>
                                 <Path Data="M0,0 L4,4 L8,0 Z" Fill="{StaticResource TextSecondaryBrush}"
                                       HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,11,0" IsHitTestVisible="False"/>

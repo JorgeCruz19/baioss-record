@@ -7,7 +7,7 @@ namespace Baioss.Record.App;
 /// Diálogo modal que, al DETENER una grabación MANUAL, pide cómo guardarla. El nombre se usa como base
 /// del archivo; si ya existe uno igual en la carpeta del canal, el motor añade « 1», « 2»… para no chocar.
 /// </summary>
-public partial class RecordingNameWindow : Window
+public partial class RecordingNameWindow : SecondaryWindow
 {
     /// <summary>Nombre aceptado por el operador (válido solo cuando <see cref="Window.DialogResult"/> es true).</summary>
     public string RecordingName { get; private set; } = "";

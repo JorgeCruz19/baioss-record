@@ -1,6 +1,7 @@
-<Window x:Class="Baioss.Record.App.Audit.AuditWindow"
+<app:SecondaryWindow x:Class="Baioss.Record.App.Audit.AuditWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Baioss.Record.App"
         xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
         Title="{loc:T Audit_Title}" Width="1240" Height="660" MinWidth="960" MinHeight="440"
         Icon="/Assets/icon.ico"
@@ -137,4 +138,4 @@
             </ItemsControl>
         </ScrollViewer>
     </DockPanel>
-</Window>
+</app:SecondaryWindow>

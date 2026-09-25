@@ -2,7 +2,7 @@ using System.Windows;
 
 namespace Baioss.Record.App.Licensing;
 
-public partial class LicenseWindow : Window
+public partial class LicenseWindow : SecondaryWindow
 {
     public LicenseWindow() => InitializeComponent();
 

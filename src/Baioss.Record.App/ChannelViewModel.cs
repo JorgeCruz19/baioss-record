@@ -277,7 +277,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
             var dialog = new RecordingNameWindow(Key, Loc.F("Ch_DefaultRecordingName", DateTime.Now.ToString("dd-MM-yyyy")))
             {
-                Owner = System.Windows.Application.Current?.MainWindow,
+                Owner = SecondaryWindow.ActiveOwner(),
             };
             if (dialog.ShowDialog() == true)
                 await _renamer!.RenameLastRecordingAsync(dialog.RecordingName, Environment.UserName);
