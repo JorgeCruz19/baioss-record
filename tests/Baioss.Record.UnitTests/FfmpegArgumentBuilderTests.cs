@@ -320,6 +320,36 @@ public class FfmpegArgumentBuilderTests : IDisposable
     }
 
     [Fact]
+    public void BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat()
+    {
+        // Los presets NVENC del catálogo dejan el píxel en Auto. Sin NVIDIA el motor degrada clonando el perfil y
+        // cambiando SOLO el códec (EncoderFallbackChain), así que cada escalón debe recibir su formato nativo:
+        // NVENC nv12 (solo en el filtro: elige solo), QSV/AMF nv12, x264/x265 yuv420p. Un yuv420p fijo en el preset
+        // haría fallar a h264_qsv, y un yuv420p10le a NVENC.
+        var nvenc = Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns()
+            .Where(p => p.VideoCodec is VideoCodec.H264Nvenc or VideoCodec.HevcNvenc)
+            .ToList();
+        Assert.NotEmpty(nvenc);
+
+        foreach (var preset in nvenc)
+        {
+            var profile = preset.ToProfile();
+            for (VideoCodec? codec = profile.VideoCodec; codec is { } c; codec = EncoderFallbackChain.Next(c))
+            {
+                var step = profile.Clone();
+                step.VideoCodec = c;
+                var joined = BuildLive(step, recording: true);
+
+                string expected = c is VideoCodec.H264x264 or VideoCodec.H265x265 ? "yuv420p" : "nv12";
+                Assert.Contains($"-c:v {FfmpegCodecMap.VideoEncoder(c)}", joined);
+                Assert.Contains($"format={expected}[vmain]", joined);
+                if (FfmpegCodecMap.IsGpuEncoder(c)) Assert.DoesNotContain("-pix_fmt", joined);
+                else Assert.Contains($"-pix_fmt {expected}", joined);
+            }
+        }
+    }
+
+    [Fact]
     public void BuildLive_Recording_Software_ConvertsRecordBranchToYuv420p()
         // El mismo format= explícito también para libx264 (yuv420p): no-op si ya coincide, robusto si no.
         => Assert.Contains("format=yuv420p[vmain]", BuildLive(SoftwareMp4(), recording: true));

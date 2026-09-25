@@ -116,6 +116,49 @@ public static class PresetCatalog
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 80; p.MaxBitrateMbps = 100; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p; }),
 
+        // ---- H.264 por GPU NVIDIA (NVENC): mismas cadencias y bitrates que los de CPU, sin cargar el procesador ----
+        // Solo progresivos (NVENC no codifica entrelazado) y con píxel Auto: si el equipo no tiene NVENC, el canal
+        // degrada a QuickSync/AMF/CPU (EncoderFallbackChain) y cada uno recibe su formato nativo (nv12/yuv420p).
+        Make("H.264 NVENC · HD 720p50", PresetCategory.H264, "1280×720p50, 10 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1280; p.Height = 720;
+          p.FrameRateNum = 50; p.VideoBitrateMbps = 10; p.MaxBitrateMbps = 12; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · HD 720p59.94", PresetCategory.H264, "1280×720p59.94 (60000/1001), 12 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1280; p.Height = 720;
+          p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 12; p.MaxBitrateMbps = 15; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p23.98", PresetCategory.H264, "1920×1080p23.98 (24000/1001), cadencia cine, 16 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 24000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p25", PresetCategory.H264, "1920×1080p25, 16 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p29.97", PresetCategory.H264, "1920×1080p29.97 (30000/1001), 16 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p50", PresetCategory.H264, "1920×1080p50 (50/1), 20 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 50; p.VideoBitrateMbps = 20; p.MaxBitrateMbps = 25; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p59.94", PresetCategory.H264, "1920×1080p59.94 (60000/1001), 24 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 24; p.MaxBitrateMbps = 30; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · FullHD 1080p60", PresetCategory.H264, "1920×1080p60 (60/1, entero), 24 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 60; p.VideoBitrateMbps = 24; p.MaxBitrateMbps = 30; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · 4K UHD 2160p50", PresetCategory.H264, "3840×2160p50, 60 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 3840; p.Height = 2160;
+          p.FrameRateNum = 50; p.VideoBitrateMbps = 60; p.MaxBitrateMbps = 80; p.GopSize = 50; }),
+
+        Make("H.264 NVENC · 4K UHD 2160p59.94", PresetCategory.H264, "3840×2160p59.94 (60000/1001), 80 Mbps CBR, MP4, AAC. " + NvencH264Note, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264Nvenc; p.Width = 3840; p.Height = 2160;
+          p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 80; p.MaxBitrateMbps = 100; p.GopSize = 50; }),
+
         // ---------------- H.265 / HEVC ----------------
         Make("HEVC · FullHD 1080p25", PresetCategory.H265, "1920×1080p25, 10 Mbps VBR, MP4, AAC.", p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H265x265; p.Width = 1920; p.Height = 1080;
@@ -136,6 +179,37 @@ public static class PresetCatalog
         Make("HEVC · 4K UHD 2160p59.94 10-bit", PresetCategory.H265, "3840×2160p59.94 (60000/1001) 10-bit, 45 Mbps VBR, MP4.", p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H265x265; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 45; p.MaxBitrateMbps = 60; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p10le;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        // ---- HEVC por GPU NVIDIA (NVENC): 8 bits (NVENC no toma yuv420p10le, pide p010) y solo progresivo ----
+        Make("HEVC NVENC · FullHD 1080p25", PresetCategory.H265, "1920×1080p25, 10 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 10; p.MaxBitrateMbps = 14; p.GopSize = 50;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        Make("HEVC NVENC · FullHD 1080p29.97", PresetCategory.H265, "1920×1080p29.97 (30000/1001), 10 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 10; p.MaxBitrateMbps = 14; p.GopSize = 50;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        Make("HEVC NVENC · FullHD 1080p50", PresetCategory.H265, "1920×1080p50 (50/1), 12 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 50; p.VideoBitrateMbps = 12; p.MaxBitrateMbps = 16; p.GopSize = 50;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        Make("HEVC NVENC · FullHD 1080p59.94", PresetCategory.H265, "1920×1080p59.94 (60000/1001), 12 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 12; p.MaxBitrateMbps = 16; p.GopSize = 50;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        Make("HEVC NVENC · 4K UHD 2160p50", PresetCategory.H265, "3840×2160p50 8 bits, 35 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 3840; p.Height = 2160;
+          p.FrameRateNum = 50; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 45; p.GopSize = 50;
+          p.RateControl = RateControlMode.VariableBitrate; }),
+
+        Make("HEVC NVENC · 4K UHD 2160p59.94", PresetCategory.H265, "3840×2160p59.94 (60000/1001) 8 bits, 45 Mbps VBR, MP4, AAC. " + NvencHevcNote, p =>
+        { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.HevcNvenc; p.Width = 3840; p.Height = 2160;
+          p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 45; p.MaxBitrateMbps = 60; p.GopSize = 50;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
         // ---------------- DNxHR (Avid, edición) ----------------
@@ -389,6 +463,10 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 8; p.MaxBitrateMbps = 8; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.AudioBitrateKbps = 160; p.StreamProtocol = StreamProtocol.Srt; }),
     };
+
+    // Cola de la descripción de los presets NVENC: qué hace el preset si el equipo no tiene NVIDIA (EncoderFallbackChain).
+    private const string NvencH264Note = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync, AMF o CPU.";
+    private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a CPU (x265).";
 
     private static EncodingPreset Make(string name, PresetCategory category, string description, Action<EncodingPreset> configure)
     {

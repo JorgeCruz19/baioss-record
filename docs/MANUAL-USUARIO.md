@@ -183,6 +183,13 @@ Un **preset** define **cómo se graba** el vídeo: el formato del archivo, la re
 - **＋ Nuevo / ✎ Editar / ⧉ Duplicar / 🗑 Eliminar:** crear tus propios presets a partir de los existentes.
 - **⭱ Importar / ⭳ Exportar:** llevarte tus presets a otro equipo o guardarlos como copia.
 
+**Grabar con la tarjeta gráfica NVIDIA (presets NVENC):** los presets **H.264 NVENC** y **HEVC NVENC** graban con la
+tarjeta NVIDIA en vez de con el procesador, así que el equipo va más holgado con varios canales. Hay uno por cada
+formato habitual (720p, 1080p y 4K a 25, 29.97, 50, 59.94…). Escribe **NVENC** en el buscador para verlos todos.
+- Solo son **progresivos** (1080p, no 1080i): para grabar entrelazado usa los H.264 normales, MPEG-2, ProRes o DNxHR.
+- Si el equipo no tiene NVIDIA o su driver es antiguo, **no pasa nada**: el canal cambia solo a la gráfica Intel/AMD o al
+  procesador y sigue grabando, con el aviso «Codificador por GPU no disponible — grabando con codificador alternativo».
+
 **Pistas de audio (solo cuenta con entradas de 8 o 16 canales):** en el editor de un preset, el campo **Pistas de audio**
 decide cómo se guardan los pares elegidos en la entrada (ver punto 3):
 - **Single:** una sola pista con lo elegido (estéreo del par, o 5.1/7.1 con los primeros canales). Es lo de siempre.
