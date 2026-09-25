@@ -220,6 +220,14 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 - **＋ New / ✎ Edit / ⧉ Duplicate / 🗑 Delete:** create your own presets from the existing ones.
 - **⭱ Import / ⭳ Export:** take your presets to another machine or keep them as a backup.
 
+**Recording with the NVIDIA graphics card (NVENC presets):** the **H.264 NVENC** and **HEVC NVENC** presets record
+with the NVIDIA card instead of the processor, so the machine has more headroom with several channels. There is one for
+each common format (720p, 1080p and 4K at 25, 29.97, 50, 59.94…). Type **NVENC** in the search box to list them all.
+- They are **progressive only** (1080p, not 1080i): to record interlaced, use the regular H.264, MPEG-2, ProRes or DNxHR ones.
+- If the machine has no NVIDIA card or its driver is old, **nothing breaks**: the channel switches by itself to the
+  Intel/AMD graphics or to the processor and keeps recording, showing "GPU encoder unavailable — recording with a
+  fallback encoder".
+
 **Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
 how the pairs chosen on the input (see section 3) are stored:
 - **Single:** one track with the selection (the pair in stereo, or 5.1/7.1 with the first channels). This is the usual behaviour.

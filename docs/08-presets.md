@@ -12,15 +12,16 @@ Se abre desde la barra de título (**⚙ Presets de grabación**) → ventana
 ```mermaid
 flowchart LR
     L["Panel izquierdo<br/>formatos / categorías"] --> C["Panel central<br/>presets del formato<br/>(★ favorito · búsqueda)"]
-    C --> R["Panel derecho<br/>detalle + línea de comandos<br/>+ aplicar al canal"]
+    C --> R["Panel derecho<br/>detalle<br/>+ aplicar al canal"]
 ```
 
 - **Izquierda** — formatos: Todos, ★ Favoritos, MPEG-2, H.264, H.265/HEVC, DNxHD/DNxHR,
   ProRes, XDCAM, MXF OP1A, AVI, MKV, Audio, Streaming, Proxy, Archive.
 - **Centro** — presets de la categoría, filtrados por la **búsqueda rápida**; estrella de favorito
   por fila; etiqueta "fábrica" en los built-in.
-- **Derecha** — todos los parámetros del preset, la **línea de comandos FFmpeg** generada, y un
-  selector de **Canal A/B** con el botón *Aplicar*.
+- **Derecha** — todos los parámetros del preset y un selector de **Canal A/B** con el botón *Aplicar*.
+  La **línea de comandos FFmpeg** generada está oculta de fábrica; se muestra poniendo a `true`
+  `UiFeatures.ShowFfmpegCommandLine` ([`UiFeatures.cs`](../src/Baioss.Record.App/UiFeatures.cs)) y recompilando.
 
 Barra de herramientas: **Nuevo · Editar · Duplicar · Eliminar · Importar · Exportar**.
 
@@ -45,26 +46,53 @@ Barra de herramientas: **Nuevo · Editar · Duplicar · Eliminar · Importar · 
 
 > El campo `AudioOnly` produce comandos sin video (`-vn`) para los presets de la categoría Audio.
 
-## Catálogo de fábrica (64 presets)
+## Catálogo de fábrica (94 presets)
 
 [`PresetCatalog`](../src/Baioss.Record.Application/Presets/PresetCatalog.cs) — todos verificados
 grabando material real (ver más abajo).
 
 | Categoría | Presets |
 |-----------|---------|
-| **MPEG-2** | PS SD PAL · TS HD 1080i25 · TS SD PAL |
-| **H.264** | HD 720p50 · FullHD 1080p25 · 1080i25 TS · 4K UHD 2160p50 · SD PAL · **59.94/60/50:** 1080p59.94 · 1080p60 · 1080p50 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080i59.94 TS · 4K 2160p59.94 |
-| **H.265/HEVC** | FullHD 1080p25 · 4K UHD 2160p50 10-bit · **59.94:** 1080p59.94 · 4K 2160p59.94 10-bit |
-| **DNxHD/DNxHR** | DNxHR HQ 1080p25 · DNxHR HQX 10-bit · DNxHD 1080i25 (MXF) · DNxHR HQ 1080p59.94 (MOV) |
-| **ProRes** | 422 HQ 1080p25 · 422 HQ 4K 2160p25 · 422 HQ 1080p59.94 |
-| **XDCAM** | HD422 1080i25 50 Mbps · HD 1080i25 35 Mbps |
-| **MXF OP1A** | XDCAM HD422 50 (1080i25) · DNxHR HQ 1080p25 · **59.94 (NTSC):** XDCAM HD422 1080i59.94 · 1080p59.94 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080p60 · DNxHR HQ 1080i59.94 · DNxHR HQ 1080p59.94 · DNxHR HQX 1080p59.94 10-bit · **50 Hz (PAL):** XDCAM HD422 1080p50 · 720p50 · DNxHR HQ 1080p50 |
-| **AVI** | H.264 1080p25 |
-| **MKV** | H.264 1080p25 · HEVC 4K 10-bit |
-| **Audio** | WAV PCM 48k 24-bit · AAC 256k (M4A) · MP3 320k |
-| **Proxy** | H.264 540p · H.264 360p |
-| **Archive** | HEVC 1080p CRF20 · ProRes 422 1080p |
-| **Streaming** | IPTV H.264 720p TS (UDP) · RTMP H.264 1080p · SRT H.264 1080p |
+| **MPEG-2** (6) | PS SD PAL · PS SD NTSC 480i59.94 · TS HD 1080i25 · TS HD 1080i59.94 · TS SD PAL · TS SD NTSC 480i59.94 |
+| **H.264** (26) | **CPU (libx264):** HD 720p50 · 720p59.94 · FullHD 1080p23.98 · 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 1080p60 · 4K UHD 2160p50 · 2160p59.94 · **entrelazado:** 1080i25 MP4 · 1080i25 TS · 1080i59.94 MP4 · 1080i59.94 TS · SD PAL 576i25 · SD NTSC 480i59.94 · **GPU NVIDIA (NVENC):** 720p50 · 720p59.94 · 1080p23.98 · 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 1080p60 · 4K 2160p50 · 4K 2160p59.94 |
+| **H.265/HEVC** (10) | **CPU (libx265):** FullHD 1080p25 · 1080p59.94 · 4K UHD 2160p50 10-bit · 2160p59.94 10-bit · **GPU NVIDIA (NVENC, 8 bits):** 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 4K 2160p50 · 4K 2160p59.94 |
+| **DNxHD/DNxHR** (9) | LB 1080p25 (offline) · SQ 1080p25 · HQ 1080p25 · HQ 1080p59.94 (MOV) · HQX 1080p25 10-bit · 444 1080p25 10-bit · HQ 1080i25 (MXF) · HQ 1080i25 (MOV) · HQ 1080i59.94 (MOV) |
+| **ProRes** (10) | 422 Proxy 1080p25 · 422 LT 1080p25 · 422 1080p25 · 422 HQ 1080p25 · 4444 1080p25 · 4444 XQ 1080p25 · 422 HQ 4K 2160p25 · 422 HQ 1080p59.94 · 422 HQ 1080i25 · 422 HQ 1080i59.94 |
+| **XDCAM** (4) | HD422 1080i25 50 Mbps · HD 1080i25 35 Mbps · HD422 1080i59.94 50 Mbps · HD 1080i59.94 35 Mbps |
+| **MXF OP1A** (14) | XDCAM HD422 50 (1080i25) · DNxHR HQ 1080p25 · **59.94 (NTSC):** XDCAM HD422 1080i59.94 · 1080p59.94 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080p60 · DNxHR HQ 1080i59.94 · DNxHR HQ 1080p59.94 · DNxHR HQX 1080p59.94 10-bit · **50 Hz (PAL):** XDCAM HD422 1080p50 · 720p50 · DNxHR HQ 1080p50 |
+| **AVI** (2) | H.264 1080p25 · H.264 1080i25 |
+| **MKV** (3) | H.264 1080p25 · H.264 1080i25 · HEVC 4K 10-bit |
+| **Audio** (3) | WAV PCM 48k 24-bit · AAC 256k (M4A) · MP3 320k |
+| **Proxy** (2) | H.264 540p · H.264 360p |
+| **Archive** (2) | HEVC 1080p CRF20 · ProRes 422 1080p |
+| **Streaming** (3) | IPTV H.264 720p TS (UDP) · RTMP H.264 1080p · SRT H.264 1080p |
+
+### Presets por GPU NVIDIA (NVENC)
+
+Los **H.264 NVENC** y **HEVC NVENC** graban con el codificador de la tarjeta NVIDIA y dejan libre la CPU; el resto de
+H.264/HEVC de fábrica codifica por CPU (libx264/libx265). Los H.264 NVENC son los gemelos por GPU de los H.264 de CPU:
+misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); todos en MP4 + AAC.
+
+- **Solo progresivos:** NVENC no codifica entrelazado. Para 1080i/576i/480i siguen los de x264, MPEG-2, ProRes y DNxHR.
+- **8 bits:** NVENC pide `p010` para 10 bits y no acepta el `yuv420p10le` del catálogo, así que los HEVC 4K de 10 bits
+  siguen siendo de CPU.
+- **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.
+- **Sin NVIDIA**, o con un driver más antiguo que el que exige el FFmpeg empaquetado (el actual, SDK 13.1, pide
+  **≥ 610**), el canal **degrada solo** (`EncoderFallbackChain`, alarma *EncoderFallback*): H.264 → QuickSync → AMF →
+  CPU (libx264); HEVC → CPU (libx265). Lo permite el píxel Auto: cada codificador recibe su formato nativo, porque un
+  `yuv420p` fijo haría fallar a `h264_qsv`. Lo cubre `BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat`.
+- En la ventana de presets, escribir **NVENC** en el buscador los lista todos.
+
+```text
+# H.264 NVENC · FullHD 1080p29.97
+ffmpeg ... -filter_complex "[0:v]scale=1920:1080[mainout]" -map "[mainout]" -map 0:a? \
+  -c:v h264_nvenc -preset p5 -tune hq -rc cbr -b:v 16000000 -g 50 -bf 0 -no-scenecut 1 \
+  -c:a aac -ar 48000 -b:a 256000 -ac 2 -r 30000/1001 ... -f mp4 -y <salida>
+
+# HEVC NVENC · 4K UHD 2160p59.94
+ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
+  -c:v hevc_nvenc -preset p5 -tune hq -rc vbr -b:v 45000000 -maxrate 60000000 -bufsize 120000000 -g 50 -bf 0 ...
+```
 
 ## Línea de comandos generada (ejemplos reales)
 
@@ -97,7 +125,7 @@ ffmpeg ... -i <entrada> -vn -map 0:a? -c:a pcm_s24le -ar 48000 -ac 2 -af ebur128
 
 ```mermaid
 flowchart TD
-    CAT["PresetCatalog<br/>(64 built-in)"] --> STORE["IPresetStore / JsonPresetStore<br/>built-in + custom (JSON)"]
+    CAT["PresetCatalog<br/>(94 built-in)"] --> STORE["IPresetStore / JsonPresetStore<br/>built-in + custom (JSON)"]
     STORE --> VM["PresetManagerViewModel<br/>filtrar · CRUD · favoritos · import/export"]
     VM -->|ToProfile| PROF["RecordingProfile"]
     PROF --> BLD["FfmpegArgumentBuilder<br/>línea de comandos / argv"]
@@ -142,17 +170,22 @@ recibe una identidad nueva como personalizado.
 ## Verificación
 
 El smoke test [`tools/Baioss.Record.SmokeTest`](../tools/Baioss.Record.SmokeTest/Program.cs)
-genera la línea de comandos de los 64 presets y **graba material real** con cada uno (≤ 1080p;
-los 6 presets en 4K se omiten de la grabación):
+genera la línea de comandos de los 94 presets y **graba material real** con cada uno (≤ 1080p;
+los 10 presets en 4K se omiten de la grabación):
 
 ```
-Resultado grabación: 58 OK, 0 fallidos.
+Resultado grabación: 84 OK, 0 fallidos.
 ```
 
 Cubre MPEG-2 PS/TS, H.264/265 (incl. **familia de cadencias 59.94/60/50/29.97/23.98** en MP4/TS),
-DNxHR HQ/HQX, ProRes, XDCAM, **MXF OP1A (familias 59.94 y 50 Hz: 1080i/1080p/720p en XDCAM HD422 y
+**H.264/HEVC por NVENC**, DNxHR HQ/HQX, ProRes, XDCAM, **MXF OP1A (familias 59.94 y 50 Hz: 1080i/1080p/720p en XDCAM HD422 y
 DNxHR)**, AVI, MKV, WAV/AAC/MP3, Proxy, Archive e IPTV/RTMP/SRT; todos producen archivos válidos
 (verificados con `ffprobe`).
+
+> Los presets **NVENC** necesitan una GPU NVIDIA en el equipo del smoke test: el smoke test usa
+> `FfmpegRecorderEngine`, que no degrada de codificador (la degradación está en el motor de los canales). Último
+> resultado (2026-09-24): GTX 1650 Ti con driver 610.62 y el FFmpeg empaquetado. Los 4K NVENC se verificaron en la app:
+> HEVC NVENC 2160p59.94 grabó 826 frames en 13,78 s (59,94 fps), a la vez que H.264 NVENC 1080p29.97 en el otro canal.
 
 ## Extender el catálogo
 
