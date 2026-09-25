@@ -293,7 +293,8 @@ public sealed partial class ShellViewModel : ObservableObject
         var window = new NetworkSourcesWindow
         {
             DataContext = viewModel,
-            Owner = System.Windows.Application.Current?.MainWindow,
+            // Dueña = la ventana activa (Entradas, desde donde se abre), no la principal: la cadena de dueños correcta. (Ver SecondaryWindow.)
+            Owner = SecondaryWindow.ActiveOwner(),
         };
         window.ShowDialog();
         return viewModel.Changed;

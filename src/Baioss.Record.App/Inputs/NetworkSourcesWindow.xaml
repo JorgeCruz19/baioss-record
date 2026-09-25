@@ -1,6 +1,7 @@
-<Window x:Class="Baioss.Record.App.Inputs.NetworkSourcesWindow"
+<app:SecondaryWindow x:Class="Baioss.Record.App.Inputs.NetworkSourcesWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Baioss.Record.App"
         xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
         Title="{loc:T Net_Title}" Height="640" Width="980"
         Icon="/Assets/icon.ico"
@@ -156,4 +157,4 @@
             </ScrollViewer>
         </Grid>
     </DockPanel>
-</Window>
+</app:SecondaryWindow>
