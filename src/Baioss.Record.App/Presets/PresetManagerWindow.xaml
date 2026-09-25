@@ -104,8 +104,6 @@
                                    Foreground="{StaticResource TextPrimaryBrush}" TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding SelectedPreset.Description}" FontSize="12"
                                    Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" Margin="0,2,0,12"/>
-                        <TextBlock Text="{Binding Detail}" FontFamily="Consolas" FontSize="12"
-                                   Foreground="{StaticResource TextPrimaryBrush}"/>
                     </StackPanel>
 
                     <!-- Aplicar a canal -->
@@ -115,8 +113,9 @@
                         <Button Content="{loc:T Pre_ApplyToChannel}" Command="{Binding ApplyCommand}" Style="{StaticResource StartButton}" Margin="10,0,0,0"/>
                     </StackPanel>
 
-                    <!-- Línea de comandos FFmpeg -->
-                    <DockPanel Margin="0,14,0,0">
+                    <!-- Línea de comandos FFmpeg: oculta salvo que se active en código (UiFeatures.ShowFfmpegCommandLine) -->
+                    <DockPanel DockPanel.Dock="Bottom" Height="200" Margin="0,14,0,0"
+                               Visibility="{Binding ShowCommandLine, Converter={StaticResource BoolToVis}}">
                         <TextBlock DockPanel.Dock="Top" Text="{loc:T Pre_CommandLine}" FontSize="11" FontWeight="Bold"
                                    Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,4"/>
                         <TextBox Text="{Binding CommandLine, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
@@ -124,6 +123,12 @@
                                  Foreground="#9FE8C0" BorderThickness="0" Padding="8"
                                  VerticalScrollBarVisibility="Auto"/>
                     </DockPanel>
+
+                    <!-- Detalle técnico del preset: se desplaza si la ventana es baja -->
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <TextBlock Text="{Binding Detail}" FontFamily="Consolas" FontSize="12"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                    </ScrollViewer>
                 </DockPanel>
             </Border>
         </Grid>

@@ -42,6 +42,9 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
 
     [ObservableProperty][NotifyCanExecuteChangedFor(nameof(ApplyCommand))] private ChannelViewModel? _targetChannel;
     [ObservableProperty] private string _commandLine = "";
+
+    /// <summary>¿Se enseña la línea de comandos FFmpeg del preset? Se decide en código (<see cref="UiFeatures"/>).</summary>
+    public bool ShowCommandLine => UiFeatures.ShowFfmpegCommandLine;
     [ObservableProperty] private string _detail = "";
     [ObservableProperty] private string _statusMessage = "";
 
@@ -88,7 +91,7 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
     partial void OnSearchTextChanged(string value) => Refresh();
     partial void OnSelectedPresetChanged(EncodingPreset? value)
     {
-        CommandLine = value is null ? "" : FfmpegCommandPreview.Build(value.ToProfile());
+        CommandLine = value is null || !ShowCommandLine ? "" : FfmpegCommandPreview.Build(value.ToProfile());
         Detail = value is null ? "" : BuildDetail(value);
     }
 
