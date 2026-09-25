@@ -188,7 +188,9 @@ lo adelanta; prueba de 50 en 50 ms y vuelve a asignar la fuente al canal para ap
 el preview se ve a saltos o congelado con una entrada de red, mira el registro: suele ser que el emisor o la red
 entregan menos cuadros de los nominales (el programa lo indica en la línea de «Salud grabación»).
 
-También puedes **pegar una URL** de otro programa y pulsar **Rellenar**. Mientras no llega el emisor, el canal marca
+También puedes **pegar una URL** de otro programa y pulsar **Rellenar**. El programa la lee igual que FFmpeg (ffplay,
+OBS): si una URL abre en ffplay, abre aquí, aunque la contraseña lleve caracteres como `#`. Revisa después que el campo
+**Contraseña** muestra la contraseña completa. Mientras no llega el emisor, el canal marca
 **SIN SEÑAL** («Esperando al emisor» o «Conectando…») y el botón Grabar queda desactivado; en cuanto conecta pasa a
 SEÑAL OK y se ve el formato real. Si el emisor se va a mitad de una grabación, el programa cierra la pieza y sigue en una
 nueva cuando vuelve. Si el emisor está en otro equipo, abre el puerto en el cortafuegos de Windows (UDP para SRT, TCP

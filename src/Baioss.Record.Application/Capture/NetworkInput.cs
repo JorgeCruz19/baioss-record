@@ -167,7 +167,9 @@ public sealed partial record NetworkInput
             return Localizer.F("Net_Hint_Rtmp", $"rtmp://{thisHost}:{n.Port}/{app}", key);
         }
         var query = new List<string> { "mode=caller", $"latency={(n.LatencyMs * 1000L).ToString(CultureInfo.InvariantCulture)}" };
-        if (n.Passphrase is not null) query.Add($"passphrase={n.Passphrase}");
+        // Codificada, como el streamid: FFmpeg y OBS leen «+» como espacio, decodifican %XX y cortan en «&», así que una
+        // contraseña con «#», «+», «&» o «%» en crudo no les llegaría entera (ver SrtOptions).
+        if (n.Passphrase is not null) query.Add($"passphrase={Uri.EscapeDataString(n.Passphrase)}");
         if (n.StreamId is not null) query.Add($"streamid={Uri.EscapeDataString(n.StreamId)}");
         return Localizer.F("Net_Hint_Srt", $"srt://{thisHost}:{n.Port}?{string.Join('&', query)}");
     }
@@ -224,6 +226,9 @@ public sealed partial record NetworkInput
     /// es opcional: hay dispositivos que dan solo <c>rtmp://ip:puerto</c>) o <c>rtmps://…</c>.
     /// La latencia de una URL SRT va en MICROSEGUNDOS, como la escriben FFmpeg, OBS y vMix. Devuelve false con el
     /// motivo en <paramref name="error"/>; la definición devuelta puede necesitar aún <see cref="Validate"/>.
+    /// System.Uri solo da el esquema, el host y el puerto: lo que va detrás (opciones SRT, aplicación/clave RTMP) se lee
+    /// como FFmpeg, que no trata el «#» como fragmento (ver <see cref="AfterAuthority"/> y <see cref="SrtOptions"/>). Con
+    /// Uri, una contraseña acabada en «#» llegaba recortada y el emisor rechazaba la URL que en ffplay sí abría.
     /// </summary>
     public static bool TryParseUrl(string? url, out NetworkInput? input, out NetworkInputError error)
     {
@@ -234,11 +239,12 @@ public sealed partial record NetworkInput
         if (scheme is not ("srt" or "rtmp" or "rtmps")) { error = NetworkInputError.UnsupportedScheme; return false; }
         if (string.IsNullOrEmpty(uri.Host)) { error = NetworkInputError.MissingHost; return false; }
         string host = uri.HostNameType == UriHostNameType.IPv6 ? uri.Host.Trim('[', ']') : uri.Host;
+        string rest = AfterAuthority(url.Trim());
 
         if (scheme == "srt")
         {
             if (uri.Port < 0) { error = NetworkInputError.InvalidPort; return false; }
-            var query = ParseQuery(uri.Query);
+            var query = SrtOptions(rest);
             var candidate = new NetworkInput
             {
                 Protocol = NetworkProtocol.Srt,
@@ -254,7 +260,7 @@ public sealed partial record NetworkInput
             return true;
         }
 
-        string path = NormalizePath(uri.AbsolutePath + uri.Query);
+        string path = NormalizePath(rest);
         input = new NetworkInput
         {
             Protocol = NetworkProtocol.Rtmp, Role = NetworkRole.Connect, Host = host,
@@ -282,15 +288,37 @@ public sealed partial record NetworkInput
 
     private static string BracketIfIpv6(string host) => host.Contains(':') && !host.StartsWith('[') ? $"[{host}]" : host;
 
-    private static Dictionary<string, string> ParseQuery(string query)
+    /// <summary>
+    /// Lo que sigue a host:puerto TAL CUAL, cortado como lo corta FFmpeg (<c>av_url_split</c>): desde el primer «/», «?» o
+    /// «#». Es la aplicación/clave RTMP (medido: el servidor RTMP de FFmpeg recibe «abc#x+y» de <c>…/live/abc#x+y</c>) y
+    /// contiene las opciones SRT. System.Uri, en cambio, descarta el «#…» como fragmento y escapa lo que no es ASCII.
+    /// </summary>
+    private static string AfterAuthority(string url)
+    {
+        int start = url.IndexOf("://", StringComparison.Ordinal);
+        int end = start < 0 ? -1 : url.IndexOfAny(AuthorityEnd, start + 3);
+        return end < 0 ? "" : url[end..];
+    }
+
+    private static readonly char[] AuthorityEnd = { '/', '?', '#' };
+
+    /// <summary>
+    /// Las opciones de una URL <c>srt://</c> leídas como las lee FFmpeg (libsrt.c: <c>av_find_info_tag</c> +
+    /// <c>ff_urldecode</c>): todo lo que sigue al primer «?», separado por «&amp;», con el «#» como un carácter más, «+»
+    /// como espacio y %XX decodificado; si una opción se repite, vale la primera. Medido con el FFmpeg empaquetado contra
+    /// un emisor con contraseña: así, la URL que abre ffplay abre aquí igual.
+    /// </summary>
+    private static Dictionary<string, string> SrtOptions(string afterAuthority)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        int q = afterAuthority.IndexOf('?');
+        if (q < 0) return result;
+        foreach (var part in afterAuthority[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             int eq = part.IndexOf('=');
             string key = eq < 0 ? part : part[..eq];
-            string value = eq < 0 ? "" : Uri.UnescapeDataString(part[(eq + 1)..]);
-            result[key] = value;
+            string value = eq < 0 ? "" : Uri.UnescapeDataString(part[(eq + 1)..].Replace('+', ' '));
+            result.TryAdd(key, value);
         }
         return result;
     }

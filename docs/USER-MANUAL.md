@@ -187,7 +187,9 @@ it; try steps of 50 ms and assign the source to the channel again to apply it. I
 the preview looks jerky or frozen with a network input, check the log: usually the sender or the network deliver fewer
 frames than nominal (the program says so in the "Salud grabación" line).
 
-You can also **paste a URL** from another program and press **Fill in**. Until the sender arrives, the channel shows
+You can also **paste a URL** from another program and press **Fill in**. The program reads it the way FFmpeg does
+(ffplay, OBS): if a URL opens in ffplay, it opens here, even when the passphrase has characters such as `#`. Then check
+that the **Passphrase** field shows the whole passphrase. Until the sender arrives, the channel shows
 **NO SIGNAL** ("Waiting for the sender" or "Connecting…") and the Record button stays disabled; as soon as it connects
 it turns to SIGNAL OK and the real format is shown. If the sender drops out in the middle of a recording, the program
 closes the piece and continues in a new one when it returns. If the sender is on another computer, open the port in the

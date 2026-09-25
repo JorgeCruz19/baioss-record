@@ -243,6 +243,30 @@ public sealed class NetworkInputTests
     }
 
     [SkippableFact]
+    public async Task SrtConnect_FromAPastedUrl_WithAHashInThePassphrase_Locks()
+    {
+        // Caso real (2026-09-24): ffplay abría «srt://…?passphrase=Televicentro2023#&mode=caller» y el Record no, porque al
+        // leer la URL la contraseña se cortaba en el «#». El emisor escucha con esa contraseña y el Record llama con la
+        // definición LEÍDA DE LA URL, como al pegarla en Fuentes de red.
+        Skip.IfNot(Available, "FFmpeg no disponible en tools/.");
+        var outputRoot = OutputRoot("srt-hash");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            int port = FreeUdpPort();
+            using var sender = new Sender(TestAssets.FfmpegDir!, $"srt://127.0.0.1:{port}?mode=listener", "mpegts", 60, passphrase: "Televicentro2023#");
+            await Task.Delay(1500);
+
+            Assert.True(NetworkInput.TryParseUrl($"srt://127.0.0.1:{port}?passphrase=Televicentro2023#&mode=caller", out var input, out _));
+            await using var source = await OpenAsync(locator, input!);
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            await engine.StartPreviewAsync(source, Profile(), "NET");
+            await WaitForAsync(() => source.CurrentSignal.State == SignalState.Locked, Lock, "La fuente no bloqueó con la contraseña leída de la URL.");
+        }
+        finally { Cleanup(outputRoot); }
+    }
+
+    [SkippableFact]
     public async Task RtmpListen_RecordsAPublishedStream()
     {
         Skip.IfNot(Available, "FFmpeg no disponible en tools/.");

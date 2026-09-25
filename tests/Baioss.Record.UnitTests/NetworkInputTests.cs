@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Capture;
@@ -255,6 +256,58 @@ public class NetworkInputTests : IDisposable
     }
 
     [Fact]
+    public void ParseUrl_Srt_AHashInThePassphraseIsPartOfIt_LikeFfmpeg()
+    {
+        // Caso real (2026-09-24): ffplay abría esta URL y el Record no. Para FFmpeg (libsrt.c) todo lo que sigue al «?» son
+        // opciones y el «#» es un carácter más; System.Uri abría un fragmento en el «#», así que la contraseña llegaba sin él
+        // («Televicentro2023»), el emisor rechazaba la conexión y el «mode» de detrás se perdía.
+        Assert.True(NetworkInput.TryParseUrl("srt://190.5.109.106:10000?passphrase=Televicentro2023#&mode=caller", out var input, out var error));
+        Assert.Equal(NetworkInputError.None, error);
+        Assert.Equal("Televicentro2023#", input!.Passphrase);
+        Assert.Equal(NetworkRole.Connect, input.Role);
+        Assert.Equal("190.5.109.106", input.Host);
+        Assert.Equal(10000, input.Port);
+        Assert.Equal(NetworkInputError.None, input.Validate());
+
+        // Lo que va detrás del «#» también cuenta: aquí, el modo escucha.
+        Assert.True(NetworkInput.TryParseUrl("srt://0.0.0.0:9000?passphrase=clave#secreta&mode=listener", out var listen, out _));
+        Assert.Equal("clave#secreta", listen!.Passphrase);
+        Assert.Equal(NetworkRole.Listen, listen.Role);
+    }
+
+    [Theory]
+    // Medido con el FFmpeg empaquetado contra un emisor con la contraseña literal «Pass#word+12%41xyz»: abre las dos primeras
+    // y rechaza las dos últimas, porque lee «+» como espacio y decodifica %XX (av_find_info_tag + ff_urldecode).
+    [InlineData("Pass%23word%2B12%2541xyz", "Pass#word+12%41xyz")]
+    [InlineData("Pass#word%2B12%2541xyz", "Pass#word+12%41xyz")]
+    [InlineData("Pass#word+12%2541xyz", "Pass#word 12%41xyz")]
+    [InlineData("Pass#word+12%41xyz", "Pass#word 12Axyz")]
+    public void ParseUrl_Srt_DecodesTheOptionsLikeFfmpeg(string inUrl, string expected)
+    {
+        Assert.True(NetworkInput.TryParseUrl($"srt://10.0.0.5:9000?passphrase={inUrl}&mode=caller", out var input, out _));
+        Assert.Equal(expected, input!.Passphrase);
+    }
+
+    [Fact]
+    public void ParseUrl_Srt_ARepeatedOptionKeepsTheFirst_LikeFfmpeg()
+    {
+        Assert.True(NetworkInput.TryParseUrl("srt://10.0.0.5:9000?passphrase=primera-clave&passphrase=segunda-clave", out var input, out _));
+        Assert.Equal("primera-clave", input!.Passphrase);
+    }
+
+    [Fact]
+    public void ParseUrl_Rtmp_KeepsTheKeyVerbatim_LikeFfmpeg()
+    {
+        // Medido: el servidor RTMP de FFmpeg recibe la clave «abc#x+y» de rtmp://…/live/abc#x+y (FFmpeg corta la ruta en el
+        // primer «/», «?» o «#» tras host:puerto y la usa tal cual). .NET descartaba el «#…» y escapaba lo que no es ASCII.
+        Assert.True(NetworkInput.TryParseUrl("rtmp://srv.example/live/abc#x+y", out var hash, out _));
+        Assert.Equal("live/abc#x+y", hash!.Path);
+        Assert.True(NetworkInput.TryParseUrl("rtmp://srv.example:1936/live/señal", out var accent, out _));
+        Assert.Equal("live/señal", accent!.Path);
+        Assert.Equal(1936, accent.Port);
+    }
+
+    [Fact]
     public void ParseUrl_Rtmp_DefaultsThePort_KeepsTheKeyParameters_AndReadsRtmps()
     {
         Assert.True(NetworkInput.TryParseUrl("rtmp://srv.example/live/clave?token=abc", out var input, out _));
@@ -327,6 +380,20 @@ public class NetworkInputTests : IDisposable
 
         Localizer.Language = AppLanguage.English;
         Assert.Equal("SRT · listening on 0.0.0.0:9000", SrtListen().Describe());
+    }
+
+    [Theory]
+    [InlineData("Televicentro2023#")]
+    [InlineData("a+b&c=d#e%f g")]
+    public void EncoderHint_Srt_EncodesThePassphrase_SoTheSenderReadsItBackIntact(string passphrase)
+    {
+        // La URL que se le da al emisor la lee FFmpeg/OBS con «+» como espacio, %XX decodificado y «&» como separador: la
+        // contraseña va codificada para que vuelva entera (en crudo, «#», «+», «&» o «%» la rompían).
+        string hint = (SrtListen() with { Passphrase = passphrase }).EncoderHint("192.168.1.10")!;
+        string url = Regex.Match(hint, @"srt://\S+").Value;
+        Assert.True(NetworkInput.TryParseUrl(url, out var back, out _));
+        Assert.Equal(passphrase, back!.Passphrase);
+        Assert.DoesNotContain("#", url);
     }
 
     // --- Retardo de audio manual (ajuste fino de labios por fuente) ---
