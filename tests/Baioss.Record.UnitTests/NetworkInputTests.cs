@@ -413,4 +413,21 @@ public class NetworkInputTests : IDisposable
         Assert.Equal(-120, NetworkInput.FromInputSource(rtmp)!.AudioDelayMs);
         Assert.False(SrtListen().ToInputSource(Guid.NewGuid(), "z").Parameters.ContainsKey(NetworkInput.AudioDelayKey)); // 0 = no se guarda
     }
+
+    // --- Colchón de preview por fuente (absorbe una llegada a ráfagas; no toca la grabación) ---
+
+    [Fact]
+    public void PreviewBuffer_IsOptional_Bounded_AndRoundTrips()
+    {
+        Assert.Equal(NetworkInputError.None, (RtmpConnect() with { PreviewBufferMs = 1000 }).Validate());
+        Assert.Equal(NetworkInputError.None, (SrtListen() with { PreviewBufferMs = 5000 }).Validate());
+        Assert.Equal(NetworkInputError.PreviewBufferRange, (RtmpConnect() with { PreviewBufferMs = 5001 }).Validate());
+        Assert.Equal(NetworkInputError.PreviewBufferRange, (SrtListen() with { PreviewBufferMs = -1 }).Validate());
+
+        var def = (RtmpConnect() with { PreviewBufferMs = 1500 }).ToInputSource(Guid.NewGuid(), "x");
+        Assert.Equal("1500", def.Parameters[NetworkInput.PreviewBufferKey]);
+        Assert.Equal(1500, NetworkInput.FromInputSource(def)!.PreviewBufferMs);
+        Assert.False(SrtListen().ToInputSource(Guid.NewGuid(), "z").Parameters.ContainsKey(NetworkInput.PreviewBufferKey)); // 0 = no se guarda
+        Assert.Equal(0, NetworkInput.FromInputSource(SrtListen().ToInputSource(Guid.NewGuid(), "w"))!.PreviewBufferMs);     // fuentes antiguas: sin colchón
+    }
 }

@@ -321,4 +321,41 @@ public class TsAudioClockAlignerTests
         Assert.Equal(Concat(a, a, a, a), aligner.Process(a, 0)); // el cuarto supera el tope: se suelta todo tal cual
         Assert.Equal(0, aligner.CorrectionSeconds);
     }
+
+    [Fact]
+    public void SeparateClocks_TheVideoWaitsWithTheAudioWhileSettling_AndEverythingComesOutInOrder()
+    {
+        // Mientras se mide (asentamiento) no sale NADA: ni audio ni vídeo. Así un proceso del canal que conecte en ese
+        // momento no ve un flujo solo-vídeo (con 2 s de análisis arrancaría sin audio). Al decidir sale todo, en su orden.
+        var aligner = new TsAudioClockAligner();
+        var stream = ServerStream(seconds: 6, audioSkew: Skew);
+        var output = new List<byte>();
+        int outputWhileSettling = 0, videoHeld = 0;
+        foreach (var (at, packet) in stream)
+        {
+            var produced = aligner.Process(packet, at);
+            if (aligner.IsSettling) { outputWhileSettling += produced.Length; if (Pid(packet) == V) videoHeld++; }
+            output.AddRange(produced);
+        }
+        Assert.True(videoHeld > 60, $"llegó vídeo durante el asentamiento ({videoHeld} PES)");
+        Assert.Equal(0, outputWhileSettling);
+        Assert.False(aligner.IsSettling);
+
+        var packets = Split(output.ToArray());
+        Assert.Equal(stream.Select(s => Tag(s.Packet)), packets.Select(Tag)); // todo, en el orden de llegada
+        Assert.Equal(stream.Where(s => Pid(s.Packet) == V).Select(s => ReadPes(s.Packet).Dts), packets.Where(p => Pid(p) == V).Select(p => ReadPes(p).Dts)); // el vídeo, intacto
+        var (worst, count) = AudioErrorAgainstContent(packets);
+        Assert.True(count > 250 && worst < 0.1, $"audio alineado: {count} PES, desviación máxima {worst:0.000} s");
+        Assert.Equal(VideoStart + (6 * 30 - 1) * 3000L, aligner.LastVideoDts);
+    }
+
+    [Fact]
+    public void PesTimestamps_AreReadWithAndWithoutDts()
+    {
+        Assert.True(TsAudioClockAligner.TryReadPesTimestamps(Packet(V, true, pts: 5000, dts: 2000, adaptation: true), out var pts, out var dts));
+        Assert.Equal((5000, 2000), (pts, dts));
+        Assert.True(TsAudioClockAligner.TryReadPesTimestamps(Packet(A, true, pts: 7000), out pts, out dts));
+        Assert.Equal((7000, 7000), (pts, dts));
+        Assert.False(TsAudioClockAligner.TryReadPesTimestamps(Packet(V, false, pts: null), out _, out _));
+    }
 }

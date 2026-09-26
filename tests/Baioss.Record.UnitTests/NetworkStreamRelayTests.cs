@@ -194,4 +194,221 @@ public class NetworkStreamRelayTests
             Assert.Equal(-1, await ReadOnceAsync(cs, TimeSpan.FromMilliseconds(300)));
         }
     }
+
+    // --- Pre-roll alineado a fotograma clave (flujo con vídeo, como el que produce el receptor) ---
+
+    private const int V = TsAudioClockAligner.VideoPid, A = TsAudioClockAligner.AudioPid;
+
+    /// <summary>Paquete TS que abre un PES: vídeo (frame <paramref name="frame"/> a 30 fps, DTS = frame × 3000, con
+    /// random_access_indicator si es keyframe, como lo escribe el muxer mpegts de FFmpeg) o audio (PTS dado).</summary>
+    private static byte[] PesPacket(int pid, long dts, bool keyframe, int tag)
+    {
+        var p = new byte[Ts];
+        Array.Fill(p, (byte)0xAB);
+        p[0] = 0x47; p[1] = (byte)(0x40 | (pid >> 8)); p[2] = (byte)(pid & 0xFF);
+        p[3] = 0x30; p[4] = 1; p[5] = (byte)(keyframe ? 0x40 : 0x00); // campo de adaptación de 1 byte: solo las banderas
+        int o = 6;
+        p[o] = 0; p[o + 1] = 0; p[o + 2] = 1; p[o + 3] = (byte)(pid == V ? 0xE0 : 0xC0);
+        p[o + 4] = 0; p[o + 5] = 0; p[o + 6] = 0x80; p[o + 7] = 0xC0; p[o + 8] = 10;
+        WriteTs(p, o + 9, dts + 3000, 0x3); // PTS un frame por delante
+        WriteTs(p, o + 14, dts, 0x1);
+        BitConverter.GetBytes(tag).CopyTo(p, 100);
+        return p;
+    }
+
+    private static void WriteTs(byte[] p, int i, long ts, int marker)
+    {
+        p[i] = (byte)((marker << 4) | (int)((ts >> 29) & 0x0E) | 1);
+        p[i + 1] = (byte)((ts >> 22) & 0xFF);
+        p[i + 2] = (byte)(((ts >> 14) & 0xFE) | 1);
+        p[i + 3] = (byte)((ts >> 7) & 0xFF);
+        p[i + 4] = (byte)(((ts << 1) & 0xFE) | 1);
+    }
+
+    private static int Tag(byte[] p) => BitConverter.ToInt32(p, 100);
+
+    /// <summary>Vídeo a 30 fps del frame <paramref name="from"/> al <paramref name="to"/> (excluido), keyframe cada
+    /// <paramref name="gop"/> frames, con un PES de audio cada 4 frames (etiquetas: vídeo = frame, audio = 100000 + frame).</summary>
+    private static byte[] VideoStream(int from, int to, int gop)
+    {
+        var bytes = new List<byte>();
+        for (int i = from; i < to; i++)
+        {
+            bytes.AddRange(PesPacket(V, i * 3000L, keyframe: i % gop == 0, tag: i));
+            if (i % 4 == 0) bytes.AddRange(PesPacket(A, i * 3000L + 100, keyframe: false, tag: 100_000 + i));
+        }
+        return bytes.ToArray();
+    }
+
+    private static async Task<byte[][]> ReadPacketsAsync(NetworkStream stream, int count)
+    {
+        var all = await ReadExactlyAsync(stream, count * Ts);
+        return Enumerable.Range(0, count).Select(i => all[(i * Ts)..((i + 1) * Ts)]).ToArray();
+    }
+
+    [Fact]
+    public async Task ThePreroll_StartsAtTheLatestKeyframe_ThatAlreadyHasTheWindowOfVideoBehindIt()
+    {
+        // GOP de 2 s (60 frames) y ventana de 2,5 s. Con 6,53 s de vídeo (frames 0–195), el keyframe de los 4 s ya tiene
+        // 2,53 s por detrás; el de los 6 s no. Un consumidor nuevo recibe desde el keyframe de los 4 s (frame 120), no
+        // desde «los últimos 2,5 s de llegada» (que empezarían a mitad de GOP) ni desde el keyframe más reciente.
+        await using var relay = new NetworkStreamRelay("gop", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5) };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        var stream = VideoStream(0, 196, gop: 60);
+        await src.WriteAsync(stream);
+        await WaitAsync(() => relay.ForwardedBytes >= stream.Length, "el relé no drenó el origen");
+
+        using var consumer = await ConnectAsync(relay.ConsumerPort);
+        var cs = consumer.GetStream();
+        int expected = stream.Length / Ts - (120 + 30); // desde el frame 120: 76 vídeo + 19 audio; antes iban 120 + 30
+        var got = await ReadPacketsAsync(cs, expected);
+        Assert.Equal(120, Tag(got[0]));                         // empieza justo en el keyframe de los 4 s…
+        Assert.Equal(0x40, got[0][5] & 0x40);                    // …que lleva random_access_indicator
+        Assert.Equal(Enumerable.Range(120, 76), got.Where(p => (((p[1] & 0x1F) << 8) | p[2]) == V).Select(Tag)); // vídeo contiguo
+        Assert.Equal(-1, await ReadOnceAsync(cs, TimeSpan.FromMilliseconds(300)));           // y nada más (todo lo anterior se descartó)
+    }
+
+    [Fact]
+    public async Task WithAGopLongerThanTheWindow_ThePrerollKeepsTheFirstKeyframe_ItHas()
+    {
+        // GOP de 8 s y solo 3 s de vídeo: ningún keyframe tiene aún 2,5 s por detrás salvo el primero (frame 0), que
+        // los tiene → se conserva desde él. Descartarlo dejaría al proceso nuevo sin nada que decodificar hasta el keyframe siguiente.
+        await using var relay = new NetworkStreamRelay("gop-largo", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5) };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        var stream = VideoStream(0, 90, gop: 240);
+        await src.WriteAsync(stream);
+        await WaitAsync(() => relay.ForwardedBytes >= stream.Length, "el relé no drenó el origen");
+
+        using var consumer = await ConnectAsync(relay.ConsumerPort);
+        var got = await ReadPacketsAsync(consumer.GetStream(), stream.Length / Ts);
+        Assert.Equal(0, Tag(got[0]));
+        Assert.Equal(stream, got.SelectMany(p => p).ToArray()); // íntegro, en orden
+
+        // Y con solo 1,5 s de vídeo (menos que la ventana) también: el único keyframe manda.
+        await using var young = new NetworkStreamRelay("joven", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5) };
+        young.Start();
+        using var source2 = await ConnectAsync(young.SourcePort);
+        var short45 = VideoStream(0, 45, gop: 60);
+        await source2.GetStream().WriteAsync(short45);
+        await WaitAsync(() => young.ForwardedBytes >= short45.Length, "el relé no drenó el origen");
+        using var consumer2 = await ConnectAsync(young.ConsumerPort);
+        Assert.Equal(short45, (await ReadPacketsAsync(consumer2.GetStream(), short45.Length / Ts)).SelectMany(p => p).ToArray());
+    }
+
+    [Fact]
+    public async Task AReservedConsumer_GetsTheSnapshotOfTheReservation_PlusEverythingSince_AndTheFrameCountIsExact()
+    {
+        // El motor reserva al construir el proceso y este conecta unos cientos de ms después: la instantánea es la del
+        // momento de reservar (el número de frames que el preview se salta es exacto) y lo llegado entre medias viaja en
+        // su cola, sin hueco ni solape.
+        await using var relay = new NetworkStreamRelay("reserva", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5) };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        var first = VideoStream(0, 90, gop: 60); // 3 s: la ventana arranca en el keyframe 0 (el de los 2 s aún no tiene 2,5 s detrás)
+        await src.WriteAsync(first);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length, "el relé no drenó el origen");
+
+        Assert.Equal(90, relay.ReserveConsumer().VideoFrames); // los PES de vídeo de la instantánea
+        var meanwhile = VideoStream(90, 120, gop: 60);   // llega ANTES de que el proceso conecte
+        await src.WriteAsync(meanwhile);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length + meanwhile.Length, "el relé no drenó el origen");
+
+        using var reserved = await ConnectAsync(relay.ConsumerPort);
+        var cs = reserved.GetStream();
+        var got = await ReadPacketsAsync(cs, (first.Length + meanwhile.Length) / Ts);
+        Assert.Equal(first.Concat(meanwhile).ToArray(), got.SelectMany(p => p).ToArray());
+
+        var live = VideoStream(120, 142, gop: 60);       // y sigue en vivo
+        await src.WriteAsync(live);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length + meanwhile.Length + live.Length, "el relé no drenó el origen");
+        Assert.Equal(live, (await ReadPacketsAsync(cs, live.Length / Ts)).SelectMany(p => p).ToArray());
+
+        // Un consumidor SIN reserva recibe la ventana de AHORA: desde el keyframe de los 2 s (frame 60), que ya tiene 2,7 s detrás.
+        using var plain = await ConnectAsync(relay.ConsumerPort);
+        Assert.Equal(60, Tag((await ReadPacketsAsync(plain.GetStream(), 1))[0]));
+    }
+
+    [Fact]
+    public async Task AReservation_IsLive_OnlyWhileItsConsumerHasTakenThePreroll_AndKeepsUpWithTheStream()
+    {
+        // El motor cede el preview al proceso nuevo cuando este ya lee en directo: conectó, tragó el pre-roll y no tiene
+        // nada pendiente en su cola. Si se atrasa (el origen empuja más de lo que lee), deja de estar en directo hasta
+        // que vacía el atraso.
+        await using var relay = new NetworkStreamRelay("directo", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5), ConsumerQueueCapacity = 4096 };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        var first = VideoStream(0, 90, gop: 60);
+        await src.WriteAsync(first);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length, "el relé no drenó el origen");
+
+        var reservation = relay.ReserveConsumer();
+        Assert.Equal(90, reservation.VideoFrames);
+        Assert.False(reservation.IsLive);                       // nadie ha conectado aún
+
+        using var consumer = await ConnectAsync(relay.ConsumerPort);
+        var cs = consumer.GetStream();
+        await ReadPacketsAsync(cs, first.Length / Ts);           // se traga el pre-roll entero
+        await WaitAsync(() => reservation.IsLive, "el consumidor al día no se reporta en directo");
+
+        // Deja de leer mientras el origen sigue empujando (más de lo que caben los búferes del socket): el atraso se
+        // acumula en su cola → ya no va al día.
+        var backlog = TsPackets(8000, 7);                        // ~1,5 MB
+        await src.WriteAsync(backlog);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length + backlog.Length, "el relé no drenó el origen");
+        Assert.False(reservation.IsLive);
+
+        await ReadExactlyAsync(cs, backlog.Length);              // vacía el atraso: al día otra vez
+        await WaitAsync(() => reservation.IsLive, "el consumidor no volvió a estar en directo tras vaciar la cola");
+    }
+
+    [Fact]
+    public async Task AReservation_NobodyClaims_ExpiresWithoutLeakingAConsumer()
+    {
+        await using var relay = new NetworkStreamRelay("caduca", NullLogger.Instance) { ReservationTimeout = TimeSpan.FromMilliseconds(100) };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        await src.WriteAsync(VideoStream(0, 30, gop: 30));
+        await WaitAsync(() => relay.ForwardedBytes >= 30 * Ts, "el relé no drenó el origen");
+
+        var reservation = relay.ReserveConsumer();
+        Assert.Equal(30, reservation.VideoFrames);
+        Assert.Equal(1, relay.ConsumerCount);            // reservado = ya cuenta (recibe el flujo en su cola)
+        Assert.False(reservation.IsLive);                // nadie ha conectado: no está en directo
+        await Task.Delay(300);
+        await src.WriteAsync(VideoStream(30, 31, gop: 30)); // el fragmento siguiente caduca la reserva
+        await WaitAsync(() => relay.ConsumerCount == 0, "la reserva no caducó");
+        Assert.True(reservation.IsLive);                 // caducada: no hay nada que esperar de ella
+
+        using var plain = await ConnectAsync(relay.ConsumerPort); // sin reserva pendiente: instantánea de ahora
+        var head = await ReadPacketsAsync(plain.GetStream(), 1);
+        Assert.Equal(0, Tag(head[0]));
+    }
+
+    [Fact]
+    public async Task WhenTheByteCapBites_ThePrerollDropsTheOldest_AndRestartsAtTheNextKeyframe()
+    {
+        // Tope de 50 paquetes con keyframes cada 20 frames y ventana de flujo pequeña (100 ms): tras 100 frames (125
+        // paquetes con el audio) sobreviven como mucho 50 → la ventana arranca en el keyframe siguiente al corte (frame 80).
+        await using var relay = new NetworkStreamRelay("tope", NullLogger.Instance) { PrerollWindow = TimeSpan.FromMilliseconds(100), PrerollMaxBytes = 50 * Ts };
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        var stream = VideoStream(0, 100, gop: 20);
+        await src.WriteAsync(stream);
+        await WaitAsync(() => relay.ForwardedBytes >= stream.Length, "el relé no drenó el origen");
+
+        using var consumer = await ConnectAsync(relay.ConsumerPort);
+        var cs = consumer.GetStream();
+        var got = await ReadPacketsAsync(cs, 20 + 5); // frames 80–99 y sus 5 PES de audio
+        Assert.Equal(80, Tag(got[0]));
+        Assert.Equal(0x40, got[0][5] & 0x40);
+        Assert.Equal(-1, await ReadOnceAsync(cs, TimeSpan.FromMilliseconds(300)));
+    }
 }

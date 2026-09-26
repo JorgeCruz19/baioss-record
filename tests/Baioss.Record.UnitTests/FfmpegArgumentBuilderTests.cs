@@ -280,7 +280,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         Assert.Contains("-progress pipe:1", joined);                        // telemetría/watchdog del supervisor
         Assert.Contains("[0:v]scale=640:360,format=bgra[pv]", joined);      // rama de preview
-        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined);
         Assert.Contains("ebur128=peak=true", joined);                       // medidores
         Assert.DoesNotContain("-c:v libx264", joined);                      // idle: NO graba
         Assert.DoesNotContain("-y", joined);                                // …ni escribe archivo
@@ -294,7 +294,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         Assert.Contains("split=2[vrec][vprev]", joined);                    // una apertura → dos ramas
         Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", joined);    // preview…
-        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined);
         Assert.Contains("-c:v libx264", joined);                            // …y grabación a la vez
         Assert.Contains("-movflags +frag_keyframe+empty_moov+default_base_moof", joined); // fMP4: archivo siempre reproducible
         Assert.Contains("-y", joined);                                      // archivo de salida
@@ -350,6 +350,29 @@ public class FfmpegArgumentBuilderTests : IDisposable
     }
 
     [Fact]
+    public void BuildLive_PreviewSkipsTheSourcePreroll_BeforeScalingAndDetectors_AndRecordingKeepsIt()
+    {
+        // Una entrada de red entrega un pre-roll (la grabación empieza antes del botón): el preview se lo salta —antes de
+        // escalar y de los detectores de negro/congelado— y la rama de grabación lo conserva. Y cada frame decodificado
+        // sale una vez al preview (passthrough), sin las duplicaciones del CFR.
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { PreviewFramesToSkip = 75 };
+        source.Emit(new SignalInfo(SignalState.Locked, new Resolution(1920, 1080), new FrameRate(30000, 1001), AudioLayout.Stereo,
+            HasAudio: true, Timecode: null, Bitrate: null));
+        var builder = new FfmpegArgumentBuilder().From(source).Using(SoftwareMp4()).ForChannel("TST")
+            .ToDirectory("C:/out").WithPreviewSink("tcp://127.0.0.1:9001").WithSignalAnalysis(true);
+        var joined = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
+
+        Assert.Contains("[0:v]split=2[vrec][vprev];", joined);
+        Assert.Contains("[vprev]select=gte(n\\,75),scale=640:360,", joined);   // primero el salto, luego escala y detectores
+        Assert.DoesNotContain("[vrec]select", joined);                          // la grabación se queda con el pre-roll
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined);
+
+        // Sin pre-roll (0), la rama de preview es la de siempre.
+        source.PreviewFramesToSkip = 0;
+        Assert.DoesNotContain("select=", string.Join(' ', builder.BuildLive(recording: false, 640, 360)));
+    }
+
+    [Fact]
     public void BuildLive_Recording_Software_ConvertsRecordBranchToYuv420p()
         // El mismo format= explícito también para libx264 (yuv420p): no-op si ya coincide, robusto si no.
         => Assert.Contains("format=yuv420p[vmain]", BuildLive(SoftwareMp4(), recording: true));
@@ -361,7 +384,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         // El preview sigue funcionando (es la regresión que reportó el usuario con OBS solo-vídeo)…
         Assert.Contains("[0:v]scale=640:360,format=bgra[pv]", joined);
-        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined);
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined);
         // …pero no se pide medición ni un output solo-audio sin streams (que abortaría todo FFmpeg).
         Assert.DoesNotContain("ebur128", joined);
         Assert.DoesNotContain("-f null", joined);
@@ -443,7 +466,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("smptebars", joined);                               // barras SMPTE…
         Assert.Contains("anullsrc", joined);                                // …y silencio
         Assert.Contains("drawtext", joined);                                // rótulo "SIN SEÑAL"
-        Assert.Contains("-map [pv] -f rawvideo tcp://127.0.0.1:9001", joined); // el preview sigue
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined); // el preview sigue
         Assert.Contains("-c:v libx264", joined);                            // graba el slate
         Assert.DoesNotContain("in.mp4", joined);                            // NO abre el dispositivo/fuente
     }

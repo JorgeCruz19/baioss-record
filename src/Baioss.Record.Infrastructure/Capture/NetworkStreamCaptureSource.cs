@@ -129,16 +129,46 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
         lock (_sync) { receiver = _receiver; signal = CurrentSignal; }
         if (receiver is null || signal.State != SignalState.Locked)
             throw new InvalidOperationException(Localizer.F("Net_Err_CannotOpen", Definition.Name, Localizer.T("Net_Err_NoPeer")));
+        // Reserva la instantánea del pre-roll para el proceso que se va a construir: así el número de frames que su
+        // preview debe saltarse es exacto (el relé no la recorta ni la amplía entre este momento y la conexión).
+        _reservation = receiver.ReserveConsumer();
         return ConsumerArgumentsFor(receiver.ConsumerPort);
     }
 
-    /// <summary>Puro y testeable: la entrada TS por TCP loopback. Formato explícito (sin adivinar). El análisis termina en
-    /// cuanto FFmpeg conoce todas las pistas (normalmente al instante: el relé entrega primero un pre-roll con un fotograma
-    /// clave), pero puede esperar hasta 5 s: si el emisor trae el audio con otro reloj, el relé lo retiene hasta 4 s al
-    /// conectar para medir el desfase, y con un análisis más corto el proceso arrancaría creyendo que no hay audio.</summary>
+    /// <summary>El relé reparte el flujo a varios consumidores: el motor puede arrancar el proceso nuevo antes de retirar el viejo.</summary>
+    public bool SupportsOverlappingProcesses => true;
+
+    /// <summary>¿El proceso del último <see cref="BuildInputArguments"/> ya lee el flujo en directo (agotó el pre-roll y el atraso
+    /// acumulado mientras lo digería)? Hasta entonces su preview va adelantado y el motor no le cede el mando.</summary>
+    public bool NewestConsumerIsLive => _reservation?.IsLive ?? true;
+
+    /// <summary>Colchón de preview configurado en la fuente (Entradas → Fuentes de red), 0 si no tiene.</summary>
+    public int PreviewBufferMs => _input?.PreviewBufferMs ?? 0;
+
+    /// <summary>Bytes repartidos por el relé al proceso del canal desde que se abrió la fuente (diagnóstico y tests: distingue
+    /// «el emisor dejó de entregar» de «el motor dejó de pintar»).</summary>
+    public long RelayForwardedBytes { get { lock (_sync) return _receiver?.ForwardedBytes ?? 0; } }
+
+    /// <summary>Bytes que el relé ha recibido del receptor (diagnóstico: con <see cref="RelayForwardedBytes"/> dice si el relé retiene).</summary>
+    public long RelaySourceBytes { get { lock (_sync) return _receiver?.SourceBytes ?? 0; } }
+
+    /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico).</summary>
+    public string RelayPumpStage { get { lock (_sync) return _receiver?.PumpStage ?? ""; } }
+
+    /// <summary>Frames de vídeo del pre-roll reservado en el último <see cref="BuildInputArguments"/>: la grabación los
+    /// necesita (empieza antes del botón), el preview no debe mostrarlos.</summary>
+    public int PreviewFramesToSkip => _reservation?.VideoFrames ?? 0;
+    private RelayReservation? _reservation;
+
+    /// <summary>Puro y testeable: la entrada TS por TCP loopback. Formato explícito (sin adivinar). Con MPEG-TS, FFmpeg
+    /// AGOTA SIEMPRE el tiempo de análisis (el formato no tiene cabecera: no sabe cuándo ha visto todas las pistas), así
+    /// que son 2 s de FLUJO, que el pre-roll del relé (≥ 2,5 s desde un fotograma clave) cubre al instante: el proceso
+    /// nuevo pinta y graba enseguida. Con 5 s consumía el pre-roll y esperaba 2,5 s en vivo: 3 s de preview congelado en
+    /// cada Grabar/Detener (medido). El caso «audio con otro reloj» ya no exige más: el relé retiene también el vídeo
+    /// mientras mide, así que ningún proceso ve un flujo solo-vídeo.</summary>
     public static IReadOnlyList<string> ConsumerArgumentsFor(int consumerPort) => new[]
     {
-        "-f", "mpegts", "-analyzeduration", "5000000", "-probesize", "5000000",
+        "-f", "mpegts", "-analyzeduration", "2000000", "-probesize", "5000000",
         "-i", $"tcp://127.0.0.1:{consumerPort}",
     };
 

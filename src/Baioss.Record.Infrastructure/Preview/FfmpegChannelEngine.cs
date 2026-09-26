@@ -32,16 +32,36 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private readonly FfmpegProgressParser _parser = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    // Colchón de preview (ver PreviewPacer): los frames del sumidero con el mando se entregan a través de él; sin colchón
+    // (fuentes locales, o de red sin configurarlo) es paso directo. Uno por canal, POR ENCIMA de los sumideros: un relevo
+    // de proceso ni lo vacía ni lo vuelve a llenar. Su pool de búferes sustituye al anillo de 3 que había por lector.
+    private PreviewPacer? _pacer;
+    private PreviewPacer Pacer => _pacer ??= new PreviewPacer(FrameWidth * 4 * FrameHeight, DeliverFrame, _channelKey);
+    private void DeliverFrame(byte[] bgra) => FrameReady?.Invoke(this, new PreviewFrame(bgra, FrameWidth, FrameHeight, FrameWidth * 4));
+
+    /// <summary>Estado del colchón de preview (diagnóstico y tests): frames en cola, entregados, repetidos (huecos) y descartados (ráfagas).</summary>
+    public (int Queued, long Delivered, long Repeated, long Dropped) PreviewCushion =>
+        _pacer is { } p ? (p.QueuedFrames, p.Delivered, p.Repeated, p.Dropped) : (0, 0, 0, 0);
+
     private ICaptureSource? _source;
     private RecordingProfile? _baseProfile;
     private RecordingProfile? _recordProfile;
     private string _channelKey = "A";
 
     private FfmpegProcessSupervisor? _supervisor;
-    private TcpListener? _listener;
-    private CancellationTokenSource? _acceptCts;
-    private Task? _acceptLoop;
-    private int _port;
+    // Sumidero de preview del proceso ACTUAL. Uno por proceso: al reemplazarlo (Grabar/Detener) el nuevo arranca sobre el
+    // suyo mientras el viejo sigue pintando en el anterior, y el relevo se hace en el primer frame del nuevo (ver
+    // ReplaceProcessAsync / HandoffAsync). Solo pinta el sumidero de generación más alta que ya entregó un frame.
+    private PreviewSink? _sink;
+    private int _sinkGeneration;
+    private volatile int _activeSink;
+    // Sumideros vivos (el actual y los que esperan su relevo): cuando uno toma el mando, los más viejos que aún no habían
+    // pintado quedan relevados (su HandoffAsync retira su proceso sin esperar más).
+    private readonly List<PreviewSink> _liveSinks = new();
+    /// <summary>Tope de espera a que el proceso nuevo tome el mando del preview antes de retirar el viejo de todos modos.
+    /// Generoso: mientras tanto el viejo sigue pintando el directo, y un proceso que graba a 1080p con un preset lento tarda
+    /// varios segundos en digerir el pre-roll (grabación) antes de ir en directo.</summary>
+    private static readonly TimeSpan HandoffTimeout = TimeSpan.FromSeconds(15);
 
     private RecordingState _state = RecordingState.Idle;
     private Guid _sessionId;
@@ -181,12 +201,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // entrando/saliendo de carta de ajuste sin esperar al watchdog de 15 s. (Auditoría 24/7, C3.)
         source.SignalChanged += OnSourceSignalChanged;
 
-        // Servidor TCP loopback para recibir los frames de preview del proceso FFmpeg.
-        _listener = new TcpListener(IPAddress.Loopback, 0);
-        _listener.Start();
-        _port = ((IPEndPoint)_listener.LocalEndpoint).Port;
-        _acceptCts = new CancellationTokenSource();
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_acceptCts.Token), _acceptCts.Token);
+        // El servidor TCP loopback de los frames de preview se crea con cada proceso (ver ReplaceProcessAsync).
 
         // Si la fuente todavía NO tiene señal (caso típico de NDI cuyo emisor aún no emite), el pipeline no se
         // puede construir (BuildInputArguments lanza sin receptor). En vez de fallar el arranque del canal, se
@@ -396,14 +411,30 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private async Task ReplaceProcessAsync(bool recording, bool slate, CancellationToken ct)
     {
-        // Dispone el proceso anterior (su cierre ordenado envía 'q' y finaliza el archivo si grababa).
-        if (_supervisor is not null)
+        var previous = _supervisor;
+        var previousSink = _sink;
+        // Modo archivo único: el proceso saliente deja su archivo finalizado en disco al cerrarse → se emite como segmento
+        // (en modo segmentado lo hace el escaneo del directorio, _recordFile es null). Solo en fMP4 se remuxea a faststart
+        // para arreglar el seek; en MP4 estándar (moov al final) el archivo YA es seekable. (Config Recording:FragmentedMp4.)
+        string? previousFile = _recordFile;
+        _recordFile = null;
+        // Si la fuente admite dos aperturas (el relé de una entrada de red), el proceso viejo SIGUE PINTANDO mientras
+        // el nuevo arranca, y se retira en el primer frame del nuevo (HandoffAsync): el preview no se congela ni un
+        // instante al Grabar/Detener. Un dispositivo no lo admite: se retira el viejo antes de abrir el nuevo (su cierre
+        // ordenado envía 'q' y finaliza el archivo si grababa).
+        // Solo si el viejo sigue EN MARCHA: uno que ya salió (el emisor se fue, el proceso murió) no pinta nada que
+        // mantener, y su archivo debe emitirse ya, aunque el nuevo no pueda construirse todavía (sin emisor).
+        bool overlap = previous is { IsRunning: true } && _source?.SupportsOverlappingProcesses == true;
+
+        if (previous is not null)
         {
-            _supervisor.Crashed -= OnRecordingProcessDied;
-            _supervisor.Restarted -= OnSupervisorRestarted;
-            _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
-            await _supervisor.DisposeAsync().ConfigureAwait(false);
-            _supervisor = null;
+            Detach(previous); // sus eventos ya no cuentan: lo que le pase en el relevo (o al finalizar) no es una caída (N6)
+            _supervisor = null; _sink = null; // desde aquí viven en previous/previousSink: se retiran ahora o tras el relevo
+            if (!overlap)
+            {
+                await RetireAsync(previous, previousSink).ConfigureAwait(false);
+                if (previousFile is not null) { EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4); previousFile = null; }
+            }
         }
 
         // El stream cambió: cualquier negro/congelado/silencio detectado pertenecía al proceso anterior.
@@ -415,16 +446,36 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // La alarma de disco colgado pertenecía al supervisor saliente; el entrante la volverá a levantar si procede.
         RaiseAlarm(AlarmType.DiskStalled, false);
 
-        // Modo archivo único: el proceso que se acaba de cerrar dejó su archivo finalizado en disco →
-        // emítelo como segmento (en modo segmentado lo hace el escaneo del directorio, _recordFile es null).
-        if (_recordFile is not null)
+        PreviewSink sink;
+        try { sink = await LaunchProcessAsync(recording, slate, overlap, ct).ConfigureAwait(false); }
+        catch when (overlap)
         {
-            // Solo en fMP4: se remuxea a faststart para arreglar el seek. En MP4 estándar (moov al final) el
-            // archivo YA es seekable → sin remux (ni saturación de disco). (Config Recording:FragmentedMp4.)
-            EmitSegmentFile(_recordFile, optimizeSeek: FragmentedMp4);
-            _recordFile = null;
+            // El nuevo no arrancó (p. ej. la fuente perdió el emisor entre medias): se retira el viejo y se emite su
+            // archivo, como sin solape, antes de propagar; el llamador restaura el preview sobre un estado sin procesos.
+            await RetireAsync(previous!, previousSink).ConfigureAwait(false);
+            if (previousFile is not null) EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4);
+            throw;
         }
 
+        if (overlap)
+        {
+            // Relevo: el viejo sigue pintando hasta el primer frame del nuevo. Si el viejo GRABABA, se espera aquí (su
+            // archivo debe estar finalizado al volver: Detener lo emite y lo renombra); si solo hacía preview, no hace falta
+            // esperar (Grabar responde al instante) y se retira en segundo plano.
+            var handoff = HandoffAsync(sink, previous!, previousSink);
+            if (previous!.FinalizeOnStop)
+            {
+                await handoff.ConfigureAwait(false);
+                if (previousFile is not null) EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4);
+            }
+            else _ = handoff;
+        }
+    }
+
+    /// <summary>Construye y arranca el proceso FFmpeg del canal sobre un sumidero de preview NUEVO (que devuelve); deja el
+    /// supervisor en <see cref="_supervisor"/> y el sumidero en <see cref="_sink"/>.</summary>
+    private async Task<PreviewSink> LaunchProcessAsync(bool recording, bool slate, bool overlap, CancellationToken ct)
+    {
         var profile = recording ? _recordProfile! : (_baseProfile ?? _recordProfile!);
 
         // El parser deriva el HH:MM:SS del tiempo real, pero necesita la tasa nominal para los cuadros
@@ -436,9 +487,29 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var dir = OutputRoot;
         if (recording) Directory.CreateDirectory(dir);
 
+        // Servidor TCP loopback para los frames de preview de ESTE proceso (los relanzamientos internos reconectan a él).
+        // Con relevo, no toma el mando hasta que la fuente confirme que ya lee en directo y sus frames lleguen a cadencia
+        // real: hasta entonces el proceso decodifica el pre-roll y el atraso acumulado más deprisa que el directo, y
+        // pintarlos sería un avance rápido. La cadencia se juzga contra la tasa REAL de la fuente (el preview va en
+        // passthrough: pinta cada frame de la entrada, no los de la tasa de salida del perfil).
+        var source = _source!;
+        double sourceFps = source.CurrentSignal.FrameRate is { Value: > 0 } rate ? rate.Value : _parser.NominalRate;
+        var sink = new PreviewSink(++_sinkGeneration)
+        {
+            SettleBeforeTakeover = overlap,
+            NominalIntervalMs = 1000.0 / sourceFps,
+            IsLive = () => source.NewestConsumerIsLive,
+        };
+        lock (_liveSinks) _liveSinks.Add(sink);
+        sink.Run((s, token) => AcceptLoopAsync(s, token));
+        _sink = sink;
+        // Colchón de preview de la fuente (0 = paso directo) a la cadencia real de la señal. Se vuelve a fijar en cada
+        // proceso: la señal puede haberse redetectado con otra tasa, o el operador haber cambiado el colchón de la fuente.
+        Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), sourceFps);
+
         var builder = new FfmpegArgumentBuilder()
             .From(_source!).Using(profile).ForChannel(_channelKey)
-            .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{_port}")
+            .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{sink.Port}")
             .WithFragmentedMp4(FragmentedMp4);
 
         // Nombre del archivo. Si hay un nombre base (manual/programada), lo aplica; si no, el builder usa
@@ -500,58 +571,209 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // archivo sin índice y no arreglaría nada). Incidente 2026-09-06.
             VolumeProbe = recording ? () => Baioss.Record.Engine.FFmpeg.VolumeProbe.IsResponsiveAsync(dir, TimeSpan.FromSeconds(5)) : null,
         };
-        _supervisor.VolumeStalled += (_, stalled) => RaiseAlarm(AlarmType.DiskStalled, stalled);
-        _supervisor.ProgressLine += OnProgress;
-        _supervisor.LogLine += OnLog;
-        _supervisor.Crashed += OnRecordingProcessDied;
-        _supervisor.Completed += OnRecordingProcessCompleted; // salida LIMPIA inesperada durante grabación (N6)
-        _supervisor.Restarted += OnSupervisorRestarted;         // el preview se relanza: la fuente dejó de entregar
+        Attach(_supervisor);
         await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
+        return sink;
     }
 
-    // El proceso FFmpeg se conecta como cliente al servidor TCP; aquí leemos los frames BGRA y, al
-    // reiniciar el proceso (alternar grabación / respawn), re-aceptamos la nueva conexión.
-    private async Task AcceptLoopAsync(CancellationToken ct)
+    /// <summary>Espera (con tope) a que el proceso nuevo tome el mando del preview —o a que uno más nuevo aún lo releve— y
+    /// entonces retira el viejo y su sumidero.</summary>
+    private async Task HandoffAsync(PreviewSink incoming, FfmpegProcessSupervisor outgoing, PreviewSink? outgoingSink)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(HandoffTimeout);
+            await incoming.TookOver.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            _log.LogWarning("Canal {Key}: el proceso nuevo no tomó el preview en {Timeout:0} s; se retira el anterior igualmente.",
+                _channelKey, HandoffTimeout.TotalSeconds);
+        }
+        await RetireAsync(outgoing, outgoingSink).ConfigureAwait(false);
+    }
+
+    private async Task RetireAsync(FfmpegProcessSupervisor supervisor, PreviewSink? sink)
+    {
+        try { await supervisor.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: fallo al retirar el proceso anterior.", _channelKey); }
+        if (sink is not null)
+        {
+            lock (_liveSinks) _liveSinks.Remove(sink);
+            await sink.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>El sumidero <paramref name="generation"/> tomó el mando: los más viejos que aún esperaban su turno quedan
+    /// relevados (sus relevos pendientes retiran su proceso sin esperar más).</summary>
+    private void SupersedeOlderSinks(int generation)
+    {
+        lock (_liveSinks)
+            foreach (var s in _liveSinks)
+                if (s.Generation < generation) s.MarkSuperseded();
+    }
+
+    private void Attach(FfmpegProcessSupervisor supervisor)
+    {
+        supervisor.VolumeStalled += OnVolumeStalled;
+        supervisor.ProgressLine += OnProgress;
+        supervisor.LogLine += OnLog;
+        supervisor.Crashed += OnRecordingProcessDied;
+        supervisor.Completed += OnRecordingProcessCompleted; // salida LIMPIA inesperada durante grabación (N6)
+        supervisor.Restarted += OnSupervisorRestarted;         // el preview se relanza: la fuente dejó de entregar
+    }
+
+    private void Detach(FfmpegProcessSupervisor supervisor)
+    {
+        supervisor.VolumeStalled -= OnVolumeStalled;
+        supervisor.ProgressLine -= OnProgress;
+        supervisor.LogLine -= OnLog;
+        supervisor.Crashed -= OnRecordingProcessDied;
+        supervisor.Completed -= OnRecordingProcessCompleted;
+        supervisor.Restarted -= OnSupervisorRestarted;
+    }
+
+    private void OnVolumeStalled(object? sender, bool stalled) => RaiseAlarm(AlarmType.DiskStalled, stalled);
+
+    /// <summary>
+    /// Servidor TCP loopback al que un proceso FFmpeg envía los frames BGRA del preview. Uno por proceso: así el proceso
+    /// nuevo y el viejo pueden pintar a la vez durante el relevo. <see cref="TookOver"/> se completa cuando este sumidero
+    /// toma el mando (pinta su primer frame) o cuando uno más nuevo lo releva sin que llegara a pintar.
+    /// </summary>
+    private sealed class PreviewSink : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _cts = new();
+        private readonly TaskCompletionSource _tookOver = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Task? _loop;
+
+        public PreviewSink(int generation)
+        {
+            Generation = generation;
+            Listener = new TcpListener(IPAddress.Loopback, 0);
+            Listener.Start();
+            Port = ((IPEndPoint)Listener.LocalEndpoint).Port;
+        }
+
+        public int Generation { get; }
+        public int Port { get; }
+        public TcpListener Listener { get; }
+        /// <summary>Se completa cuando este sumidero toma el mando (pinta su primer frame) o uno más nuevo lo releva.</summary>
+        public Task TookOver => _tookOver.Task;
+
+        /// <summary>Con relevo: esperar a que el proceso lea en directo y sus frames lleguen a cadencia real antes de tomar el
+        /// mando (ver <see cref="ReadyToTakeOver"/>). Sin relevo, el primer frame manda.</summary>
+        public bool SettleBeforeTakeover { get; init; }
+        /// <summary>Intervalo nominal entre frames de la fuente (ms): la cadencia «real» que se espera.</summary>
+        public double NominalIntervalMs { get; init; } = 40;
+        /// <summary>¿Lee ya el proceso de este sumidero la entrada en directo (sin pre-roll ni atraso pendientes)? La fuente lo
+        /// sabe (<see cref="ICaptureSource.NewestConsumerIsLive"/>); null = no se puede saber (se juzga solo por cadencia).</summary>
+        public Func<bool>? IsLive { get; init; }
+        /// <summary>Cuánto debe SOSTENERSE el estado «en directo» antes de tomar el mando: un instante al día entre dos fragmentos
+        /// no vale, y en ese tiempo el proceso vacía también los búferes del socket que la fuente no ve.</summary>
+        public TimeSpan LiveConfirmation { get; init; } = TimeSpan.FromSeconds(1);
+        /// <summary>Tope: pasado este tiempo desde el primer frame se toma el mando aunque no se haya asentado (fuente a ráfagas,
+        /// tasa nominal desconocida). Generoso: el proceso viejo sigue pintando el directo mientras tanto.</summary>
+        public TimeSpan SettleTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+        private readonly Queue<long> _arrivals = new();
+        private long _firstArrival;
+        private long _liveSince;
+        private static readonly TimeSpan RateWindow = TimeSpan.FromMilliseconds(500);
+
+        /// <summary>¿Puede este sumidero tomar el mando con el frame que acaba de llegar? Sin asentamiento, sí. Con él, cuando
+        /// (1) la fuente lleva <see cref="LiveConfirmation"/> confirmando que el proceso lee en directo (agotó el pre-roll y el
+        /// atraso acumulado mientras lo digería) y (2) en el último medio segundo han llegado como mucho un 25 % más frames de
+        /// los que caben a la cadencia nominal (mientras vacía los últimos búferes llegan al doble o más); o al vencer
+        /// <see cref="SettleTimeout"/>. Esperar de más no cuesta nada: el proceso viejo sigue pintando el directo mientras tanto.</summary>
+        public bool ReadyToTakeOver(long nowTicks)
+        {
+            if (!SettleBeforeTakeover) return true;
+            if (_firstArrival == 0) _firstArrival = nowTicks;
+            _arrivals.Enqueue(nowTicks);
+            while (_arrivals.Count > 0 && Stopwatch.GetElapsedTime(_arrivals.Peek(), nowTicks) > RateWindow) _arrivals.Dequeue();
+            if (Stopwatch.GetElapsedTime(_firstArrival, nowTicks) >= SettleTimeout) return true;
+            // (1) En directo de forma sostenida: cualquier instante atrasado reinicia la cuenta.
+            if (IsLive is not null && !IsLive()) { _liveSince = 0; return false; }
+            if (_liveSince == 0) _liveSince = nowTicks;
+            if (Stopwatch.GetElapsedTime(_liveSince, nowTicks) < LiveConfirmation) return false;
+            // (2) A cadencia real.
+            if (Stopwatch.GetElapsedTime(_firstArrival, nowTicks) < RateWindow) return false;
+            double expected = RateWindow.TotalMilliseconds / NominalIntervalMs;
+            return _arrivals.Count <= expected * 1.25 + 1;
+        }
+
+        public void Run(Func<PreviewSink, CancellationToken, Task> loop) => _loop = Task.Run(() => loop(this, _cts.Token), _cts.Token);
+        public void MarkTookOver() => _tookOver.TrySetResult();
+        /// <summary>Uno más nuevo tomó el mando antes que este: su relevo pendiente ya no debe esperar nada.</summary>
+        public void MarkSuperseded() => _tookOver.TrySetResult();
+
+        private bool _disposed;
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            await _cts.CancelAsync().ConfigureAwait(false);
+            try { Listener.Stop(); } catch { /* noop */ }
+            if (_loop is not null) { try { await _loop.ConfigureAwait(false); } catch { /* cancelación esperada */ } }
+            _tookOver.TrySetCanceled();
+            _cts.Dispose();
+        }
+    }
+
+    // El proceso FFmpeg se conecta como cliente al servidor TCP de su sumidero; aquí leemos los frames BGRA y, al
+    // relanzarse el proceso (respawn del supervisor), re-aceptamos la nueva conexión.
+    private async Task AcceptLoopAsync(PreviewSink sink, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                using var client = await _listener!.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                using var client = await sink.Listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 await using var stream = client.GetStream();
-                await ReadFramesAsync(stream, ct).ConfigureAwait(false);
+                await ReadFramesAsync(sink, stream, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex) { _log.LogDebug(ex, "Preview TCP: reintentando aceptación."); }
         }
     }
 
-    private async Task ReadFramesAsync(NetworkStream stream, CancellationToken ct)
+    private async Task ReadFramesAsync(PreviewSink sink, NetworkStream stream, CancellationToken ct)
     {
-        int stride = FrameWidth * 4;
-        int frameSize = stride * FrameHeight;
-        // Anillo de buffers REUTILIZADOS: se llenan por turnos y se entregan sin copiar, en vez de clonar
-        // ~0,9 MB por frame (que a ~30 fps × N canales presionaba al GC, sobre todo al Large Object Heap).
-        // Es seguro porque el consumidor copia el frame a su textura/bitmap en <1 ms (WritePixels/Update) y
-        // el productor tarda ~1 frame (decenas de ms) en avanzar un hueco: nunca reescribe el buffer que la
-        // UI está leyendo. 3 huecos dan margen de sobra para el patrón «último frame» del consumidor.
-        const int ringSize = 3;
-        var ring = new byte[ringSize][];
-        for (int i = 0; i < ringSize; i++) ring[i] = new byte[frameSize];
-        int slot = 0;
-
+        int frameSize = FrameWidth * 4 * FrameHeight;
+        // Los búferes salen del pool del colchón (PreviewPacer), que los REUTILIZA sin copiar (clonar ~0,9 MB por frame a
+        // ~30 fps × N canales presionaba al GC, sobre todo al Large Object Heap) y nunca vuelve a prestar uno que la UI
+        // pueda estar leyendo aún (cuarentena de los 2 últimos entregados: el anillo de 3 que había por lector).
+        // Sin colchón, el frame se entrega aquí mismo, en este hilo, como siempre; con colchón se encola y lo entrega el
+        // hilo del colchón a la cadencia de la fuente.
+        var pacer = Pacer;
         while (!ct.IsCancellationRequested)
         {
-            var buffer = ring[slot];
-            int read = 0;
-            while (read < frameSize)
+            var buffer = pacer.Rent();
+            bool handedOver = false;
+            try
             {
-                int n = await stream.ReadAsync(buffer.AsMemory(read, frameSize - read), ct).ConfigureAwait(false);
-                if (n == 0) return; // el proceso cerró la conexión (reinicio) → volver a aceptar
-                read += n;
+                int read = 0;
+                while (read < frameSize)
+                {
+                    int n = await stream.ReadAsync(buffer.AsMemory(read, frameSize - read), ct).ConfigureAwait(false);
+                    if (n == 0) return; // el proceso cerró la conexión (reinicio) → volver a aceptar
+                    read += n;
+                }
+                // Relevo: el sumidero más nuevo toma el mando en cuanto su proceso lee en directo y a cadencia real (o con su
+                // primer frame si no hay relevo); hasta entonces sus frames se descartan (se leen igual: FFmpeg no debe
+                // bloquearse), y los de un sumidero ya relevado también.
+                if (sink.Generation != _activeSink)
+                {
+                    if (sink.Generation < _activeSink || !sink.ReadyToTakeOver(Stopwatch.GetTimestamp())) continue;
+                    _activeSink = sink.Generation;
+                    SupersedeOlderSinks(sink.Generation);
+                }
+                sink.MarkTookOver();
+                handedOver = true;
+                pacer.Enqueue(buffer);
             }
-            FrameReady?.Invoke(this, new PreviewFrame(buffer, FrameWidth, FrameHeight, stride));
-            slot = (slot + 1) % ringSize;
+            finally { if (!handedOver) pacer.Discard(buffer); }
         }
     }
 
@@ -1346,18 +1568,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await StopSegmentScanAsync().ConfigureAwait(false);
         if (_supervisor is not null)
         {
-            _supervisor.Crashed -= OnRecordingProcessDied;
-            _supervisor.Restarted -= OnSupervisorRestarted;
-            _supervisor.Completed -= OnRecordingProcessCompleted; // no "recuperar" en un stop/replace nuestro (N6)
+            Detach(_supervisor); // no "recuperar" en un stop/replace nuestro (N6)
             await _supervisor.DisposeAsync().ConfigureAwait(false);
         }
-        if (_acceptCts is not null) await _acceptCts.CancelAsync().ConfigureAwait(false);
-        if (_acceptLoop is not null)
-        {
-            try { await _acceptLoop.ConfigureAwait(false); } catch { /* cancelación esperada */ }
-        }
-        try { _listener?.Stop(); } catch { /* noop */ }
-        _acceptCts?.Dispose();
+        if (_sink is not null) await _sink.DisposeAsync().ConfigureAwait(false);
+        // Sumideros de relevos aún pendientes: se cierran aquí (su HandoffAsync los volverá a disponer sin efecto).
+        PreviewSink[] pending;
+        lock (_liveSinks) { pending = _liveSinks.ToArray(); _liveSinks.Clear(); }
+        foreach (var s in pending) await s.DisposeAsync().ConfigureAwait(false);
+        _pacer?.Dispose();
         _gate.Dispose();
     }
 }

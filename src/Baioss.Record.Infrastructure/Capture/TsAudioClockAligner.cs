@@ -10,9 +10,11 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// <list type="bullet">
 ///   <item>Lee el PTS del primer PES de vídeo (PID 256) y del primer PES de audio (PID 257, los PIDs que el muxer
 ///   mpegts de FFmpeg asigna a <c>-map 0:v:0 -map 0:a:0</c>). Si difieren más de <see cref="MaxSkewSeconds"/>, son
-///   relojes distintos: el audio se RETIENE durante <see cref="SettleSeconds"/> de reloj de pared y en el último
-///   segundo se mide, por llegada, cuánto va cada PES de audio por delante del último DTS de vídeo (mediana); ese
-///   desfase menos el adelanto PTS-DTS del vídeo se resta al audio desde el primer PES retenido. NO vale anclar por el
+///   relojes distintos: se RETIENE el flujo entero (audio y vídeo, en su orden) durante <see cref="SettleSeconds"/> de
+///   reloj de pared y en el último segundo se mide, por llegada, cuánto va cada PES de audio por delante del último DTS
+///   de vídeo (mediana); ese desfase menos el adelanto PTS-DTS del vídeo se resta al audio desde el primer PES retenido.
+///   Se retiene también el vídeo para que un consumidor que conecte durante la medición no vea un flujo solo-vídeo y
+///   arranque creyendo que no hay audio (el proceso del canal analiza el flujo solo 2 s). NO vale anclar por el
 ///   primer par: al conectar, el servidor real vuelca una ráfaga de caché con audio ANTERIOR al vídeo (1,2 s medidos),
 ///   y con el primer par el audio quedaba 1,2 s tarde en toda la sesión.</item>
 ///   <item>Después, un servo lento (≤ <see cref="MaxServoStepTicks"/> por PES de audio, error filtrado, banda muerta
@@ -57,7 +59,9 @@ public sealed class TsAudioClockAligner
 
     private readonly byte[] _carry = new byte[PacketSize];
     private int _carryLength;
-    private readonly List<byte[]> _heldAudio = new();
+    // Lo retenido antes de decidir, en su orden de llegada: audio desde el primer PES (a la espera del primer vídeo) y, ya
+    // en el asentamiento, también el vídeo.
+    private readonly List<(byte[] Packet, bool Audio)> _held = new();
     private long _heldBytes;
     private long? _firstVideoPts;
     private long? _firstVideoDts;
@@ -80,8 +84,13 @@ public sealed class TsAudioClockAligner
     /// Una caché de GOP legítima adelanta el vídeo unos segundos como mucho; 3,4 h no es una caché.</summary>
     public double MaxSkewSeconds { get; init; } = 10;
 
-    /// <summary>Tope de audio retenido a la espera del primer PES de vídeo; superado, se suelta sin corregir.</summary>
-    public int MaxHeldBytes { get; init; } = 4 * 1024 * 1024;
+    /// <summary>Tope de lo retenido (audio a la espera del primer PES de vídeo; audio y vídeo durante el asentamiento, hasta
+    /// 4 s de flujo); superado, se decide con lo que haya y se suelta.</summary>
+    public int MaxHeldBytes { get; init; } = 32 * 1024 * 1024;
+
+    /// <summary>DTS (90 kHz, 33 bits) del último PES de vídeo LLEGADO, retenido o no; 0 si aún no hay vídeo. El relé mide con él
+    /// cuánto flujo cubre su ventana de pre-roll.</summary>
+    internal long LastVideoDts => _lastVideoDts;
 
     /// <summary>Retardo manual del audio en ticks de 90 kHz (positivo = el audio suena más tarde). Ajuste fino de labios
     /// de la fuente; se aplica siempre, con o sin relojes distintos. Cambiarlo en caliente vale desde el PES siguiente.</summary>
@@ -154,7 +163,7 @@ public sealed class TsAudioClockAligner
     public void Reset()
     {
         _carryLength = 0;
-        _heldAudio.Clear();
+        _held.Clear();
         _heldBytes = 0;
         _firstVideoPts = null;
         _firstVideoDts = null;
@@ -191,6 +200,14 @@ public sealed class TsAudioClockAligner
                     DecideIfPossible(output, now);
                 }
             }
+            if (_settling)
+            {
+                // Relojes distintos, midiendo: el vídeo también espera, en su sitio, para salir junto con el audio.
+                _held.Add((packet.ToArray(), false));
+                _heldBytes += packet.Length;
+                EnforceHeldCap(output, now);
+                return;
+            }
             output.AddRange(packet.ToArray());
             return;
         }
@@ -209,21 +226,25 @@ public sealed class TsAudioClockAligner
                 _firstAudioPts ??= pts;
                 if (_settling && _firstVideoPts is not null) _settleSamples.Add((now, Signed33(pts - _lastVideoDts)));
             }
-            _heldAudio.Add(copy);
+            _held.Add((copy, true));
             _heldBytes += copy.Length;
             if (_settling) FinishSettlingIfDue(output, now, force: false);
             else DecideIfPossible(output, now);
-            if (!_decided && _heldBytes > MaxHeldBytes)
-            {
-                // Sin vídeo con el que comparar (¿flujo solo audio?) o asentamiento imposible: no se retiene más.
-                if (_settling) FinishSettlingIfDue(output, now, force: true);
-                else { _decided = true; _offsetTicks = 0; FlushHeld(output); }
-            }
+            EnforceHeldCap(output, now);
             return;
         }
 
         if (payloadStart && (_offsetTicks != 0 || _servo || AudioDelayTicks != 0)) Shift(copy);
         output.AddRange(copy);
+    }
+
+    /// <summary>Con el tope de retención superado no se espera más: sin vídeo con el que comparar (¿flujo solo audio?) se
+    /// suelta tal cual; en pleno asentamiento se decide con las muestras que haya.</summary>
+    private void EnforceHeldCap(List<byte> output, double now)
+    {
+        if (_decided || _heldBytes <= MaxHeldBytes) return;
+        if (_settling) FinishSettlingIfDue(output, now, force: true);
+        else { _decided = true; _offsetTicks = 0; FlushHeld(output); }
     }
 
     private void DecideIfPossible(List<byte> output, double now)
@@ -284,14 +305,15 @@ public sealed class TsAudioClockAligner
 
     private void FlushHeld(List<byte> output)
     {
-        foreach (var packet in _heldAudio)
+        foreach (var (packet, audio) in _held)
         {
             // El audio retenido se suelta con el desfase recién medido, SIN servo: son PES antiguos (hasta 2,5 s más la
-            // ráfaga) y compararlos con el último vídeo llegado los haría parecer atrasados y desviaría el desfase.
-            if ((packet[1] & 0x40) != 0 && (_offsetTicks != 0 || _servo || AudioDelayTicks != 0)) Shift(packet, servo: false);
+            // ráfaga) y compararlos con el último vídeo llegado los haría parecer atrasados y desviaría el desfase. El
+            // vídeo retenido sale tal cual, en su sitio.
+            if (audio && (packet[1] & 0x40) != 0 && (_offsetTicks != 0 || _servo || AudioDelayTicks != 0)) Shift(packet, servo: false);
             output.AddRange(packet);
         }
-        _heldAudio.Clear();
+        _held.Clear();
         _heldBytes = 0;
     }
 
@@ -321,6 +343,15 @@ public sealed class TsAudioClockAligner
             long dts = ReadTimestamp(packet, ptsIndex + 5);
             WriteTimestamp(packet, ptsIndex + 5, (dts + shift) & (PtsModulo - 1));
         }
+    }
+
+    /// <summary>PTS y DTS (90 kHz, 33 bits; DTS = PTS si el PES no lo lleva) del PES que empieza en este paquete, si lo hay.</summary>
+    internal static bool TryReadPesTimestamps(ReadOnlySpan<byte> packet, out long pts, out long dts)
+    {
+        pts = 0; dts = 0;
+        if (!TryReadPesPts(packet, out int ptsIndex, out pts, out bool hasDts)) return false;
+        dts = hasDts ? ReadTimestamp(packet, ptsIndex + 5) : pts;
+        return true;
     }
 
     /// <summary>Localiza la cabecera PES al inicio de la carga útil de un paquete con payload_unit_start y lee su PTS.</summary>

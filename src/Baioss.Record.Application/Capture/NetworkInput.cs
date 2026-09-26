@@ -33,6 +33,7 @@ public enum NetworkInputError
     InvalidUrl,
     UnsupportedScheme,
     AudioDelayRange,
+    PreviewBufferRange,
 }
 
 /// <summary>
@@ -50,10 +51,13 @@ public sealed partial record NetworkInput
     public const int DefaultRtmpPort = 1935;
     /// <summary>Tope del retardo de audio manual (±5 s): más allá no es un ajuste de labios, es otro problema.</summary>
     public const int MaxAudioDelayMs = 5000;
+    /// <summary>Tope del colchón de preview (5 s): más retardo ya no es un monitor de confianza. Medido con un servidor RTMP
+    /// real que entrega a trompicones (huecos de hasta 1,8 s): con 1 s quedaban tirones; con 2 s, cadencia perfecta.</summary>
+    public const int MaxPreviewBufferMs = 5000;
 
     // Claves con las que viaja en InputSource.Parameters (el tipo y la URL van en Type y Uri).
     public const string RoleKey = "net_role", LatencyKey = "latency_ms", PassphraseKey = "passphrase",
-        StreamIdKey = "streamid", SecureKey = "secure", AudioDelayKey = "audio_delay_ms";
+        StreamIdKey = "streamid", SecureKey = "secure", AudioDelayKey = "audio_delay_ms", PreviewBufferKey = "preview_buffer_ms";
 
     public NetworkProtocol Protocol { get; init; }
     public NetworkRole Role { get; init; }
@@ -76,6 +80,10 @@ public sealed partial record NetworkInput
     /// <summary>Retardo de audio manual en ms (positivo = el audio suena más tarde; 0 = sin ajuste): el ajuste fino de labios
     /// de esta fuente, para el residuo que solo un operador puede juzgar (el relé ya alinea relojes distintos por llegada).</summary>
     public int AudioDelayMs { get; init; }
+    /// <summary>Colchón de preview en ms (0 = sin colchón): retardo con el que se muestra el preview de esta fuente para
+    /// absorber una llegada a ráfagas (servidores RTMP que entregan a trompicones) y verla a cadencia constante. No afecta
+    /// a la grabación. Ver <c>PreviewPacer</c> en Infraestructura.</summary>
+    public int PreviewBufferMs { get; init; }
 
     /// <summary>El tipo persistido: SRT lleva el rol en el tipo; RTMP lo lleva en los parámetros.</summary>
     public InputType InputType => Protocol switch
@@ -93,6 +101,7 @@ public sealed partial record NetworkInput
         if (!IsValidHost(host)) return NetworkInputError.InvalidHost;
         if (Port is < 1 or > 65535) return NetworkInputError.InvalidPort;
         if (Math.Abs(AudioDelayMs) > MaxAudioDelayMs) return NetworkInputError.AudioDelayRange;
+        if (PreviewBufferMs is < 0 or > MaxPreviewBufferMs) return NetworkInputError.PreviewBufferRange;
         if (Protocol == NetworkProtocol.Rtmp)
         {
             string path = NormalizePath(Path);
@@ -188,6 +197,7 @@ public sealed partial record NetworkInput
         }
         else if (n.Secure) def.Parameters[SecureKey] = "1";
         if (n.AudioDelayMs != 0) def.Parameters[AudioDelayKey] = n.AudioDelayMs.ToString(CultureInfo.InvariantCulture);
+        if (n.PreviewBufferMs != 0) def.Parameters[PreviewBufferKey] = n.PreviewBufferMs.ToString(CultureInfo.InvariantCulture);
         return def;
     }
 
@@ -217,6 +227,8 @@ public sealed partial record NetworkInput
         else result = result with { Secure = parsed.Secure || p.GetValueOrDefault(SecureKey) == "1" };
         if (int.TryParse(p.GetValueOrDefault(AudioDelayKey), NumberStyles.Integer, CultureInfo.InvariantCulture, out var delay))
             result = result with { AudioDelayMs = delay };
+        if (int.TryParse(p.GetValueOrDefault(PreviewBufferKey), NumberStyles.Integer, CultureInfo.InvariantCulture, out var cushion))
+            result = result with { PreviewBufferMs = cushion };
         return result.Normalized();
     }
 

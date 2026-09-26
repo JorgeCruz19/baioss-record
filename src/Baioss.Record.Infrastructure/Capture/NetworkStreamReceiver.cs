@@ -25,6 +25,19 @@ public interface INetworkStreamReceiver : IAsyncDisposable
     /// <summary>SRT rechazó la conexión por contraseña incorrecta (la del emisor no coincide con la de la entrada).</summary>
     event EventHandler? PassphraseRejected;
 
+    /// <summary>Reserva para el PRÓXIMO consumidor la instantánea del pre-roll de este instante: cuántos frames de vídeo
+    /// contiene (los que su preview debe saltarse) y si ese consumidor ya va al día. Ver <see cref="NetworkStreamRelay.ReserveConsumer"/>.</summary>
+    RelayReservation? ReserveConsumer() => null;
+
+    /// <summary>Bytes que el relé ha repartido a los consumidores desde el arranque (diagnóstico: ¿sigue llegando flujo del emisor?).</summary>
+    long ForwardedBytes => 0;
+
+    /// <summary>Bytes que el relé ha recibido del receptor desde el arranque (diagnóstico).</summary>
+    long SourceBytes => 0;
+
+    /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico). Ver <see cref="NetworkStreamRelay.PumpStage"/>.</summary>
+    string PumpStage => "";
+
     Task StartAsync(CancellationToken ct = default);
 }
 
@@ -73,6 +86,14 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     public event EventHandler<FfmpegInputDescription>? PeerConnected;
     public event EventHandler? PeerLost;
     public event EventHandler? PassphraseRejected;
+
+    public RelayReservation? ReserveConsumer() => _relay.ReserveConsumer();
+
+    public long ForwardedBytes => _relay.ForwardedBytes;
+
+    public long SourceBytes => _relay.SourceBytes;
+
+    public string PumpStage => _relay.PumpStage;
 
     public async Task StartAsync(CancellationToken ct = default)
     {

@@ -179,13 +179,17 @@ otra entrada. El flujo se graba con el preset del canal, como las demás entrada
 
 El programa mantiene la conexión con el emisor mientras la entrada esté asignada: **Grabar y Detener no cortan esa
 conexión** (OBS, vMix o el codificador no ven ningún corte) y la grabación arranca con los últimos ~2 s ya recibidos,
-así que nunca pierde el principio. Si el emisor entrega el audio y el vídeo con relojes distintos (pasa con algunos
+así que nunca pierde el principio. Tampoco interrumpen el preview: la imagen sigue fluida y a su ritmo mientras el
+programa cambia de proceso por debajo (al detener, el archivo tarda un par de segundos en cerrarse; el preview no lo nota). Si el emisor entrega el audio y el vídeo con relojes distintos (pasa con algunos
 servidores: el audio llega marcado horas antes o después que el vídeo), el programa lo detecta, lo anota en el registro
 y realinea el audio al vídeo por orden de llegada (mide durante los primeros 2,5 s de conexión, pasada la ráfaga de caché
 que envían los servidores); sin esto la grabación saldría sin audio o con el audio desplazado. Si aun así notas los labios
 desincronizados con una fuente concreta, usa **Retardo de audio (ms)** en esa fuente: positivo retrasa el audio, negativo
 lo adelanta; prueba de 50 en 50 ms y vuelve a asignar la fuente al canal para aplicarlo. Si
-el preview se ve a saltos o congelado con una entrada de red, mira el registro: suele ser que el emisor o la red
+el preview se ve a saltos con una entrada de red (servidores RTMP que entregan a trompicones), pon un **Colchón de
+preview (ms)** en esa fuente: 1000–2000 ms, más cuanto más a trompicones llegue (medido con un servidor real con paradas
+de casi 2 s: con 2000 ms se ve fluido). El colchón retrasa solo lo que ves en pantalla, no la grabación, y se aplica al
+volver a asignar la fuente al canal. Si aun así se ve congelado, mira el registro: suele ser que el emisor o la red
 entregan menos cuadros de los nominales (el programa lo indica en la línea de «Salud grabación»).
 
 También puedes **pegar una URL** de otro programa y pulsar **Rellenar**. El programa la lee igual que FFmpeg (ffplay,

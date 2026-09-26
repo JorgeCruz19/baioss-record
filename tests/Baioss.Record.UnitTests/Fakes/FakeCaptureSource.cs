@@ -24,6 +24,7 @@ internal sealed class FakeCaptureSource : ICaptureSource
     public Task OpenAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task CloseAsync(CancellationToken ct = default) => Task.CompletedTask;
     public IReadOnlyList<string> BuildInputArguments() => new[] { "-i", Definition.Uri! };
+    public int PreviewFramesToSkip { get; set; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     /// <summary>Fuerza una transición de señal y notifica a los suscriptores.</summary>

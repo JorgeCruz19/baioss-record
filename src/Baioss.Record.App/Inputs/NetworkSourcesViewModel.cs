@@ -84,6 +84,7 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
     [ObservableProperty] private string _latencyMs = NetworkInput.DefaultLatencyMs.ToString(CultureInfo.InvariantCulture);
     [ObservableProperty] private string _streamId = "";
     [ObservableProperty] private string _audioDelayMs = "0";
+    [ObservableProperty] private string _previewBufferMs = "0";
     [ObservableProperty] private bool _secure;
     [ObservableProperty] private string _pasteUrl = "";
 
@@ -129,6 +130,7 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
         StreamId = n.StreamId ?? "";
         Secure = n.Secure;
         AudioDelayMs = n.AudioDelayMs.ToString(CultureInfo.InvariantCulture);
+        PreviewBufferMs = n.PreviewBufferMs.ToString(CultureInfo.InvariantCulture);
         Status = "";
     }
 
@@ -141,6 +143,7 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
     partial void OnLatencyMsChanged(string value) => RefreshPreview();
     partial void OnStreamIdChanged(string value) => RefreshPreview();
     partial void OnAudioDelayMsChanged(string value) => RefreshPreview();
+    partial void OnPreviewBufferMsChanged(string value) => RefreshPreview();
     partial void OnSecureChanged(bool value) => RefreshPreview();
 
     private void UpdateRoles()
@@ -165,12 +168,14 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
         // Vacío = 0; no numérico = fuera de rango (para que el mensaje lo diga).
         int audioDelay = AudioDelayMs.Trim().Length == 0 ? 0
             : int.TryParse(AudioDelayMs.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var d) ? d : int.MaxValue;
+        int previewBuffer = PreviewBufferMs.Trim().Length == 0 ? 0
+            : int.TryParse(PreviewBufferMs.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var b) ? b : int.MaxValue;
         var input = new NetworkInput
         {
             Protocol = Protocol?.Value ?? NetworkProtocol.Srt,
             Role = Role?.Value ?? NetworkRole.Listen,
             Host = Host, Port = port, Path = Path, Passphrase = Passphrase, LatencyMs = latency, StreamId = StreamId, Secure = Secure,
-            AudioDelayMs = audioDelay,
+            AudioDelayMs = audioDelay, PreviewBufferMs = previewBuffer,
         }.Normalized();
         error = input.Validate();
         return error == NetworkInputError.None ? input : null;
@@ -209,7 +214,7 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
         Role = Roles.FirstOrDefault(r => r.Value == NetworkRole.Listen) ?? Roles.FirstOrDefault();
         Host = ""; Port = ""; Path = ""; Passphrase = "";
         LatencyMs = NetworkInput.DefaultLatencyMs.ToString(CultureInfo.InvariantCulture);
-        StreamId = ""; Secure = false; PasteUrl = ""; AudioDelayMs = "0";
+        StreamId = ""; Secure = false; PasteUrl = ""; AudioDelayMs = "0"; PreviewBufferMs = "0";
         Status = "";
         RefreshPreview();
     }
@@ -294,6 +299,7 @@ public sealed partial class NetworkSourcesViewModel : ObservableObject
         NetworkInputError.LatencyRange => "Net_Err_Latency",
         NetworkInputError.StreamIdTooLong => "Net_Err_StreamId",
         NetworkInputError.AudioDelayRange => "Net_Err_AudioDelay",
+        NetworkInputError.PreviewBufferRange => "Net_Err_PreviewBuffer",
         NetworkInputError.UnsupportedScheme => "Net_Err_Scheme",
         _ => "Net_Err_InvalidUrl",
     };

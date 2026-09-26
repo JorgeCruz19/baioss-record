@@ -159,7 +159,7 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.Equal(2, changes);
 
         // El proceso del canal lee el TS del relé del receptor, no del emisor.
-        Assert.Equal(new[] { "-f", "mpegts", "-analyzeduration", "5000000", "-probesize", "5000000", "-i", "tcp://127.0.0.1:43210" },
+        Assert.Equal(new[] { "-f", "mpegts", "-analyzeduration", "2000000", "-probesize", "5000000", "-i", "tcp://127.0.0.1:43210" },
             source.BuildInputArguments());
 
         fake.Lose(); // el emisor cerró: el receptor se relanza y vuelve a esperar

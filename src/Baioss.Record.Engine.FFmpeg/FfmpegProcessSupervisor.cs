@@ -72,6 +72,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// sin señal, que ignora la «q»). Seguro: no hay contenedor que cerrar en el preview.
     /// </summary>
     public bool FinalizeOnStop { get; init; } = true;
+
+    /// <summary>¿Hay un proceso FFmpeg en marcha ahora mismo? False antes de arrancar, cuando ya salió o tras disponer.</summary>
+    public bool IsRunning { get { try { return _process is { HasExited: false }; } catch { return false; } } }
     /// <summary>
     /// <c>true</c> (por defecto): ante una salida INESPERADA (código ≠ 0 o kill del watchdog) relanza el mismo
     /// proceso con backoff (auto-recuperación 24/7 del PREVIEW —sin archivo— y de la carta de ajuste —bars
@@ -186,14 +189,6 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         foreach (var a in arguments) psi.ArgumentList.Add(a);
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data is null) return;
-            _lastProgress = DateTimeOffset.UtcNow;
-            _progressSeen = true;
-            ProgressLine?.Invoke(this, e.Data);
-        };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) LogLine?.Invoke(this, e.Data); };
 
         _lastProgress = DateTimeOffset.UtcNow;
         _progressSeen = false;
@@ -217,8 +212,17 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         // fin de sesión), Windows mata este FFmpeg en vez de dejarlo grabando huérfano y reteniendo el
         // dispositivo/puerto de la fuente. (Auditoría 24/7, C2.)
         ChildProcessTracker.Track(_process);
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
+        // Progreso (stdout) y log (stderr) en hilos PROPIOS, no con BeginOutputReadLine: cada flujo redirigido ocupaba un
+        // hilo del pool mientras esperaba bytes y, con varios FFmpeg vivos (canales + receptores de red), el pool se
+        // agotaba y todo lo asíncrono de la app se paraba varios segundos en cada Grabar/Detener. Ver ProcessOutput.
+        var stdout = ProcessOutput.ReadLines(_process.StandardOutput, line =>
+        {
+            _lastProgress = DateTimeOffset.UtcNow;
+            _progressSeen = true;
+            ProgressLine?.Invoke(this, line);
+        }, $"ffmpeg-{_process.Id}-progress", ex => _log.LogDebug(ex, "Fallo procesando el progreso de FFmpeg."));
+        var stderr = ProcessOutput.ReadLines(_process.StandardError, line => LogLine?.Invoke(this, line),
+            $"ffmpeg-{_process.Id}-log", ex => _log.LogDebug(ex, "Fallo procesando el log de FFmpeg."));
 
         try { await _process.WaitForExitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException)
@@ -228,6 +232,8 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         }
 
         int code = _process.ExitCode;
+        // Las últimas líneas (el motivo de un fallo, el resumen final) deben entregarse ANTES de anunciar la salida.
+        ProcessOutput.Join(TimeSpan.FromSeconds(2), stdout, stderr);
         Exited?.Invoke(this, code);
         return code;
     }

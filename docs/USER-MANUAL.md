@@ -178,14 +178,18 @@ other input. The stream is recorded with the channel's preset, like every other 
 
 The program keeps the connection with the sender for as long as the input is assigned: **Record and Stop do not drop
 that connection** (OBS, vMix or the encoder see no interruption) and the recording starts with the last ~2 s already
-received, so it never misses the beginning. If the sender delivers audio and video with different clocks (some servers
+received, so it never misses the beginning. Nor do they interrupt the preview: the picture keeps flowing at its own pace
+while the program swaps processes underneath (on Stop, the file takes a couple of seconds to close; the preview does not notice). If the sender delivers audio and video with different clocks (some servers
 do: the audio arrives stamped hours before or after the video), the program detects it, notes it in the log and
 realigns the audio to the video by arrival order (it measures during the first 2.5 s of the connection, once the cache
 burst that servers send is over); without this the recording would have no audio or a shifted one. If lips still look out
 of sync with a particular source, use **Audio delay (ms)** on that source: positive delays the audio, negative advances
 it; try steps of 50 ms and assign the source to the channel again to apply it. If
-the preview looks jerky or frozen with a network input, check the log: usually the sender or the network deliver fewer
-frames than nominal (the program says so in the "Salud grabación" line).
+the preview looks jerky with a network input (RTMP servers that deliver in fits and starts), set a **Preview buffer
+(ms)** on that source: 1000–2000 ms, larger the burstier the delivery (measured with a real server that pauses for almost
+2 s: at 2000 ms it plays smoothly). The buffer only delays what you see on screen, not the recording, and applies when
+you assign the source to the channel again. If it still looks frozen, check the log: usually the sender or the network
+deliver fewer frames than nominal (the program says so in the "Salud grabación" line).
 
 You can also **paste a URL** from another program and press **Fill in**. The program reads it the way FFmpeg does
 (ffplay, OBS): if a URL opens in ffplay, it opens here, even when the passphrase has characters such as `#`. Then check
