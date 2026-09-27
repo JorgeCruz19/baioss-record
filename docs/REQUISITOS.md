@@ -12,7 +12,7 @@ referencia del final del documento; los demás son estimaciones prudentes.
 | CPU | 4 núcleos / 8 hilos (Intel Core i5 de 10.ª gen., Ryzen 5) | 8 núcleos físicos (Core i7 / Ryzen 7) | 12–16 núcleos (Core i9 / Ryzen 9 o Xeon) |
 | GPU | NVIDIA con NVENC (GTX 1650 o superior) y driver ≥ 610, o codificación por CPU (x264) | NVIDIA RTX (Turing o posterior), driver ≥ 610 | RTX Ampere/Ada o RTX A-series/Quadro (sesiones NVENC sin límite) |
 | RAM | 8 GB | 16 GB | 32 GB |
-| Disco de grabación | SSD SATA (o HDD para ≤ 2 canales a ≤ 10 Mbps) | SSD NVMe dedicado a grabaciones | NVMe ≥ 2 TB (o varios) dedicado |
+| Disco de grabación | SSD del sistema + disco duro CMR 7200 rpm dedicado (o SSD SATA) | SSD del sistema + disco duro CMR 7200 rpm dedicado (SSD si ProRes/DNxHR/MXF o segmentos cortos) | NVMe ≥ 2 TB o RAID de discos CMR, dedicado |
 | Red | 1 GbE | 1 GbE (2,5 GbE con varias fuentes NDI) | 10 GbE con NDI a full bandwidth |
 | Sistema | Windows 10 21H2 / 11 x64 | Windows 11 x64, SAI | Windows 11 x64, SAI |
 
@@ -77,23 +77,40 @@ de 5 s, finalización de cada segmento y un clip cada 4 s durante dos minutos, s
 
 ### Disco de grabación
 
-Lo que más decide la estabilidad con varios canales. Tres cargas se suman:
+Lo que más decide la estabilidad con varios canales. La configuración normal de un grabador es la de siempre: **SSD para
+el sistema y un disco duro dedicado a las grabaciones.** Las cifras de disco duro de esta sección son estimaciones (el
+equipo de referencia solo tiene NVMe); las de SSD, medidas.
+
+Tres cargas se suman sobre el disco de grabación:
 
 1. **Escritura continua:** la suma de bitrates. 8 Mbps = 1 MB/s por canal (3,6 GB/h); 20 Mbps = 9 GB/h; 50 Mbps = 22,5
-   GB/h; 100 Mbps (ProRes/DNxHR) = 45 GB/h.
+   GB/h; 100 Mbps (ProRes/DNxHR) = 45 GB/h. Grabar es escritura secuencial, lo que un disco duro hace bien: uno de
+   7200 rpm sostiene 150–250 MB/s en las pistas exteriores y 80–120 MB/s en las interiores, de sobra para 8 canales
+   H.264/HEVC a 50 Mbps (50 MB/s en total).
 2. **Finalización de cada pieza (MP4/MOV):** al cerrarse un segmento se reescribe como MP4 normal: **medido** lee y
-   escribe 1,7 veces el tamaño de la pieza cada uno (3,4× en total), una pieza a la vez en toda la aplicación y a
-   prioridad baja. Un segmento de 30 min a 8 Mbps (1,8 GB) mueve unos 6 GB: 5–10 s en NVMe, 40–60 s en un disco duro.
-   Con 4 canales y corte a la hora, en un disco duro son 3–4 minutos de trabajo de fondo cada media hora; en SSD no se
-   nota. Por encima de `Recording:FaststartMaxGB` (4 GB) la pieza queda fragmentada, reproducible pero sin duración en
-   el Explorador: con bitrates altos y segmentos largos, subir el tope y usar SSD, o acortar los segmentos.
-3. **Clips en caliente:** copian el tramo pedido (≈ 2–3× el tamaño del clip en lecturas y escrituras); un clip de 10
-   minutos a 8 Mbps (600 MB) tarda 2–3 s en NVMe. MXF no admite clips en caliente (sin índice hasta cerrarse).
+   escribe 1,7 veces el tamaño de la pieza cada uno (3,4× en total), una pieza a la vez en toda la aplicación. Va con
+   prioridad de CPU baja, pero no de disco: en SSD no se nota (5–10 s por un segmento de 30 min a 8 Mbps, 1,8 GB); en
+   un disco duro ocupa el cabezal 40–60 s por ese mismo segmento mientras los canales siguen escribiendo, y la caché de
+   escritura de Windows absorbe el bache. Con 4 canales y corte a la hora son 3–4 minutos de fondo cada media hora;
+   con segmentos de pocos minutos y varios canales la contención es casi continua. Por encima de
+   `Recording:FaststartMaxGB` (4 GB) la pieza queda fragmentada, reproducible pero sin duración en el Explorador: con
+   bitrates altos y segmentos largos, subir el tope (más E/S) o acortar los segmentos.
+3. **Clips en caliente:** copian el tramo pedido (≈ 2–3× el tamaño del clip en lecturas y escrituras) leyendo el final
+   del archivo en curso, que suele seguir en la caché; un clip de 10 minutos a 8 Mbps (600 MB) tarda 2–3 s en NVMe.
+   No preocupan en disco duro. MXF no admite clips en caliente (sin índice hasta cerrarse).
 
 Recomendaciones:
 
-- **SSD para las grabaciones** a partir de 2 canales o de 20 Mbps; NVMe con 4 o más. Un disco duro sirve para 1–2
-  canales a bitrate moderado, con segmentos de 30 min o más para espaciar las finalizaciones.
+- **Configuración normal: SSD para el sistema y un disco duro CMR de 7200 rpm, interno (SATA) y dedicado a las
+  grabaciones.** Sirve hasta 4 canales H.264/HEVC de hasta 50 Mbps con segmentos de 30 min o más. Calcular con la
+  cifra de las pistas interiores y dejar la mitad libre para finalizaciones y lecturas.
+- **SSD o NVMe para las grabaciones** cuando haya varios canales ProRes/DNxHR/MXF (100 Mbps o más cada uno),
+  segmentos cortos (menos de 15 min) con varios canales, o reproducción, copia o edición intensa desde el mismo disco
+  mientras se graba. Para 8 canales, NVMe o un RAID de discos CMR.
+- **CMR, nunca SMR:** los discos «shingled» (muchos de sobremesa y de archivo de 2–8 TB) se hunden con escritura
+  sostenida. Clase vigilancia o empresarial: WD Purple / Red Plus / Ultrastar, Seagate SkyHawk / IronWolf / Exos.
+- **Ni USB ni ahorro de energía:** las carcasas USB se duermen o se desconectan; el apagado de discos del plan de
+  energía y la optimización de unidades de Windows (desfragmentado semanal) no deben coincidir con la grabación.
 - **Disco del sistema separado** del de grabación: el registro, la base de datos y Windows no compiten con el vídeo.
 - **Espacio libre:** el 10 % del volumen y nunca menos de una pieza entera más 256 MB (lo que necesita la finalización
   para escribir la copia) más el clip más largo. La aplicación avisa al 80/90/95 % y puede parar por emergencia.
@@ -123,17 +140,18 @@ Recomendaciones:
 
 | Uso | CPU | GPU | RAM | Disco de grabación | Notas |
 |---|---|---|---|---|---|
-| 1 canal SRT/RTMP 1080p, MP4 8–12 Mbps | Core i5 / Ryzen 5 (4 núcleos) | GTX 1650 o x264 | 8 GB | SSD SATA | Colchón de preview si el servidor va a ráfagas |
-| 2 canales SDI 1080i/p, MP4 NVENC 20 Mbps | Core i5 / Ryzen 5 | GTX 1650 Ti | 16 GB | SSD SATA/NVMe | El equipo de referencia |
-| 4 canales mixtos (SDI + NDI + SRT), MP4 NVENC | Core i7 / Ryzen 7 (8 núcleos) | RTX 3060 o superior | 16–32 GB | NVMe dedicado | 2,5 GbE si hay varias NDI |
-| 8 canales 1080p50, MP4/MXF 50 Mbps | Core i9 / Ryzen 9 / Xeon (12–16 núcleos) | RTX 4070 o RTX A4000 | 32 GB | NVMe ≥ 2 TB, ideal en RAID | 400 MB/s de escritura sostenida; 10 GbE con NDI |
-| 24/7 con programación y retención | Como el escenario correspondiente | — | +8 GB | Un 20 % de margen de espacio | SAI, NTP, horas activas de Windows, disco de sistema aparte |
+| 1 canal SRT/RTMP 1080p, MP4 8–12 Mbps | Core i5 / Ryzen 5 (4 núcleos) | GTX 1650 o x264 | 8 GB | Disco duro CMR dedicado o SSD SATA | Colchón de preview si el servidor va a ráfagas |
+| 2 canales SDI 1080i/p, MP4 NVENC 20 Mbps | Core i5 / Ryzen 5 | GTX 1650 Ti | 16 GB | Disco duro CMR 7200 rpm dedicado | CPU y GPU del equipo de referencia |
+| 4 canales mixtos (SDI + NDI + SRT), MP4 NVENC | Core i7 / Ryzen 7 (8 núcleos) | RTX 3060 o superior | 16–32 GB | Disco duro CMR 7200 rpm dedicado; SSD si los segmentos son cortos | 2,5 GbE si hay varias NDI |
+| 8 canales 1080p50, MP4/MXF 50 Mbps | Core i9 / Ryzen 9 / Xeon (12–16 núcleos) | RTX 4070 o RTX A4000 | 32 GB | NVMe ≥ 2 TB o RAID de discos CMR | 50 MB/s de escritura continua más finalizaciones; 10 GbE con NDI |
+| 24/7 con programación y retención | Como el escenario correspondiente | — | +8 GB | Un 20 % de margen de espacio | SAI, NTP, horas activas de Windows, optimización de unidades fuera del horario, disco de sistema aparte |
 
 ## Equipo de referencia (donde se ha medido todo lo marcado como medido)
 
 - Intel Core i5-10300H (4 núcleos / 8 hilos, 2,5 GHz), 24 GB de RAM, Windows 11 Home (26200).
 - NVIDIA GeForce GTX 1650 Ti (4 GB, driver 610.62) e Intel UHD Graphics.
-- SSD NVMe Micron 2210 de 512 GB (sistema y grabaciones en el mismo disco, que no es lo recomendado).
+- SSD NVMe Micron 2210 de 512 GB, sistema y grabaciones en el mismo disco (no es lo recomendado); sin disco duro, así
+  que las cifras de disco duro son estimadas.
 - Resultados: batería de estrés completa en verde (4 canales + clips + finalización, 20 ciclos de Grabar/Detener, 5
   caídas provocadas, RTMP a ráfagas con caídas del emisor); API a 265 peticiones/s con 20 clientes y p99 ≤ 55 ms
   mientras grababa y sacaba clips; finalización de 683 MB en 1,9 s; clip de 30 s en 0,6 s.
