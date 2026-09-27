@@ -34,7 +34,7 @@ public sealed class NetworkPreviewCushionTests
     };
 
     /// <summary>Proxy TCP loopback que retiene lo que va del servidor al cliente y lo suelta de golpe cada <paramref name="burst"/>.</summary>
-    private sealed class BurstyProxy : IAsyncDisposable
+    internal sealed class BurstyProxy : IAsyncDisposable
     {
         private readonly TcpListener _listener;
         private readonly int _target;
@@ -58,7 +58,10 @@ public sealed class NetworkPreviewCushionTests
                 TcpClient client;
                 try { client = await _listener.AcceptTcpClientAsync(_cts.Token); } catch { return; }
                 var server = new TcpClient();
-                await server.ConnectAsync(IPAddress.Loopback, _target, _cts.Token);
+                // Si el emisor aún no escucha (se cayó y no ha vuelto), se rechaza ESTA conexión y se sigue aceptando: el
+                // receptor reintentará. Antes la excepción tumbaba el bucle de aceptación y el banco moría con el emisor.
+                try { await server.ConnectAsync(IPAddress.Loopback, _target, _cts.Token); }
+                catch { client.Dispose(); server.Dispose(); continue; }
                 client.NoDelay = true; server.NoDelay = true;
                 lock (_pumps)
                 {

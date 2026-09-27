@@ -9,6 +9,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 |--------|------|-------------|-----------|
 | POST | `/channels/{id}/recording/start` | Inicia grabación con un perfil | Operador |
 | POST | `/channels/{id}/recording/stop` | Detiene grabación. Cuerpo opcional `{ "name", "operator" }`: guarda el archivo con ese nombre (ver abajo) | Operador |
+| POST | `/channels/{id}/clip` | Clip de los últimos `seconds` (5–3600) de la grabación EN CURSO, sin detenerla ni recodificar, a `clips/` del canal. Cuerpo `{ "seconds", "operator" }` (ver abajo) | Operador |
 | POST | `/channels/{id}/recording/pause` | Pausa | Operador |
 | POST | `/channels/{id}/recording/resume` | Reanuda | Operador |
 | GET | `/channels` | Lista canales con estado | Operador |
@@ -37,6 +38,21 @@ Content-Type: application/json
 ```
 
 ### Detener poniéndole nombre al archivo
+
+```http
+POST /api/v1/channels/8f3c.../clip
+Content-Type: application/json
+
+{ "seconds": 300, "operator": "jcruz" }
+→ 200 OK { "file": "D:\\grab\\clips\\A_20260926_120000_clip_20260926_131502_5min.mp4", "fileName": "…", "seconds": 300, "duration": 300.9, "bytes": 301234567 }
+→ 400 { "error": "…", "code": "invalid-duration" }
+→ 409 { "error": "…", "code": "not-recording" | "unsupported-container" | "busy" | "too-short" | "no-space" | "failed" }
+```
+
+Copia sin recodificar el tramo pedido del archivo que aún se escribe (empieza en el fotograma clave anterior: la duración
+real es algo mayor; termina ~1 s antes del instante de la petición). Solo con MP4 fragmentado (el modo robusto, por
+defecto) y TS; con MXF o MP4 estándar responde `unsupported-container` hasta detener. Un clip a la vez por canal. Queda
+en la auditoría como `ClipExtracted`.
 
 ```http
 POST /api/v1/channels/8f3c.../recording/stop

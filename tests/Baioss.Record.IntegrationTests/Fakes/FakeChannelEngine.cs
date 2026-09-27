@@ -8,8 +8,22 @@ using Baioss.Record.Application.Recording;
 namespace Baioss.Record.IntegrationTests.Fakes;
 
 /// <summary>Doble de prueba de <see cref="IChannelEngine"/> para probar la API/scheduler sin FFmpeg ni canales reales.</summary>
-internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename
+internal sealed class FakeChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename, IClipExtraction
 {
+    // IClipExtraction: clip de los últimos N segundos de la grabación en curso (la API lo pide; aquí solo se anota).
+    public int? ClipSecondsRequested { get; private set; }
+    public string? ClipRequestedBy { get; private set; }
+    public bool CanExtractClip => _sessionId is not null;
+
+    public Task<ClipResult> ExtractClipAsync(TimeSpan lastSeconds, string? operatorName = null, CancellationToken ct = default)
+    {
+        if (_sessionId is null) throw new ClipExtractionException(ClipError.NotRecording, "No hay grabación en curso.");
+        ClipSecondsRequested = (int)lastSeconds.TotalSeconds;
+        ClipRequestedBy = operatorName;
+        return Task.FromResult(new ClipResult(Path.Combine(@"X:\grabaciones\clips", $"{_key}_clip_{(int)lastSeconds.TotalSeconds}s.mp4"),
+            lastSeconds + TimeSpan.FromSeconds(1.5), 12_345_678, lastSeconds));
+    }
+
     private readonly string _key;
     private Guid? _sessionId;
 

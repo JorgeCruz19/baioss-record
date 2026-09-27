@@ -81,6 +81,43 @@ public sealed class ApiEndpointsTests
         await app.StopAsync();
     }
 
+    // --- Clip de los últimos N segundos de la grabación en curso ---
+
+    [Fact]
+    public async Task Clip_WhileRecording_ReturnsTheFile_AndOtherwiseAConflict_OrABadRequest()
+    {
+        var (app, channel) = BuildApi();
+        await using var _ = app;
+        await app.StartAsync();
+        var client = app.GetTestClient();
+
+        // Sin grabación: 409 con un código estable.
+        var idle = await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/clip", new { seconds = 60, @operator = "tester" });
+        Assert.Equal(HttpStatusCode.Conflict, idle.StatusCode);
+        Assert.Equal("not-recording", (await idle.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        (await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/recording/start",
+            new { ProfileId = Guid.Empty, Operator = "tester" })).EnsureSuccessStatusCode();
+
+        // Grabando: 200 con el archivo, la duración pedida y quién lo pidió llega al canal.
+        var ok = await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/clip", new { seconds = 300, @operator = "tester" });
+        ok.EnsureSuccessStatusCode();
+        var body = await ok.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.EndsWith("_clip_300s.mp4", body.GetProperty("fileName").GetString());
+        Assert.Equal(300, body.GetProperty("seconds").GetInt32());
+        Assert.Equal(301.5, body.GetProperty("duration").GetDouble(), 3);
+        Assert.Equal(12_345_678, body.GetProperty("bytes").GetInt64());
+        Assert.Equal(300, channel.ClipSecondsRequested);
+        Assert.Equal("tester", channel.ClipRequestedBy);
+
+        // Duración fuera de rango: 400.
+        var bad = await client.PostAsJsonAsync($"/api/v1/channels/{channel.ChannelId}/clip", new { seconds = 2 });
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        Assert.Equal("invalid-duration", (await bad.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("code").GetString());
+
+        await app.StopAsync();
+    }
+
     // --- Detener poniéndole nombre al archivo (lo que el panel web ofrece en su diálogo de «Detener») ---
 
     [Fact]

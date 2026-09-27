@@ -91,6 +91,12 @@ Cada panel te muestra, de arriba a abajo:
 - **Botones de grabación (transporte):**
   - **● Grabar:** empieza a grabar a mano.
   - **■ Detener:** para la grabación manual (solo aparece cuando estás grabando a mano).
+  - **✂ Clip:** mientras se graba, saca un clip de los **últimos 30 segundos, 1, 5 o 10 minutos** sin detener la grabación
+    ni recodificar (elige la duración en el menú que se abre). El clip queda en la subcarpeta `clips` de la carpeta del
+    canal, con el nombre de la grabación más `_clip_`, la hora y la duración; empieza en el fotograma clave anterior al
+    instante pedido (sale un poco más largo por delante, nunca más corto) y termina un segundo antes de pulsar. Funciona
+    con MP4 (en el modo robusto, que es el de fábrica) y TS; con MXF el botón aparece apagado y hay que esperar a detener.
+    Queda anotado en la Actividad.
   - **⏏ Detener grabación automática:** aparece solo si hay una grabación **programada** en curso; sirve para saltarte *esa* grabación sin afectar a las siguientes.
   - A la derecha, la etiqueta **PRESET** dice **con qué formato se grabará** al pulsar Grabar (por ejemplo «ProRes 422 · 1080p25»). Al pasar el ratón por encima ves el resumen técnico (códec · tasa · tamaño · contenedor). Se cambia en **⚙ Presets de grabación** (ver punto 4).
 
@@ -103,6 +109,17 @@ Cada panel te muestra, de arriba a abajo:
 3. Al detener, el programa te **pregunta con qué nombre guardar** la grabación. Escribe un nombre (o deja el que propone) y confirma. Si el nombre ya existe, le añade un número para no pisar nada.
 
 > Si no pones nombre, se guarda como `Canal_fecha_hora` (por ejemplo `A_20260721_203055.mp4`).
+
+**Sacar un clip sin detener la grabación.** Mientras grabas, pulsa **✂ Clip** y elige «Últimos 30 segundos», «Último
+minuto», «Últimos 5 minutos» o «Últimos 10 minutos». En unos segundos verás «Clip guardado: …» junto a los botones; el
+archivo está en la subcarpeta `clips` de la carpeta del canal y la grabación sigue como si nada. Si el botón aparece
+apagado es porque el canal graba en MXF: con ese formato hay que esperar a detener.
+
+> **Cómo se escriben los MP4.** Mientras se graba, cada pieza se escribe de forma robusta (si el programa o el
+> equipo se cayeran, se perdería como mucho un segundo, no el archivo). Al cerrarse cada pieza —cada segmento, o el
+> archivo al detener— el programa la convierte en segundo plano en un MP4 normal, con la duración visible en el
+> Explorador y búsqueda exacta en cualquier reproductor. Tarda unos segundos por pieza y no interrumpe nada; hasta
+> entonces el archivo ya se puede reproducir, solo que sin duración en el Explorador.
 
 > **Desde el panel web es igual:** al pulsar **Detener**, el mismo aviso que pide confirmación trae el campo **Nombre del
 > archivo** (con el mismo nombre sugerido). Escribe el tuyo y pulsa Enter o **Detener grabación**; si lo dejas vacío se

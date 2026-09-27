@@ -39,6 +39,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         _engine = engine;
         _config = engine as IConfigurableRecording;
         _renamer = engine as IPostRecordingRename;
+        _clipper = engine as IClipExtraction;
         _skipScheduled = skipScheduled;
         _persistOutputDir = persistOutputDir;
         IsConfigurable = _config is not null;
@@ -292,6 +293,63 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     }
     private bool CanStop() => IsRecording;
 
+    // ---------------------------------------------------------------------
+    //  Clip de la grabación en curso (últimos 30 s / 1 / 5 / 10 min, sin detenerla)
+    // ---------------------------------------------------------------------
+
+    private readonly IClipExtraction? _clipper;
+    private DispatcherTimer? _clipNoticeTimer;
+
+    /// <summary>El botón «✂ Clip» se muestra mientras se graba; se habilita solo en un contenedor legible en caliente
+    /// (fMP4/TS) y, si no, su tooltip explica por qué (MXF o MP4 estándar: hay que esperar a detener).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ClipButtonEnabled))]
+    [NotifyPropertyChangedFor(nameof(ClipToolTip))]
+    private bool _canExtractClip;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ClipButtonEnabled))]
+    private bool _isExtractingClip;
+    public bool ClipButtonEnabled => CanExtractClip && !IsExtractingClip;
+    public string ClipToolTip => CanExtractClip ? Loc.T("Ch_ClipTip") : Loc.T("Clip_Err_Container");
+    /// <summary>Aviso breve junto al transporte: «Extrayendo clip…» y luego «Clip guardado: …» (se borra solo).</summary>
+    [ObservableProperty] private string _clipNotice = "";
+
+    [RelayCommand]
+    private async Task ExtractClipAsync(object? parameter)
+    {
+        if (_clipper is null || IsExtractingClip) return;
+        int seconds = parameter switch
+        {
+            int i => i,
+            string s when int.TryParse(s, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var v) => v,
+            _ => 0,
+        };
+        if (seconds <= 0) return;
+        IsExtractingClip = true;
+        _clipNoticeTimer?.Stop();
+        ClipNotice = Loc.F("Ch_ClipWorking", ClipLabel(seconds));
+        try
+        {
+            var clip = await _clipper.ExtractClipAsync(TimeSpan.FromSeconds(seconds), Environment.UserName);
+            ClipNotice = Loc.F("Ch_ClipSaved", Path.GetFileName(clip.FilePath), ClipLabel(seconds));
+            _clipNoticeTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+            _clipNoticeTimer.Tick -= ClearClipNotice; _clipNoticeTimer.Tick += ClearClipNotice;
+            _clipNoticeTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            ClipNotice = "";
+            System.Windows.MessageBox.Show(ex.Message, Loc.T("Ch_Err_ClipTitle"),
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+        finally { IsExtractingClip = false; }
+    }
+
+    private void ClearClipNotice(object? sender, EventArgs e) { _clipNoticeTimer?.Stop(); ClipNotice = ""; }
+
+    private static string ClipLabel(int seconds)
+        => seconds % 60 == 0 ? Loc.F("Ch_ClipMinutes", seconds / 60) : Loc.F("Ch_ClipSeconds", seconds);
+
     /// <summary>True cuando una grabación PROGRAMADA está corriendo en este canal (lo fija el shell desde el scheduler).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowStopButton))]
@@ -414,6 +472,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         RecordingState = status.RecordingState;
         SignalState = status.Signal.State;
         IsLocked = status.Signal.State == SignalState.Locked;
+        CanExtractClip = _clipper?.CanExtractClip == true;
 
         // Qué pares van al archivo (fuente multicanal): fija el par de los medidores L/R y marca los mini medidores.
         _selectedPairs = status.Signal.AudioSelectedPairs;

@@ -38,6 +38,9 @@ public interface INetworkStreamReceiver : IAsyncDisposable
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico). Ver <see cref="NetworkStreamRelay.PumpStage"/>.</summary>
     string PumpStage => "";
 
+    /// <summary>Consumidores conectados al relé ahora mismo (diagnóstico y tests: en reposo debe ser 1, el proceso del canal).</summary>
+    int ConsumerCount => 0;
+
     Task StartAsync(CancellationToken ct = default);
 }
 
@@ -94,6 +97,7 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     public long SourceBytes => _relay.SourceBytes;
 
     public string PumpStage => _relay.PumpStage;
+    public int ConsumerCount => _relay.ConsumerCount;
 
     public async Task StartAsync(CancellationToken ct = default)
     {

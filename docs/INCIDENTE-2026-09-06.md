@@ -194,6 +194,15 @@ como si nada hubiera pasado; la única pista estaba en el registro técnico. Aho
 - **`RecordingFileUnverified`** (error): qué archivo no se puede reproducir y cuánto ocupa; y el segmento queda
   marcado como **dañado** en el historial en vez de figurar como una pieza sana.
 
+## Decisión tomada (2026-09-26): opción 4
+
+Se implementó la opción 4: `Recording:FragmentedMp4 = true` (cada pieza se escribe fragmentada, una caída pierde
+≤ 1 s) y **cada segmento se finaliza al cerrarse** como MP4 estándar con el índice al inicio, en segundo plano, uno a
+la vez en toda la aplicación y a baja prioridad (el archivo único, al detener, como ya se hacía). Los archivos quedan
+«normales» (duración en el Explorador, búsqueda exacta) sin renunciar a la robustez; además permite los clips en
+caliente. Detalle en `docs/01-arquitectura.md` («Grabación robusta con archivos normales») y test
+`SegmentFinalizeTests`. Lo que sigue es el análisis original.
+
 ## Decisión pendiente: el formato
 
 Con el vigilante corregido, **este incidente concreto ya no se repetiría**: un disco que se cuelga se espera, no

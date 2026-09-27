@@ -27,7 +27,7 @@ namespace Baioss.Record.Infrastructure.Channels;
 /// persiste y se publican eventos; si no, el canal sigue grabando en modo "standalone". Pensado para la
 /// app de escritorio en Fase 1; la variante completa basada en repositorios es <c>ChannelEngine</c>.
 /// </summary>
-public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename
+public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecording, IPostRecordingRename, IClipExtraction
 {
     private readonly string _key;
     private readonly ICaptureSource _source;
@@ -516,6 +516,24 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// archivos en segundo plano y corrige la ruta de los segmentos persistidos. Devuelve la nueva ruta
     /// principal, o null si no había nada que renombrar.
     /// </summary>
+    // IClipExtraction: clip de los últimos N segundos de la grabación en curso (el motor hace el corte; aquí se audita).
+    public bool CanExtractClip => _engine.CanExtractClip;
+
+    public async Task<ClipResult> ExtractClipAsync(TimeSpan lastSeconds, string? operatorName = null, CancellationToken ct = default)
+    {
+        var result = await _engine.ExtractClipAsync(lastSeconds, ct).ConfigureAwait(false);
+        if (_bus is not null)
+        {
+            try
+            {
+                await _bus.PublishAsync(new ClipExtracted(ChannelId, _session?.Id, Path.GetFileName(result.FilePath),
+                    (int)Math.Round(lastSeconds.TotalSeconds), result.Duration.TotalSeconds, result.SizeBytes, operatorName), CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) { _log?.LogError(ex, "No se pudo publicar el clip en la auditoría."); }
+        }
+        return result;
+    }
+
     public async Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default)
     {
         // Los segmentos de la sesión terminada se fijan AL ENTRAR, igual que sus archivos en el motor: el renombrado

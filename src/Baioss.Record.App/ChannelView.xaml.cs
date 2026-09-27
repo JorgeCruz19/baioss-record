@@ -32,6 +32,15 @@ public partial class ChannelView : UserControl
 
     private IChannelPreviewSource? CurrentPreview => (DataContext as ChannelViewModel)?.Preview;
 
+    // «✂ Clip»: el menú de duraciones se abre con el clic izquierdo (un ContextMenu solo se abre con el derecho por defecto).
+    private void OnClipButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button) return;
+        menu.PlacementTarget = button;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
     // La superficie cambió su ImageSource (cayó a CPU porque la GPU no se recuperó): re-apunta el control.
     private void OnSurfaceImageSourceChanged(object? sender, EventArgs e)
     {

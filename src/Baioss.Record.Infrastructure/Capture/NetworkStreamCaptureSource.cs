@@ -155,6 +155,9 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico).</summary>
     public string RelayPumpStage { get { lock (_sync) return _receiver?.PumpStage ?? ""; } }
 
+    /// <summary>Consumidores conectados al relé (diagnóstico y tests): en reposo, 1 (el proceso del canal); durante un relevo, 2.</summary>
+    public int RelayConsumers { get { lock (_sync) return _receiver?.ConsumerCount ?? 0; } }
+
     /// <summary>Frames de vídeo del pre-roll reservado en el último <see cref="BuildInputArguments"/>: la grabación los
     /// necesita (empieza antes del botón), el preview no debe mostrarlos.</summary>
     public int PreviewFramesToSkip => _reservation?.VideoFrames ?? 0;

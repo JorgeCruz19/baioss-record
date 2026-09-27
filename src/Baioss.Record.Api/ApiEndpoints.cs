@@ -57,6 +57,30 @@ public static class ApiEndpoints
             });
         });
 
+        // Clip de los últimos N segundos de la grabación EN CURSO, sin detenerla ni recodificar, a la subcarpeta clips/ del
+        // canal. 200 con el archivo; 400 si la duración no vale (5–3600 s); 409 si no se puede ahora (no graba, contenedor
+        // no legible en caliente —MXF/MP4 estándar—, otro clip en marcha, sin espacio, o FFmpeg falló): `code` lo distingue.
+        api.MapPost("/channels/{id:guid}/clip", async (Guid id, ClipBody body, IDispatcher d, CancellationToken ct) =>
+        {
+            try
+            {
+                var clip = await d.SendAsync(new ExtractClipCommand(id, body.Seconds, body.Operator), ct);
+                return Results.Ok(new
+                {
+                    file = clip.FilePath,
+                    fileName = Path.GetFileName(clip.FilePath),
+                    seconds = body.Seconds,
+                    duration = clip.Duration.TotalSeconds,
+                    bytes = clip.SizeBytes,
+                });
+            }
+            catch (ClipExtractionException ex)
+            {
+                var payload = new { error = ex.Message, code = ex.Code };
+                return ex.Error == ClipError.InvalidDuration ? Results.BadRequest(payload) : Results.Conflict(payload);
+            }
+        });
+
         // --- Programación (tareas automáticas de cada canal): ver ScheduleEndpoints ---
         api.MapBaiossSchedule();
 
@@ -381,6 +405,8 @@ public static class ApiEndpoints
     }
 
     public sealed record StartBody(Guid ProfileId, string? Operator);
+    /// <summary>Cuerpo de <c>POST /channels/{id}/clip</c>: los últimos <c>Seconds</c> segundos de la grabación en curso.</summary>
+    public sealed record ClipBody(int Seconds, string? Operator);
     /// <summary>Cuerpo OPCIONAL de «detener»: el nombre (sin extensión) con el que guardar la grabación y quién lo pone.</summary>
     public sealed record StopBody(string? Name, string? Operator);
     public sealed record ProtectionBody(string Level);

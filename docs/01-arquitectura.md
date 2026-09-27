@@ -103,6 +103,39 @@ que el colchón. Está por encima de los sumideros de proceso, así que un relev
 Medido con el servidor real del usuario (paradas de hasta 1,8 s): de 27 fps con huecos a 29–30 frames por segundo
 exactos con 2 s de colchón (`NetworkPreviewCushionTests`: banco con proxy a ráfagas y sonda contra una URL real).
 
+**Grabación robusta con archivos normales (desde 2026-09-26).** Con `Recording:FragmentedMp4 = true` (ahora el
+valor de la compilación) cada pieza MP4/MOV se escribe FRAGMENTADA (índice al inicio + fragmentos de ≤ 1 s): una
+caída del proceso pierde como mucho un segundo, no la pieza (el incidente 2026-09-06 costó un segmento de 22 min
+grabado en MP4 estándar). Y para que los archivos queden «normales» —duración en el Explorador, búsqueda exacta—,
+cada segmento se FINALIZA al cerrarse: `ScanSegments` lo emite con `optimizeSeek` y `VerifyRecordingAsync` lo
+verifica con ffprobe y lo remuxea a MP4 estándar con `+faststart` (`FfmpegLocator.RemuxFaststartAsync`: copia sin
+recodificar a un temporal `*.faststart.tmp` en la misma carpeta —que el escaneo de segmentos no ve— y sustitución
+atómica; si el original está abierto por otro, reintenta y si no puede lo deja fragmentado, que sigue siendo válido).
+Uno a la vez en toda la aplicación (`RemuxGate`) y a prioridad baja, para no competir con las grabaciones por el
+disco; acotado por `Recording:FaststartMaxGB` (por encima la pieza queda fragmentada). El archivo único se finaliza al
+detener, como antes. El renombrado al detener espera a las finalizaciones en vuelo. `SegmentFinalizeTests` lo cubre.
+Una pieza que una caída deja SIN contenido reproducible (el proceso murió con el archivo recién abierto o a mitad del
+primer fragmento: menos de 4 MB y ffprobe no la lee) se descarta al emitirla, con aviso en el registro y sin fila de
+segmento ni alarma: no es una grabación, y la caída ya consta como `RecordingInterrupted`. Las piezas grandes que no se
+verifican sí se conservan y alarman (ahí hay material que recuperar).
+
+**Pruebas de estrés (`StressTests`, con `BAIOSS_STRESS=1`).** Cuatro canales grabando dos minutos con segmentación,
+finalización y clips concurrentes; veinte ciclos rápidos de Grabar/Detener; cinco caídas provocadas del proceso de
+grabación; y una entrada RTMP a ráfagas con relevos, clips y dos caídas del emisor. Cada escenario comprueba, además de
+los archivos, que no queden procesos ffmpeg huérfanos, hilos, descriptores ni memoria de más, ni temporales de remux.
+
+**Clip de la grabación en curso (`ClipPlanner` + `ClipExtractor`).** «✂ Clip» (o `POST /channels/{id}/clip`) copia los
+últimos 30 s / 1 / 5 / 10 min de la grabación EN CURSO a `clips/` sin detenerla ni recodificar: otro ffmpeg lee el
+archivo que aún se escribe. Solo con contenedores legibles mientras crecen, MP4 fragmentado (el modo robusto por
+defecto) y TS; MXF no tiene índice hasta cerrarse y el MP4 estándar no tiene `moov` (`IClipExtraction.CanExtractClip`
+lo dice y el botón no se ofrece). El corte empieza en el fotograma clave anterior al instante pedido (buscado con
+`ffprobe -read_intervals`, sin leer el archivo entero) y termina 1,2 s (fMP4) o 0,5 s (TS) antes de la duración
+legible, porque el último fragmento puede estar a medias. Con grabación segmentada el clip cruza segmentos en dos
+pasos: la cola del primero desde el keyframe a una pieza temporal y luego `concat` sin buscar (el demuxer `concat` no
+sabe buscar dentro de un fMP4 recién abierto: copiaba desde el principio del segmento, medido). Un clip a la vez por
+canal, comprobación de espacio por el bitrate real, verificación con ffprobe y evento `ClipExtracted` en la auditoría
+(`ClipExtractionTests` lo cubre con el motor real: fMP4, TS, segmentado y los casos que no se pueden).
+
 ## Procesos en ejecución (background services)
 
 El host (`App` o un Windows Service en modo headless) levanta servicios de fondo:

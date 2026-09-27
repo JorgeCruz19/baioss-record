@@ -420,6 +420,26 @@
                         Style="{StaticResource TransportButton}" Background="{StaticResource SignalAmberBrush}"
                         Foreground="#10131A" FontWeight="Bold"
                         Visibility="{Binding IsScheduledRecording, Converter={StaticResource BoolToVis}}"/>
+                <!-- «✂ Clip»: solo grabando en fMP4/TS. Abre un menú con las duraciones; el clip se saca sin detener la grabación
+                     (el menú no está en el árbol visual: el comando se toma del DataContext del botón). -->
+                <Button Content="{loc:T Ch_ClipButton}" Style="{StaticResource TransportButton}" Click="OnClipButtonClick"
+                        ToolTip="{Binding ClipToolTip}" ToolTipService.ShowOnDisabled="True" IsEnabled="{Binding ClipButtonEnabled}"
+                        Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}">
+                    <Button.ContextMenu>
+                        <ContextMenu Style="{StaticResource DarkContextMenu}">
+                            <MenuItem Header="{loc:T Ch_Clip30s}" CommandParameter="30" Style="{StaticResource DarkMenuItem}"
+                                      Command="{Binding PlacementTarget.DataContext.ExtractClipCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <MenuItem Header="{loc:T Ch_Clip1m}" CommandParameter="60" Style="{StaticResource DarkMenuItem}"
+                                      Command="{Binding PlacementTarget.DataContext.ExtractClipCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <MenuItem Header="{loc:T Ch_Clip5m}" CommandParameter="300" Style="{StaticResource DarkMenuItem}"
+                                      Command="{Binding PlacementTarget.DataContext.ExtractClipCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                            <MenuItem Header="{loc:T Ch_Clip10m}" CommandParameter="600" Style="{StaticResource DarkMenuItem}"
+                                      Command="{Binding PlacementTarget.DataContext.ExtractClipCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
+                <TextBlock Text="{Binding ClipNotice}" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11"
+                           Foreground="{StaticResource AccentBrush}" TextTrimming="CharacterEllipsis" MaxWidth="360"/>
             </StackPanel>
 
             <!-- Programación: en el panel solo se muestra la grabación EN CURSO (alto fijo, uniforme entre

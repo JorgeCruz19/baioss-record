@@ -10,6 +10,7 @@ using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Localization;
 using Baioss.Record.Application.Recording;
 using Baioss.Record.Engine.FFmpeg;
 
@@ -102,6 +103,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // dejaba escapar las anteriores. Lista bajo lock (se emite desde el hilo del escaneo y el del progreso). (N29.)
     private readonly List<Task> _pendingOptimizes = new();
     private readonly object _optimizeLock = new();
+    /// <summary>Un remux a faststart a la vez en todo el proceso (todos los canales comparten el disco de grabación).</summary>
+    private static readonly SemaphoreSlim RemuxGate = new(1, 1);
     private CancellationTokenSource? _segScanCts;
     private Task? _segScanLoop;
 
@@ -314,6 +317,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 _segDir = OutputRoot; // sin subcarpeta por canal
                 _segGlob = $"{_recordBaseName ?? _channelKey}_*.{ext}";
                 Directory.CreateDirectory(_segDir);
+                CleanStaleRemuxTemps(_segDir);
                 foreach (var f in Directory.GetFiles(_segDir, _segGlob)) _emitted.Add(f);
             }
 
@@ -360,7 +364,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             try
             {
                 await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
-                if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
+                if (_segmented) await ScanSegmentsAsync(includeNewest: true).ConfigureAwait(false); // emite los segmentos restantes, incluido el último ya finalizado
             }
             catch (Exception ex)
             {
@@ -368,7 +372,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 // flush/moov del archivo); lo que falló es rearmar el preview. Completa el stop igualmente y
                 // restaura el preview best-effort, en vez de dejar el canal atascado en «Stopping». (Auditoría N3.)
                 _log.LogError(ex, "Canal {Key}: la grabación se detuvo pero no se pudo rearmar el preview; se restaura.", _channelKey);
-                if (_segmented) { try { ScanSegments(includeNewest: true); } catch { /* best-effort */ } }
+                if (_segmented) { try { await ScanSegmentsAsync(includeNewest: true).ConfigureAwait(false); } catch { /* best-effort */ } }
                 await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
             }
             // Snapshot de los archivos de ESTA sesión para el renombrado posterior (inmune a que una grabación
@@ -433,7 +437,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             if (!overlap)
             {
                 await RetireAsync(previous, previousSink).ConfigureAwait(false);
-                if (previousFile is not null) { EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4); previousFile = null; }
+                if (previousFile is not null) { await EmitSegmentFileAsync(previousFile, optimizeSeek: FragmentedMp4).ConfigureAwait(false); previousFile = null; }
             }
         }
 
@@ -453,7 +457,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // El nuevo no arrancó (p. ej. la fuente perdió el emisor entre medias): se retira el viejo y se emite su
             // archivo, como sin solape, antes de propagar; el llamador restaura el preview sobre un estado sin procesos.
             await RetireAsync(previous!, previousSink).ConfigureAwait(false);
-            if (previousFile is not null) EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4);
+            if (previousFile is not null) await EmitSegmentFileAsync(previousFile, optimizeSeek: FragmentedMp4).ConfigureAwait(false);
             throw;
         }
 
@@ -466,7 +470,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             if (previous!.FinalizeOnStop)
             {
                 await handoff.ConfigureAwait(false);
-                if (previousFile is not null) EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4);
+                if (previousFile is not null) await EmitSegmentFileAsync(previousFile, optimizeSeek: FragmentedMp4).ConfigureAwait(false);
             }
             else _ = handoff;
         }
@@ -920,6 +924,86 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks) AudioPeaksUpdated?.Invoke(this, peaks);
     }
 
+    // --- Clip de la grabación en curso (ver ClipExtractor) ---
+
+    private int _clipInFlight;
+
+    /// <summary>¿Se puede sacar un clip ahora? Grabando (o en pausa) en un contenedor legible mientras crece: MP4
+    /// fragmentado (el modo robusto por defecto) o TS. MXF y MP4 estándar solo se pueden leer al cerrarse.</summary>
+    public bool CanExtractClip => _state is RecordingState.Recording or RecordingState.Paused && ClipContainerOf(_recordProfile) is not null;
+
+    private ClipContainer? ClipContainerOf(RecordingProfile? profile) => profile?.Container switch
+    {
+        ContainerFormat.Mp4 when FragmentedMp4 => ClipContainer.FragmentedMp4,
+        ContainerFormat.Ts => ClipContainer.MpegTs,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Copia los últimos <paramref name="lastSeconds"/> de la grabación en curso a <c>clips/</c> (subcarpeta del destino:
+    /// NUNCA junto a los segmentos, cuyo escaneo <c>{base}_*.{ext}</c> lo tomaría por una pieza más) sin detenerla ni
+    /// recodificar. Un clip a la vez por canal; comprueba el espacio libre con el bitrate real de la sesión.
+    /// </summary>
+    public async Task<ClipResult> ExtractClipAsync(TimeSpan lastSeconds, CancellationToken ct = default)
+    {
+        var profile = _recordProfile;
+        if (_state is not (RecordingState.Recording or RecordingState.Paused) || profile is null)
+            throw new ClipExtractionException(ClipError.NotRecording, Localizer.T("Clip_Err_NotRecording"));
+        var container = ClipContainerOf(profile)
+                        ?? throw new ClipExtractionException(ClipError.UnsupportedContainer, Localizer.T("Clip_Err_Container"));
+        if (Interlocked.CompareExchange(ref _clipInFlight, 1, 0) != 0)
+            throw new ClipExtractionException(ClipError.Busy, Localizer.T("Clip_Err_Busy"));
+        try
+        {
+            var files = CurrentRecordingFiles();
+            if (files.Count == 0)
+                throw new ClipExtractionException(ClipError.TooShort, Localizer.F("Clip_Err_TooShort", ClipPlanner.MinClipSeconds));
+
+            var (_, ext) = FfmpegCodecMap.Container(profile.Container);
+            string dir = Path.Combine(OutputRoot, "clips");
+            Directory.CreateDirectory(dir);
+            // Base del nombre: el archivo en curso; en modo segmentado, sin su número de segmento («A_20260926_120000_3» →
+            // «A_20260926_120000»). Solo entonces: en archivo único el sufijo numérico es la hora («A_20260926_163810»).
+            string baseName = Path.GetFileNameWithoutExtension(files[^1]);
+            if (_segmented) baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @"_\d+$", "");
+            int seconds = (int)Math.Round(lastSeconds.TotalSeconds);
+            string output = Path.Combine(dir, ClipPlanner.OutputFileName(baseName, DateTimeOffset.Now, seconds, ext));
+
+            // Espacio: el bitrate real medido de la sesión (o el objetivo del perfil) por la duración pedida, con margen.
+            long bps = _realBitrateBps > 0 ? _realBitrateBps : profile.VideoBitrate.BitsPerSecond + profile.AudioBitrate.BitsPerSecond;
+            long needed = (long)(bps / 8.0 * lastSeconds.TotalSeconds * 1.2);
+            try
+            {
+                var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(dir))!);
+                if (drive.AvailableFreeSpace < needed)
+                    throw new ClipExtractionException(ClipError.NoSpace, Localizer.F("Clip_Err_NoSpace", needed / 1048576));
+            }
+            catch (ClipExtractionException) { throw; }
+            catch { /* unidad no consultable (ruta de red): se intenta igual */ }
+
+            var extractor = new ClipExtractor(_locator, _log);
+            var outcome = await extractor.ExtractAsync(files, container, lastSeconds.TotalSeconds, output, ct).ConfigureAwait(false);
+            _log.LogInformation("Canal {Key}: clip de los últimos {Seconds} s → {File} ({Duration:0.0} s, {MB:0.0} MB).",
+                _channelKey, seconds, Path.GetFileName(output), outcome.Duration.TotalSeconds, outcome.SizeBytes / 1048576.0);
+            return new ClipResult(outcome.Path, outcome.Duration, outcome.SizeBytes, lastSeconds);
+        }
+        finally { Volatile.Write(ref _clipInFlight, 0); }
+    }
+
+    /// <summary>Archivos de la grabación EN CURSO en orden cronológico (el último es el que FFmpeg escribe). Archivo único:
+    /// solo la pieza actual (entre las piezas de una recuperación hay un hueco: no se cruzan). Segmentada: los segmentos
+    /// creados desde que empezó esta sesión (los de una sesión anterior con el mismo nombre son más antiguos).</summary>
+    private IReadOnlyList<string> CurrentRecordingFiles()
+    {
+        if (!_segmented)
+            return _recordFile is { } current && File.Exists(current) ? new[] { current } : Array.Empty<string>();
+        if (string.IsNullOrEmpty(_segDir) || !Directory.Exists(_segDir)) return Array.Empty<string>();
+        var files = Directory.GetFiles(_segDir, _segGlob);
+        Array.Sort(files, CompareSegment);
+        var since = _recordStart.AddSeconds(-5).UtcDateTime;
+        return files.Where(f => { try { return File.GetCreationTimeUtc(f) >= since; } catch { return false; } }).ToList();
+    }
+
     // --- Segmentación: cada archivo de segmento completo se emite como un Segment ---
 
     private async Task SegmentScanLoopAsync(CancellationToken ct)
@@ -928,7 +1012,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             try { await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
-            try { ScanSegments(includeNewest: false); }
+            try { await ScanSegmentsAsync(includeNewest: false).ConfigureAwait(false); }
             catch (Exception ex) { _log.LogDebug(ex, "Escaneo de segmentos: fallo."); }
         }
     }
@@ -938,7 +1022,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// (<paramref name="includeNewest"/>), deja el archivo más reciente sin emitir porque suele ser el
     /// que FFmpeg está escribiendo; el siguiente segmento (o el stop) lo cerrará.
     /// </summary>
-    private void ScanSegments(bool includeNewest)
+    private async Task ScanSegmentsAsync(bool includeNewest)
     {
         if (string.IsNullOrEmpty(_segDir) || !Directory.Exists(_segDir)) return;
         var files = Directory.GetFiles(_segDir, _segGlob);
@@ -947,14 +1031,37 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // que pondría «_10» antes de «_2») y la numeración 1-based sin relleno conserva la continuidad.
         Array.Sort(files, CompareSegment);
         int upTo = includeNewest ? files.Length : files.Length - 1;
-        for (int i = 0; i < upTo; i++) EmitSegmentFile(files[i]);
+        // Cada segmento cerrado se FINALIZA en segundo plano (fMP4 → MP4 estándar con el índice al inicio): así se graba
+        // robusto (una caída pierde ≤ 1 s, no el segmento) y los archivos quedan normales (duración en el Explorador,
+        // búsqueda exacta). Uno a la vez en toda la app y a baja prioridad: ver VerifyRecordingAsync. (Incidente 2026-09-06.)
+        for (int i = 0; i < upTo; i++) await EmitSegmentFileAsync(files[i], optimizeSeek: FragmentedMp4).ConfigureAwait(false);
     }
 
-    private void EmitSegmentFile(string path, bool optimizeSeek = false)
+    /// <summary>Por debajo de este tamaño una pieza solo se emite si ffprobe la reproduce: si no, es un resto sin contenido
+    /// (el proceso murió o se detuvo antes de escribir el primer fragmento) y se descarta. Por encima se emite siempre y,
+    /// si no se verifica, se alarma: ahí sí hay material que recuperar (untrunc).</summary>
+    private const long StubMaxBytes = 4L * 1024 * 1024;
+
+    private async Task EmitSegmentFileAsync(string path, bool optimizeSeek = false)
     {
         if (!_emitted.Add(path)) return; // ya emitido
-        _sessionFiles.Add(path);         // candidato a renombrar al detener una grabación manual
         var fi = new FileInfo(path);
+        if (fi.Exists && fi.Length < StubMaxBytes)
+        {
+            // Pieza pequeña: ¿tiene algo reproducible? Tras una caída, el proceso pudo morir con el archivo recién abierto
+            // (28 bytes: solo la cabecera) o a mitad del primer fragmento (unos cientos de KB truncados). Eso no es una
+            // grabación: emitirla daría una fila de segmento vacía y una alarma «grabación sin verificar» por nada; la
+            // caída en sí ya consta (RecordingInterrupted). Se borra y se deja constancia. (Estrés 2026-09-26.)
+            var probe = await _locator.ProbeMediaAsync(path).ConfigureAwait(false);
+            if (!probe.IsPlayable || probe.DurationSeconds <= 0)
+            {
+                try { File.Delete(path); } catch { /* si no se puede borrar, queda en la carpeta pero no se emite */ }
+                _log.LogWarning("Canal {Key}: pieza {File} sin contenido reproducible ({Bytes} bytes; el proceso no llegó a escribir un fragmento entero): descartada.",
+                    _channelKey, Path.GetFileName(path), fi.Length);
+                return;
+            }
+        }
+        _sessionFiles.Add(path);         // candidato a renombrar al detener una grabación manual
         SegmentClosed?.Invoke(this, new Segment
         {
             SessionId = _sessionId,
@@ -1015,17 +1122,21 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                     }
                     else
                     {
+                        // UN remux a la vez en TODA la aplicación (los canales cierran sus segmentos a la vez con la
+                        // segmentación por reloj): N reescrituras simultáneas saturarían el disco que usan las grabaciones.
+                        await RemuxGate.WaitAsync().ConfigureAwait(false);
                         try
                         {
                             if (await _locator.RemuxFaststartAsync(path).ConfigureAwait(false))
-                                _log.LogInformation("Canal {Key}: {File} optimizado para búsqueda (índice al inicio).",
+                                _log.LogInformation("Canal {Key}: {File} finalizado como MP4 estándar (índice al inicio).",
                                     _channelKey, Path.GetFileName(path));
                         }
                         catch (Exception ex)
                         {
-                            _log.LogWarning(ex, "Canal {Key}: no se pudo optimizar la búsqueda de {File} (se conserva el original).",
+                            _log.LogWarning(ex, "Canal {Key}: no se pudo finalizar {File} (se conserva el original fragmentado, reproducible).",
                                 _channelKey, Path.GetFileName(path));
                         }
+                        finally { RemuxGate.Release(); }
                     }
                 }
             }
@@ -1040,6 +1151,22 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             }
         }
         catch (Exception ex) { _log.LogWarning(ex, "Canal {Key}: no se pudo verificar {File}.", _channelKey, path); }
+    }
+
+    /// <summary>Borra temporales de remux («*.faststart.tmp») abandonados hace más de una hora en la carpeta: quedan si la
+    /// aplicación murió a mitad de finalizar un segmento (el original fragmentado sigue intacto). Best-effort.</summary>
+    private void CleanStaleRemuxTemps(string dir)
+    {
+        try
+        {
+            foreach (var tmp in Directory.GetFiles(dir, "*" + FfmpegLocator.RemuxTempSuffix))
+            {
+                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(tmp) < TimeSpan.FromHours(1)) continue;
+                try { File.Delete(tmp); _log.LogInformation("Canal {Key}: temporal de remux abandonado borrado: {File}.", _channelKey, Path.GetFileName(tmp)); }
+                catch { /* en uso o sin permisos: se deja */ }
+            }
+        }
+        catch { /* carpeta inaccesible: nada que limpiar */ }
     }
 
     private async Task StopSegmentScanAsync()

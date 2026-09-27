@@ -91,6 +91,12 @@ Each panel shows you, from top to bottom:
 - **Recording buttons (transport):**
   - **● Record:** starts recording by hand.
   - **■ Stop:** stops the manual recording (it only appears while you are recording by hand).
+  - **✂ Clip:** while recording, saves a clip of the **last 30 seconds, 1, 5 or 10 minutes** without stopping or re-encoding
+    the recording (pick the length from the menu that opens). The clip goes to the `clips` subfolder of the channel's folder,
+    named after the recording plus `_clip_`, the time and the length; it starts at the keyframe before the requested
+    moment (a little longer at the front, never shorter) and ends one second before you pressed. It works with MP4 (in the
+    robust mode, the factory default) and TS; with MXF the button shows disabled and you have to wait until the recording
+    stops. It is logged in the Activity window.
   - **⏏ Stop scheduled recording:** appears only if a **scheduled** recording is running; it lets you skip *that* recording without affecting the following ones.
   - On the right, the **PRESET** tag tells you **which format will be recorded** when you press Record (for example "ProRes 422 · 1080p25"). Hovering over it shows the technical summary (codec · rate · size · container). It is changed in **⚙ Recording presets** (see section 4).
 
@@ -103,6 +109,17 @@ Each panel shows you, from top to bottom:
 3. On stopping, the program **asks what name to save the recording under**. Type a name (or keep the one it suggests) and confirm. If the name already exists it appends a number so that nothing is overwritten.
 
 > If you leave the name empty, it is saved as `Channel_date_time` (for example `A_20260721_203055.mp4`).
+
+**Saving a clip without stopping the recording.** While recording, press **✂ Clip** and choose "Last 30 seconds", "Last
+minute", "Last 5 minutes" or "Last 10 minutes". A few seconds later "Clip saved: …" appears next to the buttons; the file
+is in the `clips` subfolder of the channel's folder and the recording carries on untouched. If the button shows disabled,
+the channel records in MXF: with that format you have to wait until you stop.
+
+> **How MP4 files are written.** While recording, each piece is written robustly (if the program or the computer
+> crashed, at most one second would be lost, not the file). When a piece closes —each segment, or the file when you
+> stop— the program converts it in the background into a normal MP4, with the duration visible in Explorer and exact
+> seeking in any player. It takes a few seconds per piece and interrupts nothing; until then the file already plays,
+> just without a duration in Explorer.
 
 > **The web panel works the same way:** when you press **Stop**, the confirmation prompt includes a **File name** field
 > with the same suggested name. Type yours and press Enter or **Stop recording**; leave it empty to keep the automatic

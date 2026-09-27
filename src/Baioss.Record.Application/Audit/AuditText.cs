@@ -45,6 +45,7 @@ public static class AuditText
                 "RecordingStarted" => Started(j),
                 "RecordingStopped" => Stopped(j),
                 "RecordingRenamed" => Renamed(j),
+                "ClipExtracted" => Clip(j),
                 "RecordingStartFailed" => Failed(j),
                 "ScheduledRecordingSkipped" => Skipped(j),
                 "ScheduleChanged" => ScheduleChanged(j),
@@ -100,6 +101,18 @@ public static class AuditText
     }
 
     /// <summary>«Noticias del mediodía.mp4» (antes A_20260919_115343.mp4) · 3 archivos · jcruz.</summary>
+    private static string Clip(JsonElement j)
+    {
+        int seconds = Int(j, "Seconds");
+        string length = seconds > 0 && seconds % 60 == 0 ? Localizer.F("Audit_Clip_Minutes", seconds / 60) : Localizer.F("Audit_Clip_Seconds", seconds);
+        var parts = new List<string>(3)
+        {
+            Localizer.F("Audit_Clip_Detail", Str(j, "FileName") ?? "?", length, (Long(j, "SizeBytes") / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture)),
+        };
+        if (Str(j, "Operator") is { Length: > 0 } op) parts.Add(op);
+        return string.Join(" · ", parts);
+    }
+
     private static string Renamed(JsonElement j)
     {
         var parts = new List<string>(3) { Localizer.F("Audit_Renamed_Detail", Str(j, "FileName") ?? "?", Str(j, "PreviousFileName") ?? "?") };

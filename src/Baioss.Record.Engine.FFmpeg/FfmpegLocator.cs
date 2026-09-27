@@ -34,6 +34,9 @@ public sealed class FfmpegLocator : IFfmpegLocator
     public string FfmpegPath { get; }
     public string FfprobePath { get; }
 
+    /// <summary>Sufijo del temporal del remux («archivo.faststart.tmp», en la misma carpeta que el original).</summary>
+    public const string RemuxTempSuffix = ".faststart.tmp";
+
     /// <summary>Límite de tamaño para optimizar con faststart (ver <see cref="IFfmpegLocator.FaststartMaxBytes"/>).
     /// Por defecto 4 GiB; se ajusta en el cableado de DI desde la configuración. 0 = sin límite.</summary>
     public long FaststartMaxBytes { get; init; } = 4L * 1024 * 1024 * 1024;
@@ -154,9 +157,11 @@ public sealed class FfmpegLocator : IFfmpegLocator
         if (FaststartMaxBytes > 0 && new FileInfo(filePath).Length > FaststartMaxBytes) return false;
 
         var dir = Path.GetDirectoryName(filePath) ?? ".";
-        // Temporal en la misma carpeta (mismo volumen → el Move final es un renombrado atómico) y CON la
-        // extensión real, para que FFmpeg elija el muxer por ella.
-        var tmp = Path.Combine(dir, Path.GetFileNameWithoutExtension(filePath) + ".faststart" + ext);
+        // Temporal en la misma carpeta (mismo volumen → el Move final es un renombrado atómico) con extensión «.tmp»:
+        // así NO lo ve el escaneo de segmentos («{base}_*.mp4»), que antes podía emitir el temporal a medias como si
+        // fuera una pieza. El muxer se indica explícitamente (-f), ya que la extensión no lo dice.
+        var tmp = Path.Combine(dir, Path.GetFileNameWithoutExtension(filePath) + RemuxTempSuffix);
+        string muxer = ext.Equals(".mov", StringComparison.OrdinalIgnoreCase) ? "mov" : "mp4";
         try
         {
             // El remux escribe una COPIA completa antes de sustituir el original: si el volumen no tiene espacio
@@ -172,7 +177,7 @@ public sealed class FfmpegLocator : IFfmpegLocator
 
             // -map 0 copia TODAS las pistas; -c copy no recodifica (rápido, sin pérdida); +faststart mueve el moov
             // al inicio (de paso des-fragmenta el fMP4). -y sobrescribe un temporal previo.
-            var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", tmp };
+            var args = new[] { "-hide_banner", "-loglevel", "error", "-i", filePath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", muxer, "-y", tmp };
             // Prioridad POR DEBAJO de lo normal: aunque el remux es -c copy (poca CPU), es intensivo en E/S; bajar
             // la prioridad reduce que compita con la escritura de las grabaciones activas en el mismo disco.
             // Timeout generoso: el remux reescribe el archivo entero (puede tardar minutos en piezas de varios
@@ -183,8 +188,17 @@ public sealed class FfmpegLocator : IFfmpegLocator
                 TryDelete(tmp);
                 return false;
             }
-            File.Move(tmp, filePath, overwrite: true); // sustitución atómica del original por el optimizado
-            return true;
+            // Sustitución atómica del original por el finalizado. Si el original está ABIERTO por otro (un clip que se
+            // está copiando de él, VLC, una copia de seguridad), Windows no deja reemplazarlo: se reintenta un rato y,
+            // si sigue ocupado, se renuncia dejando el original (fragmentado, reproducible) y se borra el temporal.
+            for (int attempt = 1; ; attempt++)
+            {
+                try { File.Move(tmp, filePath, overwrite: true); return true; }
+                catch (IOException) when (attempt < 10) { await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false); }
+                catch (UnauthorizedAccessException) when (attempt < 10) { await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false); }
+                catch (IOException) { TryDelete(tmp); return false; }
+                catch (UnauthorizedAccessException) { TryDelete(tmp); return false; }
+            }
         }
         catch
         {

@@ -40,6 +40,14 @@ public sealed record RecordingStopped(
 public sealed record RecordingRenamed(
     Guid ChannelId, Guid? SessionId, string FileName, string PreviousFileName, int Files = 1, string? Operator = null) : DomainEventBase;
 
+/// <summary>
+/// Se sacó un CLIP de los últimos <paramref name="Seconds"/> segundos de la grabación en curso (botón «✂ Clip» o la API),
+/// sin detenerla: <paramref name="FileName"/> en la subcarpeta <c>clips/</c> del canal, con su duración real (arranca en
+/// el fotograma clave anterior) y tamaño. Queda en la auditoría para saber qué material se sacó, cuándo y quién lo pidió.
+/// </summary>
+public sealed record ClipExtracted(
+    Guid ChannelId, Guid? SessionId, string FileName, int Seconds, double DurationSeconds, long SizeBytes, string? Operator = null) : DomainEventBase;
+
 /// <summary>Una grabación NO llegó a arrancar (pre-vuelo, dispositivo, licencia…). Sin esto, un hueco en la
 /// programación no deja ni rastro en la auditoría: solo faltaría el archivo.</summary>
 public sealed record RecordingStartFailed(
