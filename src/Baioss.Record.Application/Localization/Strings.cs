@@ -280,6 +280,11 @@ public static class Strings
         ["Net_State_Waiting"] = "Esperando al emisor",
         ["Net_State_Connecting"] = "Conectando…",
         ["Net_State_BadPassphrase"] = "Contraseña SRT rechazada",
+        ["Dl_State_Opening"] = "Abriendo la tarjeta…",
+        ["Dl_State_Busy"] = "Tarjeta en uso por otro programa",
+        ["Dl_State_NoDetect"] = "La tarjeta no detecta señal",
+        ["Dl_State_Reopening"] = "Reabriendo la tarjeta…",
+        ["Dl_Err_CannotOpen"] = "La entrada «{0}» no está lista: {1}",
         ["Net_Err_NoPeer"] = "aún no hay emisor conectado",
 
         // --- Reasignación de entrada (mensajes que acaban en la ventana de Entradas) ---
@@ -922,6 +927,11 @@ public static class Strings
         ["Net_State_Waiting"] = "Waiting for the sender",
         ["Net_State_Connecting"] = "Connecting…",
         ["Net_State_BadPassphrase"] = "SRT passphrase rejected",
+        ["Dl_State_Opening"] = "Opening the card…",
+        ["Dl_State_Busy"] = "Card in use by another program",
+        ["Dl_State_NoDetect"] = "The card detects no signal",
+        ["Dl_State_Reopening"] = "Reopening the card…",
+        ["Dl_Err_CannotOpen"] = "Input “{0}” is not ready: {1}",
         ["Net_Err_NoPeer"] = "no sender is connected yet",
 
         // --- Input rebinding (messages that end up in the Inputs window) ---

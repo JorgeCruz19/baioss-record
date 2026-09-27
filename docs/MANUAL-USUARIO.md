@@ -126,7 +126,13 @@ Esta pastilla está visible **siempre**, incluso cuando no estás grabando, para
 Aquí decides **qué fuente de vídeo se conecta a cada canal**.
 
 **Tipos de entrada que admite el programa:**
-- **DeckLink (SDI):** tarjetas de captura profesionales Blackmagic. Es la entrada típica de broadcast.
+- **DeckLink (SDI):** tarjetas de captura profesionales Blackmagic. Es la entrada típica de broadcast. La tarjeta la
+  abre un proceso de captura permanente que no la suelta mientras la entrada esté asignada a un canal: **Grabar y
+  Detener no la reabren**, así que el preview no se congela y la grabación no empieza con negro. Mientras la tarjeta se
+  abre, el canal marca **SIN SEÑAL** con el motivo («Abriendo la tarjeta…», «Tarjeta en uso por otro programa», «La
+  tarjeta no detecta señal», «Reabriendo la tarjeta…»), y si la entrada SDI se queda sin señal con la tarjeta abierta lo
+  dice al momento. Para volver a la captura directa de siempre (el canal abre la tarjeta en cada Grabar/Detener):
+  `Capture:DecklinkRelay=false` en la configuración embebida (hay que recompilar).
 - **Cámara / capturadora USB (DirectShow):** webcams, capturadoras HDMI-USB, etc.
 - **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red).
 - **Flujo de red (SRT o RTMP):** una señal que llega por la red desde un codificador, OBS, vMix o un servidor (ver

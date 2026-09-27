@@ -125,7 +125,13 @@ This pill is **always** visible, even when you are not recording, so that one gl
 This is where you decide **which video source is connected to each channel**.
 
 **Input types the program supports:**
-- **DeckLink (SDI):** professional Blackmagic capture cards. This is the typical broadcast input.
+- **DeckLink (SDI):** professional Blackmagic capture cards. This is the typical broadcast input. The card is opened by
+  a permanent capture process that keeps it as long as the input is assigned to a channel: **Record and Stop do not
+  reopen it**, so the preview never freezes and recordings do not start with black. While the card is being opened, the
+  channel shows **NO SIGNAL** with the reason ("Opening the card…", "Card in use by another program", "The card detects
+  no signal", "Reopening the card…"), and if the SDI input loses its signal while the card is open it says so at once.
+  To go back to the classic direct capture (the channel reopens the card on every Record/Stop):
+  `Capture:DecklinkRelay=false` in the embedded configuration (requires a rebuild).
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
 - **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network).
 - **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see

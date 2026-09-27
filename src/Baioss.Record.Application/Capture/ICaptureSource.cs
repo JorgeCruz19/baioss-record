@@ -143,6 +143,14 @@ public interface ICaptureSource : IAsyncDisposable
 
     /// <summary>Argumentos de entrada FFmpeg específicos del protocolo (ej. -f decklink -i "...").</summary>
     IReadOnlyList<string> BuildInputArguments();
+
+    /// <summary>
+    /// Argumentos de entrada para SONDEAR la fuente (el bucle de recuperación del motor abre un ffmpeg medio segundo
+    /// para saber si la señal volvió). Por defecto, los mismos de <see cref="BuildInputArguments"/>. Una fuente servida
+    /// por un relé los da SIN reservar consumidor (la reserva es para el proceso del canal) y solo si su receptor ve
+    /// señal: si no, lanza, y el sondeo cuenta como fallido en vez de dar por buena una tarjeta abierta sin señal.
+    /// </summary>
+    IReadOnlyList<string> BuildProbeArguments() => BuildInputArguments();
 }
 
 /// <summary>

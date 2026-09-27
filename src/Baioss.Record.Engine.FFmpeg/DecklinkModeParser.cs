@@ -34,6 +34,22 @@ public static partial class DecklinkModeParser
     /// <summary>True si FFmpeg no pudo encender la entrada de vídeo: la tarjeta está en uso por otro proceso.</summary>
     public static bool IsDeviceBusy(string line) => line.Contains(DeviceBusy, StringComparison.Ordinal);
 
+    public const string NoInputSignal = "No input signal detected";
+
+    /// <summary>True si la tarjeta dejó de ver señal en la entrada («Frame received (#N) - No input signal detected»): con
+    /// modo fijo FFmpeg sigue entregando frames (negros) y lo avisa una vez por pérdida.</summary>
+    public static bool IsNoInputSignal(string line) => line.Contains(NoInputSignal, StringComparison.Ordinal);
+
+    public const string InputReturned = "Input returned";
+
+    /// <summary>True si la señal volvió a la entrada tras una pérdida («Frame received (#N) - Input returned»).</summary>
+    public static bool IsInputReturned(string line) => line.Contains(InputReturned, StringComparison.Ordinal);
+
+    public const string AudioInputRejected = "Cannot enable audio input";
+
+    /// <summary>True si la tarjeta rechazó los canales de audio pedidos (16 u 8 en una tarjeta que no los admite).</summary>
+    public static bool IsAudioInputRejected(string line) => line.Contains(AudioInputRejected, StringComparison.Ordinal);
+
     /// <summary>True si FFmpeg abrió el dispositivo decklink («Input #0, decklink, from '…':»): a partir de aquí captura.</summary>
     public static bool IsInputOpened(string line) => line.Contains(", decklink, from ", StringComparison.Ordinal);
 

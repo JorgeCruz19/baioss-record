@@ -114,6 +114,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // pipeline no puede construirse; este bucle reintenta abrir la fuente y levanta el preview en cuanto llega.
     private CancellationTokenSource? _awaitCts;
     private Task? _awaitLoop;
+    // Despierta al bucle de espera de señal en cuanto la fuente avisa de que ya la tiene (el receptor abrió la tarjeta,
+    // llegó el emisor): el preview se levanta al instante en vez de en el siguiente reintento (hasta 5 s después).
+    private readonly SemaphoreSlim _awaitWake = new(0, 1);
     private DateTimeOffset _slateSince;       // cuándo entró en slate, para escalar a alarma si se prolonga
     private volatile bool _slateAlarmRaised;  // ya se elevó SignalLoss por slate prolongado (dedupe)
 
@@ -243,10 +246,22 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// </summary>
     private async Task AwaitSignalLoopAsync(CancellationToken ct)
     {
+        // Avisos anteriores no valen: el bucle empieza de cero, y un aviso basta por intento.
+        while (_awaitWake.CurrentCount > 0) _awaitWake.Wait(0);
+        bool retryAfterFailure = false;
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+            try
+            {
+                // Cada 5 s, o antes si la fuente avisa de que ya tiene señal (ver OnSourceSignalChanged). Tras un intento
+                // CON señal que no levantó el pipeline, la cadencia de siempre: un aviso (una fuente NDI lo da en cada
+                // apertura) no debe convertir el reintento en un bucle sin pausa.
+                if (retryAfterFailure) await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+                else await _awaitWake.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) { return; }
+            while (_awaitWake.CurrentCount > 0) _awaitWake.Wait(0);
+            retryAfterFailure = false;
 
             try { await _source!.OpenAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
@@ -263,6 +278,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                     _log.LogInformation("Canal {Key}: señal detectada; preview activo.", _channelKey);
                     return;
                 }
+                retryAfterFailure = true;
             }
             catch (OperationCanceledException) { return; }
             finally { _gate.Release(); }
@@ -1207,6 +1223,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (info.State == SignalState.Locked)
         {
             if (_slate) _ = ExitSlateAsync(); // la señal volvió: reanuda la fuente real
+            // Sin proceso aún (la fuente no tenía señal al enlazar): el bucle de espera levanta el preview ya.
+            else if (_awaitWake.CurrentCount == 0) { try { _awaitWake.Release(); } catch (SemaphoreFullException) { /* ya avisado */ } }
             return;
         }
         // Pérdida/inestabilidad: misma política y guardas que OnSupervisorRestarted, pero proactiva.
@@ -1375,7 +1393,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 UseShellExecute = false, CreateNoWindow = true,
             };
             psi.ArgumentList.Add("-hide_banner");
-            foreach (var a in _source.BuildInputArguments()) psi.ArgumentList.Add(a);
+            // Los argumentos de SONDEO (no los del proceso del canal): una fuente con relé no reserva consumidor para
+            // esto y lanza si su receptor no ve señal, con lo que el sondeo falla y el canal sigue en carta de ajuste.
+            foreach (var a in _source.BuildProbeArguments()) psi.ArgumentList.Add(a);
             psi.ArgumentList.Add("-t"); psi.ArgumentList.Add("0.5");
             psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("null"); psi.ArgumentList.Add("-");
 
