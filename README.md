@@ -72,6 +72,7 @@ Capacidades de fiabilidad y validación integradas en el motor de grabación:
 | 06 | [API y seguridad](docs/06-api-seguridad.md) | REST, WebSocket, roles y auditoría |
 | 07 | [Roadmap](docs/07-roadmap.md) | MVP → Enterprise por fases |
 | 08 | [Presets de grabación](docs/08-presets.md) | Presets de encoding (Marsis-style): UI 3 paneles, catálogo, JSON |
+| — | [Requisitos de hardware y software](docs/REQUISITOS.md) | Mínimos y recomendados por escenario (canales, formato, SDI/NDI/SRT), disco para finalización y clips, Windows y drivers |
 | 09 | [Publicación / Release](docs/09-release.md) | Empaquetado portable self-contained (win-x64), FFmpeg incluido |
 
 Manuales para el operador: [MANUAL-USUARIO.md](docs/MANUAL-USUARIO.md) / [USER-MANUAL.md](docs/USER-MANUAL.md) y
