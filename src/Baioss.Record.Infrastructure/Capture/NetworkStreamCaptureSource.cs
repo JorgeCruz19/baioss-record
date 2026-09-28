@@ -138,6 +138,10 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     /// <summary>El relé reparte el flujo a varios consumidores: el motor puede arrancar el proceso nuevo antes de retirar el viejo.</summary>
     public bool SupportsOverlappingProcesses => true;
 
+    /// <summary>El relé entrega pre-roll (desde un fotograma clave, ≥ 2,5 s): el proceso nuevo lo digiere a más velocidad que el
+    /// directo, así que el motor no le cede el preview hasta que va al día y a cadencia real.</summary>
+    public bool DeliversPreroll => true;
+
     /// <summary>¿El proceso del último <see cref="BuildInputArguments"/> ya lee el flujo en directo (agotó el pre-roll y el atraso
     /// acumulado mientras lo digería)? Hasta entonces su preview va adelantado y el motor no le cede el mando.</summary>
     public bool NewestConsumerIsLive => _reservation?.IsLive ?? true;

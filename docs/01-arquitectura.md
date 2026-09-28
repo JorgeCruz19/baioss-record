@@ -123,6 +123,25 @@ directa, sin GPU ni disco; 4 canales son ≈ 1 núcleo y 0,5 GB/s de loopback. V
 2026-09-27: 4 canales con 16 canales de audio grabando a 30/30 fps sin descartes y sin que ningún receptor se relance.
 `Capture:DecklinkRelay=false` devuelve la captura directa.
 
+**Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando: con una
+entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; hasta 10 s de `SettleTimeout` o 15 s de
+`HandoffTimeout` si la máquina va saturada y el proceso nuevo no llega a «al día»), porque su entrada trae pre-roll
+(`ICaptureSource.DeliversPreroll`); con el relé en crudo de DeckLink no hay pre-roll y el relevo se hace con el primer
+frame del proceso nuevo (≈ 0,5–1 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales
+grabando, Detener tardaba 15 s). Luego envía la «q» al grabador y espera a que FFmpeg cierre el archivo (hasta
+`GracefulTimeout`, 30 s; si vence, lo mata y avisa «FFmpeg no finalizó en…»), emite el segmento, espera su fila en la
+BD y publica `RecordingStopped` (el bus espera a la auditoría y al WebSocket del panel). Solo entonces la aplicación
+abre el diálogo del nombre. Medido con contenido fabricado (i5-10300H, GTX 1650 Ti, NVMe): el cierre del archivo en
+sí NO crece con las horas (MXF MPEG-2 + PCM de 3 h y 7 GB en 0,11 s; MP4 estándar con vídeo 59.94 fps y 8 pistas AAC
+de 3 h codificado con x264 en 0,10 s: el `moov` de 4 millones de muestras es cuestión de milisegundos; un archivo de
+3,5 GB se cierra en 0,12 s con Defender activo), pero **el cierre de `h264_nvenc` sí**: con el mismo MP4 de 8 pistas,
+FFmpeg tarda en salir 0,6 s tras 1 h de contenido, 2,2 s tras 2 h y 4,0 s tras 3 h (superlineal; con 20 s o 5 min de
+contenido, 0,24 s), y ese tiempo lo espera Detener. Lo que puede alargarlo además en producción y no depende del
+motor: un antivirus que escanea el archivo al cerrarlo (crece con el tamaño), SQLite bloqueada por otro escritor
+(hasta 30 s) o un cliente del panel web que no lee.
+Para saberlo sin adivinar, el registro deja dos líneas por cada Detener: «Canal X: relevo del preview en A s y archivo
+cerrado en B s» (motor) y «Canal X: grabación detenida en T s (motor, base de datos, eventos)» (canal).
+
 **Colchón de preview (`PreviewPacer`).** El preview pinta cada frame según llega; una fuente que entrega a ráfagas
 (un servidor RTMP que se para y luego descarga de golpe) se ve a saltos aunque el motor esté sano. Por eso cada
 fuente de red admite un colchón opcional (Entradas → Fuentes de red → «Colchón de preview», 0 = sin colchón): los

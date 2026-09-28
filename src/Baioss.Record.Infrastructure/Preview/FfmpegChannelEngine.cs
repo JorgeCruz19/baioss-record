@@ -448,7 +448,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _supervisor = null; _sink = null; // desde aquí viven en previous/previousSink: se retiran ahora o tras el relevo
             if (!overlap)
             {
+                var retire = Stopwatch.StartNew();
                 await RetireAsync(previous, previousSink).ConfigureAwait(false);
+                if (previous.FinalizeOnStop)
+                    _log.LogInformation("Canal {Key}: archivo cerrado en {Close:0.0} s (sin relevo: la fuente no admite dos aperturas).", _channelKey, retire.Elapsed.TotalSeconds);
                 if (previousFile is not null) { EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4); previousFile = null; }
             }
         }
@@ -512,7 +515,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         double sourceFps = source.CurrentSignal.FrameRate is { Value: > 0 } rate ? rate.Value : _parser.NominalRate;
         var sink = new PreviewSink(++_sinkGeneration)
         {
-            SettleBeforeTakeover = overlap,
+            // Solo hay que esperar a que el proceso nuevo vaya al día si su entrada trae pre-roll (relé de red); con el
+            // relé en crudo de DeckLink arranca en el directo y toma el relevo con su primer frame: un Detener de ~1 s en
+            // vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da (medido en producción).
+            SettleBeforeTakeover = overlap && source.DeliversPreroll,
             NominalIntervalMs = 1000.0 / sourceFps,
             IsLive = () => source.NewestConsumerIsLive,
         };
@@ -596,6 +602,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// entonces retira el viejo y su sumidero.</summary>
     private async Task HandoffAsync(PreviewSink incoming, FfmpegProcessSupervisor outgoing, PreviewSink? outgoingSink)
     {
+        var sw = Stopwatch.StartNew();
         try
         {
             using var timeout = new CancellationTokenSource(HandoffTimeout);
@@ -606,7 +613,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _log.LogWarning("Canal {Key}: el proceso nuevo no tomó el preview en {Timeout:0} s; se retira el anterior igualmente.",
                 _channelKey, HandoffTimeout.TotalSeconds);
         }
+        var handoff = sw.Elapsed;
         await RetireAsync(outgoing, outgoingSink).ConfigureAwait(false);
+        // Al detener una grabación, cuánto costó cada fase: el relevo del preview (el nuevo toma el mando) y el cierre
+        // del archivo (la «q» y lo que FFmpeg tarde en escribir el índice o el moov). Es lo primero que hay que leer
+        // cuando el operador dice que «tarda en aparecer el diálogo del nombre».
+        if (outgoing.FinalizeOnStop)
+            _log.LogInformation("Canal {Key}: relevo del preview en {Handoff:0.0} s y archivo cerrado en {Close:0.0} s.",
+                _channelKey, handoff.TotalSeconds, (sw.Elapsed - handoff).TotalSeconds);
     }
 
     private async Task RetireAsync(FfmpegProcessSupervisor supervisor, PreviewSink? sink)

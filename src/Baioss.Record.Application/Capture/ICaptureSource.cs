@@ -115,6 +115,16 @@ public interface ICaptureSource : IAsyncDisposable
     bool SupportsOverlappingProcesses => false;
 
     /// <summary>
+    /// True si la entrada de un proceso nuevo empieza con PRE-ROLL (el relé de una entrada de red entrega material anterior
+    /// al momento de conectar, que el proceso digiere más deprisa que el directo): el motor debe esperar a que ese proceso
+    /// vaya al día (<see cref="NewestConsumerIsLive"/>) y a cadencia real antes de cederle el preview, o se vería un avance
+    /// rápido. Una fuente cuyo proceso nuevo arranca ya en el directo (el relé en crudo de DeckLink: siguiente punto de
+    /// sincronía tras conectar) toma el relevo con su primer frame; esperar más solo retrasa el Detener, y en una máquina
+    /// cargada el criterio de «al día sostenido» puede no cumplirse nunca (10–15 s de espera medidos en producción).
+    /// </summary>
+    bool DeliversPreroll => false;
+
+    /// <summary>
     /// ¿El proceso construido en el último <see cref="BuildInputArguments"/> consume ya la entrada EN DIRECTO? Una fuente
     /// que entrega pre-roll (el relé de una entrada de red) hace que el proceso nuevo lo digiera —y el atraso que acumula
     /// mientras tanto— más deprisa que el directo; hasta agotarlo, su preview va por delante del reloj de pared (un

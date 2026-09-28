@@ -245,10 +245,11 @@ public sealed class DecklinkRelayContinuityTests
                 lock (logLines) logLines.Add($"Grabar @{tStart:0.00} s · Detener @{tStop:0.00} s (volvió @{tStopped:0.00} s) · frames de preview {frames} · relé {receiver.VideoFramesForwarded} frames, {receiver.SourceBytes / 1_000_000} MB · proceso de la app {cores:0.00} núcleos de media · archivo {file}\nffprobe: {probe.Raw}");
                 lock (logLines) File.AppendAllLines(logPath, logLines);
             }
-            // El archivo empieza al conectar el proceso (medio segundo tras el botón) y termina cuando el preview nuevo toma el
-            // relevo (unos 2,5 s tras Detener: confirmación de directo + ventana de cadencia), como con una entrada de red.
+            // El archivo empieza al conectar el proceso (medio segundo tras el botón) y termina cuando el preview nuevo pinta su
+            // primer frame (sin pre-roll no hay que esperar a que vaya al día): Detener devuelve el control en ~1 s.
             Assert.True(probe.Duration is >= 4.5 and <= 8.5, $"Duración {probe.Duration:0.0} s para 5 s de botón. ffprobe: {probe.Raw}");
             Assert.Equal(2, probe.AudioChannels);
+            Assert.True(tStopped - tStop < 3.0, $"Detener tardó {tStopped - tStop:0.0} s en devolver el control (relevo + cierre).");
         }
         finally
         {

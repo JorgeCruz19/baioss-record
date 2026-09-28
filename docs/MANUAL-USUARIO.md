@@ -100,7 +100,7 @@ Cada panel te muestra, de arriba a abajo:
 
 1. Pulsa **● Grabar** en el canal que quieras. Empieza a grabar de inmediato y el marco del monitor se pone rojo.
 2. Cuando termines, pulsa **■ Detener**.
-3. Al detener, el programa te **pregunta con qué nombre guardar** la grabación. Escribe un nombre (o deja el que propone) y confirma. Si el nombre ya existe, le añade un número para no pisar nada.
+3. Al detener, el programa te **pregunta con qué nombre guardar** la grabación. Escribe un nombre (o deja el que propone) y confirma. Si el nombre ya existe, le añade un número para no pisar nada. La pregunta aparece al instante, mientras el programa cierra el archivo en segundo plano (el panel enseña «Deteniendo» hasta que termina; con grabaciones de varias horas puede tardar unos segundos): el nombre se aplica en cuanto el archivo queda cerrado.
 
 > Si no pones nombre, se guarda como `Canal_fecha_hora` (por ejemplo `A_20260721_203055.mp4`).
 

@@ -431,7 +431,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             await _diskGuard.StopAsync();
         }
         _diskUsage?.Unregister(ChannelId); // deja de contar en el caudal agregado del volumen
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         await _engine.StopRecordingAsync(ct);
+        var engineStop = sw.Elapsed;
 
         // Vacía la persistencia de los segmentos emitidos al detener ANTES de dar por cerrada la grabación: la
         // detención emite el segmento (SegmentClosed → PersistSegmentAsync) como tarea de fondo; si la app se
@@ -447,6 +449,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
         if (persists.Length > 0)
             try { await Task.WhenAll(persists).ConfigureAwait(false); } catch { /* cada persist ya registró su propio error */ }
+        var segmentsDb = sw.Elapsed - engineStop;
 
         // Las alarmas operativas de la grabación dejan de aplicar al detener (RecordingUnverified NO: avisa
         // de un archivo dañado y debe persistir hasta la próxima grabación).
@@ -482,6 +485,11 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
                     new RecordingStopped(ChannelId, _session.Id, _session.Duration, reason, files, bytes, _session.Operator), ct);
             }
         }
+        // Cuánto tardó cada fase hasta devolver el control (y, en la aplicación, abrir el diálogo del nombre): el motor
+        // (relevo + cierre del archivo), la base de datos (segmentos y sesión) y los suscriptores de eventos (auditoría,
+        // panel web). Con grabaciones de horas es la línea que dice dónde se fue el tiempo.
+        _log?.LogInformation("Canal {Key}: grabación detenida en {Total:0.0} s (motor {Engine:0.0} s, base de datos {Db:0.0} s, eventos {Rest:0.0} s).",
+            _key, sw.Elapsed.TotalSeconds, engineStop.TotalSeconds, segmentsDb.TotalSeconds, (sw.Elapsed - engineStop - segmentsDb).TotalSeconds);
 
         _session = null;
         Array.Fill(_peakHold, -60);

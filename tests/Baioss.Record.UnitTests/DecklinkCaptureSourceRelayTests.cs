@@ -82,6 +82,7 @@ public class DecklinkCaptureSourceRelayTests
         Assert.Throws<InvalidOperationException>(() => source.BuildInputArguments());
         Assert.Throws<InvalidOperationException>(() => source.BuildProbeArguments());
         Assert.True(source.SupportsOverlappingProcesses);
+        Assert.False(((ICaptureSource)source).DeliversPreroll); // arranca en el directo: el relevo no espera a «al día»
         Assert.True(source.WaitsForPeer);
         Assert.True(source.RestartsAfterEndOfStream);
         Assert.False(((ICaptureSource)source).SelfReportsRecovery);

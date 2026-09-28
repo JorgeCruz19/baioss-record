@@ -100,7 +100,7 @@ Each panel shows you, from top to bottom:
 
 1. Press **● Record** on the channel you want. It starts recording immediately and the monitor frame turns red.
 2. When you are done, press **■ Stop**.
-3. On stopping, the program **asks what name to save the recording under**. Type a name (or keep the one it suggests) and confirm. If the name already exists it appends a number so that nothing is overwritten.
+3. On stopping, the program **asks what name to save the recording under**. Type a name (or keep the one it suggests) and confirm. If the name already exists it appends a number so that nothing is overwritten. The question appears at once, while the program closes the file in the background (the panel shows "Stopping" until it is done; with recordings of several hours this can take a few seconds): the name is applied as soon as the file is closed.
 
 > If you leave the name empty, it is saved as `Channel_date_time` (for example `A_20260721_203055.mp4`).
 
