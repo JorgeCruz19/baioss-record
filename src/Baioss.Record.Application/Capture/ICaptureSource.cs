@@ -74,6 +74,20 @@ public interface ICaptureSource : IAsyncDisposable
     bool SelfReportsRecovery => false;
 
     /// <summary>
+    /// True si es NORMAL que FFmpeg se quede esperando sin producir nada: una entrada de red en escucha (SRT
+    /// <c>listener</c>, servidor RTMP) aguarda al emisor todo el tiempo que haga falta. El vigilante del supervisor
+    /// no debe tomar esa espera por un proceso colgado (solo vigila el estancamiento una vez llegó el primer progreso).
+    /// </summary>
+    bool WaitsForPeer => false;
+
+    /// <summary>
+    /// True si un FIN DE FLUJO no es el fin de la fuente: cuando el emisor de un flujo de red cierra, FFmpeg termina
+    /// limpiamente (código 0) y hay que volver a abrir para esperar al siguiente. Con un archivo o un dispositivo, un
+    /// código 0 en el preview solo ocurre al detener, y el supervisor no relanza.
+    /// </summary>
+    bool RestartsAfterEndOfStream => false;
+
+    /// <summary>
     /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
     /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
     /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal
@@ -91,11 +105,62 @@ public interface ICaptureSource : IAsyncDisposable
     /// </summary>
     void ReportDeviceOpen(bool opened) { }
 
+    /// <summary>
+    /// True si un segundo proceso FFmpeg puede abrir la fuente mientras el primero sigue en marcha (una entrada de red:
+    /// su relé reparte el flujo a varios consumidores). El motor arranca entonces el proceso nuevo ANTES de retirar el
+    /// viejo y le cede el preview cuando ya lee en directo (<see cref="NewestConsumerIsLive"/>) y a cadencia real: al
+    /// Grabar y al Detener el preview no se congela ni un instante ni avanza a saltos. Un dispositivo (DeckLink,
+    /// DirectShow) no admite dos aperturas.
+    /// </summary>
+    bool SupportsOverlappingProcesses => false;
+
+    /// <summary>
+    /// True si la entrada de un proceso nuevo empieza con PRE-ROLL (el relé de una entrada de red entrega material anterior
+    /// al momento de conectar, que el proceso digiere más deprisa que el directo): el motor debe esperar a que ese proceso
+    /// vaya al día (<see cref="NewestConsumerIsLive"/>) y a cadencia real antes de cederle el preview, o se vería un avance
+    /// rápido. Una fuente cuyo proceso nuevo arranca ya en el directo (el relé en crudo de DeckLink: siguiente punto de
+    /// sincronía tras conectar) toma el relevo con su primer frame; esperar más solo retrasa el Detener, y en una máquina
+    /// cargada el criterio de «al día sostenido» puede no cumplirse nunca (10–15 s de espera medidos en producción).
+    /// </summary>
+    bool DeliversPreroll => false;
+
+    /// <summary>
+    /// ¿El proceso construido en el último <see cref="BuildInputArguments"/> consume ya la entrada EN DIRECTO? Una fuente
+    /// que entrega pre-roll (el relé de una entrada de red) hace que el proceso nuevo lo digiera —y el atraso que acumula
+    /// mientras tanto— más deprisa que el directo; hasta agotarlo, su preview va por delante del reloj de pared (un
+    /// avance rápido). El motor no le cede el preview hasta que esto es true de forma sostenida. Una fuente sin pre-roll
+    /// siempre está en directo.
+    /// </summary>
+    bool NewestConsumerIsLive => true;
+
+    /// <summary>
+    /// Colchón de preview en ms (0 = ninguno): retardo con el que el motor muestra el preview de esta fuente para absorber
+    /// una llegada a ráfagas y verla a cadencia constante (un servidor RTMP que entrega a trompicones). Solo el preview:
+    /// la grabación no pasa por el colchón. Un dispositivo local entrega a su cadencia y no lo necesita.
+    /// </summary>
+    int PreviewBufferMs => 0;
+
+    /// <summary>
+    /// Frames de vídeo del principio de la entrada que el PREVIEW no debe mostrar: el pre-roll que el relé entrega a un
+    /// proceso nuevo para que la grabación empiece antes del botón y arranque en un fotograma clave, y que en el preview
+    /// se veía como un rebobinado a ×3–×4. Vale para el proceso construido justo después del último
+    /// <see cref="BuildInputArguments"/> (que reserva esa instantánea). 0 si no aplica.
+    /// </summary>
+    int PreviewFramesToSkip => 0;
+
     Task OpenAsync(CancellationToken ct = default);
     Task CloseAsync(CancellationToken ct = default);
 
     /// <summary>Argumentos de entrada FFmpeg específicos del protocolo (ej. -f decklink -i "...").</summary>
     IReadOnlyList<string> BuildInputArguments();
+
+    /// <summary>
+    /// Argumentos de entrada para SONDEAR la fuente (el bucle de recuperación del motor abre un ffmpeg medio segundo
+    /// para saber si la señal volvió). Por defecto, los mismos de <see cref="BuildInputArguments"/>. Una fuente servida
+    /// por un relé los da SIN reservar consumidor (la reserva es para el proceso del canal) y solo si su receptor ve
+    /// señal: si no, lanza, y el sondeo cuenta como fallido en vez de dar por buena una tarjeta abierta sin señal.
+    /// </summary>
+    IReadOnlyList<string> BuildProbeArguments() => BuildInputArguments();
 }
 
 /// <summary>

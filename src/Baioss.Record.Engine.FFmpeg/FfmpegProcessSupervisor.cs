@@ -18,6 +18,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _runLoop;
     private DateTimeOffset _lastProgress;
+    // True desde la primera línea de progreso del proceso actual: hasta entonces, si el dueño lo pide, no se juzga el
+    // estancamiento (una entrada de red en escucha espera al emisor sin producir nada, y no está colgada).
+    private volatile bool _progressSeen;
     private int _restartCount;
     private volatile bool _closing;   // true durante el cierre ordenado: el watchdog NO debe matar entonces.
     private FileGrowthTracker? _growth; // #55: vigila que el ARCHIVO crezca (solo grabación, si hay sonda).
@@ -69,6 +72,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// sin señal, que ignora la «q»). Seguro: no hay contenedor que cerrar en el preview.
     /// </summary>
     public bool FinalizeOnStop { get; init; } = true;
+
+    /// <summary>¿Hay un proceso FFmpeg en marcha ahora mismo? False antes de arrancar, cuando ya salió o tras disponer.</summary>
+    public bool IsRunning { get { try { return _process is { HasExited: false }; } catch { return false; } } }
     /// <summary>
     /// <c>true</c> (por defecto): ante una salida INESPERADA (código ≠ 0 o kill del watchdog) relanza el mismo
     /// proceso con backoff (auto-recuperación 24/7 del PREVIEW —sin archivo— y de la carta de ajuste —bars
@@ -76,6 +82,22 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// en su lugar emite <see cref="Crashed"/> para que el dueño (el motor) reconstruya en una PIEZA NUEVA. (N1.)
     /// </summary>
     public bool RestartInternally { get; init; } = true;
+
+    /// <summary>
+    /// <c>true</c>: una salida LIMPIA (código 0) también se relanza con backoff. Para fuentes de red en preview: cuando
+    /// el emisor cierra, FFmpeg termina con 0 y hay que volver a escuchar o a llamar; sin esto el preview se daría por
+    /// acabado y el canal quedaría muerto hasta reasignar la entrada. Por defecto <c>false</c>: con archivos y
+    /// dispositivos el 0 solo llega al detener.
+    /// </summary>
+    public bool RestartOnCleanExit { get; init; }
+
+    /// <summary>
+    /// <c>true</c>: el vigilante NO cuenta como estancamiento el tiempo ANTERIOR a la primera línea de progreso del
+    /// proceso. Para entradas de red en escucha, que esperan al emisor indefinidamente sin producir nada; sin esto,
+    /// a los <see cref="StallTimeout"/> se mataría un FFmpeg que solo está esperando, y en escucha además se
+    /// cerraría el puerto durante cada backoff. Una vez hay progreso, el estancamiento se vigila como siempre.
+    /// </summary>
+    public bool IgnoreStallUntilFirstProgress { get; init; }
 
     /// <summary>Código sintético devuelto cuando FFmpeg NO llegó a lanzarse (≠ 0 → reinicio/aviso). (N5.)</summary>
     private const int LaunchFailedCode = -100;
@@ -114,8 +136,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             int exitCode = await RunOnceAsync(arguments, ct).ConfigureAwait(false);
             if (ct.IsCancellationRequested) { Completed?.Invoke(this, 0); return; } // stop manual
 
-            // Salida 0 = fin normal (EOF de una fuente finita o stop): NO reiniciar.
-            if (exitCode == 0)
+            // Salida 0 = fin normal (EOF de una fuente finita o stop): NO reiniciar… salvo que el dueño diga que un fin de
+            // flujo no es el fin de la fuente (entradas de red: el emisor cerró y hay que volver a esperarlo).
+            if (exitCode == 0 && !RestartOnCleanExit)
             {
                 _log.LogInformation("FFmpeg finalizó normalmente (EOF/stop).");
                 Completed?.Invoke(this, 0);
@@ -166,15 +189,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         foreach (var a in arguments) psi.ArgumentList.Add(a);
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data is null) return;
-            _lastProgress = DateTimeOffset.UtcNow;
-            ProgressLine?.Invoke(this, e.Data);
-        };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) LogLine?.Invoke(this, e.Data); };
 
         _lastProgress = DateTimeOffset.UtcNow;
+        _progressSeen = false;
         try
         {
             process.Start();
@@ -195,8 +212,17 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         // fin de sesión), Windows mata este FFmpeg en vez de dejarlo grabando huérfano y reteniendo el
         // dispositivo/puerto de la fuente. (Auditoría 24/7, C2.)
         ChildProcessTracker.Track(_process);
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
+        // Progreso (stdout) y log (stderr) en hilos PROPIOS, no con BeginOutputReadLine: cada flujo redirigido ocupaba un
+        // hilo del pool mientras esperaba bytes y, con varios FFmpeg vivos (canales + receptores de red), el pool se
+        // agotaba y todo lo asíncrono de la app se paraba varios segundos en cada Grabar/Detener. Ver ProcessOutput.
+        var stdout = ProcessOutput.ReadLines(_process.StandardOutput, line =>
+        {
+            _lastProgress = DateTimeOffset.UtcNow;
+            _progressSeen = true;
+            ProgressLine?.Invoke(this, line);
+        }, $"ffmpeg-{_process.Id}-progress", ex => _log.LogDebug(ex, "Fallo procesando el progreso de FFmpeg."));
+        var stderr = ProcessOutput.ReadLines(_process.StandardError, line => LogLine?.Invoke(this, line),
+            $"ffmpeg-{_process.Id}-log", ex => _log.LogDebug(ex, "Fallo procesando el log de FFmpeg."));
 
         try { await _process.WaitForExitAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException)
@@ -206,6 +232,8 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         }
 
         int code = _process.ExitCode;
+        // Las últimas líneas (el motivo de un fallo, el resumen final) deben entregarse ANTES de anunciar la salida.
+        ProcessOutput.Join(TimeSpan.FromSeconds(2), stdout, stderr);
         Exited?.Invoke(this, code);
         return code;
     }
@@ -226,13 +254,15 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
                 if (_closing || p is null || p.HasExited) continue;
 
                 var now = DateTimeOffset.UtcNow;
-                bool progressStalled = now - _lastProgress > StallTimeout;
+                // Antes del primer progreso, una fuente que espera al emisor no está estancada (IgnoreStallUntilFirstProgress).
+                bool judgeStall = _progressSeen || !IgnoreStallUntilFirstProgress;
+                bool progressStalled = judgeStall && now - _lastProgress > StallTimeout;
                 // #55: aunque FFmpeg reporte progreso, si el ARCHIVO no crece durante FileStallTimeout la grabación
                 // está muerta (encoder colgado emitiendo frames vacíos, escritura bloqueada, ruta que descarta en
                 // silencio). Solo en grabación (hay archivo y sonda). Se evalúa SIEMPRE (no dentro del `||`) para no
                 // perder muestras del crecimiento entre ticks.
                 bool fileStalled = false;
-                if (FinalizeOnStop && _growth is { } g && RecordedBytesProbe is { } probe)
+                if (judgeStall && FinalizeOnStop && _growth is { } g && RecordedBytesProbe is { } probe)
                     fileStalled = g.IsStalled(SafeProbe(probe), now, FileStallTimeout);
 
                 string reason = progressStalled

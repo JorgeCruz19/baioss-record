@@ -270,16 +270,23 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         bool manual = !IsScheduledRecording && _renamer is not null;
         try
         {
-            await _engine.StopRecordingAsync(RecordingStopReason.Operator);
-            if (!manual) return;
+            // La parada arranca en segundo plano y el diálogo del nombre se abre AL INSTANTE: detener tarda lo que tarde
+            // el relevo del preview (2–3 s), el cierre del archivo por FFmpeg (con NVENC crece con las horas grabadas:
+            // 4 s tras 3 h, medido) y la base de datos, y antes el operador miraba un botón que no respondía durante
+            // todo eso. Ahora escribe el nombre mientras tanto; el panel enseña «Deteniendo» hasta que el archivo cierra.
+            var stop = _engine.StopRecordingAsync(RecordingStopReason.Operator);
+            if (!manual) { await stop; return; }
 
-            // Pide el nombre al terminar y renombra el archivo recién grabado (dedupe « 1», « 2»… si choca).
-            // Si el operador cancela, la grabación queda con el nombre temporal (no se pierde).
+            // Pide el nombre y, cuando la parada termina, renombra el archivo recién grabado (dedupe « 1», « 2»… si
+            // choca). Si el operador cancela, la grabación queda con el nombre temporal (no se pierde). El diálogo
+            // modal sigue bombeando mensajes, así que la parada avanza mientras está abierto.
             var dialog = new RecordingNameWindow(Key, Loc.F("Ch_DefaultRecordingName", DateTime.Now.ToString("dd-MM-yyyy")))
             {
                 Owner = SecondaryWindow.ActiveOwner(),
             };
-            if (dialog.ShowDialog() == true)
+            bool accepted = dialog.ShowDialog() == true;
+            await stop; // un fallo de la parada se avisa abajo, como siempre, y no se renombra nada
+            if (accepted)
                 await _renamer!.RenameLastRecordingAsync(dialog.RecordingName, Environment.UserName);
         }
         catch (Exception ex)

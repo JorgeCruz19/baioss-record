@@ -227,9 +227,13 @@ public sealed class FfmpegArgumentBuilder
         args.AddRange(source.BuildInputArguments());
 
         // El preview lleva, opcionalmente, los detectores de negro/congelado (pasan los frames sin
-        // alterarlos: solo registran marcas por stderr que se convierten en alarmas).
+        // alterarlos: solo registran marcas por stderr que se convierten en alarmas). Si la fuente entrega un pre-roll
+        // (relé de una entrada de red: la grabación empieza antes del botón), el preview se lo salta —antes de escalar y de
+        // los detectores, que no deben ver material repetido—: pintarlo era un rebobinado a ×3–×4 en cada Grabar/Detener.
         string analyze = _analyze ? $"{BlackDetect},{FreezeDetect}," : "";
-        string previewChain = string.Create(CultureInfo.InvariantCulture, $"scale={previewWidth}:{previewHeight},{analyze}format=bgra");
+        string skip = source.PreviewFramesToSkip > 0
+            ? string.Create(CultureInfo.InvariantCulture, $"select=gte(n\\,{source.PreviewFramesToSkip}),") : "";
+        string previewChain = string.Create(CultureInfo.InvariantCulture, $"{skip}scale={previewWidth}:{previewHeight},{analyze}format=bgra");
         var filter = new StringBuilder();
         string recLabel = "0:v:0";
 
@@ -281,8 +285,11 @@ public sealed class FfmpegArgumentBuilder
 
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
-        // Salida A — preview BGRA por TCP (lo lee la app y lo sube a la textura/bitmap).
+        // Salida A — preview BGRA por TCP (lo lee la app y lo sube a la textura/bitmap). Cada frame decodificado, una vez
+        // (passthrough): el vsync CFR de rawvideo duplicaba o tiraba frames según las marcas de tiempo, y tras saltarse el
+        // pre-roll rellenaría el hueco con copias del primer frame en directo.
         args.Add("-map"); args.Add("[pv]");
+        args.Add("-fps_mode"); args.Add("passthrough");
         args.Add("-f"); args.Add("rawvideo");
         args.Add(_previewSink);
 
@@ -503,8 +510,9 @@ public sealed class FfmpegArgumentBuilder
         }
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
-        // Salida A — preview de las barras.
+        // Salida A — preview de las barras (cada frame una vez, como en el pipeline en vivo).
         args.Add("-map"); args.Add("[pv]");
+        args.Add("-fps_mode"); args.Add("passthrough");
         args.Add("-f"); args.Add("rawvideo");
         args.Add(_previewSink);
 

@@ -128,7 +128,7 @@ public sealed partial class ApiAccessViewModel : ObservableObject
     }
 
     /// <summary>IPv4 de las interfaces de red ACTIVAS de este equipo (sin loopback ni las autoasignadas 169.254.x).</summary>
-    private static System.Collections.Generic.IEnumerable<string> LocalIPv4()
+    internal static System.Collections.Generic.IEnumerable<string> LocalIPv4()
     {
         try
         {

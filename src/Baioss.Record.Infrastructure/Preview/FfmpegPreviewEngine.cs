@@ -77,11 +77,11 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) OnStderr(e.Data); };
 
         _log.LogInformation("Preview FFmpeg argv: {Args}", string.Join(' ', args));
         _process.Start();
-        _process.BeginErrorReadLine();
+        // stderr en un hilo propio (no BeginErrorReadLine, que ocupa un hilo del pool por proceso; ver ProcessOutput).
+        ProcessOutput.ReadLines(_process.StandardError, OnStderr, $"preview-{_process.Id}-log");
 
         _readLoop = Task.Run(() => ReadFramesAsync(_process, _cts.Token));
         return Task.CompletedTask;

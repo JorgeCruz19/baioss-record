@@ -286,7 +286,10 @@ public partial class App : System.Windows.Application
 
         // Bus de eventos y storage (que la API necesita) se registran en ambos modos; en modo real
         // se añaden además repos/captura/locator. En simulado, la BD queda registrada pero sin usar.
-        s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null, faststartCap);
+        // DeckLink: dispositivo persistente con relé en crudo (por defecto) o captura directa de siempre (Capture:DecklinkRelay).
+        bool decklinkRelay = builder.Configuration.GetValue("Capture:DecklinkRelay", true);
+        Serilog.Log.Information("DeckLink: {Mode}.", decklinkRelay ? "dispositivo persistente con relé en crudo" : "captura directa (sin relé)");
+        s.AddBaiossInfrastructure(dbPath, real ? ffmpegDir : null, faststartCap, decklinkRelay);
         s.AddBaiossCqrs(); // IDispatcher + handlers de comandos/queries que despacha la API
         s.AddSingleton(new RecordingCapabilities { GpuEncoders = gpuEncoders });
         s.AddSingleton(apiAccess);                       // lo enseña y lo edita la ventana de Configuración

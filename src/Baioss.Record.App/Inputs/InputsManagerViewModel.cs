@@ -27,11 +27,18 @@ public sealed class InputDeviceOption
     /// <summary>Modos/formatos SDI del dispositivo (DeckLink), con "Automático" primero. Vacío en el resto.</summary>
     public IReadOnlyList<DeviceFormat> Formats { get; init; } = new[] { DeviceFormat.Auto };
 
+    /// <summary>Fuente de red (SRT/RTMP) guardada en Fuentes de red: su definición y el nombre que le puso el operador.</summary>
+    public NetworkInput? Network { get; init; }
+    public string? NetworkName { get; init; }
+
     public override string ToString() => Label;
 
     /// <summary>Traduce la opción (audio DShow / formato y audio DeckLink elegidos) a una <see cref="InputSource"/>.</summary>
     public InputSource ToInputSource(string? audioDevice, DeviceFormat? format, AudioChannelsOption? audioChannels = null, PairOption? pair = null)
     {
+        // Fuente de red: ya está guardada con su Id; se reutiliza tal cual (el host la actualiza, no la duplica).
+        if (Network is not null) return Network.ToInputSource(Id ?? Guid.NewGuid(), NetworkName ?? Label);
+
         var def = new InputSource
         {
             Id = Id ?? Guid.NewGuid(),
@@ -199,6 +206,9 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     private readonly IDeviceEnumerator _devices;
     private readonly Func<Guid, InputSource, Task> _apply;
     private readonly string? _clipPath;
+    // Fuentes de red: cómo listarlas (BD) y cómo abrir su diálogo (lo pone el shell; null en modo simulado).
+    private readonly Func<Task<IReadOnlyList<InputSource>>>? _loadNetwork;
+    private readonly Func<Task<bool>>? _manageNetwork;
 
     public bool CanRebind { get; }
     public ObservableCollection<InputDeviceOption> VideoDevices { get; } = new();
@@ -243,11 +253,14 @@ public sealed partial class InputsManagerViewModel : ObservableObject
 
     public InputsManagerViewModel(
         IDeviceEnumerator devices, IReadOnlyList<ChannelViewModel> channels,
-        bool canRebind, string? clipPath, Func<Guid, InputSource, Task> apply)
+        bool canRebind, string? clipPath, Func<Guid, InputSource, Task> apply,
+        Func<Task<IReadOnlyList<InputSource>>>? loadNetworkSources = null, Func<Task<bool>>? manageNetworkSources = null)
     {
         _devices = devices;
         _apply = apply;
         _clipPath = clipPath;
+        _loadNetwork = loadNetworkSources;
+        _manageNetwork = manageNetworkSources;
         CanRebind = canRebind;
 
         AudioDevices.Add(InputDeviceOption.NoAudio);
@@ -274,6 +287,51 @@ public sealed partial class InputsManagerViewModel : ObservableObject
     /// <summary>«DeckLink — DeckLink Duo (1) · 1920×1080 · 59.94i»: la entrada activa del canal y, si ya sabe el formato de
     /// su señal (modo fijo, o el que la tarjeta detectó en autodetección), el formato. Así se ve qué detectó la tarjeta sin
     /// tener que liberarla para «Detectar señal».</summary>
+    /// <summary>Hay diálogo de fuentes de red (no en modo simulado).</summary>
+    public bool CanManageNetwork => CanRebind && _manageNetwork is not null;
+
+    /// <summary>Carga inicial de las fuentes de red guardadas (el shell la llama al abrir la ventana).</summary>
+    public Task LoadAsync() => ReloadNetworkSourcesAsync();
+
+    /// <summary>Abre «Fuentes de red» y, si se guardó o eliminó algo, refresca los desplegables.</summary>
+    [RelayCommand]
+    private async Task OpenNetworkSourcesAsync()
+    {
+        if (_manageNetwork is null) return;
+        try
+        {
+            if (await _manageNetwork()) await ReloadNetworkSourcesAsync();
+        }
+        catch (Exception ex) { StatusMessage = Loc.F("In_Msg_DetectError", ex.Message); }
+    }
+
+    /// <summary>Repone en los desplegables las fuentes de red guardadas («SRT — nombre», «RTMP — nombre»), sin duplicar.</summary>
+    private async Task ReloadNetworkSourcesAsync()
+    {
+        if (_loadNetwork is null) return;
+        IReadOnlyList<InputSource> saved;
+        try { saved = await _loadNetwork(); }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudieron cargar las fuentes de red."); return; }
+
+        foreach (var stale in VideoDevices.Where(d => d.Network is not null).ToList()) VideoDevices.Remove(stale);
+        foreach (var s in saved.Where(s => NetworkInput.IsNetworkType(s.Type)).OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            if (NetworkInput.FromInputSource(s) is not { } input) continue;
+            VideoDevices.Add(new InputDeviceOption
+            {
+                Label = NetworkLabel(s), Type = s.Type, DeviceId = s.Uri, Id = s.Id, Network = input, NetworkName = s.Name,
+            });
+        }
+        // La fila que tenía seleccionada una fuente de red la conserva si sigue existiendo (mismo Id).
+        foreach (var row in Channels)
+            if (row.SelectedDevice is { Network: not null } chosen)
+                row.SelectedDevice = VideoDevices.FirstOrDefault(d => d.Id == chosen.Id);
+    }
+
+    /// <summary>«SRT — Enlace estudio» / «RTMP — OBS del plató»: como se ve en los desplegables y en el panel del canal.</summary>
+    public static string NetworkLabel(InputSource s)
+        => $"{(s.Type is InputType.Rtmp ? "RTMP" : "SRT")} — {s.Name}";
+
     private static string CurrentInputText(ChannelViewModel c)
         => c.FormatText is { Length: > 0 } format && format != "—" ? $"{c.InputText} · {format}" : c.InputText;
 
@@ -312,6 +370,7 @@ public sealed partial class InputsManagerViewModel : ObservableObject
                 VideoDevices.Add(new InputDeviceOption { Label = $"NDI — {d.Name}", Type = InputType.Ndi, DeviceId = d.Uri, Id = d.Id });
             foreach (var a in await _devices.DiscoverAudioDevicesAsync(InputType.DirectShow))
                 AudioDevices.Add(a);
+            await ReloadNetworkSourcesAsync(); // las fuentes de red no se «detectan»: están guardadas
 
             int cards = VideoDevices.Count(d => d.Type is not InputType.File);
             // Aviso si hay tarjetas DeckLink pero ninguna expuso sus modos: el desplegable quedaría solo
