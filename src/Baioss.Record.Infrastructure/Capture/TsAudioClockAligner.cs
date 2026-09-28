@@ -88,6 +88,12 @@ public sealed class TsAudioClockAligner
     /// 4 s de flujo); superado, se decide con lo que haya y se suelta.</summary>
     public int MaxHeldBytes { get; init; } = 32 * 1024 * 1024;
 
+    /// <summary>Tope de retención por RELOJ (segundos desde el primer paquete retenido). Solo con el tope en bytes, un emisor
+    /// que describe el vídeo pero no lo envía dejaba el audio retenido hasta 32 MB (≈ 35 min a 128 kb/s): los consumidores
+    /// sin audio y luego una ráfaga de audio viejo. Holgado frente al asentamiento (≈ 4 s de flujo).</summary>
+    public double MaxHoldSeconds { get; init; } = 10;
+    private double _holdStart;
+
     /// <summary>DTS (90 kHz, 33 bits) del último PES de vídeo LLEGADO, retenido o no; 0 si aún no hay vídeo. El relé mide con él
     /// cuánto flujo cubre su ventana de pre-roll.</summary>
     internal long LastVideoDts => _lastVideoDts;
@@ -203,6 +209,7 @@ public sealed class TsAudioClockAligner
             if (_settling)
             {
                 // Relojes distintos, midiendo: el vídeo también espera, en su sitio, para salir junto con el audio.
+                if (_held.Count == 0) _holdStart = now;
                 _held.Add((packet.ToArray(), false));
                 _heldBytes += packet.Length;
                 EnforceHeldCap(output, now);
@@ -226,6 +233,7 @@ public sealed class TsAudioClockAligner
                 _firstAudioPts ??= pts;
                 if (_settling && _firstVideoPts is not null) _settleSamples.Add((now, Signed33(pts - _lastVideoDts)));
             }
+            if (_held.Count == 0) _holdStart = now;
             _held.Add((copy, true));
             _heldBytes += copy.Length;
             if (_settling) FinishSettlingIfDue(output, now, force: false);
@@ -242,7 +250,8 @@ public sealed class TsAudioClockAligner
     /// suelta tal cual; en pleno asentamiento se decide con las muestras que haya.</summary>
     private void EnforceHeldCap(List<byte> output, double now)
     {
-        if (_decided || _heldBytes <= MaxHeldBytes) return;
+        if (_decided) return;
+        if (_heldBytes <= MaxHeldBytes && !(_held.Count > 0 && now - _holdStart > MaxHoldSeconds)) return;
         if (_settling) FinishSettlingIfDue(output, now, force: true);
         else { _decided = true; _offsetTicks = 0; FlushHeld(output); }
     }

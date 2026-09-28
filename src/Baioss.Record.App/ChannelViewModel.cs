@@ -251,7 +251,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     {
         // Grabación MANUAL: arranca YA con un nombre temporal ({canal}_{fecha_hora}); el nombre real se
         // pide al DETENER y se renombra el archivo entonces.
-        try { await _engine.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual(Environment.UserName)); }
+        // Fuera del hilo de la interfaz: el pre-vuelo escribe en la carpeta de destino y la sesión va a SQLite (síncrono),
+        // y con un NAS lento o la base de datos ocupada la ventana entera se congelaba en el instante de pulsar Grabar.
+        try { await Task.Run(() => _engine.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual(Environment.UserName))); }
         catch (Exception ex)
         {
             // Pre-vuelo fallido (perfil inválido, carpeta de destino no escribible, …): avisa al operador
@@ -274,7 +276,9 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             // el relevo del preview (2–3 s), el cierre del archivo por FFmpeg (con NVENC crece con las horas grabadas:
             // 4 s tras 3 h, medido) y la base de datos, y antes el operador miraba un botón que no respondía durante
             // todo eso. Ahora escribe el nombre mientras tanto; el panel enseña «Deteniendo» hasta que el archivo cierra.
-            var stop = _engine.StopRecordingAsync(RecordingStopReason.Operator);
+            // La sesión que se detiene, para renombrar ESA (y no otra que empiece y termine mientras se escribe el nombre).
+            var sessionId = _engine.Status.SessionId;
+            var stop = Task.Run(() => _engine.StopRecordingAsync(RecordingStopReason.Operator));
             if (!manual) { await stop; return; }
 
             // Pide el nombre y, cuando la parada termina, renombra el archivo recién grabado (dedupe « 1», « 2»… si
@@ -287,7 +291,10 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             bool accepted = dialog.ShowDialog() == true;
             await stop; // un fallo de la parada se avisa abajo, como siempre, y no se renombra nada
             if (accepted)
-                await _renamer!.RenameLastRecordingAsync(dialog.RecordingName, Environment.UserName);
+            {
+                if (sessionId is { } id) await _renamer!.RenameRecordingAsync(id, dialog.RecordingName, Environment.UserName);
+                else await _renamer!.RenameLastRecordingAsync(dialog.RecordingName, Environment.UserName);
+            }
         }
         catch (Exception ex)
         {

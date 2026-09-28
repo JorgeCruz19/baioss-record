@@ -99,6 +99,12 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// </summary>
     public bool IgnoreStallUntilFirstProgress { get; init; }
 
+    /// <summary>Con <see cref="RestartOnCleanExit"/>: una ejecución que duró al menos esto y terminó con 0 (el emisor cerró
+    /// tras emitir) se relanza tras <see cref="CleanExitRestartDelay"/>, sin backoff ni contar como reintento.</summary>
+    public TimeSpan CleanExitFastRestartAfter { get; init; } = TimeSpan.FromSeconds(2);
+    /// <summary>Pausa antes de relanzar tras un fin de flujo limpio (ver <see cref="CleanExitFastRestartAfter"/>).</summary>
+    public TimeSpan CleanExitRestartDelay { get; init; } = TimeSpan.FromMilliseconds(300);
+
     /// <summary>Código sintético devuelto cuando FFmpeg NO llegó a lanzarse (≠ 0 → reinicio/aviso). (N5.)</summary>
     private const int LaunchFailedCode = -100;
     public int MaxRestarts { get; init; } = int.MaxValue; // 24/7: reintentar indefinidamente
@@ -116,10 +122,17 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// motor de grabación) debe reiniciar en una PIEZA NUEVA sin reabrir el mismo archivo. Lleva el código de salida.</summary>
     public event EventHandler<int>? Crashed;
 
-    /// <summary>Arranca el proceso y la supervisión. No bloquea.</summary>
+    /// <summary>
+    /// Arranca el proceso y la supervisión. No bloquea. La VIDA del proceso no depende de <paramref name="ct"/>: solo
+    /// termina con <see cref="DisposeAsync"/> (o por sí mismo). Antes se enlazaba al token del llamador, y el de una
+    /// petición HTTP (<c>RequestAborted</c>) o el del programador (su <c>stoppingToken</c>) llegaba hasta aquí: un cliente
+    /// que abortaba la petición de «grabar» cerraba la grabación recién abierta, y cerrar la aplicación «interrumpía» todas
+    /// las grabaciones programadas antes de su parada ordenada (auditoría 2026-09-27).
+    /// </summary>
     public Task StartAsync(IReadOnlyList<string> arguments, CancellationToken ct = default)
     {
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _ = ct; // se conserva en la firma por compatibilidad; ver el resumen
+        _cts = new CancellationTokenSource();
         _growth = RecordedBytesProbe is not null ? new FileGrowthTracker(DateTimeOffset.UtcNow) : null; // #55
         // La sonda del disco solo tiene sentido en grabación (hay archivo); sin ella, todo estancamiento es de FFmpeg.
         _arbiter = new StallArbiter(FinalizeOnStop && VolumeProbe is not null ? IsVolumeResponsiveAsync : null);
@@ -134,14 +147,14 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         {
             long runStart = Stopwatch.GetTimestamp();
             int exitCode = await RunOnceAsync(arguments, ct).ConfigureAwait(false);
-            if (ct.IsCancellationRequested) { Completed?.Invoke(this, 0); return; } // stop manual
+            if (ct.IsCancellationRequested) { Raise(Completed, 0, nameof(Completed)); return; } // stop manual
 
             // Salida 0 = fin normal (EOF de una fuente finita o stop): NO reiniciar… salvo que el dueño diga que un fin de
             // flujo no es el fin de la fuente (entradas de red: el emisor cerró y hay que volver a esperarlo).
             if (exitCode == 0 && !RestartOnCleanExit)
             {
                 _log.LogInformation("FFmpeg finalizó normalmente (EOF/stop).");
-                Completed?.Invoke(this, 0);
+                Raise(Completed, 0, nameof(Completed));
                 return;
             }
 
@@ -151,24 +164,52 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             if (!RestartInternally)
             {
                 _log.LogWarning("FFmpeg salió con código {Code}; el reinicio lo gestiona el motor (pieza nueva, sin truncar).", exitCode);
-                Crashed?.Invoke(this, exitCode);
+                Raise(Crashed, exitCode, nameof(Crashed));
                 return;
             }
 
             // Incidente AISLADO (el proceso estuvo sano un buen rato antes de morir) → NO es un crash-loop:
             // resetea el contador para que el backoff vuelva a empezar corto, en vez de quedarse clavado en el
             // tope de 30 s por hiccups esporádicos repartidos en semanas de 24/7. (Auditoría N24.)
-            if (Stopwatch.GetElapsedTime(runStart) >= HealthyResetAfter) _restartCount = 0;
+            var ran = Stopwatch.GetElapsedTime(runStart);
+            if (ran >= HealthyResetAfter) _restartCount = 0;
 
-            // Salida inesperada → backoff exponencial acotado (máx 30 s) y reintento.
-            _restartCount++;
-            var delay = TimeSpan.FromMilliseconds(Math.Min(30_000, 500 * Math.Pow(2, Math.Min(_restartCount, 6))));
-            _log.LogWarning("FFmpeg salió con código {Code}. Reinicio #{N} en {Delay}.", exitCode, _restartCount, delay);
-            Restarted?.Invoke(this, _restartCount);
+            TimeSpan delay;
+            if (exitCode == 0 && ran >= CleanExitFastRestartAfter)
+            {
+                // Fin de flujo LIMPIO de una fuente que se reconecta (el emisor cerró tras emitir un rato): no es un fallo
+                // ni cuenta como reintento. Se vuelve a escuchar/llamar casi al instante: con el backoff de las caídas, un
+                // técnico que reiniciaba el codificador varias veces seguidas encontraba el puerto de escucha CERRADO hasta
+                // 30 s mientras la interfaz decía «esperando al emisor». Si la ejecución fue fugaz (algo abre y cierra en
+                // bucle), se aplica el backoff normal para no relanzar FFmpeg varias veces por segundo.
+                _restartCount = 0;
+                delay = CleanExitRestartDelay;
+                _log.LogInformation("FFmpeg: el flujo terminó (código 0); se relanza en {Delay} para esperar el siguiente.", delay);
+                Raise(Restarted, 1, nameof(Restarted));
+            }
+            else
+            {
+                // Salida inesperada → backoff exponencial acotado (máx 30 s) y reintento.
+                _restartCount++;
+                delay = TimeSpan.FromMilliseconds(Math.Min(30_000, 500 * Math.Pow(2, Math.Min(_restartCount, 6))));
+                _log.LogWarning("FFmpeg salió con código {Code}. Reinicio #{N} en {Delay}.", exitCode, _restartCount, delay);
+                Raise(Restarted, _restartCount, nameof(Restarted));
+            }
             try { await Task.Delay(delay, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { Completed?.Invoke(this, 0); return; }
+            catch (OperationCanceledException) { Raise(Completed, 0, nameof(Completed)); return; }
         }
-        Completed?.Invoke(this, -1); // agotó reintentos
+        Raise(Completed, -1, nameof(Completed)); // agotó reintentos
+    }
+
+    /// <summary>
+    /// Invoca un evento del ciclo de vida AISLANDO al suscriptor: si un manejador lanzaba, la excepción salía del bucle de
+    /// supervisión y lo terminaba en silencio (sin relanzar el proceso ni avisar a nadie). Se registra y sigue.
+    /// </summary>
+    private void Raise(EventHandler<int>? handler, int value, string name)
+    {
+        if (handler is null) return;
+        try { handler(this, value); }
+        catch (Exception ex) { _log.LogError(ex, "Supervisor de FFmpeg: un suscriptor de {Event} falló; la supervisión continúa.", name); }
     }
 
     private async Task<int> RunOnceAsync(IReadOnlyList<string> arguments, CancellationToken ct)
@@ -192,6 +233,10 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
 
         _lastProgress = DateTimeOffset.UtcNow;
         _progressSeen = false;
+        // El vigilante del crecimiento del archivo empieza de cero con CADA proceso: un relanzamiento interno (la carta de
+        // ajuste) reabre su archivo con -y y lo trunca, y con la medida del proceso anterior el nuevo nunca la superaba en
+        // FileStallTimeout → «el archivo no crece» → cierre + relanzar → truncar… en bucle cada ~35 s.
+        if (RecordedBytesProbe is not null) _growth = new FileGrowthTracker(DateTimeOffset.UtcNow);
         try
         {
             process.Start();
@@ -234,8 +279,19 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         int code = _process.ExitCode;
         // Las últimas líneas (el motivo de un fallo, el resumen final) deben entregarse ANTES de anunciar la salida.
         ProcessOutput.Join(TimeSpan.FromSeconds(2), stdout, stderr);
-        Exited?.Invoke(this, code);
+        Raise(Exited, code, nameof(Exited));
+        // El proceso ya salió: sus handles (proceso y stdin; stdout/stderr los cierran sus lectores) se sueltan YA. Antes cada
+        // relanzamiento dejaba el objeto del proceso anterior sin liberar hasta que pasara el recolector.
+        _process = null;
+        ReleaseExited(process);
         return code;
+    }
+
+    /// <summary>Libera un proceso ya terminado: su stdin (accedido para la «q», Process.Dispose no lo cierra) y el objeto.</summary>
+    private static void ReleaseExited(Process process)
+    {
+        try { process.StandardInput.Dispose(); } catch { /* sin stdin o ya cerrado */ }
+        try { process.Dispose(); } catch { /* noop */ }
     }
 
     /// <summary>Mata el proceso si deja de reportar progreso (encoder colgado / pérdida de señal). En grabación
@@ -296,6 +352,11 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
                         break; // el colgado es FFmpeg: sigue abajo
                 }
 
+                // La decisión pudo tardar (la sonda del disco espera hasta 6 s): si entre tanto empezó un cierre ordenado
+                // (Detener, apagado) o el proceso ya es otro, no se toca. Sin esta comprobación el vigilante podía matar a
+                // FFmpeg en mitad de la «q» del Detener y dejar el archivo sin índice.
+                if (_closing || ct.IsCancellationRequested || !ReferenceEquals(p, _process) || p.HasExited) continue;
+
                 if (FinalizeOnStop)
                 {
                     // Grabación: intenta un cierre ORDENADO (q) para que FFmpeg finalice el contenedor (moov) —
@@ -305,6 +366,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
                     _log.LogError("Watchdog: {Reason}; intentando cierre ordenado (q) antes de forzar.", reason);
                     if (!await TryQuitAsync(p, TimeSpan.FromSeconds(5)).ConfigureAwait(false))
                     {
+                        // Un Detener que llegó mientras tanto espera a FFmpeg con su propio plazo (más largo): es él quien
+                        // decide forzar, no el vigilante.
+                        if (_closing || ct.IsCancellationRequested) continue;
                         _log.LogWarning("Watchdog: FFmpeg no respondió al cierre ordenado; forzando.");
                         try { p.Kill(entireProcessTree: true); } catch { /* ya terminó */ }
                     }
@@ -398,6 +462,19 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         catch { try { _process.Kill(entireProcessTree: true); } catch { /* noop */ } }
     }
 
+    /// <summary>
+    /// Mata el proceso actual como si se hubiera caído: el supervisor sigue su camino de siempre (relanzar con backoff, o
+    /// avisar con <see cref="Crashed"/>). Para el dueño que detecta un cuelgue que FFmpeg no delata (p. ej. una tarjeta que
+    /// deja de entregar frames: FFmpeg sigue imprimiendo progreso con el contador de frames parado). No hace nada durante un
+    /// cierre ordenado. Devuelve si había un proceso vivo que matar.
+    /// </summary>
+    public bool AbortCurrentProcess()
+    {
+        var p = _process;
+        if (p is null || _closing) return false;
+        try { if (p.HasExited) return false; p.Kill(entireProcessTree: true); return true; } catch { return false; }
+    }
+
     /// <summary>SOLO PARA TESTS: mata el proceso actual para simular una caída de FFmpeg y verificar que la
     /// recuperación NO trunca el archivo. No forma parte de la API de producción.</summary>
     internal bool KillCurrentProcessForTest()
@@ -422,7 +499,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         {
             await GracefulStopAsync().ConfigureAwait(false);
         }
-        _process?.Dispose();
+        var last = _process;
+        _process = null;
+        if (last is not null) ReleaseExited(last);
         _cts?.Dispose();
     }
 }

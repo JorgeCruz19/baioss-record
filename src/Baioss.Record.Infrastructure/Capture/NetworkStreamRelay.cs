@@ -74,6 +74,8 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
         public volatile bool Writing;
         /// <summary>Se desconectó, el flujo terminó o la reserva caducó: ya no hay nada que esperar de él.</summary>
         public volatile bool Closed;
+        /// <summary>Bytes en su cola aún sin escribir a su socket (el tope de la contrapresión se mide en BYTES).</summary>
+        public long PendingBytes;
         /// <summary>¿Consume ya el flujo en directo? Ver <see cref="RelayReservation.IsLive"/>.</summary>
         public bool IsLive => Closed || (PrerollSent && !Writing && Queue.Reader.Count == 0);
     }
@@ -109,8 +111,15 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
     /// memoria). Superado, se descarta lo más viejo y la ventana vuelve a empezar en el siguiente fotograma clave.</summary>
     public int PrerollMaxBytes { get; init; } = 32 * 1024 * 1024;
 
-    /// <summary>Fragmentos pendientes por consumidor antes de descartar (contrapresión). A 64 KiB por fragmento, 64 MiB.</summary>
-    public int ConsumerQueueCapacity { get; init; } = 1024;
+    /// <summary>Fragmentos pendientes por consumidor antes de descartar (tope de seguridad; el que manda es
+    /// <see cref="ConsumerQueueMaxBytes"/>). Con <c>-flush_packets 1</c> cada lectura trae ~un PES (0,2–50 KB), así que
+    /// el antiguo tope de 1024 fragmentos toleraba solo 5–15 s de un consumidor parado: el relé descartaba (hueco en la
+    /// grabación) antes de que el vigilante (30 s) o la espera por disco colgado llegaran a actuar.</summary>
+    public int ConsumerQueueCapacity { get; init; } = 262_144;
+
+    /// <summary>Bytes pendientes por consumidor antes de descartar: con el disco de destino colgado un rato, lo que llega
+    /// se guarda en memoria y se escribe cuando el disco vuelve, en vez de perderse. 128 MiB ≈ 50 s a 20 Mb/s.</summary>
+    public long ConsumerQueueMaxBytes { get; init; } = 128L * 1024 * 1024;
 
     /// <summary>Cuánto se guarda una reserva (<see cref="ReserveConsumer"/>) a la espera de que su proceso conecte.</summary>
     public TimeSpan ReservationTimeout { get; init; } = TimeSpan.FromSeconds(15);
@@ -144,8 +153,12 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
         set => _aligner.AudioDelayTicks = value * 90L;
     }
 
-    /// <summary>Se eleva si hubo que DESCARTAR datos para un consumidor que no drenaba (su grabación tendrá un salto).</summary>
-    public event EventHandler? ConsumerOverflow;
+    /// <summary>Se eleva si hubo que DESCARTAR datos para un consumidor que no drenaba (su grabación tendrá un salto), con
+    /// cuántos fragmentos se descartaron desde el aviso anterior. Como mucho uno por segundo.</summary>
+    public event EventHandler<long>? ConsumerOverflow;
+    private long _droppedSinceReport;
+    private DateTimeOffset _lastOverflowReportUtc;
+    private int _disposed;
 
     /// <summary>
     /// Reserva para el PRÓXIMO socket que conecte al <see cref="ConsumerPort"/> la instantánea del pre-roll de este
@@ -207,16 +220,28 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            TcpClient client;
+            try { client = await _sourceListener.AcceptTcpClientAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                // Sin pausa, un fallo persistente de Accept era un bucle caliente. Nadie conectó: no hay flujo que cerrar.
+                _log.LogDebug(ex, "Relé {Name}: fallo aceptando al receptor.", _name);
+                try { await Task.Delay(250, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+                continue;
+            }
             try
             {
-                using var client = await _sourceListener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
-                client.NoDelay = true;
-                SourceConnected = true;
-                _log.LogDebug("Relé {Name}: receptor conectado (puerto {Port}).", _name, SourcePort);
-                await PumpSourceAsync(client.GetStream(), ct).ConfigureAwait(false);
+                using (client)
+                {
+                    client.NoDelay = true;
+                    SourceConnected = true;
+                    _log.LogDebug("Relé {Name}: receptor conectado (puerto {Port}).", _name, SourcePort);
+                    await PumpSourceAsync(client.GetStream(), ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { _log.LogDebug(ex, "Relé {Name}: fallo aceptando al receptor.", _name); }
+            catch (Exception ex) { _log.LogDebug(ex, "Relé {Name}: el flujo del receptor se cortó.", _name); }
             finally
             {
                 if (SourceConnected)
@@ -247,10 +272,23 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
                 PumpStage = "alineando";
                 // Paquetes TS completos, con el audio ya realineado si el emisor trae relojes distintos; vacío mientras
                 // se espera el resto de un paquete partido o se retiene el audio hasta ver el primer PTS de vídeo.
-                var chunk = _aligner.Process(buffer.AsSpan(0, n), Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency);
+                byte[] chunk;
+                try { chunk = _aligner.Process(buffer.AsSpan(0, n), Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency); }
+                catch (Exception ex)
+                {
+                    // Un fallo del alineador no debe cortar la conexión con el emisor (es lo que el relé existe para evitar):
+                    // el fragmento sigue tal cual, sin realinear. Con freno en el registro.
+                    var t = DateTimeOffset.UtcNow;
+                    if (t - _lastAlignerErrorUtc > TimeSpan.FromSeconds(30))
+                    {
+                        _lastAlignerErrorUtc = t;
+                        _log.LogWarning(ex, "Relé {Name}: fallo al realinear el audio; el flujo sigue sin realinear.", _name);
+                    }
+                    chunk = buffer.AsSpan(0, n).ToArray();
+                }
                 if (chunk.Length == 0) continue;
 
-                bool dropped = false;
+                int dropped = 0;
                 PumpStage = "repartiendo";
                 lock (_sync)
                 {
@@ -260,23 +298,38 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
                     ExpireReservations(now);
 
                     foreach (var c in _consumers)
-                        if (!c.Queue.Writer.TryWrite(chunk)) dropped = true;
+                    {
+                        if (c.Closed) continue; // ya no espera nada: no cuenta como descarte
+                        if (Interlocked.Read(ref c.PendingBytes) + chunk.Length > ConsumerQueueMaxBytes) { dropped++; continue; }
+                        if (c.Queue.Writer.TryWrite(chunk)) Interlocked.Add(ref c.PendingBytes, chunk.Length);
+                        else dropped++;
+                    }
                     ForwardedBytes += chunk.Length;
                 }
-                if (dropped)
-                {
-                    // Cola llena: ese consumidor no drena (disco atascado). Se descarta para NO frenar al receptor.
-                    var now = DateTimeOffset.UtcNow;
-                    if (now - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
-                    {
-                        _lastOverflowWarnUtc = now;
-                        _log.LogWarning("Relé {Name}: un consumidor no drena el flujo; se descartan datos (su grabación tendrá un salto).", _name);
-                    }
-                    ConsumerOverflow?.Invoke(this, EventArgs.Empty);
-                }
+                if (dropped > 0) ReportOverflow(dropped);
             }
         }
         finally { ArrayPool<byte>.Shared.Return(buffer); }
+    }
+
+    private DateTimeOffset _lastAlignerErrorUtc;
+
+    /// <summary>Cola llena: ese consumidor no drena (disco atascado). Se descarta para NO frenar al receptor; se avisa en el
+    /// registro (cada 5 s) y por <see cref="ConsumerOverflow"/> (cada segundo, con el total descartado desde el anterior).</summary>
+    private void ReportOverflow(int dropped)
+    {
+        Interlocked.Add(ref _droppedSinceReport, dropped);
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
+        {
+            _lastOverflowWarnUtc = now;
+            _log.LogWarning("Relé {Name}: un consumidor no drena el flujo; se descartan datos (su grabación tendrá un salto).", _name);
+        }
+        if (now - _lastOverflowReportUtc < TimeSpan.FromSeconds(1)) return;
+        _lastOverflowReportUtc = now;
+        long total = Interlocked.Exchange(ref _droppedSinceReport, 0);
+        try { ConsumerOverflow?.Invoke(this, total); }
+        catch (Exception ex) { _log.LogDebug(ex, "Relé {Name}: un suscriptor del aviso de descartes falló.", _name); }
     }
 
     /// <summary>Añade el fragmento a la ventana, partido donde empieza cada fotograma clave de vídeo, para que la ventana
@@ -363,8 +416,22 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
             TcpClient client;
             try { client = await _consumerListener.AcceptTcpClientAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { _log.LogDebug(ex, "Relé {Name}: fallo aceptando a un consumidor.", _name); continue; }
-            client.NoDelay = true;
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Relé {Name}: fallo aceptando a un consumidor.", _name);
+                try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+                continue;
+            }
+            // Protegido: una excepción aquí (un socket que el par ya cerró al aceptarlo, p. ej. un sondeo matado) terminaba
+            // este bucle en silencio, y a partir de ahí ningún proceso del canal volvía a recibir flujo (conectaban a nivel
+            // TCP y esperaban para siempre) hasta reasignar la entrada.
+            try { client.NoDelay = true; }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Relé {Name}: un consumidor se fue al conectar; se descarta esa conexión.", _name);
+                try { client.Dispose(); } catch { /* noop */ }
+                continue;
+            }
 
             // El socket se lleva la reserva más antigua si la hay (su instantánea es la del momento de reservar, y su cola
             // ya trae lo llegado desde entonces); si no, alta + instantánea del pre-roll de este instante, en una
@@ -403,6 +470,7 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
                     consumer.Writing = true;
                     await stream.WriteAsync(chunk, ct).ConfigureAwait(false);
                     consumer.Writing = false;
+                    Interlocked.Add(ref consumer.PendingBytes, -chunk.Length);
                 }
                 await stream.FlushAsync(ct).ConfigureAwait(false);
             }
@@ -416,21 +484,32 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Fin del flujo: TODOS los consumidores —conectados y reservados sin reclamar— salen de la lista, quedan cerrados
+    /// (nada que esperar de ellos: su reserva cuenta como «al día») y ven EOF al vaciar su cola. Antes las reservas sin
+    /// reclamar se quitaban de la cola de reservas pero se quedaban en la lista con su canal ya completado: en el flujo
+    /// siguiente cada fragmento «desbordaba» para siempre (aviso cada 5 s que tapaba los descartes reales), su reserva no
+    /// iba nunca «al día» (cada relevo esperaba el tope de 10 s: Detener cerraba el archivo tarde) y retenía hasta 32 MB de
+    /// pre-roll por huérfano.
+    /// </summary>
     private void CloseConsumers()
     {
         Consumer[] consumers;
         lock (_sync)
         {
             consumers = _consumers.ToArray();
+            _consumers.Clear();
+            _reserved.Clear();
             _preroll.Clear();
             _prerollLength = 0;
-            _reserved.Clear(); // sus consumidores están en la lista: se cierran con los demás
+            foreach (var c in consumers) c.Closed = true;
         }
         foreach (var c in consumers) c.Queue.Writer.TryComplete();
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // idempotente
         await _cts.CancelAsync().ConfigureAwait(false);
         try { _sourceListener.Stop(); } catch { /* noop */ }
         try { _consumerListener.Stop(); } catch { /* noop */ }

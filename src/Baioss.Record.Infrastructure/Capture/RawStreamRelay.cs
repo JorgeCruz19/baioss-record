@@ -71,6 +71,8 @@ public sealed class RawStreamRelay : IAsyncDisposable
         public volatile bool Started;
         /// <summary>Se desconectó, el flujo terminó o la reserva caducó: ya no hay nada que esperar de él.</summary>
         public volatile bool Closed;
+        /// <summary>Se le descartó algo y aún no ha pasado el siguiente punto de sincronía (bajo el candado del relé).</summary>
+        public bool Dropping;
         /// <summary>
         /// ¿Consume ya el flujo en directo? Conectado, arrancado y con un atraso de como mucho DOS unidades del tamaño
         /// mayor visto (la que se le está escribiendo y una en cola). No sirve «nada pendiente»: una escritura de 4 MB
@@ -124,6 +126,14 @@ public sealed class RawStreamRelay : IAsyncDisposable
     /// <summary>Frames de vídeo repartidos desde el arranque (diagnóstico y tests).</summary>
     public long VideoFramesForwarded { get; private set; }
 
+    /// <summary>Conexiones del receptor aceptadas desde el arranque: cambia con cada proceso de captura nuevo.</summary>
+    public int SourceGeneration => Volatile.Read(ref _sourceGeneration);
+    private int _sourceGeneration;
+
+    /// <summary>Frames de vídeo recibidos en la conexión ACTUAL del receptor (vigilancia de una captura muda).</summary>
+    public long VideoFramesThisSource => Interlocked.Read(ref _videoFramesThisSource);
+    private long _videoFramesThisSource;
+
     /// <summary>En qué está el bucle que drena al receptor (diagnóstico): «esperando al receptor», «leyendo» (a la espera de
     /// bytes del receptor) o «repartiendo».</summary>
     public string PumpStage { get; private set; } = "esperando al receptor";
@@ -131,8 +141,12 @@ public sealed class RawStreamRelay : IAsyncDisposable
     /// <summary>Consumidores dados de alta ahora mismo, reservados incluidos (diagnóstico y tests).</summary>
     public int ConsumerCount { get { lock (_sync) return _consumers.Count; } }
 
-    /// <summary>Se eleva si hubo que DESCARTAR unidades a un consumidor que no drenaba (su grabación tendrá un salto).</summary>
-    public event EventHandler? ConsumerOverflow;
+    /// <summary>Se eleva si hubo que DESCARTAR unidades a un consumidor que no drenaba (su grabación tendrá un salto), con
+    /// cuántas se descartaron desde el aviso anterior. Como mucho uno por segundo.</summary>
+    public event EventHandler<long>? ConsumerOverflow;
+    private long _droppedSinceReport;
+    private DateTimeOffset _lastOverflowReportUtc;
+    private int _disposed;
 
     /// <summary>
     /// Reserva para el PRÓXIMO socket que conecte al <see cref="ConsumerPort"/> un consumidor y devuelve cómo saber si ya
@@ -146,6 +160,8 @@ public sealed class RawStreamRelay : IAsyncDisposable
     {
         lock (_sync)
         {
+            // Las reservas caducan también aquí (y al conectar un consumidor), no solo con flujo: sin él no caducaban nunca.
+            ExpireReservations(Stopwatch.GetTimestamp());
             var consumer = NewConsumer();
             _reserved.Enqueue((consumer, Stopwatch.GetTimestamp()));
             _log.LogDebug("Relé crudo {Name}: consumidor reservado ({Headers} cabeceras guardadas).", _name, _headers.Count);
@@ -196,17 +212,31 @@ public sealed class RawStreamRelay : IAsyncDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            TcpClient client;
+            try { client = await _sourceListener.AcceptTcpClientAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                // Sin pausa, un fallo persistente de Accept era un bucle caliente. Nadie conectó: no hay flujo que cerrar.
+                _log.LogDebug(ex, "Relé crudo {Name}: fallo aceptando al receptor.", _name);
+                try { await Task.Delay(250, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+                continue;
+            }
             try
             {
-                using var client = await _sourceListener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
-                client.NoDelay = true;
-                client.ReceiveBufferSize = 1024 * 1024; // frames de MB: menos despertares por frame
-                SourceConnected = true;
-                _log.LogDebug("Relé crudo {Name}: receptor conectado (puerto {Port}).", _name, SourcePort);
-                await PumpSourceAsync(client.GetStream(), ct).ConfigureAwait(false);
+                using (client)
+                {
+                    client.NoDelay = true;
+                    client.ReceiveBufferSize = 1024 * 1024; // frames de MB: menos despertares por frame
+                    Interlocked.Exchange(ref _videoFramesThisSource, 0);
+                    Interlocked.Increment(ref _sourceGeneration);
+                    SourceConnected = true;
+                    _log.LogDebug("Relé crudo {Name}: receptor conectado (puerto {Port}).", _name, SourcePort);
+                    await PumpSourceAsync(client.GetStream(), ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: fallo aceptando al receptor.", _name); }
+            catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: el flujo del receptor se cortó.", _name); }
             finally
             {
                 if (SourceConnected)
@@ -235,7 +265,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
                 if (unit is null) return; // el receptor cerró (el proceso se relanza)
                 SourceBytes += unit.Length;
                 PumpStage = "repartiendo";
-                bool dropped = false;
+                int dropped = 0;
                 lock (_sync)
                 {
                     ExpireReservations(Stopwatch.GetTimestamp());
@@ -249,39 +279,63 @@ public sealed class RawStreamRelay : IAsyncDisposable
                         // principio del flujo) se le entregan siempre: si ya tenía una instantánea, era parcial.
                         if (unit.Kind == NutUnitKind.Syncpoint && c.Connected) c.Started = true;
                         if (!unit.IsHeader && !c.Started) continue;
-                        if (!Enqueue(c, unit)) dropped = true;
+                        if (!Enqueue(c, unit)) dropped++;
                     }
                     ForwardedBytes += unit.Length;
-                    if (unit.IsVideoFrame) VideoFramesForwarded++;
+                    if (unit.IsVideoFrame) { VideoFramesForwarded++; Interlocked.Increment(ref _videoFramesThisSource); }
                 }
                 unit.Release();
-                if (dropped)
-                {
-                    // Cola llena: ese consumidor no drena (disco atascado). Se descarta para NO frenar al receptor.
-                    var now = DateTimeOffset.UtcNow;
-                    if (now - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
-                    {
-                        _lastOverflowWarnUtc = now;
-                        _log.LogWarning("Relé crudo {Name}: un consumidor no drena el flujo; se le descartan frames (su grabación tendrá un salto).", _name);
-                    }
-                    ConsumerOverflow?.Invoke(this, EventArgs.Empty);
-                }
+                if (dropped > 0) ReportOverflow(dropped);
             }
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException)
+        catch (EndOfStreamException)
         {
-            // El flujo ya no es de fiar: se corta al receptor (verá el socket cerrado, saldrá y el supervisor lo relanzará
-            // con un flujo nuevo desde sus cabeceras) y los consumidores ven EOF.
-            _log.LogWarning(ex, "Relé crudo {Name}: flujo NUT inválido o truncado; se corta al receptor para que empiece de nuevo.", _name);
+            // Lo normal cuando el receptor se relanza (reapertura, canales de audio, apagado): FFmpeg muere a mitad de un
+            // frame de varios MB. No es una corrupción; avisar como tal enseñaba a ignorar el aviso de verdad.
+            _log.LogInformation("Relé crudo {Name}: el receptor cerró a mitad de una unidad (se relanza).", _name);
         }
+        catch (IOException ex)
+        {
+            _log.LogInformation("Relé crudo {Name}: la conexión con el receptor se cortó ({Reason}).", _name, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            // El flujo ya no es de fiar (NUT inválido, o un valor imposible en una cabecera): se corta al receptor (verá el
+            // socket cerrado, saldrá y el supervisor lo relanzará con un flujo nuevo desde sus cabeceras) y los consumidores
+            // ven EOF.
+            _log.LogWarning(ex, "Relé crudo {Name}: flujo NUT inválido; se corta al receptor para que empiece de nuevo.", _name);
+        }
+    }
+
+    /// <summary>Cola llena: ese consumidor no drena (disco atascado). Se descarta para NO frenar al receptor; se avisa en el
+    /// registro (cada 5 s) y por <see cref="ConsumerOverflow"/> (cada segundo, con el total descartado desde el anterior).</summary>
+    private void ReportOverflow(int dropped)
+    {
+        Interlocked.Add(ref _droppedSinceReport, dropped);
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastOverflowWarnUtc > TimeSpan.FromSeconds(5))
+        {
+            _lastOverflowWarnUtc = now;
+            _log.LogWarning("Relé crudo {Name}: un consumidor no drena el flujo; se le descartan frames (su grabación tendrá un salto).", _name);
+        }
+        if (now - _lastOverflowReportUtc < TimeSpan.FromSeconds(1)) return;
+        _lastOverflowReportUtc = now;
+        long total = Interlocked.Exchange(ref _droppedSinceReport, 0);
+        try { ConsumerOverflow?.Invoke(this, total); }
+        catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: un suscriptor del aviso de descartes falló.", _name); }
     }
 
     /// <summary>Encola una unidad a un consumidor (una referencia más), salvo que su cola supere el tope en bytes. Bajo <see cref="_sync"/>.</summary>
     private bool Enqueue(Consumer consumer, NutUnit unit)
     {
         if (consumer.Closed) return true; // se está retirando: no es un descarte
-        if (Interlocked.Read(ref consumer.PendingBytes) + unit.Length > ConsumerQueueMaxBytes) return false;
+        // Tras un descarte se reanuda SOLO en un punto de sincronía: en NUT la marca de tiempo de un frame es relativa a la
+        // del frame anterior de su flujo, y solo un punto de sincronía la fija de nuevo; una unidad suelta tras el hueco
+        // llegaba con una marca calculada sobre otra base (marca hacia atrás en la grabación).
+        if (consumer.Dropping && !unit.IsHeader && unit.Kind != NutUnitKind.Syncpoint) return false;
+        if (Interlocked.Read(ref consumer.PendingBytes) + unit.Length > ConsumerQueueMaxBytes) { consumer.Dropping = true; return false; }
+        consumer.Dropping = false;
         unit.Retain();
         Interlocked.Add(ref consumer.PendingBytes, unit.Length);
         if (consumer.Queue.Writer.TryWrite(unit)) return true;
@@ -303,8 +357,22 @@ public sealed class RawStreamRelay : IAsyncDisposable
             TcpClient client;
             try { client = await _consumerListener.AcceptTcpClientAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: fallo aceptando a un consumidor.", _name); continue; }
-            client.NoDelay = true;
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Relé crudo {Name}: fallo aceptando a un consumidor.", _name);
+                try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+                continue;
+            }
+            // Protegido: una excepción aquí (un socket que el par ya cerró al aceptarlo, p. ej. un sondeo matado) terminaba
+            // este bucle en silencio, y a partir de ahí ningún proceso del canal volvía a recibir flujo (conectaban a nivel
+            // TCP y esperaban para siempre, con «SEÑAL OK» y el preview congelado) hasta reiniciar la aplicación.
+            try { client.NoDelay = true; }
+            catch (Exception ex)
+            {
+                _log.LogDebug(ex, "Relé crudo {Name}: un consumidor se fue al conectar; se descarta esa conexión.", _name);
+                try { client.Dispose(); } catch { /* noop */ }
+                continue;
+            }
 
             // El socket se lleva la reserva más antigua si la hay (su cola ya trae lo llegado desde entonces); si no,
             // alta + instantánea de las cabeceras de este instante, en una operación atómica (ver _sync).
@@ -312,6 +380,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
             bool reserved;
             lock (_sync)
             {
+                ExpireReservations(Stopwatch.GetTimestamp());
                 reserved = _reserved.TryDequeue(out var reservation);
                 consumer = reserved ? reservation.Consumer : NewConsumer();
                 consumer.Connected = true;
@@ -376,6 +445,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // idempotente
         await _cts.CancelAsync().ConfigureAwait(false);
         try { _sourceListener.Stop(); } catch { /* noop */ }
         try { _consumerListener.Stop(); } catch { /* noop */ }

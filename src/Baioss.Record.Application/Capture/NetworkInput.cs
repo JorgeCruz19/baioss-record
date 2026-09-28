@@ -97,8 +97,10 @@ public sealed partial record NetworkInput
     public NetworkInputError Validate()
     {
         string host = Host.Trim();
-        if (host.Length == 0) return Role == NetworkRole.Listen ? NetworkInputError.None : NetworkInputError.MissingHost;
-        if (!IsValidHost(host)) return NetworkInputError.InvalidHost;
+        // Sin host, en escucha, vale (todas las interfaces), pero el RESTO se valida igual: antes se devolvía «válida» aquí
+        // mismo y se saltaban puerto, contraseña, latencia, retardo de audio y colchón.
+        if (host.Length == 0) { if (Role != NetworkRole.Listen) return NetworkInputError.MissingHost; }
+        else if (!IsValidHost(host)) return NetworkInputError.InvalidHost;
         if (Port is < 1 or > 65535) return NetworkInputError.InvalidPort;
         if (Math.Abs(AudioDelayMs) > MaxAudioDelayMs) return NetworkInputError.AudioDelayRange;
         if (PreviewBufferMs is < 0 or > MaxPreviewBufferMs) return NetworkInputError.PreviewBufferRange;

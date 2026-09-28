@@ -25,6 +25,8 @@ namespace Baioss.Record.Api;
 /// </summary>
 public static class ApiEndpoints
 {
+    private static IResult ChannelNotFound() => Results.NotFound(new { error = "Canal no encontrado (o reasignándose su entrada)." });
+
     public static IEndpointRouteBuilder MapBaiossApi(this IEndpointRouteBuilder app)
     {
         var api = app.MapGroup("/api/v1"); // .RequireAuthorization() en producción
@@ -35,6 +37,8 @@ public static class ApiEndpoints
             try { return Results.Ok(await d.SendAsync(new StartRecordingCommand(id, body.ProfileId, body.Operator), ct)); }
             // El canal ya está grabando (doble START): conflicto claro en vez de un 500. (Auditoría 24/7, A9.)
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+            // Canal inexistente, o reasignándose su entrada en este instante: 404 en vez de un 500.
+            catch (KeyNotFoundException) { return ChannelNotFound(); }
         });
 
         // Detener. SIN cuerpo (lo de siempre): 204. Con { "name": "…" } además le pone ese nombre al archivo recién
@@ -46,7 +50,9 @@ public static class ApiEndpoints
         api.MapPost("/channels/{id:guid}/recording/stop", async (Guid id, HttpContext http, IDispatcher d, CancellationToken ct) =>
         {
             var body = await ReadStopBodyAsync(http.Request, ct);
-            var result = await d.SendAsync(new StopRecordingCommand(id, body?.Name, body?.Operator), ct);
+            StopRecordingResult result;
+            try { result = await d.SendAsync(new StopRecordingCommand(id, body?.Name, body?.Operator), ct); }
+            catch (KeyNotFoundException) { return ChannelNotFound(); }
             if (result.Name == RecordingNameOutcome.NotRequested) return Results.NoContent();
             return Results.Ok(new
             {
@@ -62,7 +68,10 @@ public static class ApiEndpoints
 
         // --- Estado / consultas ---
         api.MapGet("/channels/{id:guid}/status", async (Guid id, IDispatcher d, CancellationToken ct) =>
-            Results.Ok(await d.QueryAsync(new GetChannelStatusQuery(id), ct)));
+        {
+            try { return Results.Ok(await d.QueryAsync(new GetChannelStatusQuery(id), ct)); }
+            catch (KeyNotFoundException) { return ChannelNotFound(); }
+        });
 
         api.MapGet("/channels", (IChannelManager m) =>
             Results.Ok(m.Channels.Select(c => c.Status)));
@@ -207,25 +216,40 @@ public static class ApiEndpoints
             // sin cerrar en BD y archivo sin finalizar (medido). Al empezar el apagado se corta el socket; el panel
             // reconecta solo cuando la aplicación vuelve.
             using var onStopping = lifetime.ApplicationStopping.Register(() => { try { socket.Abort(); } catch { /* ya cerrado */ } });
-            // Un WebSocket NO admite envíos solapados: con varios canales publicando a la vez, dos SendAsync
-            // concurrentes lanzan InvalidOperationException y dejan el stream de eventos en estado Aborted. Se
-            // serializan con un semáforo por conexión, y cada envío lleva timeout para que un cliente lento no
-            // bloquee el bus de eventos (que está en la ruta de algunos start/stop). (Auditoría 24/7, A1/#27.)
-            using var sendGate = new SemaphoreSlim(1, 1);
-            using var sub = bus.Subscribe<IDomainEvent>(async (e, _) =>
+            // Cola POR CLIENTE y un único escritor por conexión: el bus solo ENCOLA (nunca espera a la red). Antes cada evento
+            // se enviaba dentro de la publicación, y la publicación va en el camino de Grabar/Detener: cada panel web abierto
+            // se sumaba a su duración, hasta 5 s por uno que no leía. Un WebSocket no admite envíos solapados: los hace uno
+            // solo, en orden. Acotada: a un cliente que no lee se le descartan los eventos más viejos (al reconectar, el panel
+            // se resincroniza con el estado). (Auditoría 24/7, A1/#27; auditoría de estabilidad 2026-09.)
+            var outbox = System.Threading.Channels.Channel.CreateBounded<byte[]>(new System.Threading.Channels.BoundedChannelOptions(256)
             {
-                if (socket.State != WebSocketState.Open) return;
-                var json = JsonSerializer.SerializeToUtf8Bytes(e, e.GetType());
-                await sendGate.WaitAsync().ConfigureAwait(false);
+                FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest, SingleReader = true,
+            });
+            using var sub = bus.Subscribe<IDomainEvent>((e, _) =>
+            {
+                if (socket.State == WebSocketState.Open)
+                {
+                    try { outbox.Writer.TryWrite(JsonSerializer.SerializeToUtf8Bytes(e, e.GetType())); }
+                    catch { /* un evento que no se serializa no debe romper la publicación */ }
+                }
+                return Task.CompletedTask;
+            });
+            var writer = Task.Run(async () =>
+            {
                 try
                 {
-                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await socket.SendAsync(json, WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false);
+                    await foreach (var json in outbox.Reader.ReadAllAsync().ConfigureAwait(false))
+                    {
+                        if (socket.State != WebSocketState.Open) break;
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        await socket.SendAsync(json, WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false);
+                    }
                 }
                 catch { try { socket.Abort(); } catch { /* cliente caído: WaitUntilClosed cerrará la suscripción */ } }
-                finally { sendGate.Release(); }
             });
             await WaitUntilClosedAsync(socket);
+            outbox.Writer.TryComplete();
+            try { await writer.WaitAsync(TimeSpan.FromSeconds(6)); } catch { /* ya cerrado */ }
         });
 
         // --- WebSocket de preview de baja resolución (panel web) ---

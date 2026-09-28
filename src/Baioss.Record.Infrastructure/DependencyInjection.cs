@@ -127,6 +127,9 @@ public static class DependencyInjection
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_StartedAt\" ON \"Sessions\" (\"ChannelId\", \"StartedAt\");");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_ChannelId_EndedAt\" ON \"Sessions\" (\"ChannelId\", \"EndedAt\");");
         db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_StartedAt\" ON \"Sessions\" (\"StartedAt\");");
+        // La limpieza de retención busca los candidatos por fecha de FIN en todos los canales: sin este índice, cada ronda
+        // de una limpieza de emergencia recorría y ordenaba la tabla entera (hasta 1000 rondas).
+        db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS \"IX_Sessions_EndedAt\" ON \"Sessions\" (\"EndedAt\");");
         // Columna de PROTECCIÓN de grabaciones frente a la limpieza automática (gestión de almacenamiento, Fase 1):
         // EnsureCreated no la añade a una BD ya existente y SQLite no tiene «ADD COLUMN IF NOT EXISTS», así que se
         // comprueba antes con PRAGMA. Idempotente: en una BD NUEVA la columna ya existe (el modelo la incluye) → se

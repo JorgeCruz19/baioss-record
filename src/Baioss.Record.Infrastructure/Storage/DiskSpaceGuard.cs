@@ -65,23 +65,50 @@ public sealed class DiskSpaceGuard : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        if (_cts is null) return;
-        await _cts.CancelAsync().ConfigureAwait(false);
-        if (_loop is not null) { try { await _loop.ConfigureAwait(false); } catch { /* cancelación */ } }
-        _cts.Dispose();
-        _cts = null; _loop = null;
+        // Se toman y anulan de golpe (un Detener y el Dispose del canal pueden llegar a la vez).
+        var cts = Interlocked.Exchange(ref _cts, null);
+        var loop = Interlocked.Exchange(ref _loop, null);
+        if (cts is null) return;
+        try { await cts.CancelAsync().ConfigureAwait(false); } catch (ObjectDisposedException) { /* noop */ }
+        // Con tope: una medida sobre un NAS colgado puede quedarse bloqueada en el sistema decenas de segundos, y esto va en
+        // el camino de Detener (y del apagado). El bucle termina solo al volver la medida (su token ya está cancelado).
+        if (loop is not null) { try { await loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { /* cancelación o tope */ } }
+        cts.Dispose();
     }
+
+    /// <summary>Evaluaciones seguidas en condición de auto-stop antes de pedirlo: una medida suelta no para una grabación.</summary>
+    public int AutoStopConfirmations { get; init; } = 2;
 
     private async Task LoopAsync(CancellationToken ct)
     {
+        int autoStopStreak = 0;
+        DateTimeOffset lastUnmeasurableLog = default;
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 var (free, total) = ReadDrive(_outputDir());
-                var (level, info, autoStop) = Evaluate(free, total, _bytesPerSecond(), WarnRemaining, CriticalRemaining,
-                    _minFreeBytes(), WarnPercent(), CriticalPercent(), EmergencyPercent());
-                Updated?.Invoke(this, (level, info, autoStop));
+                if (total <= 0)
+                {
+                    // NO se pudo medir (NAS con un corte momentáneo, disco USB reenumerándose, fallo de la API): antes llegaba
+                    // como «0 bytes libres» y DETENÍA la grabación por «disco lleno» con teras libres. Sin medida no se decide
+                    // nada: se mantiene el último estado y se avisa (con freno) por si dura.
+                    autoStopStreak = 0;
+                    var now = DateTimeOffset.UtcNow;
+                    if (now - lastUnmeasurableLog > TimeSpan.FromMinutes(5))
+                    {
+                        lastUnmeasurableLog = now;
+                        _log.LogWarning("Guarda de disco: no se puede medir el espacio de «{Dir}»; se reintenta (sin detener la grabación).", _outputDir());
+                    }
+                }
+                else
+                {
+                    var (level, info, autoStop) = Evaluate(free, total, _bytesPerSecond(), WarnRemaining, CriticalRemaining,
+                        _minFreeBytes(), WarnPercent(), CriticalPercent(), EmergencyPercent());
+                    autoStopStreak = autoStop ? autoStopStreak + 1 : 0;
+                    if (!ct.IsCancellationRequested)
+                        Updated?.Invoke(this, (level, info, autoStop && autoStopStreak >= Math.Max(1, AutoStopConfirmations)));
+                }
             }
             catch (Exception ex) { _log.LogDebug(ex, "Guarda de disco: fallo al medir el espacio."); }
 

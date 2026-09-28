@@ -46,6 +46,9 @@ public interface IRawCaptureReceiver : IAsyncDisposable
     /// <summary>En qué está el bucle del relé que drena la captura (diagnóstico).</summary>
     string PumpStage => "";
 
+    /// <summary>El relé descartó unidades de un proceso del canal que no daba abasto (ver <see cref="RawStreamRelay.ConsumerOverflow"/>).</summary>
+    event EventHandler<long>? DataDropped { add { } remove { } }
+
     Task StartAsync(CancellationToken ct = default);
 
     /// <summary>Cierra el proceso de captura y lo vuelve a lanzar con los argumentos ACTUALES del dispositivo (p. ej. con
@@ -64,8 +67,10 @@ public interface IRawCaptureReceiver : IAsyncDisposable
 ///   supervisor lo relanza con su backoff; el relé cierra a los consumidores y la fuente pasa a SIN SEÑAL hasta que
 ///   vuelva a abrir.</item>
 ///   <item>El vigilante del supervisor no toma por colgado un proceso que aún no entregó nada (abrir una tarjeta y
-///   autodetectar tarda hasta 3 s); una vez fluye, una tarjeta que deja de entregar frames se detecta por estancamiento
-///   (30 s) y se reabre.</item>
+///   autodetectar tarda hasta 3 s). Una tarjeta que deja de entregar frames NO la ve ese vigilante (FFmpeg sigue
+///   imprimiendo progreso con el contador parado): la vigila <see cref="FrameFlowWatch"/> por los frames que cruzan el
+///   relé, y a los <see cref="FrameStallTimeout"/> sin ninguno —con la tarjeta abierta y diciendo que hay señal— se
+///   reabre como tras una caída.</item>
 ///   <item>El estado sale del stderr de FFmpeg: el volcado «Input #0, decklink, from '…'» + pistas = dispositivo abierto
 ///   y formato real (<see cref="FfmpegInputDump"/>); las líneas del demuxer decklink (<see cref="DecklinkModeParser"/>)
 ///   = modo detectado, tarjeta en uso, señal perdida/recuperada, audio rechazado.</item>
@@ -86,6 +91,19 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
     private bool _audioRejectedThisRun;
     private string? _lastErrorLine;
     private DateTimeOffset _lastFailureLogUtc;
+    // Vigilancia de frames (ver FrameFlowWatch): generación del proceso actual y lo que la tarjeta dice de la señal.
+    private readonly FrameFlowWatch _watch = new();
+    private int _run;
+    private volatile bool _inputSignal = true;
+    private CancellationTokenSource? _watchCts;
+    private Task? _watchLoop;
+    private int _disposed;
+
+    /// <summary>Sin un solo frame durante este tiempo (tras haber fluido, con la tarjeta abierta y con señal), se reabre.</summary>
+    public TimeSpan FrameStallTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Cada cuánto se mira si siguen llegando frames.</summary>
+    public TimeSpan FrameWatchInterval { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <param name="name">Nombre para el registro (el dispositivo).</param>
     /// <param name="deviceArguments">Argumentos de ENTRADA del dispositivo (<c>-f decklink … -i "…"</c>), evaluados en cada
@@ -100,7 +118,10 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         _ffmpegPath = ffmpegPath;
         _log = log;
         _relay = new RawStreamRelay(name, log);
+        _relay.ConsumerOverflow += (_, dropped) => DataDropped?.Invoke(this, dropped);
     }
+
+    public event EventHandler<long>? DataDropped;
 
     public int ConsumerPort => _relay.ConsumerPort;
 
@@ -140,8 +161,35 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
             if (_supervisor is not null) return;
             _relay.Start();
             await LaunchAsync(ct).ConfigureAwait(false);
+            if (_watchLoop is null)
+            {
+                var cts = _watchCts = new CancellationTokenSource();
+                _watchLoop = Task.Run(() => WatchFramesAsync(cts.Token));
+            }
         }
         finally { _lifecycle.Release(); }
+    }
+
+    /// <summary>Mira cada <see cref="FrameWatchInterval"/> si siguen llegando frames; si la tarjeta se quedó muda, reabre.</summary>
+    private async Task WatchFramesAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(FrameWatchInterval, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            try
+            {
+                // Clave = proceso + su conexión al relé: cada proceso nuevo, y cada conexión nueva, empiezan de cero.
+                long key = ((long)Volatile.Read(ref _run) << 32) | (uint)_relay.SourceGeneration;
+                bool judgeable = _opened && _inputSignal && _relay.SourceConnected;
+                if (!_watch.ShouldReopen(key, _relay.VideoFramesThisSource, judgeable, DateTimeOffset.UtcNow, FrameStallTimeout)) continue;
+                _log.LogError("Captura {Name}: la tarjeta dejó de entregar frames hace más de {Seconds:0} s con el dispositivo abierto y señal; se reabre.",
+                    _name, FrameStallTimeout.TotalSeconds);
+                // Como una caída: el supervisor relanza con su backoff, la fuente pasa a «reabriendo» y vuelve al abrir.
+                _supervisor?.AbortCurrentProcess();
+            }
+            catch (Exception ex) { _log.LogDebug(ex, "Captura {Name}: fallo vigilando los frames.", _name); }
+        }
     }
 
     public async Task RestartAsync(CancellationToken ct = default)
@@ -151,6 +199,10 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         {
             if (_supervisor is null) return; // nunca arrancó o ya se cerró
             await StopSupervisorAsync().ConfigureAwait(false);
+            // Proceso nuevo: la fuente debe saberlo (se reabre la tarjeta) para no arrastrar el estado del anterior —p. ej.
+            // un «sin señal» que el proceso nuevo no repetirá si la señal está desde el principio—.
+            _opened = false;
+            Lost?.Invoke(this, EventArgs.Empty);
             await LaunchAsync(ct).ConfigureAwait(false);
         }
         finally { _lifecycle.Release(); }
@@ -175,7 +227,11 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         _dump.Reset();
         _opened = false;
         _audioRejectedThisRun = false;
-        await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
+        _inputSignal = true;
+        Interlocked.Increment(ref _run);
+        // La vida del receptor es la de la fuente (termina en DisposeAsync), no la de quien la abrió: antes el token de
+        // OpenAsync (con plazo, en la reasignación de entradas) quedaba enlazado al supervisor.
+        await _supervisor.StartAsync(args, CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -222,8 +278,8 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
             AudioChannelsRejected?.Invoke(this, EventArgs.Empty);
             return;
         }
-        if (DecklinkModeParser.IsNoInputSignal(line)) { SignalPresence?.Invoke(this, false); return; }
-        if (DecklinkModeParser.IsInputReturned(line)) { SignalPresence?.Invoke(this, true); return; }
+        if (DecklinkModeParser.IsNoInputSignal(line)) { _inputSignal = false; SignalPresence?.Invoke(this, false); return; }
+        if (DecklinkModeParser.IsInputReturned(line)) { _inputSignal = true; SignalPresence?.Invoke(this, true); return; }
         if (!_opened && line.Contains("rror", StringComparison.Ordinal)) _lastErrorLine = line.Trim();
 
         var description = _dump.Feed(line);
@@ -242,6 +298,8 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         bool wasOpen = _opened;
         _opened = false;
         _audioRejectedThisRun = false;
+        _inputSignal = true;
+        Interlocked.Increment(ref _run);
         if (wasOpen)
         {
             _log.LogWarning("Captura {Name}: el proceso de captura terminó; se reabre el dispositivo.", _name);
@@ -276,6 +334,14 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // idempotente
+        var watch = _watchCts;
+        if (watch is not null)
+        {
+            try { await watch.CancelAsync().ConfigureAwait(false); } catch (ObjectDisposedException) { /* noop */ }
+            if (_watchLoop is not null) { try { await _watchLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
+            watch.Dispose();
+        }
         await _lifecycle.WaitAsync().ConfigureAwait(false);
         try { await StopSupervisorAsync().ConfigureAwait(false); }
         finally { _lifecycle.Release(); }

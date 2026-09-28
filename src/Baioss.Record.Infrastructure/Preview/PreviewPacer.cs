@@ -171,6 +171,9 @@ public sealed class PreviewPacer : IDisposable
     private void DeliverAndQuarantine(byte[] frame)
     {
         try { _deliver(frame); }
+        // Un manejador que lance no debe matar el hilo del colchón: una excepción sin capturar en un hilo propio termina la
+        // APLICACIÓN entera, sin cierre ordenado de los FFmpeg (archivos sin finalizar). El motor ya registra la suya.
+        catch (Exception) { /* se pierde ese frame, nada más */ }
         finally
         {
             lock (_sync)

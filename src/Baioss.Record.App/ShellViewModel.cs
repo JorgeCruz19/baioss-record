@@ -124,7 +124,8 @@ public sealed partial class ShellViewModel : ObservableObject
 
     /// <summary>Persiste la carpeta de destino que el operador elige en «Configuración general», para que
     /// SOBREVIVA a reinicios (antes solo vivía en memoria y volvía al default en cada arranque).</summary>
-    private Task PersistOutputDirAsync(Guid channelId, string path) => _host.PersistOutputDirectoryAsync(channelId, path);
+    // En el pool: SQLite es síncrono (SELECT + UPDATE) y esto se dispara desde la interfaz al cambiar la carpeta.
+    private Task PersistOutputDirAsync(Guid channelId, string path) => Task.Run(() => _host.PersistOutputDirectoryAsync(channelId, path));
 
     private void OnScheduledActiveChanged(object? sender, EventArgs e)
         => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => { RefreshScheduledActive(); RefreshTodayTasks(); });

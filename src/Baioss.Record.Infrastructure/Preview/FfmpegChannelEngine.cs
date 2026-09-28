@@ -37,7 +37,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // de proceso ni lo vacía ni lo vuelve a llenar. Su pool de búferes sustituye al anillo de 3 que había por lector.
     private PreviewPacer? _pacer;
     private PreviewPacer Pacer => _pacer ??= new PreviewPacer(FrameWidth * 4 * FrameHeight, DeliverFrame, _channelKey);
-    private void DeliverFrame(byte[] bgra) => FrameReady?.Invoke(this, new PreviewFrame(bgra, FrameWidth, FrameHeight, FrameWidth * 4));
+    private void DeliverFrame(byte[] bgra)
+    {
+        // Un suscriptor que lance no debe tumbar la entrega: en paso directo la excepción subía al lector del sumidero, que
+        // cerraba el socket y mataba al FFmpeg de grabación (pieza nueva); con colchón, al hilo del colchón (la aplicación).
+        try { FrameReady?.Invoke(this, new PreviewFrame(bgra, FrameWidth, FrameHeight, FrameWidth * 4)); }
+        catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: un suscriptor del preview falló con un frame.", _channelKey); }
+    }
 
     /// <summary>Estado del colchón de preview (diagnóstico y tests): frames en cola, entregados, repetidos (huecos) y descartados (ráfagas).</summary>
     public (int Queued, long Delivered, long Repeated, long Dropped) PreviewCushion =>
@@ -87,6 +93,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private bool _segmented;
     private string _segDir = "";
     private string _segGlob = "";
+    // Globs de los segmentos de ESTA sesión, uno por proceso lanzado (cada pieza sin nombre lleva su propia fecha y hora).
+    // Sin nombre, _segGlob («{canal}_*») abarcaba todo el histórico del canal: medir los bytes y buscar segmentos nuevos
+    // recorría miles de archivos cada 2 s en una carpeta de 24/7. Bajo su propio candado (lo lee el hilo del escaneo).
+    private readonly List<string> _segGlobs = new();
     private readonly HashSet<string> _emitted = new(StringComparer.OrdinalIgnoreCase);
     // Archivos REALMENTE escritos en esta sesión (en orden de emisión), para renombrarlos al detener una
     // grabación manual (cuyo nombre se pide al final, no al iniciar).
@@ -148,6 +158,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _recovering;
     private int _recordRestartCount;
     private DateTimeOffset _lastRecordDeathUtc;
+    // Generación de la grabación: cambia en cada Grabar y cada Detener. Una cadena de recuperación (con backoff de hasta
+    // 30 s) programada en una grabación NO debe actuar sobre la siguiente: antes, Detener + Grabar dentro de ese backoff
+    // hacía que la cadena vieja partiera la grabación nueva en otra pieza (o la mandara a barras).
+    private int _recordGeneration;
+    // Se dispuso (o se está disponiendo) el motor: 0/1 para que DisposeAsync sea idempotente.
+    private int _disposeStarted;
 
     public FfmpegChannelEngine(IFfmpegLocator locator, ILogger log)
     {
@@ -234,9 +250,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void StartAwaitSignalProbe()
     {
-        _awaitCts?.Dispose(); // dispone el de la espera anterior antes de reabrir: sin fuga de CTS. (#53)
-        _awaitCts = new CancellationTokenSource();
-        _awaitLoop = Task.Run(() => AwaitSignalLoopAsync(_awaitCts.Token));
+        if (_disposed) return;
+        // CANCELA la espera anterior antes de abrir otra (antes solo se disponía su CTS: el bucle viejo seguía vivo, ya
+        // incancelable, reabriendo la fuente cada 5 s y relanzando el preview al llegar la señal, uno por cada fallo de
+        // Grabar/Detener). El token se captura en local: la lambda no debe leer el campo, que otra llamada puede cambiar.
+        var previous = _awaitCts;
+        try { previous?.Cancel(); } catch (ObjectDisposedException) { /* ya dispuesto */ }
+        previous?.Dispose(); // sin fuga de CTS. (#53)
+        var cts = new CancellationTokenSource();
+        _awaitCts = cts;
+        _awaitLoop = Task.Run(() => AwaitSignalLoopAsync(cts.Token));
     }
 
     /// <summary>
@@ -296,6 +319,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _recordGeneration++; // una recuperación pendiente de la grabación anterior ya no puede tocar esta
             _recordProfile = profile;
             _sessionId = sessionId;
             _segmentIndex = 0;
@@ -329,6 +354,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 var (_, ext) = FfmpegCodecMap.Container(profile.Container);
                 _segDir = OutputRoot; // sin subcarpeta por canal
                 _segGlob = $"{_recordBaseName ?? _channelKey}_*.{ext}";
+                lock (_segGlobs) _segGlobs.Clear(); // cada proceso de esta sesión añade el suyo al lanzarse
                 Directory.CreateDirectory(_segDir);
                 foreach (var f in Directory.GetFiles(_segDir, _segGlob)) _emitted.Add(f);
             }
@@ -371,6 +397,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_disposed) return;
+            _recordGeneration++; // la cadena de recuperación de esta grabación (si la hay) ya no debe actuar
             SetState(RecordingState.Stopping);
             _slate = false; _slatePending = false;
             try
@@ -407,6 +435,59 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     }
 
     /// <summary>
+    /// Detener para el APAGADO de la aplicación: cierra el proceso de grabación de forma ordenada («q»: el archivo queda
+    /// finalizado) y NO levanta un preview nuevo — el canal se va a disponer justo después —. El Detener normal, con una
+    /// fuente de relé, primero arranca el preview siguiente y espera a que tome el relevo (hasta 15 s) antes de cerrar el
+    /// archivo: en el apagado eso solo consumía el tiempo disponible y abría procesos que había que matar enseguida.
+    /// Tampoco verifica ni optimiza el archivo (un remux interrumpido al salir dejaría su temporal).
+    /// </summary>
+    public async Task StopRecordingForShutdownAsync()
+    {
+        StopRecoveryProbe();
+        await StopSegmentScanAsync().ConfigureAwait(false);
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed || _state is RecordingState.Idle) return;
+            _recordGeneration++;
+            SetState(RecordingState.Stopping);
+            _slate = false; _slatePending = false;
+            var previous = _supervisor;
+            var previousSink = _sink;
+            string? previousFile = _recordFile;
+            _recordFile = null;
+            _supervisor = null; _sink = null;
+            if (previous is not null)
+            {
+                Detach(previous); // su salida no es una caída que recuperar (N6)
+                var close = Stopwatch.StartNew();
+                await RetireAsync(previous, previousSink).ConfigureAwait(false);
+                _log.LogInformation("Canal {Key}: apagado: archivo cerrado en {Close:0.0} s.", _channelKey, close.Elapsed.TotalSeconds);
+            }
+            else if (previousSink is not null)
+            {
+                lock (_liveSinks) _liveSinks.Remove(previousSink);
+                await previousSink.DisposeAsync().ConfigureAwait(false);
+            }
+            if (previousFile is not null) EmitSegmentFile(previousFile, verify: false);
+            if (_segmented) { try { ScanSegments(includeNewest: true, verify: false); } catch { /* best-effort */ } }
+            lock (_completedSessionFiles)
+            {
+                _completedSessionFiles.Clear();
+                _completedSessionFiles.AddRange(_sessionFiles);
+            }
+            RaiseAlarm(AlarmType.Slate, false);
+            RaiseAlarm(AlarmType.SignalLoss, false);
+            RaiseAlarm(AlarmType.EncoderFallback, false);
+            _recordProfile = null;
+            _segmented = false;
+            Stats = RecorderStats.Empty;
+            SetState(RecordingState.Idle);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
     /// Restaura el pipeline de solo-preview tras un fallo de Start/Stop (donde <see cref="ReplaceProcessAsync"/>
     /// dejó el canal sin proceso). Si la fuente aún no tiene señal para construirlo, entra en ESPERA y el preview
     /// se levanta solo cuando la señal vuelve. NUNCA lanza: es la red de recuperación, no debe volver a romper. (N3.)
@@ -427,6 +508,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private async Task ReplaceProcessAsync(bool recording, bool slate, CancellationToken ct)
     {
+        // Red de seguridad: con el motor dispuesto no se lanza nada (el proceso quedaría huérfano con el dispositivo).
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var previous = _supervisor;
         var previousSink = _sink;
         // Modo archivo único: el proceso saliente deja su archivo finalizado en disco al cerrarse → se emite como segmento
@@ -520,15 +603,36 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da (medido en producción).
             SettleBeforeTakeover = overlap && source.DeliversPreroll,
             NominalIntervalMs = 1000.0 / sourceFps,
-            IsLive = () => source.NewestConsumerIsLive,
         };
         lock (_liveSinks) _liveSinks.Add(sink);
         sink.Run((s, token) => AcceptLoopAsync(s, token));
+        var previousSinkField = _sink;
         _sink = sink;
         // Colchón de preview de la fuente (0 = paso directo) a la cadencia real de la señal. Se vuelve a fijar en cada
         // proceso: la señal puede haberse redetectado con otra tasa, o el operador haber cambiado el colchón de la fuente.
         Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), sourceFps);
+        try
+        {
+            return await BuildAndStartAsync(sink, profile, recording, slate, source, dir, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // El proceso no arrancó (la fuente perdió la señal entre medias, carpeta inaccesible…): su sumidero no tendrá
+            // a nadie. Se retira ya; antes quedaba vivo (listener + tarea) en _liveSinks y en _sink hasta disponer el motor:
+            // uno por cada reintento de recuperación con el emisor caído (≈ uno cada 30 s, toda la noche).
+            if (ReferenceEquals(_sink, sink)) _sink = previousSinkField;
+            lock (_liveSinks) _liveSinks.Remove(sink);
+            try { await sink.DisposeAsync().ConfigureAwait(false); } catch { /* best effort */ }
+            // Y el archivo que ese proceso iba a escribir no existe: no debe emitirse como pieza (falsa «grabación sin verificar»).
+            if (recording) _recordFile = null;
+            throw;
+        }
+    }
 
+    /// <summary>Segunda mitad de <see cref="LaunchProcessAsync"/>: argumentos, supervisor y arranque sobre el sumidero ya creado.</summary>
+    private async Task<PreviewSink> BuildAndStartAsync(PreviewSink sink, RecordingProfile profile, bool recording, bool slate,
+        ICaptureSource source, string dir, CancellationToken ct)
+    {
         var builder = new FfmpegArgumentBuilder()
             .From(_source!).Using(profile).ForChannel(_channelKey)
             .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{sink.Port}")
@@ -551,6 +655,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var args = slate
             ? builder.BuildSlate(recording, FrameWidth, FrameHeight)
             : builder.BuildLive(recording, FrameWidth, FrameHeight);
+        // «¿Va al día?» de ESTE proceso: la reserva que acaba de tomar su BuildInputArguments (la de la fuente cambia con el
+        // siguiente proceso que se construya; con Grabar y Detener seguidos, un relevo se juzgaba con la del siguiente).
+        sink.IsLive = source.NewestConsumerLiveCheck;
+
+        if (recording && builder.IsSegmentedOutput && !string.IsNullOrEmpty(builder.SegmentPrefixGlob))
+            lock (_segGlobs) if (!_segGlobs.Contains(builder.SegmentPrefixGlob, StringComparer.OrdinalIgnoreCase)) _segGlobs.Add(builder.SegmentPrefixGlob);
 
         if (recording)
         {
@@ -593,8 +703,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // archivo sin índice y no arreglaría nada). Incidente 2026-09-06.
             VolumeProbe = recording ? () => Baioss.Record.Engine.FFmpeg.VolumeProbe.IsResponsiveAsync(dir, TimeSpan.FromSeconds(5)) : null,
         };
-        Attach(_supervisor);
-        await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
+        var supervisor = _supervisor;
+        Attach(supervisor);
+        try { await supervisor.StartAsync(args, ct).ConfigureAwait(false); }
+        catch
+        {
+            Detach(supervisor);
+            if (ReferenceEquals(_supervisor, supervisor)) _supervisor = null;
+            try { await supervisor.DisposeAsync().ConfigureAwait(false); } catch { /* best effort */ }
+            throw;
+        }
         return sink;
     }
 
@@ -697,7 +815,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         public double NominalIntervalMs { get; init; } = 40;
         /// <summary>¿Lee ya el proceso de este sumidero la entrada en directo (sin pre-roll ni atraso pendientes)? La fuente lo
         /// sabe (<see cref="ICaptureSource.NewestConsumerIsLive"/>); null = no se puede saber (se juzga solo por cadencia).</summary>
-        public Func<bool>? IsLive { get; init; }
+        public Func<bool>? IsLive { get; set; }
         /// <summary>Cuánto debe SOSTENERSE el estado «en directo» antes de tomar el mando: un instante al día entre dos fragmentos
         /// no vale, y en ese tiempo el proceso vacía también los búferes del socket que la fuente no ve.</summary>
         public TimeSpan LiveConfirmation { get; init; } = TimeSpan.FromSeconds(1);
@@ -737,12 +855,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         /// <summary>Uno más nuevo tomó el mando antes que este: su relevo pendiente ya no debe esperar nada.</summary>
         public void MarkSuperseded() => _tookOver.TrySetResult();
 
-        private bool _disposed;
+        private int _disposed;
 
         public async ValueTask DisposeAsync()
         {
-            if (_disposed) return;
-            _disposed = true;
+            // Atómico: el relevo (HandoffAsync) y el Dispose del motor pueden llegar a la vez; con un bool, los dos entraban
+            // y el segundo cancelaba un CTS ya dispuesto (ObjectDisposedException en mitad de un Detener).
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             await _cts.CancelAsync().ConfigureAwait(false);
             try { Listener.Stop(); } catch { /* noop */ }
             if (_loop is not null) { try { await _loop.ConfigureAwait(false); } catch { /* cancelación esperada */ } }
@@ -860,7 +979,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             if (!string.IsNullOrEmpty(_segDir) && !string.IsNullOrEmpty(_segGlob) && Directory.Exists(_segDir))
             {
                 long sum = 0;
-                foreach (var f in Directory.EnumerateFiles(_segDir, _segGlob)) // glob = solo los segmentos de esta sesión
+                foreach (var f in SessionSegmentFiles()) // solo los segmentos de esta sesión
                     try { sum += new FileInfo(f).Length; } catch { /* archivo en escritura/borrado */ }
                 return sum;
             }
@@ -968,19 +1087,38 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// (<paramref name="includeNewest"/>), deja el archivo más reciente sin emitir porque suele ser el
     /// que FFmpeg está escribiendo; el siguiente segmento (o el stop) lo cerrará.
     /// </summary>
-    private void ScanSegments(bool includeNewest)
+    private void ScanSegments(bool includeNewest, bool verify = true)
     {
         if (string.IsNullOrEmpty(_segDir) || !Directory.Exists(_segDir)) return;
-        var files = Directory.GetFiles(_segDir, _segGlob);
+        var files = SessionSegmentFiles().ToArray();
         if (files.Length == 0) return;
         // Orden cronológico por (prefijo, índice NUMÉRICO): así «_10» va tras «_9» (no como el orden textual,
         // que pondría «_10» antes de «_2») y la numeración 1-based sin relleno conserva la continuidad.
         Array.Sort(files, CompareSegment);
         int upTo = includeNewest ? files.Length : files.Length - 1;
-        for (int i = 0; i < upTo; i++) EmitSegmentFile(files[i]);
+        for (int i = 0; i < upTo; i++) EmitSegmentFile(files[i], verify: verify);
     }
 
-    private void EmitSegmentFile(string path, bool optimizeSeek = false)
+    /// <summary>
+    /// Archivos de segmento de ESTA sesión: los que casan con el glob de algún proceso lanzado en ella (su base real). Si
+    /// aún no se lanzó ninguno, el glob general del canal (sembrado al empezar: lo anterior ya cuenta como emitido).
+    /// </summary>
+    private List<string> SessionSegmentFiles()
+    {
+        string[] globs;
+        lock (_segGlobs) globs = _segGlobs.Count > 0 ? _segGlobs.ToArray() : new[] { _segGlob };
+        var files = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var glob in globs)
+        {
+            if (string.IsNullOrEmpty(glob)) continue;
+            foreach (var f in Directory.EnumerateFiles(_segDir, glob))
+                if (seen.Add(f)) files.Add(f);
+        }
+        return files;
+    }
+
+    private void EmitSegmentFile(string path, bool optimizeSeek = false, bool verify = true)
     {
         if (!_emitted.Add(path)) return; // ya emitido
         _sessionFiles.Add(path);         // candidato a renombrar al detener una grabación manual
@@ -995,7 +1133,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             EndedAt = fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero) : DateTimeOffset.UtcNow,
             SizeBytes = fi.Exists ? fi.Length : 0,
         });
-        var verify = VerifyRecordingAsync(path, optimizeSeek); // red de seguridad + (archivo único) optimización de seek
+        // En el APAGADO no se verifica ni se optimiza: el proceso sale enseguida y un remux a medias dejaría su temporal.
+        if (!verify) return;
+        var verifyTask = VerifyRecordingAsync(path, optimizeSeek); // red de seguridad + (archivo único) optimización de seek
         // Se registra SIEMPRE para que el renombrado espere a que TERMINE (anti-carrera). Con remux, porque reescribe el
         // archivo in situ. Y sin él también: la verificación abre el archivo por su nombre a los 300 ms, y si para
         // entonces ya se renombró no lo encuentra → FALSA alarma «grabación sin verificar», RecordingFileUnverified de
@@ -1003,7 +1143,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // operador tarda en escribir); con el nombre pedido por la API al detener, el renombrado es inmediato y la
         // carrera era sistemática (medido). Poda los ya completados para no crecer sin límite en una grabación larga
         // con muchas piezas. (Auditoría N29.)
-        lock (_optimizeLock) { _pendingOptimizes.RemoveAll(t => t.IsCompleted); _pendingOptimizes.Add(verify); }
+        lock (_optimizeLock) { _pendingOptimizes.RemoveAll(t => t.IsCompleted); _pendingOptimizes.Add(verifyTask); }
     }
 
     /// <summary>
@@ -1074,11 +1214,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private async Task StopSegmentScanAsync()
     {
-        if (_segScanCts is null) return;
-        await _segScanCts.CancelAsync().ConfigureAwait(false);
-        if (_segScanLoop is not null) { try { await _segScanLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
-        _segScanCts.Dispose();
-        _segScanCts = null; _segScanLoop = null;
+        // Se toman y anulan de golpe: un Detener y el Dispose del motor (cierre de la aplicación) pueden llegar a la vez, y
+        // con los campos compartidos el segundo encontraba el CTS ya dispuesto o nulo a mitad (el Dispose abortaba antes de
+        // cerrar el proceso de grabación).
+        var cts = Interlocked.Exchange(ref _segScanCts, null);
+        var loop = Interlocked.Exchange(ref _segScanLoop, null);
+        if (cts is null) return;
+        try { await cts.CancelAsync().ConfigureAwait(false); } catch (ObjectDisposedException) { /* ya dispuesto */ }
+        if (loop is not null) { try { await loop.ConfigureAwait(false); } catch { /* cancelación */ } }
+        cts.Dispose();
     }
 
     // --- Carta de ajuste (slate) ante pérdida de señal en vivo ---
@@ -1112,14 +1256,19 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
         _recovering = true;
+        int generation = _recordGeneration; // la recuperación es de ESTA grabación: si se detiene o empieza otra, no actúa
         _log.LogWarning("Canal {Key}: el proceso de grabación murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).", _channelKey, exitCode);
         // A la auditoría: es el suceso que explica un archivo cortado y un hueco de segundos. −1 es el código con
         // el que sale un proceso MATADO (watchdog por estancamiento, o alguien desde fuera); cualquier otro es
         // FFmpeg saliendo por su cuenta (la entrada falló, el codificador, un error de escritura…).
-        RecordingInterrupted?.Invoke(this, (exitCode, exitCode == -1
-            ? "proceso terminado a la fuerza (watchdog por estancamiento, o desde fuera)"
-            : $"FFmpeg salió con código {exitCode}"));
-        _ = Task.Run(() => RecoverRecordingAsync(exitCode));
+        try
+        {
+            RecordingInterrupted?.Invoke(this, (exitCode, exitCode == -1
+                ? "proceso terminado a la fuerza (watchdog por estancamiento, o desde fuera)"
+                : $"FFmpeg salió con código {exitCode}"));
+        }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: fallo al notificar la interrupción; la recuperación sigue.", _channelKey); }
+        _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation));
     }
 
     /// <summary>
@@ -1129,7 +1278,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// reintenta con más backoff hasta que la señal vuelva. <see cref="_recovering"/> se mantiene mientras dure
     /// la cadena de reintentos y se limpia al lograrlo o al dejar de grabar. (Auditoría N1.)
     /// </summary>
-    private async Task RecoverRecordingAsync(int exitCode)
+    private async Task RecoverRecordingAsync(int exitCode, int generation)
     {
         bool retry = false;
         try
@@ -1138,8 +1287,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             await _gate.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_disposed || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
-                bool slate = _recordProfile?.SlateOnSignalLoss == true;
+                if (_disposed || generation != _recordGeneration || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+                // Carta de ajuste solo si la SEÑAL falta. Una fuente que se auto-reporta y sigue con señal (la caída fue del
+                // proceso: el vigilante lo mató bajo carga, un error de escritura o del codificador) no saldría NUNCA de las
+                // barras: su única salida es el aviso «señal de vuelta», y la señal no se fue. Se reconstruye la fuente viva.
+                bool slate = _recordProfile?.SlateOnSignalLoss == true &&
+                             !(_source is { SelfReportsRecovery: true } s && s.CurrentSignal.State == SignalState.Locked);
                 if (slate) { _slate = true; _slateSince = DateTimeOffset.UtcNow; _slateAlarmRaised = false; }
                 await ReplaceProcessAsync(recording: true, slate: slate, CancellationToken.None).ConfigureAwait(false);
                 if (slate) { RaiseAlarm(AlarmType.Slate, true); StartRecoveryProbe(); }
@@ -1152,14 +1305,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                     _log.LogWarning("Canal {Key}: la fuente sigue sin señal; la grabación continuará en una pieza nueva cuando vuelva.", _channelKey);
                 else
                     _log.LogError(ex, "Canal {Key}: fallo al recuperar la grabación tras la caída; se reintentará con backoff.", _channelKey);
-                retry = !_disposed && _state is (RecordingState.Recording or RecordingState.Starting);
+                retry = !_disposed && generation == _recordGeneration && _state is (RecordingState.Recording or RecordingState.Starting);
             }
             finally { _gate.Release(); }
         }
         finally
         {
-            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode)); // mantiene _recovering=true durante la cadena
-            else _recovering = false;
+            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation)); // mantiene _recovering=true durante la cadena
+            else if (generation == _recordGeneration) _recovering = false; // si ya es otra grabación, la bandera es suya
         }
     }
 
@@ -1182,7 +1335,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+            if (_disposed || _slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
             _slate = true;
             _slateSince = DateTimeOffset.UtcNow;
             _slateAlarmRaised = false;
@@ -1203,14 +1356,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// <summary>Sale de la carta de ajuste reconstruyendo la fuente en vivo. Devuelve <c>true</c> si lo logró;
     /// <c>false</c> si el rebuild falló (la señal volvió a caer) → sigue en slate y el bucle de recuperación
     /// reintentará. <c>_slate</c> solo se baja TRAS un rebuild exitoso, para no quedar «grabando» sin proceso. (N3.)</summary>
-    private async Task<bool> ExitSlateAsync()
+    private async Task<bool> ExitSlateAsync(CancellationToken ct = default)
     {
+        bool exited = false;
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (!_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return true; // ya no aplica
+            // Un bucle de recuperación ya relevado (otro ciclo de slate lo canceló) no debe sacar del slate al ciclo nuevo.
+            if (ct.IsCancellationRequested) return false;
+            if (_disposed || !_slate || _state is not (RecordingState.Recording or RecordingState.Starting)) return true; // ya no aplica
             await ReplaceProcessAsync(recording: true, slate: false, CancellationToken.None).ConfigureAwait(false);
             _slate = false; // solo tras reconstruir con ÉXITO: si ReplaceProcessAsync lanzó, seguimos en slate
+            exited = true;
             RaiseAlarm(AlarmType.Slate, false);
             RaiseAlarm(AlarmType.SignalLoss, false); // la señal volvió: retira la alarma de slate prolongado
             _slateAlarmRaised = false;
@@ -1222,7 +1379,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _log.LogError(ex, "Canal {Key}: error al salir de carta de ajuste; se mantiene el slate y se reintentará.", _channelKey);
             return false;
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+            // Si la señal volvió a caer MIENTRAS se salía (el aviso se descartó porque _slate aún era true), se reevalúa ya:
+            // si no, el canal grababa la fuente sin señal hasta que el vigilante lo matara 30 s después.
+            if (exited && _source is { } src && src.CurrentSignal.State == SignalState.NoSignal)
+                OnSourceSignalChanged(this, src.CurrentSignal);
+        }
     }
 
     /// <summary>
@@ -1263,10 +1427,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// </summary>
     private async Task TryFallbackEncoderAsync()
     {
+        bool resumeRecovery = false;
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_fallbackPending) return;
+            if (_disposed || _fallbackPending) return;
             var current = _recordProfile;
             if (current is null || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
@@ -1297,8 +1462,19 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             await ReplaceProcessAsync(recording: true, slate: _slate, CancellationToken.None).ConfigureAwait(false);
             RaiseAlarm(AlarmType.EncoderFallback, true);
         }
-        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al degradar el codificador.", _channelKey); }
-        finally { _fallbackPending = false; _gate.Release(); }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Canal {Key}: error al degradar el codificador.", _channelKey);
+            // El proceso anterior ya se retiró y el degradado no arrancó: sin proceso NI caída que recuperar, el canal se
+            // quedaba «grabando» sin escribir nada hasta que alguien lo detuviera. Se devuelve al camino normal de recuperación.
+            resumeRecovery = !_disposed && _state is (RecordingState.Recording or RecordingState.Starting) && _supervisor is not { IsRunning: true };
+        }
+        finally
+        {
+            _fallbackPending = false;
+            _gate.Release();
+            if (resumeRecovery) { _encoderOpenError = false; OnRecordingProcessDied(this, -1); }
+        }
     }
 
     /// <summary>
@@ -1335,7 +1511,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             bool recording = _state is RecordingState.Recording or RecordingState.Starting;
             await ReplaceProcessAsync(recording, recording && _slate, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: error al bajar los canales de audio.", _channelKey); }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Canal {Key}: error al bajar los canales de audio.", _channelKey);
+            // Igual que sin escalón al que bajar: si grababa y ya no hay proceso, a la recuperación normal (pieza nueva).
+            resumeRecovery = !_disposed && _state is (RecordingState.Recording or RecordingState.Starting) && _supervisor is not { IsRunning: true };
+        }
         finally
         {
             _audioFallbackPending = false;
@@ -1347,9 +1528,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void StartRecoveryProbe()
     {
-        _recoveryCts?.Dispose(); // dispone el del ciclo de slate anterior (ya finalizado): sin fuga de CTS. (#53)
-        _recoveryCts = new CancellationTokenSource();
-        _recoveryLoop = Task.Run(() => RecoveryLoopAsync(_recoveryCts.Token));
+        if (_disposed) return;
+        // Cancela el bucle del ciclo de slate anterior antes de abrir otro: con la señal a golpes, cada reentrada en slate
+        // dejaba vivo (e incancelable) el bucle anterior, y varios sondeaban la misma tarjeta a la vez y se hacían fallar.
+        var previous = _recoveryCts;
+        try { previous?.Cancel(); } catch (ObjectDisposedException) { /* ya dispuesto */ }
+        previous?.Dispose(); // sin fuga de CTS. (#53)
+        var cts = new CancellationTokenSource();
+        _recoveryCts = cts;
+        _recoveryLoop = Task.Run(() => RecoveryLoopAsync(cts.Token));
     }
 
     private void StopRecoveryProbe()
@@ -1383,13 +1570,21 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // OnSourceSignalChanged), así que sondearla es redundante y DAÑINO: el sondeo abre un ffmpeg que se
             // conecta a los sockets del PROPIO receptor (no prueba la fuente NDI real), compite con el pipeline y da
             // falsos positivos. Para NDI seguimos vigilando el slate PROLONGADO (arriba) pero no sondeamos. (#39/#59.)
-            if (_source?.SelfReportsRecovery == true) continue;
+            if (_source?.SelfReportsRecovery == true)
+            {
+                // Sin sondeo, pero sin depender SOLO del aviso: si la fuente ya dice que tiene señal (el aviso llegó mientras
+                // se entraba en slate, o la caída fue del proceso y no de la señal) se sale del slate aquí. Si la
+                // reconstrucción falla, se reintenta en el siguiente tick.
+                if (_source.CurrentSignal.State == SignalState.Locked && !ct.IsCancellationRequested &&
+                    await ExitSlateAsync(ct).ConfigureAwait(false) && !_slate) return;
+                continue;
+            }
 
             if (await ProbeDeviceAsync(ct).ConfigureAwait(false) && !ct.IsCancellationRequested)
             {
                 // Solo termina el bucle si la SALIDA del slate tuvo éxito; si el rebuild falló (la señal volvió a
                 // caer entre el sondeo y la reconstrucción), sigue sondeando en vez de abandonar. (Auditoría N3.)
-                if (await ExitSlateAsync().ConfigureAwait(false)) return;
+                if (await ExitSlateAsync(ct).ConfigureAwait(false) && !_slate) return;
             }
         }
     }
@@ -1400,13 +1595,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_source is null) return false;
         try
         {
+            // Sin redirigir la salida: nadie la lee, y con las tuberías redirigidas un sondeo que escribe más de lo que cabe
+            // en su búfer (volcado de la entrada + avisos por frame) se bloqueaba al escribir, agotaba los 8 s y contaba
+            // como fallido: el canal no salía del slate por sondeo. Además, -loglevel error -nostats: casi no escribe nada.
             var psi = new ProcessStartInfo
             {
                 FileName = _locator.FfmpegPath,
-                RedirectStandardOutput = true, RedirectStandardError = true,
+                RedirectStandardOutput = false, RedirectStandardError = false,
                 UseShellExecute = false, CreateNoWindow = true,
             };
             psi.ArgumentList.Add("-hide_banner");
+            psi.ArgumentList.Add("-nostats");
+            psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
             // Los argumentos de SONDEO (no los del proceso del canal): una fuente con relé no reserva consumidor para
             // esto y lanza si su receptor no ve señal, con lo que el sondeo falla y el canal sigue en carta de ajuste.
             foreach (var a in _source.BuildProbeArguments()) psi.ArgumentList.Add(a);
@@ -1428,8 +1628,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void RaiseAlarm(AlarmType type, bool active)
     {
-        bool changed = active ? _activeAlarms.Add(type) : _activeAlarms.Remove(type);
-        if (changed) AlarmChanged?.Invoke(this, (type, active));
+        // Se llama desde varios hilos (stderr de FFmpeg, vigilante, verificación de archivos, recuperación): un HashSet
+        // modificado a la vez se corrompe y, desde el hilo de stderr, la excepción se tragaba y las alarmas dejaban de
+        // funcionar en silencio.
+        bool changed;
+        lock (_activeAlarms) changed = active ? _activeAlarms.Add(type) : _activeAlarms.Remove(type);
+        if (changed)
+        {
+            try { AlarmChanged?.Invoke(this, (type, active)); }
+            catch (Exception ex) { _log.LogError(ex, "Canal {Key}: un suscriptor de alarmas falló ({Type}).", _channelKey, type); }
+        }
     }
 
     private void ClearDetectAlarms()
@@ -1522,6 +1730,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// (ruta antigua, ruta nueva). Pensado para DESPUÉS de detener: el nombre manual se pide al final.
     /// </summary>
     public IReadOnlyList<(string Old, string New)> RenameSessionFiles(string baseName)
+        => RenameSessionFilesAsync(baseName).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Versión asíncrona de <see cref="RenameSessionFiles"/>: la espera a la optimización de los archivos (hasta 10 min en
+    /// un archivo grande sobre disco duro) ya NO bloquea un hilo del pool — varios Detener con nombre desde la API
+    /// dejaban hilos parados y retrasaban todo lo demás (Kestrel, el programador, la base de datos) —, y los movimientos
+    /// (con reintentos cortos) van al pool, nunca al hilo de quien llama.
+    /// </summary>
+    public async Task<IReadOnlyList<(string Old, string New)>> RenameSessionFilesAsync(string baseName)
     {
         var safe = SanitizeBaseName(baseName);
         var pairs = new List<(string Old, string New)>();
@@ -1541,9 +1758,17 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // se renombra igual (el archivo es válido aunque no haya quedado optimizado).
         Task[] pendingRemux;
         lock (_optimizeLock) pendingRemux = _pendingOptimizes.ToArray();
-        try { if (pendingRemux.Length > 0) Task.WaitAll(pendingRemux, TimeSpan.FromMinutes(10)); }
-        catch { /* cada remux ya capturó sus errores internamente */ }
+        if (pendingRemux.Length > 0)
+        {
+            try { await Task.WhenAll(pendingRemux).WaitAsync(TimeSpan.FromMinutes(10)).ConfigureAwait(false); }
+            catch { /* tope agotado, o cada remux ya capturó sus errores internamente */ }
+        }
+        return await Task.Run(() => MoveSessionFiles(safe, files, pairs)).ConfigureAwait(false);
+    }
 
+    /// <summary>Mueve los archivos de la sesión al nombre nuevo (con dedupe) y actualiza el snapshot si sigue siendo el suyo.</summary>
+    private List<(string Old, string New)> MoveSessionFiles(string safe, List<string> files, List<(string Old, string New)> pairs)
+    {
         var current = new List<string>(files.Count); // cómo queda cada archivo de la sesión, renombrado o no
         foreach (var old in files) // el snapshot de la sesión terminada (N9), tomado al entrar
         {
@@ -1591,6 +1816,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return; // idempotente
         _disposed = true;
         if (_source is not null) _source.SignalChanged -= OnSourceSignalChanged;
         StopRecoveryProbe();
@@ -1600,17 +1826,39 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_awaitLoop is not null) { try { await _awaitLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
         _awaitCts?.Dispose(); // ídem. (#53)
         await StopSegmentScanAsync().ConfigureAwait(false);
-        if (_supervisor is not null)
+
+        // Serializa con las transiciones (Grabar, Detener, recuperación, slate, degradación): antes el Dispose no tomaba el
+        // semáforo y, si coincidía con un ReplaceProcessAsync en vuelo (p. ej. reasignar la entrada mientras un Detener
+        // finalizaba el archivo), leía _supervisor en el hueco en que ya era null y el proceso que ese Detener lanzaba
+        // después quedaba HUÉRFANO con el dispositivo abierto (el canal nuevo no podía abrir la tarjeta hasta reiniciar).
+        // Con tope: un Detener finalizando un archivo grande puede tardar, pero no se espera para siempre.
+        bool gated = false;
+        try { gated = await _gate.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false); }
+        catch (ObjectDisposedException) { /* no debería ocurrir: el semáforo ya no se dispone */ }
+        if (!gated) _log.LogWarning("Canal {Key}: una transición no terminó en 60 s; se cierra el canal igualmente.", _channelKey);
+        try
         {
-            Detach(_supervisor); // no "recuperar" en un stop/replace nuestro (N6)
-            await _supervisor.DisposeAsync().ConfigureAwait(false);
+            var supervisor = _supervisor;
+            _supervisor = null;
+            if (supervisor is not null)
+            {
+                Detach(supervisor); // no "recuperar" en un stop/replace nuestro (N6)
+                await supervisor.DisposeAsync().ConfigureAwait(false);
+            }
+            var sink = _sink;
+            _sink = null;
+            if (sink is not null) await sink.DisposeAsync().ConfigureAwait(false);
+            // Sumideros de relevos aún pendientes: se cierran aquí (su HandoffAsync los volverá a disponer sin efecto).
+            PreviewSink[] pending;
+            lock (_liveSinks) { pending = _liveSinks.ToArray(); _liveSinks.Clear(); }
+            foreach (var s in pending) await s.DisposeAsync().ConfigureAwait(false);
+            _pacer?.Dispose();
         }
-        if (_sink is not null) await _sink.DisposeAsync().ConfigureAwait(false);
-        // Sumideros de relevos aún pendientes: se cierran aquí (su HandoffAsync los volverá a disponer sin efecto).
-        PreviewSink[] pending;
-        lock (_liveSinks) { pending = _liveSinks.ToArray(); _liveSinks.Clear(); }
-        foreach (var s in pending) await s.DisposeAsync().ConfigureAwait(false);
-        _pacer?.Dispose();
-        _gate.Dispose();
+        finally
+        {
+            // El semáforo NO se dispone: una transición que aún lo espere (recuperación, slate) lo tomará, verá _disposed y
+            // saldrá sin lanzar nada. Disponerlo con alguien dentro hacía fallar su Release con ObjectDisposedException.
+            if (gated) _gate.Release();
+        }
     }
 }

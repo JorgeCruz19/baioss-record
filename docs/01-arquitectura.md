@@ -121,7 +121,14 @@ uyvy422 + 16 canales (120 MB/s): receptor `-c copy -f nut` 0,10 núcleos y 18 MB
 canal 0,03 núcleos (menos que leer del disco). En total unos 0,25 núcleos y 40 MB más por canal 1080i que la captura
 directa, sin GPU ni disco; 4 canales son ≈ 1 núcleo y 0,5 GB/s de loopback. Validado con la Duo 2 real el
 2026-09-27: 4 canales con 16 canales de audio grabando a 30/30 fps sin descartes y sin que ningún receptor se relance.
-`Capture:DecklinkRelay=false` devuelve la captura directa.
+`Capture:DecklinkRelay=false` devuelve la captura directa. **Tarjeta muda:** el vigilante del supervisor no ve una tarjeta
+que deja de entregar frames (FFmpeg sigue imprimiendo su progreso con el contador parado); lo hace `FrameFlowWatch` en el
+receptor, contando los frames que cruzan el relé por conexión: 30 s sin ninguno, tras haber fluido y con la tarjeta abierta
+y con señal, reabre la captura como tras una caída. Y como la fuente en modo relé publica su señal
+(`SelfReportsRecovery`), el motor no sondea la tarjeta en carta de ajuste y, si el proceso de grabación cae con la señal
+presente, reconstruye la fuente viva en vez de grabar barras. Si un relé tiene que descartar datos de un proceso que no da
+abasto, el canal lo sabe (`ICaptureSource.InputDataDropped`): alarma «Frames perdidos» y un error en el registro.
+(Auditoría de estabilidad 2026-09, `docs/AUDITORIA-ESTABILIDAD-2026-09.md`.)
 
 **Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando: con una
 entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; hasta 10 s de `SettleTimeout` o 15 s de
@@ -130,8 +137,10 @@ entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; ha
 frame del proceso nuevo (≈ 0,5–1 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales
 grabando, Detener tardaba 15 s). Luego envía la «q» al grabador y espera a que FFmpeg cierre el archivo (hasta
 `GracefulTimeout`, 30 s; si vence, lo mata y avisa «FFmpeg no finalizó en…»), emite el segmento, espera su fila en la
-BD y publica `RecordingStopped` (el bus espera a la auditoría y al WebSocket del panel). Solo entonces la aplicación
-abre el diálogo del nombre. Medido con contenido fabricado (i5-10300H, GTX 1650 Ti, NVMe): el cierre del archivo en
+BD y publica `RecordingStopped` (el bus solo encola para la auditoría y para cada panel web: desde 2026-09 cada WebSocket
+tiene su cola y su escritor, y un panel lento ya no alarga el Detener). El diálogo del nombre se abre al instante y el
+renombrado espera a que la parada termine. En el APAGADO de la aplicación, Detener cierra el archivo sin levantar un
+preview nuevo ni verificarlo (el canal se dispone justo después), dentro de un tope total de 45 s. Medido con contenido fabricado (i5-10300H, GTX 1650 Ti, NVMe): el cierre del archivo en
 sí NO crece con las horas (MXF MPEG-2 + PCM de 3 h y 7 GB en 0,11 s; MP4 estándar con vídeo 59.94 fps y 8 pistas AAC
 de 3 h codificado con x264 en 0,10 s: el `moov` de 4 millones de muestras es cuestión de milisegundos; un archivo de
 3,5 GB se cierra en 0,12 s con Defender activo), pero **el cierre de `h264_nvenc` sí**: con el mismo MP4 de 8 pistas,

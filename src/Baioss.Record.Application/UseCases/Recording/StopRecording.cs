@@ -78,7 +78,7 @@ public sealed class StopRecordingHandler(IChannelManager channels)
         if (channel is not IPostRecordingRename renamer) return new(RecordingNameOutcome.Ignored, Detail: RecordingNameIgnored.Unsupported);
 
         // Sin el token de la petición: un cliente que se va a medias no debe dejar el renombrado a la mitad.
-        var rename = renamer.RenameLastRecordingAsync(name, command.Operator, CancellationToken.None);
+        var rename = renamer.RenameRecordingAsync(before.SessionId!.Value, name, command.Operator, CancellationToken.None);
         var first = await Task.WhenAny(rename, Task.Delay(RenameWait, ct)).ConfigureAwait(false);
         if (first != rename)
         {

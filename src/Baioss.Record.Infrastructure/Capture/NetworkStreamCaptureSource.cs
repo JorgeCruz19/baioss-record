@@ -80,6 +80,7 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
             receiver.PeerConnected += OnPeerConnected;
             receiver.PeerLost += OnPeerLost;
             receiver.PassphraseRejected += OnPassphraseRejected;
+            receiver.DataDropped += OnDataDropped;
             _rejected = false;
             // Sin señal hasta que el receptor vea al emisor: con «SEÑAL OK» optimista el operador podría pulsar Grabar sin
             // que haya emisor y creer que graba algo.
@@ -110,6 +111,7 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
                 receiver.PeerConnected -= OnPeerConnected;
                 receiver.PeerLost -= OnPeerLost;
                 receiver.PassphraseRejected -= OnPassphraseRejected;
+                receiver.DataDropped -= OnDataDropped;
             }
             CurrentSignal = SignalInfo.None; // sin avisar: al cerrar (reasignación/apagado) ya nadie escucha esta fuente
         }
@@ -135,6 +137,32 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
         return ConsumerArgumentsFor(receiver.ConsumerPort);
     }
 
+    /// <summary>
+    /// Sondeo: el mismo TS del relé pero SIN reservar consumidor (la reserva es del proceso del canal: un sondeo la pisaría y
+    /// el relevo de ese proceso se juzgaría con la conexión del sondeo). Hoy el motor no sondea fuentes que se auto-reportan;
+    /// esto lo deja correcto si algún día lo hace.
+    /// </summary>
+    public IReadOnlyList<string> BuildProbeArguments()
+    {
+        if (_input is null || _error != NetworkInputError.None)
+            throw new InvalidOperationException(Localizer.F("Net_Err_CannotOpen", Definition.Name, Localizer.T(ErrorKey(_error))));
+        INetworkStreamReceiver? receiver;
+        SignalInfo signal;
+        lock (_sync) { receiver = _receiver; signal = CurrentSignal; }
+        if (receiver is null || signal.State != SignalState.Locked)
+            throw new InvalidOperationException(Localizer.F("Net_Err_CannotOpen", Definition.Name, Localizer.T("Net_Err_NoPeer")));
+        return ConsumerArgumentsFor(receiver.ConsumerPort);
+    }
+
+    /// <summary>El relé tuvo que descartar datos del proceso del canal (no daba abasto): la grabación tendrá un salto.</summary>
+    public event EventHandler<long>? InputDataDropped;
+
+    private void OnDataDropped(object? sender, long dropped)
+    {
+        lock (_sync) if (!ReferenceEquals(sender, _receiver)) return;
+        InputDataDropped?.Invoke(this, dropped);
+    }
+
     /// <summary>El relé reparte el flujo a varios consumidores: el motor puede arrancar el proceso nuevo antes de retirar el viejo.</summary>
     public bool SupportsOverlappingProcesses => true;
 
@@ -145,6 +173,9 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     /// <summary>¿El proceso del último <see cref="BuildInputArguments"/> ya lee el flujo en directo (agotó el pre-roll y el atraso
     /// acumulado mientras lo digería)? Hasta entonces su preview va adelantado y el motor no le cede el mando.</summary>
     public bool NewestConsumerIsLive => _reservation?.IsLive ?? true;
+
+    /// <summary>La reserva del último proceso construido, capturada para ese proceso (ver <see cref="ICaptureSource.NewestConsumerLiveCheck"/>).</summary>
+    public Func<bool>? NewestConsumerLiveCheck => _reservation is { } reservation ? () => reservation.IsLive : null;
 
     /// <summary>Colchón de preview configurado en la fuente (Entradas → Fuentes de red), 0 si no tiene.</summary>
     public int PreviewBufferMs => _input?.PreviewBufferMs ?? 0;

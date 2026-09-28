@@ -76,18 +76,21 @@ public sealed class DecklinkCaptureSource : ICaptureSource
     {
         // Solo en «auto»: con un recuento fijo elegido por el operador no se toca nada (el motor registra el fallo).
         if (!_audio.Auto) return false;
-        int next = AudioSelection.NextLower(_channels);
-        if (next == 0) return false;
-        _channels = next;
-        // La señal publicada refleja los canales reales, sin re-emitir SignalChanged (no cambió la presencia).
-        if (CurrentSignal.State == SignalState.Locked)
-            CurrentSignal = CurrentSignal with
-            {
-                AudioChannels = _channels,
-                AudioSelectionLabel = _channels > 2 ? _audio.Describe(_channels) : null,
-                AudioSelectedPairs = _channels > 2 ? _audio.SelectedPairs(_channels) : null,
-            };
-        return true;
+        lock (_sync) // los manejadores del receptor escriben CurrentSignal bajo el mismo candado (sin actualizaciones perdidas)
+        {
+            int next = AudioSelection.NextLower(_channels);
+            if (next == 0) return false;
+            _channels = next;
+            // La señal publicada refleja los canales reales, sin re-emitir SignalChanged (no cambió la presencia).
+            if (CurrentSignal.State == SignalState.Locked)
+                CurrentSignal = CurrentSignal with
+                {
+                    AudioChannels = _channels,
+                    AudioSelectionLabel = _channels > 2 ? _audio.Describe(_channels) : null,
+                    AudioSelectedPairs = _channels > 2 ? _audio.SelectedPairs(_channels) : null,
+                };
+            return true;
+        }
     }
 
     public async Task OpenAsync(CancellationToken ct = default)
@@ -112,6 +115,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             receiver.DeviceBusy += OnReceiverDeviceBusy;
             receiver.SignalPresence += OnReceiverSignalPresence;
             receiver.AudioChannelsRejected += OnReceiverAudioRejected;
+            receiver.DataDropped += OnReceiverDataDropped;
             _deviceOpen = false; _inputSignal = true; _detected = null; _description = null;
             // Sin señal hasta que el receptor abra la tarjeta: con «SEÑAL OK» optimista el operador podría pulsar Grabar
             // sin captura y creer que graba algo.
@@ -163,6 +167,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
                 receiver.DeviceBusy -= OnReceiverDeviceBusy;
                 receiver.SignalPresence -= OnReceiverSignalPresence;
                 receiver.AudioChannelsRejected -= OnReceiverAudioRejected;
+                receiver.DataDropped -= OnReceiverDataDropped;
                 CurrentSignal = SignalInfo.None; // sin avisar: al cerrar (reasignación/apagado) ya nadie escucha esta fuente
             }
         }
@@ -236,8 +241,28 @@ public sealed class DecklinkCaptureSource : ICaptureSource
     /// viejo (relevo sin corte). En captura directa la tarjeta es exclusiva.</summary>
     public bool SupportsOverlappingProcesses => _receiverFactory is not null;
 
+    /// <summary>
+    /// En modo relé la fuente PUBLICA la pérdida y la vuelta de la señal (el receptor permanente lo cuenta: tarjeta abierta,
+    /// «No input signal», «Input returned», reapertura): el motor no necesita sondear la tarjeta en carta de ajuste — el
+    /// sondeo leía medio segundo de vídeo en crudo del relé cada 5 s — y, tras una caída del PROCESO con la señal presente,
+    /// reconstruye la fuente viva en vez de grabar barras. En captura directa, el motor sondea como siempre.
+    /// </summary>
+    public bool SelfReportsRecovery => _receiverFactory is not null;
+
+    /// <summary>El relé tuvo que descartar frames del proceso del canal (no daba abasto): la grabación tendrá un salto.</summary>
+    public event EventHandler<long>? InputDataDropped;
+
+    private void OnReceiverDataDropped(object? sender, long dropped)
+    {
+        lock (_sync) if (!ReferenceEquals(sender, _receiver)) return;
+        InputDataDropped?.Invoke(this, dropped);
+    }
+
     /// <summary>¿El proceso del último <see cref="BuildInputArguments"/> ya lee el flujo en directo? (relé)</summary>
     public bool NewestConsumerIsLive => _reservation?.IsLive ?? true;
+
+    /// <summary>La reserva del último proceso construido, capturada para ese proceso (ver <see cref="ICaptureSource.NewestConsumerLiveCheck"/>).</summary>
+    public Func<bool>? NewestConsumerLiveCheck => _reservation is { } reservation ? () => reservation.IsLive : null;
 
     /// <summary>El relé en crudo no entrega pre-roll: nada que saltarse.</summary>
     public int PreviewFramesToSkip => _reservation?.VideoFrames ?? 0;
@@ -336,9 +361,11 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             if (!ReferenceEquals(sender, _receiver)) return; // un receptor ya cerrado
             _description = description;
             _deviceOpen = true;
-            _inputSignal = true; // hasta que la tarjeta diga lo contrario
             _waitingReason = null;
-            signal = CurrentSignal = LockedSignal();
+            // _inputSignal NO se pisa aquí: la tarjeta avisa «No input signal detected» desde su primer frame sin señal, que
+            // suele llegar ANTES que este volcado; forzarlo a true dejaba el canal en «SEÑAL OK» sin señal hasta que la
+            // señal volviera y se perdiera otra vez. Se reinicia a true con cada proceso nuevo (OnReceiverLost).
+            signal = CurrentSignal = _inputSignal ? LockedSignal() : LockedSignal() with { State = SignalState.NoSignal };
         }
         _log.LogInformation("DeckLink «{Name}»: tarjeta abierta por el receptor permanente ({Format}, {Channels} canales de audio).",
             Definition.Name, signal.FormatLabel ?? "formato sin describir", _channels);
@@ -408,6 +435,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             if (!ReferenceEquals(sender, _receiver)) return;
             _deviceOpen = false;
             _description = null;
+            _inputSignal = true; // proceso nuevo: hasta que la tarjeta diga lo contrario
             // Si ya se sabe POR QUÉ no abre (en uso, sin detección), se mantiene ese motivo; si no, «reabriendo».
             if (_waitingReason is "Dl_State_Busy" or "Dl_State_NoDetect") return;
             signal = CurrentSignal = Waiting("Dl_State_Reopening");

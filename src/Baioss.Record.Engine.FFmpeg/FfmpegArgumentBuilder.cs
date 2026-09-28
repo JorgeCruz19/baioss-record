@@ -49,6 +49,13 @@ public sealed class FfmpegArgumentBuilder
     /// <summary>Patrón glob de los archivos de segmento del canal (p. ej. <c>A_*.mov</c>) para vigilarlos.</summary>
     public string SegmentFileGlob { get; private set; } = "";
 
+    /// <summary>
+    /// Glob de los segmentos de ESTE proceso: su base real (la elegida, o <c>{canal}_{fecha_hora}</c> por defecto) +
+    /// <c>_*</c>. Sin nombre, <see cref="SegmentFileGlob"/> abarca TODO el histórico del canal en la carpeta (meses de
+    /// archivos en 24/7); el motor usa este para medir y vigilar solo lo de la sesión. Vacío si la salida no es segmentada.
+    /// </summary>
+    public string SegmentPrefixGlob { get; private set; } = "";
+
     public FfmpegArgumentBuilder From(ICaptureSource source) { _source = source; return this; }
     public FfmpegArgumentBuilder Using(RecordingProfile profile) { _profile = profile; return this; }
     public FfmpegArgumentBuilder ToDirectory(string dir) { _outputDirectory = dir; return this; }
@@ -444,6 +451,7 @@ public sealed class FfmpegArgumentBuilder
         // Glob de vigilancia: con nombre dado, específico ({base}_*); sin nombre (legado), amplio por canal
         // ({canal}_*), porque el prefijo lleva fecha/hora y se siembran los anteriores como ya emitidos.
         string glob = _baseName is not null ? $"{_baseName}_*.{ext}" : $"{_channelKey}_*.{ext}";
+        SegmentPrefixGlob = $"{baseName}_*.{ext}";
         return (Path.Combine(_outputDirectory, $"{baseName}_{counter}.{ext}"), glob);
     }
 

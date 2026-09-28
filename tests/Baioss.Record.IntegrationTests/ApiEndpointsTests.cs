@@ -157,26 +157,19 @@ public sealed class ApiEndpointsTests
     }
 
     [Fact]
-    public async Task Status_UnknownChannel_FailsLoudly()
+    public async Task UnknownChannel_Is404_NotAServerError()
     {
         var (app, _) = BuildApi();
         await using var host = app;
         await app.StartAsync();
         var client = app.GetTestClient();
 
-        // El canal no existe → el handler lanza KeyNotFoundException. Aún no hay mapeo de errores
-        // (eso es Fase 2/3), así que debe fallar de forma evidente: error de servidor o excepción
-        // propagada por TestServer — nunca un 2xx silencioso.
-        try
-        {
-            var response = await client.GetAsync($"/api/v1/channels/{Guid.NewGuid()}/status");
-            Assert.True((int)response.StatusCode >= 500,
-                $"Se esperaba un error de servidor para un canal inexistente, pero fue {(int)response.StatusCode}.");
-        }
-        catch (Exception ex) when (ex is not Xunit.Sdk.XunitException)
-        {
-            // TestServer propagó la excepción del handler: también es un fallo esperado.
-        }
+        // El canal no existe (o se está reasignando su entrada): 404 con un mensaje claro, no un 500. Estado, grabar y detener.
+        var id = Guid.NewGuid();
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, (await client.GetAsync($"/api/v1/channels/{id}/status")).StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound,
+            (await client.PostAsJsonAsync($"/api/v1/channels/{id}/recording/start", new { profileId = Guid.Empty, @operator = "t" })).StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, (await client.PostAsync($"/api/v1/channels/{id}/recording/stop", null)).StatusCode);
 
         await app.StopAsync();
     }

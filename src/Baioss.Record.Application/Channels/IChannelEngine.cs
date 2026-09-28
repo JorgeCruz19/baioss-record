@@ -97,6 +97,14 @@ public interface IPostRecordingRename
     /// tanto termina otra, no toca la nueva.
     /// </summary>
     Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Como <see cref="RenameLastRecordingAsync"/>, pero SOLO si la última grabación terminada es <paramref name="sessionId"/>
+    /// (la que el operador detuvo al abrir el diálogo del nombre). Si mientras escribía el nombre otra grabación del canal
+    /// empezó y terminó (API, programador), su nombre no debe acabar en los archivos de esa otra. Devuelve null si no toca.
+    /// </summary>
+    Task<string?> RenameRecordingAsync(Guid sessionId, string baseName, string? operatorName = null, CancellationToken ct = default)
+        => RenameLastRecordingAsync(baseName, operatorName, ct);
 }
 
 /// <summary>Registro de los canales activos del despliegue (A, B, …).</summary>
