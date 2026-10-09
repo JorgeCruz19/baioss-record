@@ -52,9 +52,13 @@ public partial class App : System.Windows.Application
     // Object mataría los FFmpeg sin flush → MP4 sin moov (sobre todo con el contenedor MP4 estándar).
     private bool _shuttingDown;
     private bool _shutdownComplete;
+    private bool _confirmingClose;
     /// <summary>Tope del apagado ordenado: si se excede (un FFmpeg/servicio atascado) se fuerza la salida, para
-    /// que el proceso NUNCA quede vivo bloqueando el mutex de instancia única («ya está en ejecución» al reabrir).</summary>
-    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(20);
+    /// que el proceso NUNCA quede vivo bloqueando el mutex de instancia única («ya está en ejecución» al reabrir).
+    /// 45 s: los servicios de fondo tienen 8 s y cada FFmpeg hasta 30 s para cerrar su archivo tras la «q»; con 20 s, un
+    /// cierre con varias grabaciones largas (NVENC tarda más en soltar el codificador cuantas más horas lleva) acababa en
+    /// salida forzada con la sesión sin cerrar en la base de datos (al reiniciar, un «corte» falso en la auditoría).</summary>
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(45);
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -491,6 +495,36 @@ public partial class App : System.Windows.Application
                             try { File.Delete(f); } catch { /* best-effort */ }
             }
             catch (Exception ex) { Serilog.Log.Debug(ex, "Barrido de temporales .faststart falló."); }
+
+            // Lo mismo en la CARPETA DE DESTINO de cada canal (el despliegue recomendado graba en un disco duro dedicado,
+            // fuera de «recordings»): tras un corte de luz ahí quedaba el último segmento sin registrar (invisible para el
+            // historial y la retención) y los temporales de un remux interrumpido (varios GB) para siempre. En segundo plano
+            // y SIN recorrer subcarpetas (el canal graba directo en su carpeta, que podría ser la raíz de un disco).
+            var defaultDir = Path.GetFullPath(Path.Combine(root, "recordings"));
+            var channelDirs = ChannelDestinations(app.Services)()
+                .Select(d => { try { return Path.GetFullPath(d); } catch { return null; } })
+                .Where(d => d is not null && !string.Equals(d, defaultDir, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase).Select(d => d!).ToList();
+            if (channelDirs.Count > 0)
+                _ = Task.Run(async () =>
+                {
+                    var dbFactory = app.Services.GetRequiredService<
+                        Microsoft.EntityFrameworkCore.IDbContextFactory<Baioss.Record.Infrastructure.Persistence.BaiossDbContext>>();
+                    var recLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Recovery.Segments");
+                    foreach (var dir in channelDirs)
+                    {
+                        try { await OrphanSegmentReconciler.ReconcileAsync(dbFactory, dir, recLog, search: SearchOption.TopDirectoryOnly); }
+                        catch (Exception ex) { Serilog.Log.Error(ex, "Reconciliación de segmentos huérfanos en {Dir} falló.", dir); }
+                        try
+                        {
+                            if (Directory.Exists(dir))
+                                foreach (var pat in new[] { "*.faststart.mp4", "*.faststart.mov" })
+                                    foreach (var f in Directory.EnumerateFiles(dir, pat, SearchOption.TopDirectoryOnly))
+                                        try { File.Delete(f); } catch { /* best-effort */ }
+                        }
+                        catch (Exception ex) { Serilog.Log.Debug(ex, "Barrido de temporales .faststart en {Dir} falló.", dir); }
+                    }
+                });
         }
 
         Serilog.Log.Information("API REST + WebSocket escuchando en {Url} ({Scope}); webs permitidas (CORS): {Origins}.",
@@ -591,13 +625,21 @@ public partial class App : System.Windows.Application
         // grabación 24/7. Si hay grabaciones en curso, el mensaje avisa de que se finalizarán los archivos.
         var recording = ChannelsRecording();
         e.Cancel = true; // tomamos el control; solo se cierra si el operador CONFIRMA
-        var confirm = recording.Count > 0
-            ? MessageBox.Show(
-                Localization.Loc.F("Dlg_Close_Recording", recording.Count, string.Join(", ", recording)),
-                Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, MessageBoxImage.Warning)
-            : MessageBox.Show(
-                Localization.Loc.T("Dlg_Close_Question"),
-                Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (_confirmingClose) return; // ya hay una confirmación abierta: un segundo clic en la X no abre otra
+        _confirmingClose = true;
+        MessageBoxResult confirm;
+        try
+        {
+            // Con la ventana como dueña: queda deshabilitada mientras se pregunta.
+            string text = recording.Count > 0
+                ? Localization.Loc.F("Dlg_Close_Recording", recording.Count, string.Join(", ", recording))
+                : Localization.Loc.T("Dlg_Close_Question");
+            var icon = recording.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Question;
+            confirm = sender is Window owner
+                ? MessageBox.Show(owner, text, Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, icon)
+                : MessageBox.Show(text, Localization.Loc.T("Dlg_Close_Title"), MessageBoxButton.YesNo, icon);
+        }
+        finally { _confirmingClose = false; }
         if (confirm != MessageBoxResult.Yes) return; // no cerrar (e.Cancel sigue en true)
 
         _shuttingDown = true;

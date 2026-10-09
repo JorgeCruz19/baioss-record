@@ -210,15 +210,19 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
         // tal cual al operador (`ex.Message` en su barra de estado). Lo que sí queda en español es el registro.
         if (!CanRebind) throw new InvalidOperationException(Loc.T("Rebind_Err_Simulated"));
         if (!_keys.TryGetValue(channelId, out var key)) throw new KeyNotFoundException($"Canal {channelId} no registrado.");
-        if (_engines.TryGetValue(channelId, out var current) &&
-            current.Status.RecordingState is RecordingState.Recording or RecordingState.Paused)
-            throw new InvalidOperationException(Loc.T("Rebind_Err_Recording"));
 
         // Serializa las reasignaciones (una a la vez): la comprobación de exclusividad y el intercambio de motor
         // deben ser ATÓMICOS frente a otro rebind concurrente. (Auditoría N8.)
         await _rebindGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // Solo con el canal EN REPOSO, y comprobado ya dentro del candado: antes se miraba fuera y solo «grabando» o
+            // «en pausa», así que una reasignación podía disponer el canal a mitad de un Iniciar o de un Detener (el
+            // archivo aún cerrándose) — el proceso que ese Detener lanzaba quedaba huérfano con el dispositivo abierto.
+            if (_engines.TryGetValue(channelId, out var current) &&
+                current.Status.RecordingState is not (RecordingState.Idle or RecordingState.Error))
+                throw new InvalidOperationException(Loc.T("Rebind_Err_Recording"));
+
             // Exclusividad: una cámara DirectShow o una tarjeta DeckLink no admiten dos canales a la vez. Si otro
             // canal ya usa ese dispositivo, no reasignar (el segundo fallaría a abrir y se quedaría sin grabar).
             foreach (var (otherId, otherDef) in _sources)

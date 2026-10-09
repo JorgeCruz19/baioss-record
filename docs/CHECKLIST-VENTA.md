@@ -95,8 +95,8 @@ Es el activo más frágil del negocio:
 
 Mínimo exigible: gestor de contraseñas **y** una copia fuera de línea en otra ubicación física.
 
-Y llevar un **registro de licencias emitidas**, que no es burocracia: es la única defensa contra el clonado de
-disco (ver *Límites conocidos* en `LICENCIAMIENTO.md`) y lo que permite reemitir cuando a un cliente se le
+Y llevar un **registro de licencias emitidas**, que no es burocracia: es la segunda línea contra el clonado de disco en los equipos sin TPM (con TPM 2.0 la licencia va atada al chip y
+una copia del disco no la valida; ver *Límites conocidos* en `LICENCIAMIENTO.md`) y lo que permite reemitir cuando a un cliente se le
 muere el equipo. Plantilla sugerida:
 
 | Fecha | Cliente | Código de equipo | Canales | Nº de factura | Notas (reemisión, avería…) |

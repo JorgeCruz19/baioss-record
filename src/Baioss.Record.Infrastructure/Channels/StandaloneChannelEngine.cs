@@ -59,6 +59,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     // inmune a que una grabación nueva vacíe _sessionSegments mientras el operador nombra en el diálogo. (N9.)
     private readonly List<Segment> _completedSessionSegments = new();
     private readonly List<Task> _pendingPersists = new();
+    // La sesión a la que pertenece ese snapshot (para renombrar SOLO la que el operador detuvo; ver RenameRecordingAsync).
+    private Guid? _completedSessionId;
+    // Se guarda para poder soltarlo al disponer (era una lambda anónima: quedaba suscrita a la fuente para siempre).
+    private readonly EventHandler<SignalInfo> _onSourceSignal;
 
     /// <summary>Peak-hold por canal capturado (2 estéreo; 8/16 con audio embebido multicanal): se redimensiona con la fuente.</summary>
     private double[] _peakHold = { -60, -60 };
@@ -120,7 +124,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _engine.AlarmChanged += OnEngineAlarm;
         _engine.RecordingInterrupted += OnRecordingInterrupted;
         _engine.FileUnverified += OnFileUnverified;
-        _source.SignalChanged += (_, _) => Raise();
+        _onSourceSignal = (_, _) => Raise();
+        _source.SignalChanged += _onSourceSignal;
+        _source.InputDataDropped += OnInputDataDropped;
 
         // Arranca la vigilancia de señal (publica lock/pérdida/silencio en el bus).
         _ = _signalMonitor?.WatchAsync(_source);
@@ -142,7 +148,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         set
         {
             _profile = value;
-            _ = PersistProfileAsync(value);
+            // En el pool: con SQLite el UPDATE es síncrono (y puede esperar a una base de datos ocupada), y este setter lo
+            // llama la interfaz al aplicar un preset.
+            _ = Task.Run(() => PersistProfileAsync(value));
             Raise();
         }
     }
@@ -236,7 +244,14 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // Pre-vuelo: valida perfil y destino ANTES de crear/persistir nada, para no dejar una sesión a
         // medias. Lo bloqueante lanza (lo muestra la UI); lo no bloqueante (disco/señal) solo se registra.
         Preflight(profile, recordingName);
+        ct.ThrowIfCancellationRequested();
+        // Desde aquí la grabación se crea y se arranca ENTERA aunque quien la pidió se vaya (una petición HTTP abortada, el
+        // apagado del programador): a medias quedaba una sesión abierta en la base de datos (al reiniciar, un «corte» falso
+        // en la auditoría) o una grabación arrancada sin su evento. Por eso lo que sigue usa CancellationToken.None.
+        ct = CancellationToken.None;
         _drops.Reset();
+        _lastRelayDropUtc = DateTimeOffset.MinValue;
+        _lastDiskLevel = DiskLevel.Ok; // que la grabación nueva publique StorageLow si ya empieza con el disco bajo
 
         var signal = _source.CurrentSignal;
         var session = new RecordingSession
@@ -425,6 +440,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
 
     private async Task StopRecordingCoreAsync(RecordingStopReason reason, CancellationToken ct)
     {
+        // Una parada empezada se termina ENTERA: con el token de una petición HTTP abortada a mitad, la guarda de disco ya
+        // quedaba desenganchada con la grabación en marcha, o el archivo cerrado pero la sesión abierta en la base de datos.
+        ct = CancellationToken.None;
         if (_diskGuard is not null)
         {
             _diskGuard.Updated -= OnDiskUpdated;
@@ -432,7 +450,9 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         }
         _diskUsage?.Unregister(ChannelId); // deja de contar en el caudal agregado del volumen
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        await _engine.StopRecordingAsync(ct);
+        // En el apagado se cierra el archivo sin levantar un preview nuevo (el canal se dispone justo después).
+        if (reason == RecordingStopReason.Shutdown) await _engine.StopRecordingForShutdownAsync();
+        else await _engine.StopRecordingAsync(ct);
         var engineStop = sw.Elapsed;
 
         // Vacía la persistencia de los segmentos emitidos al detener ANTES de dar por cerrada la grabación: la
@@ -446,6 +466,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             persists = _pendingPersists.ToArray();
             _completedSessionSegments.Clear();
             _completedSessionSegments.AddRange(_sessionSegments); // snapshot para el renombrado posterior (N9)
+            _completedSessionId = _session?.Id;
         }
         if (persists.Length > 0)
             try { await Task.WhenAll(persists).ConfigureAwait(false); } catch { /* cada persist ya registró su propio error */ }
@@ -502,7 +523,16 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     {
         // Registra el segmento y su tarea de persistencia (no fire-and-forget): al renombrar al detener se
         // esperan estas tareas antes de corregir la ruta en la BD, evitando una carrera Add/Update.
-        lock (_renameLock) { _sessionSegments.Add(segment); _pendingPersists.Add(PersistSegmentAsync(segment)); }
+        // La persistencia arranca FUERA del candado y en el pool: con SQLite el INSERT es síncrono (y puede esperar hasta
+        // 30 s a una base de datos ocupada), y dentro del candado bloqueaba al hilo de la interfaz, que lo toma al renombrar.
+        // Las tareas ya terminadas se podan: en una grabación segmentada de semanas la lista crecía sin límite.
+        var persist = Task.Run(() => PersistSegmentAsync(segment));
+        lock (_renameLock)
+        {
+            _sessionSegments.Add(segment);
+            _pendingPersists.RemoveAll(t => t.IsCompleted);
+            _pendingPersists.Add(persist);
+        }
     }
 
     private async Task PersistSegmentAsync(Segment segment)
@@ -524,6 +554,19 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     /// archivos en segundo plano y corrige la ruta de los segmentos persistidos. Devuelve la nueva ruta
     /// principal, o null si no había nada que renombrar.
     /// </summary>
+    /// <summary>Renombra la grabación terminada SOLO si es <paramref name="sessionId"/> (ver <see cref="IPostRecordingRename.RenameRecordingAsync"/>).</summary>
+    public Task<string?> RenameRecordingAsync(Guid sessionId, string baseName, string? operatorName = null, CancellationToken ct = default)
+    {
+        Guid? completed;
+        lock (_renameLock) completed = _completedSessionId;
+        if (completed != sessionId)
+        {
+            _log?.LogWarning("Canal {Key}: no se renombra con «{Name}»: la grabación que se detuvo ya no es la última terminada (otra empezó y terminó mientras se escribía el nombre).", _key, baseName);
+            return Task.FromResult<string?>(null);
+        }
+        return RenameLastRecordingAsync(baseName, operatorName, ct);
+    }
+
     public async Task<string?> RenameLastRecordingAsync(string baseName, string? operatorName = null, CancellationToken ct = default)
     {
         // Los segmentos de la sesión terminada se fijan AL ENTRAR, igual que sus archivos en el motor: el renombrado
@@ -534,7 +577,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         lock (_renameLock) { pending = _pendingPersists.ToArray(); segs = _completedSessionSegments.ToList(); }
 
         // File.Move (con reintentos) no debe bloquear el hilo de UI desde el que se llama.
-        var pairs = await Task.Run(() => _engine.RenameSessionFiles(baseName), ct).ConfigureAwait(false);
+        var pairs = await _engine.RenameSessionFilesAsync(baseName).ConfigureAwait(false);
         if (pairs.Count == 0) return null;
 
         // Espera la persistencia en vuelo y corrige la ruta en la BD (que no quede el nombre temporal).
@@ -717,8 +760,26 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private void OnStats(object? sender, RecorderStats stats)
     {
         if (_engine.State is RecordingState.Recording)
-            SetAlarm(AlarmType.FramesDropped, _drops.Update(stats.DroppedFrames));
+        {
+            // También cuenta lo que el relé de la fuente tuvo que DESCARTAR porque el proceso no daba abasto: esos frames no
+            // llegan a FFmpeg, así que su contador no los ve. La alarma se mantiene un rato tras el último descarte.
+            bool relayDrops = DateTimeOffset.UtcNow - _lastRelayDropUtc < RelayDropAlarmHold;
+            SetAlarm(AlarmType.FramesDropped, _drops.Update(stats.DroppedFrames) || relayDrops);
+        }
         Raise();
+    }
+
+    private static readonly TimeSpan RelayDropAlarmHold = TimeSpan.FromSeconds(10);
+    private DateTimeOffset _lastRelayDropUtc = DateTimeOffset.MinValue;
+
+    /// <summary>El relé de la fuente descartó datos del proceso del canal (disco o CPU atascados): si se graba, la grabación
+    /// tendrá un salto. Se registra (es lo que explica el hueco) y enciende la alarma de frames perdidos.</summary>
+    private void OnInputDataDropped(object? sender, long dropped)
+    {
+        if (_engine.State is not (RecordingState.Recording or RecordingState.Paused)) return;
+        _lastRelayDropUtc = DateTimeOffset.UtcNow;
+        _log?.LogError("Canal {Key}: la entrada descartó {Count} unidades porque la grabación no daba abasto (disco o CPU atascados); el archivo tendrá un salto.", _key, dropped);
+        SetAlarm(AlarmType.FramesDropped, true);
     }
 
     private void OnAudioLevels(object? sender, IReadOnlyList<double> peaks)
@@ -747,6 +808,14 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     {
         _engine.RecordingInterrupted -= OnRecordingInterrupted;
         _engine.FileUnverified -= OnFileUnverified;
+        // Nada de lo que llegue tarde del motor o de la fuente debe tocar ya este canal (estado, alarmas, bus).
+        _engine.StatsUpdated -= OnStats;
+        _engine.AudioPeaksUpdated -= OnAudioLevels;
+        _engine.SegmentClosed -= OnSegmentClosed;
+        _engine.AlarmChanged -= OnEngineAlarm;
+        _source.SignalChanged -= _onSourceSignal;
+        _source.InputDataDropped -= OnInputDataDropped;
+        if (_diskGuard is not null) _diskGuard.Updated -= OnDiskUpdated;
         if (_diskGuard is not null) await _diskGuard.DisposeAsync();
         if (_signalMonitor is not null) await _signalMonitor.DisposeAsync();
         await _engine.DisposeAsync();

@@ -33,6 +33,9 @@ public static class ProcessOutput
                 }
             }
             catch (Exception ex) { onError?.Invoke(ex); } // tubería cerrada bajo los pies (el proceso se liberó): fin
+            // Fin de la tubería: se cierra YA. Con lecturas síncronas, Process.Dispose no cierra estos flujos (quedan para
+            // quien los lee), y su handle esperaba al recolector: en 24/7, cientos de handles de tuberías de procesos muertos.
+            finally { try { reader.Dispose(); } catch { /* ya cerrada */ } }
         })
         { IsBackground = true, Name = name };
         thread.Start();

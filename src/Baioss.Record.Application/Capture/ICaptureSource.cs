@@ -134,6 +134,21 @@ public interface ICaptureSource : IAsyncDisposable
     bool NewestConsumerIsLive => true;
 
     /// <summary>
+    /// Cómo preguntar más tarde si el proceso construido en el último <see cref="BuildInputArguments"/> —ESE, no el más
+    /// nuevo— lee ya en directo. null si la fuente no reserva nada (siempre en directo). El motor la toma justo después de
+    /// construir los argumentos de cada proceso: <see cref="NewestConsumerIsLive"/> habla del ÚLTIMO construido y, con
+    /// Grabar y Detener seguidos, el relevo de uno se juzgaba con la reserva del siguiente.
+    /// </summary>
+    Func<bool>? NewestConsumerLiveCheck => null;
+
+    /// <summary>
+    /// El relé que sirve esta fuente tuvo que DESCARTAR datos de un proceso del canal que no daba abasto (su cola se llenó:
+    /// disco o CPU atascados), así que la grabación tendrá un salto. Lleva cuántas unidades se descartaron desde el aviso
+    /// anterior (como mucho un aviso por segundo). Solo las fuentes con relé lo emiten.
+    /// </summary>
+    event EventHandler<long>? InputDataDropped { add { } remove { } }
+
+    /// <summary>
     /// Colchón de preview en ms (0 = ninguno): retardo con el que el motor muestra el preview de esta fuente para absorber
     /// una llegada a ráfagas y verla a cadencia constante (un servidor RTMP que entrega a trompicones). Solo el preview:
     /// la grabación no pasa por el colchón. Un dispositivo local entrega a su cadencia y no lo necesita.

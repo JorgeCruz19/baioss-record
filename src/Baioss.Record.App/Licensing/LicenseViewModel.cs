@@ -18,12 +18,17 @@ public sealed partial class LicenseViewModel : ObservableObject
     {
         _license = license;
         MachineCode = license.MachineCode;
+        IsTpmAnchored = MachineFingerprintComposer.IsTpmAnchoredCode(MachineCode) == true;
         Apply(license.Current);
         _license.Changed += OnLicenseChanged;
     }
 
     /// <summary>Código de ESTE equipo. Es lo único que el cliente tiene que enviar para pedir su licencia.</summary>
     public string MachineCode { get; }
+
+    /// <summary>¿Está el código ligado al chip TPM del equipo? (el nivel viaja en el propio código). Con TPM, una copia
+    /// del disco en otro equipo no valida la licencia; sin él, el código se basa en identificadores clásicos.</summary>
+    public bool IsTpmAnchored { get; }
 
     /// <summary>Desengancha el VM del servicio (singleton). La ventana es transitoria y el servicio vive toda la
     /// app: sin esto, cada apertura de la ventana de Licencia dejaba un VM retenido para siempre por el evento.</summary>

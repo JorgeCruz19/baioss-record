@@ -411,4 +411,51 @@ public class NetworkStreamRelayTests
         Assert.Equal(0x40, got[0][5] & 0x40);
         Assert.Equal(-1, await ReadOnceAsync(cs, TimeSpan.FromMilliseconds(300)));
     }
+
+    [Fact]
+    public async Task AReservationPendingWhenTheSourceCloses_IsDropped_AndTheNextStreamDoesNotOverflow()
+    {
+        // Auditoría 2026-09: la reserva que nadie reclamó cuando el emisor se fue quedaba en la lista con su cola cerrada.
+        // En el flujo siguiente «desbordaba» en cada fragmento (aviso cada 5 s que tapaba los descartes de verdad), su
+        // reserva no iba nunca al día (cada relevo esperaba el tope de 10 s) y retenía su pre-roll.
+        await using var relay = new NetworkStreamRelay("huerfana", NullLogger.Instance);
+        relay.Start();
+        long overflows = 0;
+        relay.ConsumerOverflow += (_, n) => Interlocked.Add(ref overflows, n);
+        RelayReservation reservation;
+        using (var source = await ConnectAsync(relay.SourcePort))
+        {
+            await source.GetStream().WriteAsync(VideoStream(0, 30, gop: 30));
+            await WaitAsync(() => relay.ForwardedBytes >= 30 * Ts, "el relé no drenó el origen");
+            reservation = relay.ReserveConsumer(); // el proceso del canal se construye…
+        }                                          // …y el emisor se va antes de que conecte
+        await WaitAsync(() => !relay.SourceConnected, "el relé no vio cerrarse el origen");
+        await WaitAsync(() => relay.ConsumerCount == 0, "la reserva huérfana siguió en la lista");
+        Assert.True(reservation.IsLive); // nada que esperar de ella
+
+        using var next = await ConnectAsync(relay.SourcePort); // el emisor vuelve
+        var bytes = VideoStream(0, 120, gop: 30);
+        await next.GetStream().WriteAsync(bytes);
+        await WaitAsync(() => relay.SourceBytes >= 30 * Ts + bytes.Length, "el relé no drenó el flujo nuevo");
+        Assert.Equal(0, Interlocked.Read(ref overflows));
+    }
+
+    [Fact]
+    public async Task TheConsumerQueueIsBoundedInBytes_AndDropsAreReportedWithTheirCount()
+    {
+        // La cola se medía en FRAGMENTOS (1024): con fragmentos pequeños toleraba 5–15 s de un consumidor parado. Ahora se
+        // mide en bytes, y el aviso dice cuántos fragmentos se descartaron.
+        await using var relay = new NetworkStreamRelay("bytes", NullLogger.Instance) { ConsumerQueueMaxBytes = 64 * 1024 };
+        relay.Start();
+        long dropped = 0;
+        relay.ConsumerOverflow += (_, n) => Interlocked.Add(ref dropped, n);
+        using var stuck = await ConnectAsync(relay.ConsumerPort); // conecta y NUNCA lee
+        await WaitAsync(() => relay.ConsumerCount == 1, "no se registró el consumidor");
+        using var source = await ConnectAsync(relay.SourcePort);
+        var chunk = TsPackets(348, 0); // ≈64 KiB
+        for (int i = 0; i < 256; i++) await source.GetStream().WriteAsync(chunk); // ≈16 MiB: muy por encima del tope y del búfer del socket
+        await WaitAsync(() => relay.SourceBytes >= 256L * chunk.Length, "el relé no drenó todo el origen");
+        await WaitAsync(() => Interlocked.Read(ref dropped) > 0, "no se avisó de los descartes");
+        Assert.True(relay.SourceConnected);
+    }
 }

@@ -34,14 +34,25 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
     private long _lastTickTicks;   // reloj MONOTÓNICO: mide el uso real, inmune a que cambien la hora del sistema
 
     public LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log)
+        : this(fingerprint, store, log, LicensePublicKey.ProviderPublicKeyBase64) { }
+
+    /// <summary>Para las pruebas: verificar contra una clave pública de usar y tirar (la privada del proveedor no está en
+    /// el repositorio, así que con la pública real no se puede fabricar ninguna licencia válida en una prueba).</summary>
+    internal LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log, string publicKeyBase64)
     {
         _fingerprint = fingerprint;
         _store = store;
         _log = log;
+        _publicKeyBase64 = publicKeyBase64;
         _current = new LicenseInfo(LicenseState.Unknown, 0, null, fingerprint.Code);
         _lastTickTicks = Stopwatch.GetTimestamp();
         Refresh(TimeSpan.Zero); // primer cálculo inmediato: la UI ya arranca con el estado real
     }
+
+    private readonly string _publicKeyBase64;
+
+    /// <summary>Un ciclo del bucle de fondo, a demanda (solo para las pruebas).</summary>
+    internal void RefreshForTests(TimeSpan elapsed) => Refresh(elapsed);
 
     /// <summary>Días del periodo de prueba (configurable solo para pruebas internas).</summary>
     public int TrialDays { get; init; } = TrialPeriod.DefaultDays;
@@ -63,7 +74,7 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
     {
         try
         {
-            var rejection = LicenseKey.Verify(licenseKey, _fingerprint.Raw.Span, LicensePublicKey.ProviderPublicKeyBase64);
+            var rejection = LicenseKey.Verify(licenseKey, _fingerprint.Raw.Span, _publicKeyBase64);
             if (rejection != LicenseRejection.None)
                 return new LicenseActivationResult(false, rejection, MessageFor(rejection));
 
@@ -162,7 +173,7 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
             LicenseInfo next;
             // Licencia: se VERIFICA siempre, nunca se confía en un estado guardado.
             if (!string.IsNullOrWhiteSpace(record.LicenseKey) &&
-                LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, LicensePublicKey.ProviderPublicKeyBase64) == LicenseRejection.None)
+                LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, _publicKeyBase64) == LicenseRejection.None)
             {
                 // Los canales pagados viajan FIRMADOS dentro de la clave: se releen de ella (la firma ya validó,
                 // así que el TryDecode no puede fallar aquí; el ?: es solo cinturón).

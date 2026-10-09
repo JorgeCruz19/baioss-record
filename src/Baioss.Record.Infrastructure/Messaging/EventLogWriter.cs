@@ -131,8 +131,7 @@ public sealed class EventLogWriter : BackgroundService
             try
             {
                 var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromDays(RetentionDays);
-                await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
-                int removed = await db.EventLog.Where(e => e.Timestamp < cutoff).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                int removed = await PruneAsync(_factory, cutoff, PruneBatchSize, TimeSpan.FromMilliseconds(200), ct).ConfigureAwait(false);
                 if (removed > 0)
                     _log.LogInformation("EventLog: podadas {N} entradas anteriores a {Cutoff:yyyy-MM-dd} ({Days} días).", removed, cutoff, RetentionDays);
             }
@@ -142,6 +141,35 @@ public sealed class EventLogWriter : BackgroundService
             try { await Task.Delay(TimeSpan.FromHours(6), ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
         }
+    }
+
+    /// <summary>Filas por lote de la poda.</summary>
+    public const int PruneBatchSize = 5000;
+
+    /// <summary>
+    /// Borra las entradas anteriores a <paramref name="cutoff"/> POR LOTES de <paramref name="batchSize"/>, con una pausa
+    /// entre lotes. En un solo DELETE, meses de auditoría de 24/7 (cientos de miles de filas) tenían tomado el único
+    /// escritor de SQLite varios segundos en un disco duro, y los segmentos, las sesiones y el programador esperaban
+    /// detrás (a veces justo en un Detener). Devuelve cuántas filas borró.
+    /// </summary>
+    internal static async Task<int> PruneAsync(IDbContextFactory<BaiossDbContext> factory, DateTimeOffset cutoff,
+        int batchSize, TimeSpan pause, CancellationToken ct)
+    {
+        int total = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            int removed;
+            await using (var db = await factory.CreateDbContextAsync(ct).ConfigureAwait(false))
+            {
+                removed = await db.EventLog.Where(e => e.Timestamp < cutoff)
+                    .OrderBy(e => e.Timestamp).Take(batchSize)
+                    .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            }
+            total += removed;
+            if (removed < batchSize) break;
+            await Task.Delay(pause, ct).ConfigureAwait(false);
+        }
+        return total;
     }
 
     /// <summary>Mapea un evento de dominio a una entrada de auditoría. La categoría es el nombre del tipo, el

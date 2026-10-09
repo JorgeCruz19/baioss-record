@@ -67,6 +67,33 @@
                         <Button Grid.Column="1" Content="{loc:T Lic_Copy}" Command="{Binding CopyMachineCodeCommand}"
                                 Style="{StaticResource TransportButton}" Height="34" Padding="18,0" Margin="8,0,0,0"/>
                     </Grid>
+                    <!-- A qué está atado el código: al chip TPM (una copia del disco no vale) o a identificadores clásicos. -->
+                    <TextBlock Text="{loc:T Lic_Anchor_Tpm}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Foreground="{StaticResource SignalGreenBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsTpmAnchored}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{loc:T Lic_Anchor_Classic}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Foreground="{StaticResource SignalAmberBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsTpmAnchored}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </Border>
 

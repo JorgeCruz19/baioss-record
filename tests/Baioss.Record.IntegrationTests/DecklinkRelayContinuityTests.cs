@@ -21,7 +21,7 @@ namespace Baioss.Record.IntegrationTests;
 /// </summary>
 public sealed class DecklinkRelayContinuityTests
 {
-    private static RecordingProfile Profile() => new()
+    internal static RecordingProfile Profile() => new()
     {
         Name = "dl", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None,
         VideoBitrate = Bitrate.FromMbps(2), GopSize = 30,
@@ -37,14 +37,14 @@ public sealed class DecklinkRelayContinuityTests
             $"testsrc2=size={width}x{height}:rate={fps},format=uyvy422[out0];sine=frequency=1000:sample_rate=48000,aformat=channel_layouts={audioLayout}[out1]"),
     };
 
-    private static InputSource Definition(params (string Key, string Value)[] parameters)
+    internal static InputSource Definition(params (string Key, string Value)[] parameters)
     {
         var source = new InputSource { Name = "DeckLink sintética", Type = InputType.DecklinkSdi, Uri = "DeckLink sintética" };
         foreach (var (k, v) in parameters) source.Parameters[k] = v;
         return source;
     }
 
-    private static (DecklinkCaptureSource Source, RawCaptureReceiver Receiver) SyntheticSource(FfmpegLocator locator, IReadOnlyList<string> device, Microsoft.Extensions.Logging.ILoggerFactory? loggers = null, params (string Key, string Value)[] parameters)
+    internal static (DecklinkCaptureSource Source, RawCaptureReceiver Receiver) SyntheticSource(FfmpegLocator locator, IReadOnlyList<string> device, Microsoft.Extensions.Logging.ILoggerFactory? loggers = null, params (string Key, string Value)[] parameters)
     {
         RawCaptureReceiver? receiver = null;
         var lf = loggers ?? NullLoggerFactory.Instance;
@@ -55,7 +55,7 @@ public sealed class DecklinkRelayContinuityTests
     }
 
     /// <summary>Con DL_RELAY_LOG: recoge el registro del motor, el receptor y el relé para diagnosticar un fallo.</summary>
-    private sealed class CaptureLogger : Microsoft.Extensions.Logging.ILogger, Microsoft.Extensions.Logging.ILoggerFactory
+    internal sealed class CaptureLogger : Microsoft.Extensions.Logging.ILogger, Microsoft.Extensions.Logging.ILoggerFactory
     {
         private readonly Action<string> _sink;
         private readonly string _name;

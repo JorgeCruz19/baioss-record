@@ -185,7 +185,9 @@ public sealed class NutStreamReader
         int total = checked(headerBytes + (int)forward);
 
         var unit = await TakeUnitAsync(total, kind, -1, ct).ConfigureAwait(false);
-        ParsePacket(unit, kind, headerBytes, (int)forward - 4);
+        // Si la cabecera no se entiende, la unidad (del pool) se devuelve antes de propagar: nadie más la tiene.
+        try { ParsePacket(unit, kind, headerBytes, (int)forward - 4); }
+        catch { unit.Release(); throw; }
         return unit;
     }
 
@@ -330,8 +332,9 @@ public sealed class NutStreamReader
         // Cabeceras de elisión (FFmpeg escribe siempre 6): su longitud se descuenta del tamaño del frame en el cable.
         if (pos < payload.Length)
         {
-            int headerCount = (int)ReadVarint(payload, ref pos) + 1;
-            if (headerCount > 128) throw new InvalidDataException("Demasiadas cabeceras de elisión NUT.");
+            ulong rawCount = ReadVarint(payload, ref pos);
+            if (rawCount >= 128) throw new InvalidDataException("Demasiadas cabeceras de elisión NUT.");
+            int headerCount = (int)rawCount + 1;
             var lengths = new int[headerCount];
             for (int i = 1; i < headerCount; i++)
             {
@@ -371,16 +374,28 @@ public sealed class NutStreamReader
         if ((flags & FlagStreamId) != 0) { if (!TryReadVarint(span, ref pos, out var s)) return false; streamId = (int)s; }
         if ((flags & FlagCodedPts) != 0 && !TryReadVarint(span, ref pos, out _)) return false;
         long size = fc.SizeLsb;
-        if ((flags & FlagSizeMsb) != 0) { if (!TryReadVarint(span, ref pos, out var msb)) return false; size += (long)msb * fc.SizeMul; }
+        if ((flags & FlagSizeMsb) != 0)
+        {
+            if (!TryReadVarint(span, ref pos, out var msb)) return false;
+            // Valores imposibles (flujo corrupto) como InvalidDataException, no como desbordamiento o índice fuera de rango.
+            if (msb > int.MaxValue || fc.SizeMul <= 0) throw new InvalidDataException("Tamaño de frame NUT fuera de rango.");
+            try { size = checked(size + (long)msb * fc.SizeMul); }
+            catch (OverflowException) { throw new InvalidDataException("Tamaño de frame NUT fuera de rango."); }
+        }
         if ((flags & FlagMatchTime) != 0 && !TryReadVarint(span, ref pos, out _)) return false;
         int headerIdx = fc.HeaderIdx;
-        if ((flags & FlagHeaderIdx) != 0) { if (!TryReadVarint(span, ref pos, out var h)) return false; headerIdx = (int)h; }
+        if ((flags & FlagHeaderIdx) != 0)
+        {
+            if (!TryReadVarint(span, ref pos, out var h)) return false;
+            if (h >= (ulong)_headerLen.Length) throw new InvalidDataException("Índice de cabecera de elisión NUT fuera de rango.");
+            headerIdx = (int)h;
+        }
         int reserved = fc.ReservedCount;
         if ((flags & FlagReserved) != 0) { if (!TryReadVarint(span, ref pos, out var r)) return false; reserved = (int)r; }
         for (int i = 0; i < reserved; i++) if (!TryReadVarint(span, ref pos, out _)) return false;
         if ((flags & FlagChecksum) != 0) { if (pos + 4 > span.Length) return false; pos += 4; }
         if ((flags & FlagSmData) != 0) throw new InvalidDataException("Frame NUT con datos laterales (versión 4): no soportado.");
-        if (headerIdx >= _headerLen.Length) throw new InvalidDataException("Índice de cabecera de elisión NUT fuera de rango.");
+        if (headerIdx < 0 || headerIdx >= _headerLen.Length) throw new InvalidDataException("Índice de cabecera de elisión NUT fuera de rango.");
         if (size > 4096) headerIdx = 0;
         dataBytes = size - _headerLen[headerIdx];
         if (dataBytes < 0) throw new InvalidDataException("Tamaño de frame NUT negativo.");

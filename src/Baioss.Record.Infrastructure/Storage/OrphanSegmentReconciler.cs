@@ -54,7 +54,8 @@ public static class OrphanSegmentReconciler
     /// en el siguiente arranque esos archivos YA están en la BD y no se vuelven a crear.
     /// </summary>
     public static async Task<int> ReconcileAsync(
-        IDbContextFactory<BaiossDbContext> factory, string recordingsRoot, ILogger log, CancellationToken ct = default)
+        IDbContextFactory<BaiossDbContext> factory, string recordingsRoot, ILogger log, CancellationToken ct = default,
+        SearchOption search = SearchOption.AllDirectories)
     {
         if (!Directory.Exists(recordingsRoot)) return 0;
 
@@ -65,7 +66,7 @@ public static class OrphanSegmentReconciler
 
         var media = new List<ScannedFile>();
         foreach (var pat in MediaPatterns)
-            foreach (var f in Directory.EnumerateFiles(recordingsRoot, pat, SearchOption.AllDirectories))
+            foreach (var f in Directory.EnumerateFiles(recordingsRoot, pat, search))
             {
                 if (f.Contains(".faststart.", StringComparison.OrdinalIgnoreCase)) continue; // temporal de remux
                 var fi = new FileInfo(f);

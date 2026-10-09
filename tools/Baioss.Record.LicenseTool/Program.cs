@@ -13,6 +13,9 @@ using Baioss.Record.Application.Licensing;
 //       Emite una licencia PERPETUA para ese equipo con los canales PAGADOS (sin --channels: 4). El código
 //       de equipo lo da la app del cliente (ventana de Licencia). La licencia solo funcionará en ESE PC y
 //       los canales viajan FIRMADOS dentro de la clave: el cliente no puede subírselos.
+//       El código dice además si el equipo está anclado a su chip TPM (una copia del disco no valida la
+//       licencia) o no; sin TPM la herramienta avisa antes de entregar la licencia. Los códigos son los de
+//       la huella v2: los que mostraban las builds anteriores a 2026-10 ya no sirven.
 
 // La consola de Windows usa la codepage del sistema: sin esto, los acentos de los mensajes salen como signos
 // raros (el mismo problema de codificación que ya se corrigió al leer la salida de FFmpeg).
@@ -67,7 +70,7 @@ static int Issue(string[] args)
 
     // La huella de «un equipo sin ningún identificador» es una CONSTANTE conocida (la misma en todos los equipos
     // en ese estado). Emitir para ella sería vender una licencia universal: se rechaza y se pide revisar el equipo.
-    if (fingerprint.AsSpan().SequenceEqual(MachineFingerprintComposer.Compose(null, null, null, null)))
+    if (MachineFingerprintComposer.IsGeneric(fingerprint))
     {
         Console.Error.WriteLine("Ese código corresponde a un equipo SIN identificadores utilizables (huella genérica): una licencia");
         Console.Error.WriteLine("emitida para él funcionaría en cualquier equipo en ese estado. Revisa el equipo del cliente antes de emitir.");
@@ -96,9 +99,21 @@ static int Issue(string[] args)
     var signature = ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
     string key = LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, (byte)channels, signature);
 
+    // El código dice a qué está atado el equipo (bit de nivel de la huella): al chip TPM, que una copia del disco no se
+    // lleva, o a identificadores clásicos, que en un PC sin números de serie reales se clonan con el disco.
+    bool tpmAnchored = MachineFingerprintComposer.IsTpmAnchored(fingerprint);
     Console.WriteLine();
     Console.WriteLine($"Equipo   : {Base32Crockford.Group(Base32Crockford.Encode(fingerprint), 4)}");
+    Console.WriteLine($"Ancla    : {(tpmAnchored ? "chip TPM del equipo (una copia del disco NO valida esta licencia)" : "identificadores clásicos, SIN TPM")}");
     Console.WriteLine($"Emitida  : {issuedOn:yyyy-MM-dd}  ·  Tipo: perpetua  ·  Canales: {channels}");
+    if (!tpmAnchored)
+    {
+        Console.WriteLine();
+        Console.WriteLine("AVISO: este código es de un equipo SIN chip TPM 2.0 activo. Si además el equipo no tiene números de serie");
+        Console.WriteLine("reales (PC de integrador), esta licencia valdría también en una copia de su disco. Antes de entregarla puedes");
+        Console.WriteLine("pedir al cliente que active el TPM en la BIOS (Intel PTT / AMD fTPM) y te envíe el código nuevo que le");
+        Console.WriteLine("mostrará la aplicación: una licencia emitida para ESTE código dejará de valer si el TPM se activa después.");
+    }
     Console.WriteLine();
     Console.WriteLine("=== LICENCIA (envíala al cliente; solo funcionará en ese equipo) ===");
     Console.WriteLine(key);

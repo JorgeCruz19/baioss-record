@@ -56,15 +56,22 @@ public sealed class LicenseStore
     private readonly ILogger _log;
     private readonly byte[] _hmacKey;
     private readonly string _filePath;
+    private readonly string _registryPath;
 
     public LicenseStore(IMachineFingerprint fingerprint, ILogger log)
+        : this(fingerprint, log,
+               Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Baioss", "Record", "license.dat"),
+               RegistryPath) { }
+
+    /// <summary>Para las pruebas: un archivo y una rama del registro PROPIOS, para ejercitar el almacén de verdad (HMAC,
+    /// combinación de copias, rescate de la clave) sin tocar el estado real del equipo.</summary>
+    internal LicenseStore(IMachineFingerprint fingerprint, ILogger log, string filePath, string registryPath)
     {
         _log = log;
         // Clave del HMAC derivada de la huella: una marca de prueba copiada de otro PC no valida aquí.
         _hmacKey = SHA256.HashData(Concat(fingerprint.Raw.Span, "baioss-trial-v1"u8));
-        _filePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "Baioss", "Record", "license.dat");
+        _filePath = filePath;
+        _registryPath = registryPath;
     }
 
     /// <summary>Ruta del archivo de estado (para diagnóstico y soporte).</summary>
@@ -161,7 +168,7 @@ public sealed class LicenseStore
         try
         {
             using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var key = baseKey.OpenSubKey(RegistryPath);
+            using var key = baseKey.OpenSubKey(_registryPath);
             return Parse(key?.GetValue("State") as string, "registro del equipo");
         }
         catch (Exception ex)
@@ -178,7 +185,7 @@ public sealed class LicenseStore
             // NO se crea la clave: la crea el INSTALADOR (elevado) concediendo escritura a Usuarios. Sin
             // instalador (desarrollo/portable) la clave no existe y esta copia simplemente se omite.
             using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var key = baseKey.OpenSubKey(RegistryPath, writable: true);
+            using var key = baseKey.OpenSubKey(_registryPath, writable: true);
             if (key is null) return false;
             key.SetValue("State", blob);
             return true;
@@ -192,7 +199,7 @@ public sealed class LicenseStore
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
+            using var key = Registry.CurrentUser.OpenSubKey(_registryPath);
             return Parse(key?.GetValue("State") as string, "registro del usuario");
         }
         catch (Exception ex)
@@ -206,7 +213,7 @@ public sealed class LicenseStore
     {
         try
         {
-            using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
+            using var key = Registry.CurrentUser.CreateSubKey(_registryPath);
             key?.SetValue("State", blob);
             return key is not null;
         }

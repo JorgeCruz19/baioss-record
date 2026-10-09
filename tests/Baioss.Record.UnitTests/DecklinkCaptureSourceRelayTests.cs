@@ -30,6 +30,7 @@ public class DecklinkCaptureSourceRelayTests
         public event EventHandler? DeviceBusy;
         public event EventHandler<bool>? SignalPresence;
         public event EventHandler? AudioChannelsRejected;
+        public event EventHandler<long>? DataDropped;
 
         public RelayReservation? ReserveConsumer() { Reservations++; return new RelayReservation(0, () => Live); }
         public Task StartAsync(CancellationToken ct = default) { Starts++; return Task.CompletedTask; }
@@ -42,6 +43,38 @@ public class DecklinkCaptureSourceRelayTests
         public void RaiseBusy() => DeviceBusy?.Invoke(this, EventArgs.Empty);
         public void RaisePresence(bool present) => SignalPresence?.Invoke(this, present);
         public void RaiseAudioRejected() => AudioChannelsRejected?.Invoke(this, EventArgs.Empty);
+        public void RaiseDropped(long units) => DataDropped?.Invoke(this, units);
+    }
+
+    [Fact]
+    public async Task NoSignalReportedBeforeTheDump_SurvivesTheCardOpening_AndANewProcessStartsClean()
+    {
+        var (source, receiver) = RelaySource(("format_code", "Hi59"));
+        await source.OpenAsync();
+        // La tarjeta avisa «No input signal detected» con su primer frame sin señal, que suele llegar ANTES que el volcado de
+        // la entrada: antes, el volcado lo pisaba y el canal quedaba en «SEÑAL OK» sin señal.
+        receiver.RaisePresence(false);
+        receiver.RaiseOpened(Description);
+        Assert.Equal(SignalState.NoSignal, source.CurrentSignal.State);
+        Assert.Throws<InvalidOperationException>(() => source.BuildInputArguments());
+        // Un proceso nuevo empieza limpio: si la señal está desde el principio, FFmpeg no dirá «Input returned».
+        receiver.RaiseLost();
+        receiver.RaiseOpened(Description);
+        Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+    }
+
+    [Fact]
+    public async Task FramesDroppedByTheRelay_ReachTheChannelAsInputDataDropped_OnlyFromTheCurrentReceiver()
+    {
+        var (source, receiver) = RelaySource();
+        long dropped = 0;
+        source.InputDataDropped += (_, n) => dropped += n;
+        await source.OpenAsync();
+        receiver.RaiseDropped(7);
+        Assert.Equal(7, dropped);
+        await source.CloseAsync();
+        receiver.RaiseDropped(5); // un receptor ya cerrado no cuenta
+        Assert.Equal(7, dropped);
     }
 
     private static readonly DetectedVideoMode Mode1080i = new(new Resolution(1920, 1080), VideoModes.RateFromDisplay(29.97), true);
@@ -85,7 +118,9 @@ public class DecklinkCaptureSourceRelayTests
         Assert.False(((ICaptureSource)source).DeliversPreroll); // arranca en el directo: el relevo no espera a «al día»
         Assert.True(source.WaitsForPeer);
         Assert.True(source.RestartsAfterEndOfStream);
-        Assert.False(((ICaptureSource)source).SelfReportsRecovery);
+        // El receptor publica la señal (abierta, perdida, recuperada): el motor no sondea la tarjeta y, tras una caída del
+        // proceso con la señal presente, reconstruye la fuente viva en vez de grabar barras.
+        Assert.True(((ICaptureSource)source).SelfReportsRecovery);
         Assert.Equal(0, source.PreviewFramesToSkip);
         await source.OpenAsync(); // idempotente: el bucle de espera del motor reabre cada pocos segundos
         Assert.Equal(1, receiver.Starts);

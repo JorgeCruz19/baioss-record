@@ -38,6 +38,9 @@ public interface INetworkStreamReceiver : IAsyncDisposable
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico). Ver <see cref="NetworkStreamRelay.PumpStage"/>.</summary>
     string PumpStage => "";
 
+    /// <summary>El relé descartó datos de un proceso del canal que no daba abasto (ver <see cref="NetworkStreamRelay.ConsumerOverflow"/>).</summary>
+    event EventHandler<long>? DataDropped { add { } remove { } }
+
     Task StartAsync(CancellationToken ct = default);
 }
 
@@ -76,7 +79,11 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
         _ffmpegPath = ffmpegPath;
         _log = log;
         _relay = new NetworkStreamRelay(_input.Url, log) { AudioDelayMs = _input.AudioDelayMs };
+        _relay.ConsumerOverflow += (_, dropped) => DataDropped?.Invoke(this, dropped);
     }
+
+    public event EventHandler<long>? DataDropped;
+    private int _disposed;
 
     public int ConsumerPort => _relay.ConsumerPort;
 
@@ -112,8 +119,22 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
         _supervisor.LogLine += OnLog;
         _supervisor.Restarted += OnRestarted;
         var args = ArgumentsFor(_input, _relay.SourcePort);
-        _log.LogInformation("Receptor de red {Url}: {Args}", _input.Url, string.Join(' ', args));
-        await _supervisor.StartAsync(args, ct).ConfigureAwait(false);
+        _log.LogInformation("Receptor de red {Url}: {Args}", _input.Url, string.Join(' ', Redacted(args)));
+        // La vida del receptor es la de la fuente (termina en DisposeAsync), no la de quien la abrió.
+        await _supervisor.StartAsync(args, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Los argumentos para el REGISTRO, con los secretos tapados: la contraseña SRT (y el streamid, que en algunos servidores
+    /// lleva un token) acababan en claro en el archivo de log y en cualquier copia que se enviara a soporte.
+    /// </summary>
+    public static IEnumerable<string> Redacted(IReadOnlyList<string> args)
+    {
+        for (int i = 0; i < args.Count; i++)
+        {
+            yield return args[i];
+            if (args[i] is "-passphrase" or "-srt_streamid" && i + 1 < args.Count) { yield return "***"; i++; }
+        }
     }
 
     /// <summary>
@@ -228,6 +249,7 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // idempotente
         if (_supervisor is not null)
         {
             _supervisor.LogLine -= OnLog;
