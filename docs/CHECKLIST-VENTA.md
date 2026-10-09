@@ -108,6 +108,11 @@ Sin firma, SmartScreen recibe al cliente con «editor desconocido» en la primer
 certificado de firma de código **OV** o **EV** (el EV además evita el periodo inicial de reputación). Se firma
 tanto el `.exe` de la aplicación como el instalador; el comando está en `INSTALADOR.md`.
 
+**Orden obligatorio con el manifiesto de integridad** (`LICENCIAMIENTO.md` §9): la firma digital cambia los bytes
+del `.exe`/DLL, así que se firman los archivos de `publish\` PRIMERO y DESPUÉS se genera el manifiesto
+(`build-installer.ps1 -SkipPublish -PrivateKey <clave>` lo regenera sobre los bytes finales y lo verifica antes
+de compilar el instalador). Al revés, la app vería la instalación como «modificada» en todos los clientes.
+
 ### 6. ~~Lo vendible vive en ramas, no en `main`~~ ✅ FUSIONADO — *queda una rama por validar*
 
 Ya no es cierto: **`main` contiene el producto vendible completo**. Se fusionó en `87a9d94` («Integra en main
@@ -185,8 +190,11 @@ aparece la alarma **«El disco de destino no responde»**. Comandos en `INCIDENT
   expone a la red.
 - Pendientes menores de las auditorías: sonda de recuperación NDI (#39/#59), desfase A/V de NDI bajo carga
   (A3/#35) y configuración de FFmpeg (#47/#48).
-- **Parcheo del binario:** fuera del modelo de amenaza; la build de venta va ofuscada, que sube el coste pero
-  no lo elimina. Ver `LICENCIAMIENTO.md` §5 y §6.
+- **Parcheo del binario:** fuera del modelo de amenaza; la build de venta va ofuscada y, desde 2026-10-09, se
+  **autocomprueba** contra un manifiesto firmado (una DLL parcheada se detecta y la licencia deja de aplicarse;
+  cualquier fallo al comprobar sigue siendo fail-open). Sube el coste, no lo elimina: quitar el manifiesto
+  desactiva la comprobación. Ver `LICENCIAMIENTO.md` §5, §6 y §9. **La build de venta se genera con
+  `-PrivateKey`** (o `$env:BAIOSS_LICENSE_PRIVATE_KEY`); sin manifiesto, `build-installer.ps1` no empaqueta.
 
 ---
 
@@ -197,6 +205,7 @@ aparece la alarma **«El disco de destino no responde»**. Comandos en `INCIDENT
 3. **Abogado**: EULA + datos de empresa + revisión de los términos de terceros (FFmpeg/NDI/Blackmagic).
 4. **Clave privada** a buen recaudo y registro de licencias abierto.
 5. **Validar en VM limpia** con la build ofuscada (instalación, canales, licencia pendiente, reinstalar encima).
-6. **Certificado** de firma de código y firmar la build.
+6. **Certificado** de firma de código y firmar la build — y, DESPUÉS de firmar, regenerar el manifiesto de
+   integridad (`build-installer.ps1 -SkipPublish -PrivateKey <clave>`).
 7. Actualizar `fix/decklink-dispositivo-persistente` contra `main` → validación DeckLink con tarjeta real → fusionar si pasa.
 8. Soak 24/7 de la build final.

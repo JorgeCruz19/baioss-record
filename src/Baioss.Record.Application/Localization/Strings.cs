@@ -332,6 +332,13 @@ public static class Strings
         ["Lic_Restart_Channels_One"] = " de {0} canal",
         ["Lic_Restart_Channels_Many"] = " de {0} canales",
         ["Lic_Blocked"] = "El periodo de prueba ha terminado. Activa la licencia para volver a grabar (código de equipo: {0}).",
+        // Integridad de los binarios (autocomprobación contra el manifiesto firmado por el proveedor).
+        ["Lic_Summary_Tampered_Suffix"] = " · instalación modificada",
+        ["Lic_Blocked_Tampered"] = "La instalación de Baioss Record no coincide con los archivos originales y la licencia no se puede aplicar. Reinicia el equipo o reinstala desde el instalador original (código de equipo: {0}).",
+        ["Lic_Integrity_Intact"] = "Integridad de la instalación: verificada (los archivos coinciden con el manifiesto firmado por el proveedor).",
+        ["Lic_Integrity_Unverified"] = "Integridad de la instalación: sin verificar (no hay manifiesto firmado o no se pudo comprobar; no afecta al funcionamiento).",
+        ["Lic_Integrity_Tampered"] = "ATENCIÓN: la instalación no coincide con los archivos originales ({0}). Puede ser una actualización a medias o una modificación. La licencia no se aplicará hasta reiniciar el equipo o reinstalar desde el instalador original.",
+        ["Lic_Msg_SavedButTampered"] = "La licencia es válida y se ha guardado, pero no se aplicará mientras la instalación esté modificada. Reinicia el equipo o reinstala desde el instalador original.",
 
         // --- Programación (ventana del canal) ---
         ["Sch_Ch_Title"] = "Programación",
@@ -981,6 +988,13 @@ public static class Strings
         ["Lic_Restart_Channels_One"] = ", {0} channel",
         ["Lic_Restart_Channels_Many"] = ", {0} channels",
         ["Lic_Blocked"] = "The trial period has ended. Activate your license to record again (machine code: {0}).",
+        // Binary integrity (self-check against the manifest signed by the provider).
+        ["Lic_Summary_Tampered_Suffix"] = " · installation modified",
+        ["Lic_Blocked_Tampered"] = "This Baioss Record installation does not match the original files and the license cannot be applied. Restart the machine or reinstall from the original installer (machine code: {0}).",
+        ["Lic_Integrity_Intact"] = "Installation integrity: verified (the files match the manifest signed by the provider).",
+        ["Lic_Integrity_Unverified"] = "Installation integrity: not verified (no signed manifest, or it could not be checked; this does not affect operation).",
+        ["Lic_Integrity_Tampered"] = "WARNING: the installation does not match the original files ({0}). This may be a half-applied update or a modification. The license will not be applied until you restart the machine or reinstall from the original installer.",
+        ["Lic_Msg_SavedButTampered"] = "The license is valid and has been saved, but it will not be applied while the installation is modified. Restart the machine or reinstall from the original installer.",
 
         // --- Schedule (channel window) ---
         ["Sch_Ch_Title"] = "Schedule",

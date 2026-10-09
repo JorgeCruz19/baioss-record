@@ -38,6 +38,12 @@ public sealed partial class LicenseViewModel : ObservableObject
     [ObservableProperty] private string _detailText = "";
     [ObservableProperty] private bool _isLicensed;
     [ObservableProperty] private bool _needsAttention;
+    /// <summary>Integridad de los binarios, en palabras del operador: verificada / sin verificar / modificada.</summary>
+    [ObservableProperty] private string _integrityText = "";
+    /// <summary>Evidencia POSITIVA de modificación (la licencia no se aplica): la línea de integridad va en rojo.</summary>
+    [ObservableProperty] private bool _isTampered;
+    /// <summary>Manifiesto auténtico y archivos coincidentes: la línea de integridad va en verde.</summary>
+    [ObservableProperty] private bool _isIntegrityVerified;
     [ObservableProperty] private string _licenseKeyInput = "";
     [ObservableProperty] private string _message = "";
     [ObservableProperty] private bool _messageIsError;
@@ -58,6 +64,14 @@ public sealed partial class LicenseViewModel : ObservableObject
             LicenseState.Trial => Loc.T("Lic_Detail_Trial"),
             LicenseState.Expired => Loc.T("Lic_Detail_Expired"),
             _ => Loc.T("Lic_Detail_Unknown"),
+        };
+        IsTampered = info.IsTampered;
+        IsIntegrityVerified = info.Integrity is IntegrityVerdict.Intact;
+        IntegrityText = info.Integrity switch
+        {
+            IntegrityVerdict.Intact => Loc.T("Lic_Integrity_Intact"),
+            IntegrityVerdict.Tampered => Loc.F("Lic_Integrity_Tampered", info.IntegrityDetail ?? ""),
+            _ => Loc.T("Lic_Integrity_Unverified"),
         };
     }
 

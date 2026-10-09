@@ -12,11 +12,23 @@
     Requisitos: la publicación debe ser IL normal (sin ReadyToRun): el R2R precompila a nativo y chocaría con
     el IL reescrito. scripts\build-installer.ps1 -Obfuscate ya publica sin R2R.
 
+    Al terminar genera el MANIFIESTO DE INTEGRIDAD (baioss-record.integrity) sobre los bytes finales si hay
+    clave privada (-PrivateKey o $env:BAIOSS_LICENSE_PRIVATE_KEY); sin ella avisa y deja publish\ sin manifiesto
+    (la app arranca y graba igual, pero no detecta DLL parcheadas). Un manifiesto ANTERIOR se retira siempre antes
+    de ofuscar: quedaría desfasado y la app lo tomaría por una modificación.
+
+.PARAMETER PrivateKey
+    Clave privada del proveedor (Base64) para firmar el manifiesto de integridad. Por defecto, la variable de
+    entorno BAIOSS_LICENSE_PRIVATE_KEY.
+
 .EXAMPLE
     .\scripts\obfuscate.ps1
+    .\scripts\obfuscate.ps1 -PrivateKey <clave>
 #>
 [CmdletBinding()]
-param()
+param(
+    [string]$PrivateKey = $env:BAIOSS_LICENSE_PRIVATE_KEY
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -24,6 +36,7 @@ $repoRoot  = Split-Path -Parent $PSScriptRoot
 $publishDir= Join-Path $repoRoot 'publish'
 $config    = Join-Path $repoRoot 'build\obfuscar.xml'
 $outDir    = Join-Path $publishDir '_obfuscated'
+$manifest  = Join-Path $publishDir 'baioss-record.integrity'
 
 $targets = @(
     'Baioss.Record.Application.dll',
@@ -38,6 +51,14 @@ if (-not (Test-Path (Join-Path $publishDir 'Baioss.Record.App.exe'))) {
 }
 foreach ($t in $targets) {
     if (-not (Test-Path (Join-Path $publishDir $t))) { Write-Error "Falta '$t' en '$publishDir'." }
+}
+
+# Un manifiesto de integridad anterior queda DESFASADO en cuanto se reescriben las DLL: la app lo tomaría por una
+# modificación (evidencia positiva) y dejaría de aplicar la licencia. Se retira ANTES de tocar nada y se regenera
+# al final, sobre los bytes definitivos, si hay clave privada.
+if (Test-Path $manifest) {
+    Remove-Item $manifest -Force
+    Write-Host '  manifiesto de integridad anterior retirado (quedaría desfasado; se regenera al final).' -ForegroundColor DarkGray
 }
 
 # Obfuscar resuelve las rutas relativas del XML respecto al DIRECTORIO ACTUAL: se ejecuta desde la raíz del repo.
@@ -76,3 +97,12 @@ if ($found) {
 Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host 'Ofuscación completada.' -ForegroundColor Cyan
+
+# --- Manifiesto de integridad: ÚLTIMO paso, sobre los bytes finales (ver scripts\sign-integrity.ps1) ---
+if ($PrivateKey) {
+    & (Join-Path $PSScriptRoot 'sign-integrity.ps1') -PrivateKey $PrivateKey -PublishDir $publishDir
+} else {
+    Write-Warning ('Sin clave privada (-PrivateKey o $env:BAIOSS_LICENSE_PRIVATE_KEY): publish\ queda SIN manifiesto de integridad. ' +
+        'La app arranca y graba igual (integridad «sin verificar»), pero NO detectará DLL parcheadas. ' +
+        'Para generarlo: scripts\sign-integrity.ps1 -PrivateKey <clave>. build-installer.ps1 no empaqueta sin él.')
+}
