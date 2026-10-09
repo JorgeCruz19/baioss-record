@@ -188,7 +188,7 @@ public class StabilityAuditTests
     private static string UnusedDriveRoot()
     {
         var used = DriveInfo.GetDrives().Select(d => char.ToUpperInvariant(d.Name[0])).ToHashSet();
-        for (char c = 'Z'; c >= 'G'; c--) if (!used.Contains(c)) return $"{c}:\baioss-no-existe";
+        for (char c = 'Z'; c >= 'G'; c--) if (!used.Contains(c)) return $"{c}:/baioss-no-existe";
         throw new InvalidOperationException("No hay letras de unidad libres para la prueba.");
     }
 

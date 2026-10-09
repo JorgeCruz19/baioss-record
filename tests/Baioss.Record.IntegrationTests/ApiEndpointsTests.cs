@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Licensing;
 using Baioss.Record.Application.Storage;
 using Baioss.Record.Api;
 using Baioss.Record.Infrastructure;
@@ -26,7 +27,7 @@ namespace Baioss.Record.IntegrationTests;
 /// </summary>
 public sealed class ApiEndpointsTests
 {
-    private static (WebApplication App, FakeChannelEngine Channel) BuildApi()
+    private static (WebApplication App, FakeChannelEngine Channel) BuildApi(Action<IServiceCollection>? configure = null)
     {
         var channel = new FakeChannelEngine(Guid.NewGuid(), "A");
 
@@ -37,12 +38,57 @@ public sealed class ApiEndpointsTests
         builder.Services.AddSingleton<IChannelManager, ChannelManager>();
         builder.Services.AddSingleton<IEventBus, InProcessEventBus>();
         builder.Services.AddSingleton<IStorageManager, StorageManager>();
+        configure?.Invoke(builder.Services);
         builder.Services.AddBaiossCqrs();
 
         var app = builder.Build();
         app.UseWebSockets();
         app.MapBaiossApi();
         return (app, channel);
+    }
+
+    // --- Licencia por la API: el panel web y la automatización ven el estado, el nivel de la huella y los rechazos ---
+
+    private sealed class FakeLicense(LicenseInfo current) : ILicenseService
+    {
+        public LicenseInfo Current => current;
+        public string MachineCode => current.MachineCode;
+        public string? LastKey { get; private set; }
+        public LicenseActivationResult Activate(string licenseKey)
+        {
+            LastKey = licenseKey;
+            return new LicenseActivationResult(false, LicenseRejection.OtherMachine, "otro equipo");
+        }
+        public event EventHandler<LicenseInfo>? Changed { add { } remove { } }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task License_ReportsTheStateAndWhetherTheCodeIsTpmAnchored_AndRejectsBadKeysWith422(bool tpm)
+    {
+        var raw = tpm
+            ? MachineFingerprintComposer.ComposeTpm(new byte[] { 9, 9, 9 })
+            : MachineFingerprintComposer.Compose("guid", "vol", null, null, null);
+        var license = new FakeLicense(new LicenseInfo(LicenseState.Trial, 9, DateTimeOffset.UtcNow, MachineFingerprintComposer.ToCode(raw)));
+        var (app, _) = BuildApi(s => s.AddSingleton<ILicenseService>(license));
+        await using var __ = app;
+        await app.StartAsync();
+        var client = app.GetTestClient();
+
+        var info = await client.GetFromJsonAsync<JsonElement>("/api/v1/license");
+        Assert.Equal(tpm, info.GetProperty("tpmAnchored").GetBoolean()); // el nivel se deduce del propio código
+        Assert.Equal(license.MachineCode, info.GetProperty("machineCode").GetString());
+        Assert.Equal((int)LicenseState.Trial, info.GetProperty("state").GetInt32());
+        Assert.Equal(9, info.GetProperty("daysRemaining").GetInt32());
+        Assert.True(info.GetProperty("canStartRecording").GetBoolean());
+
+        // Una clave rechazada es un 422 con el motivo, nunca un 500.
+        var activate = await client.PostAsJsonAsync("/api/v1/license/activate", new { key = "ABCD" });
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, activate.StatusCode);
+        var body = await activate.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("OtherMachine", body.GetProperty("reason").GetString());
+        Assert.Equal("ABCD", license.LastKey);
     }
 
     [Fact]

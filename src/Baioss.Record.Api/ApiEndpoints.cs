@@ -182,7 +182,12 @@ public static class ApiEndpoints
         // --- Licencia: estado y activación. [FromServices] EXPLÍCITO (si no, ASP.NET infiere el servicio como
         //     cuerpo de la petición y rompe TODA la API al construir los endpoints). ---
         api.MapGet("/license", ([FromServices] Baioss.Record.Application.Licensing.ILicenseService lic) =>
-            Results.Ok(new { lic.Current.State, lic.Current.DaysRemaining, lic.Current.Summary, lic.MachineCode, lic.Current.CanStartRecording, lic.Current.LicensedChannels }));
+            Results.Ok(new
+            {
+                lic.Current.State, lic.Current.DaysRemaining, lic.Current.Summary, lic.MachineCode, lic.Current.CanStartRecording, lic.Current.LicensedChannels,
+                // ¿El código de equipo está ligado al chip TPM? (una copia del disco en otro equipo no validaría la licencia)
+                TpmAnchored = Baioss.Record.Application.Licensing.MachineFingerprintComposer.IsTpmAnchoredCode(lic.MachineCode) == true,
+            }));
 
         api.MapPost("/license/activate", (ActivateBody body, [FromServices] Baioss.Record.Application.Licensing.ILicenseService lic) =>
         {

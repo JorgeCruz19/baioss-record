@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Prototipo (NO forma parte de la solución ni del instalador): mide si una licencia atada al TPM es viable.
+       Hereda Directory.Build.props del repo; el TFM -windows evita los avisos de plataforma de las API CNG. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>

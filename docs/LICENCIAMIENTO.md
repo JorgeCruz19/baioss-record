@@ -42,6 +42,8 @@ dotnet run --project tools/Baioss.Record.LicenseTool -- issue --machine D68J-FZN
 La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo que se firma, así que en otro ordenador la firma no valida.
 
 > La herramienta es estricta con el código de equipo: si le faltan o sobran caracteres **se niega a emitir** (antes firmaba en silencio una licencia que jamás validaría en el equipo del cliente). También se niega si el código corresponde a un equipo **sin identificadores utilizables** — esa huella es genérica y una licencia emitida para ella funcionaría en cualquier equipo en ese estado.
+>
+> La herramienta muestra además el **ancla** del código: «chip TPM del equipo» (una copia del disco no valida la licencia) o «identificadores clásicos, SIN TPM», con un aviso. En el segundo caso puedes pedir al cliente que active el TPM en la BIOS y te envíe el código nuevo; una licencia emitida para el código clásico deja de valer si el TPM se activa después (la huella cambia de nivel). Los códigos son los de la huella v2: los que mostraban las builds anteriores a 2026-10 ya no sirven.
 
 ---
 
@@ -65,7 +67,7 @@ La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo 
 
 **La huella del equipo se firma pero no viaja en la clave.** Al activar, la app verifica usando *su propia* huella. Copiar la licencia a otro PC produce un mensaje distinto y la firma falla — sin necesidad de consultar a ningún servidor.
 
-**La huella se compone de** MachineGuid de Windows, número de serie del volumen del sistema y los seriales de placa/equipo de SMBIOS. Se leen del **registro y de una API nativa, nunca por WMI**: una consulta WMI puede tardar segundos o fallar al arrancar, y de esto depende poder grabar.
+**La huella tiene dos niveles (v2, 2026-10).** Si el equipo tiene un chip **TPM 2.0** (obligatorio en Windows 11; en placas de integrador suele ir como firmware, Intel PTT o AMD fTPM, y a veces hay que activarlo en la BIOS), la huella es **solo la clave de endoso del chip**, que el fabricante graba en él y no vive en el disco: una copia del disco arranca en otro chip y obtiene otra huella. Se lee **directamente del chip** (`TPM2_ReadPublic` por el servicio base de TPM de Windows, sin administrador, en torno a 1 ms), no de la copia que Windows guarda en el registro, que un clon se llevaría. Esa huella además sobrevive a reinstalar Windows, cambiar el disco, *Sysprep* y borrar el TPM; solo cambia al cambiar la placa. Si no hay TPM utilizable, la huella es la **clásica**: MachineGuid de Windows, número de serie del volumen del sistema, seriales de placa y de equipo y UUID de sistema del SMBIOS, leídos del **registro y de API nativas, nunca por WMI** (una consulta WMI puede tardar segundos o fallar al arrancar, y de esto depende poder grabar). El nivel viaja en el propio código de equipo (un bit), así que la herramienta de emisión lo muestra y la ventana de Licencia se lo dice al cliente.
 
 **El código de equipo y la licencia se leen en voz alta.** Usan un alfabeto sin caracteres confundibles (nada de `I`, `L`, `O`, `U`) y al teclear se aceptan minúsculas, espacios y las confusiones típicas (`O`→`0`, `I`→`1`).
 
@@ -85,7 +87,7 @@ La licencia **solo funciona en ese equipo**: la huella del PC forma parte de lo 
 
 ## 5. Límites conocidos
 
-**Clonado de disco.** Clonar el disco de un equipo licenciado (imagen sin *Sysprep*) reproduce también su huella, así que la licencia valdría en el clon. **Ninguna licencia sin conexión puede evitarlo.** Mitigación práctica: lleva un registro de a qué código de equipo has emitido cada licencia; si un mismo código pide varias, es señal de aviso.
+**Clonado de disco.** En un equipo con TPM 2.0 la huella es la clave de endoso del chip, así que una copia del disco en otro equipo NO valida la licencia (tampoco apagando el TPM en la copia: una huella clásica nunca coincide con una anclada al TPM). El límite queda en los equipos **sin TPM**: ahí la huella es la clásica, y si además el equipo no tiene números de serie ni UUID reales en el firmware (PC de integrador con valores de relleno), una copia de su disco en otro equipo igual de anónimo comparte huella y licencia. La herramienta de emisión avisa cuando el código es de un equipo sin TPM, para que puedas pedir que lo activen antes de entregar la licencia; y el registro de a qué código se emitió cada licencia sigue siendo la segunda línea. Otros límites del anclaje: una máquina virtual clonada con su TPM virtual conserva la huella; y si el chip cambia (placa nueva o, en algunos equipos, una actualización de BIOS que reinicia el TPM de firmware) hay que reemitir la licencia, igual que antes al reinstalar Windows. El cruce entre dos equipos físicos no se ha podido probar desde un solo equipo: conviene hacerlo una vez antes de vender (ver §8).
 
 **Parcheo del binario.** Alguien con conocimientos puede descompilar la app (.NET produce C# muy legible con herramientas gratuitas), anular la verificación o cambiarse el tope de canales, y recompilar. Fuera del modelo de amenaza desde el día uno: la defensa real exigiría activación online. La build que se distribuye va **ofuscada** (ver abajo), lo que sube mucho el coste de leer el código descompilado, pero no lo hace imposible. Mientras el negocio sea de pocos clientes con trato directo, el registro de licencias emitidas es la mitigación que más rinde.
 
@@ -106,10 +108,40 @@ Qué **no** se ofusca, y por qué: solo se procesan `Application`, `Infrastructu
 
 ---
 
-## 6. Comprobar el estado sin abrir la interfaz
+## 7. Comprobar el estado sin abrir la interfaz
 
 ```bash
 curl http://127.0.0.1:5005/api/v1/license
 ```
 
 Devuelve el estado, los días restantes y el código de equipo. También existe `POST /api/v1/license/activate` con `{"key":"..."}` (responde **422** si la clave no es válida, nunca un error de servidor).
+
+## 8. Licencia atada al TPM (implementado el 2026-10-03)
+
+**Qué cambió.** Huella v2 en dos niveles (§4). Piezas: `MachineFingerprintComposer` (composición y bit de nivel), `TpmEndorsementKey` (lee la clave de endoso del chip por TBS), `SmbiosSystemUuid` (UUID del firmware para el nivel clásico), `WindowsMachineFingerprint` (elige el nivel y lo deja en el registro de la aplicación), la ventana de Licencia (dice a qué está atado el código), `GET /api/v1/license` (campo `tpmAnchored`) y la herramienta de emisión (línea «Ancla» y aviso sin TPM). El formato de la clave de licencia no cambia.
+
+**Migración.** La huella de TODOS los equipos cambia: las licencias emitidas con builds anteriores dejan de validar y hay que reemitirlas con el código nuevo. Al actualizar un equipo la aplicación NO bloquea de golpe: el estado guardado deja de cuadrar con la huella, la prueba de 14 días empieza de nuevo conservando la clave antigua (que ya no valida), y durante ese plazo se graba con normalidad. No hay licencias de clientes emitidas todavía; solo las de prueba propias.
+
+**Medido con el prototipo** (`prototypes/TpmLicenseProbe`, portátil con Intel PTT y Windows 11, sesión SIN elevación, como corre la aplicación):
+
+| Prueba | Resultado | Coste medido |
+|---|---|---|
+| Leer la clave de endoso directamente del chip (TBS, `TPM2_ReadPublic` sobre 0x81010001) | Sin administrador; área pública de 314 bytes (RSA-2048); la misma clave que reporta el proveedor de plataforma de Windows | p50 0,9 ms (la primera, 16 ms) |
+| Copia de la clave de endoso en el registro (`…\Services\TPM\WMI\Endorsement\EkPub`) | Existe (283 bytes): vive en el disco y un clon se la llevaría. Por eso se lee del chip y no de Windows | |
+| UUID de sistema del SMBIOS (`GetSystemFirmwareTable`, sin WMI) | Real en este equipo; firmware, no disco | 4 ms |
+| Clave ECDSA P-256 no exportable en el TPM, de usuario | Crear 300 ms; abrir 7 ms; la privada no se exporta; otro proceso la abre y firma en 210 ms | Firma p50 141 ms, verificación 0,4 ms |
+| Clave de máquina en el TPM | Crearla exige elevación (NTE_PERM 0x80090010). Creada elevada y con permiso «Usuarios: lectura/uso», un proceso normal la abre y firma; con los permisos por defecto, acceso denegado | Firma 201 ms |
+
+**Por qué basta la identidad del chip, sin una firma del chip.** Una clave propia en el TPM con reto y firma solo añadiría defensa contra una respuesta falsificada del propio sistema, que exige administrador y el mismo esfuerzo que parchear la aplicación: queda fuera del modelo de amenaza, como el parcheo. A cambio costaría provisionar una clave de máquina desde el instalador y 150–200 ms por comprobación. El prototipo deja medida esa vía por si algún día se quiere.
+
+**Fallos de lectura.** «No hay TPM» y «el chip no tiene la clave en su sitio» son definitivos y llevan al nivel clásico, con un aviso en el registro que dice por qué. Un fallo que puede ser pasajero (el servicio de TPM aún arrancando) se reintenta unos segundos al iniciar. No hay vía de «si falla, se da por bueno»: quien clonara un disco podría provocar el fallo a propósito. Si en un equipo licenciado con TPM la lectura fallara una sesión entera, esa sesión vería la licencia como de otro equipo (prueba reiniciada, sin bloqueo inmediato) hasta el siguiente arranque sano.
+
+**Verificado.** 780 pruebas unitarias en verde (37 del licenciamiento; 21 añadidas el 2026-10-08 al revisar qué quedaba sin cubrir) y 100 de integración (95 en verde, 5 omitidas por diseño).
+- *Huella:* los niveles nunca se confunden y viajan en el código de equipo; una licencia emitida para un chip se rechaza en otro chip y con el TPM apagado; las respuestas del chip y las tablas de firmware mal formadas (viejas sin UUID, cortadas, corruptas) nunca se toman por un identificador; los DOS niveles del lector real se ejercitan en cualquier equipo con un chip simulado (también el clásico, que este portátil no recorre por sí solo, y el caso de un lector que lanza); el bucle de reintentos solo reintenta fallos pasajeros, agota su presupuesto de 3,75 s y trata la falta de `tbs.dll` como definitiva.
+- *Almacén y servicio* (con archivo y rama del registro propios de cada prueba y una clave de proveedor de usar y tirar): primer arranque; estado atado a la huella con rescate de la clave; la migración (prueba nueva sin bloqueo y la clave vuelve a valer cuando vuelve la huella); borrar o manipular una copia no reinicia la prueba y manda la copia más estricta; lectura imposible → `Unknown` sin bloquear ni sembrar; caducidad que solo frena grabaciones nuevas y nombra el código; uso medido con reloj monotónico; activación (otra máquina, basura, otro emisor, sin poder guardar, y sobre un equipo caducado desbloquea al instante).
+- *API:* `tpmAnchored` según el código y 422 con el motivo ante una clave rechazada.
+- *Build OFUSCADA, en una copia aislada (2026-10-08):* la huella sale anclada al TPM con el mismo código (las funciones nativas se siguen encontrando tras ofuscar), `GET /api/v1/license` devuelve `tpmAnchored: true`, la ventana de Licencia muestra «Protegido contra copias del disco…», la migración se comporta como se describe arriba (las tres copias del estado dejan de cuadrar y la prueba se reinicia conservando la clave), el cierre es ordenado y el registro queda sin errores. La herramienta de emisión reconoce el código como anclado al TPM, avisa ante un código clásico y rechaza un código incompleto.
+
+**Costuras para las pruebas.** `WindowsMachineFingerprint`, `TpmEndorsementKey.TryRead`, `LicenseStore` y `LicenseService` tienen un constructor o una sobrecarga `internal` (lector de la clave de endoso simulado; intento de lectura simulado; archivo y rama del registro propios; clave pública de usar y tirar) que solo ve el proyecto de pruebas. La configuración de producción no cambia: el constructor público delega con los valores reales.
+
+**Pendiente de validar con hardware.** (1) El cruce real: clonar el disco de un equipo licenciado a otro PC y comprobar que el código de equipo cambia y la licencia se rechaza. (2) El arranque en frío con la aplicación en el inicio de Windows: que el servicio de TPM responda dentro de los reintentos. (3) Un equipo sin TPM o con el TPM apagado: que caiga al nivel clásico con su aviso. (4) Un equipo con TPM presente pero sin aprovisionar por Windows (la clave de endoso aún no está en su identificador estándar): el código sale clásico y, cuando Windows aprovisiona, cambia al anclado; el registro de la aplicación distingue ese caso («el TPM no tiene la clave de endoso en su identificador estándar»). (5) Una máquina virtual con TPM virtual: un clon de la máquina conserva el chip virtual y comparte licencia.
