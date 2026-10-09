@@ -187,6 +187,9 @@ public static class ApiEndpoints
                 lic.Current.State, lic.Current.DaysRemaining, lic.Current.Summary, lic.MachineCode, lic.Current.CanStartRecording, lic.Current.LicensedChannels,
                 // ¿El código de equipo está ligado al chip TPM? (una copia del disco en otro equipo no validaría la licencia)
                 TpmAnchored = Baioss.Record.Application.Licensing.MachineFingerprintComposer.IsTpmAnchoredCode(lic.MachineCode) == true,
+                // Autocomprobación de los binarios: 0 sin verificar (no cambia nada), 1 verificada, 2 MODIFICADA (la
+                // licencia no se aplica; el detalle nombra los archivos que no coinciden).
+                lic.Current.Integrity, lic.Current.IntegrityDetail,
             }));
 
         api.MapPost("/license/activate", (ActivateBody body, [FromServices] Baioss.Record.Application.Licensing.ILicenseService lic) =>

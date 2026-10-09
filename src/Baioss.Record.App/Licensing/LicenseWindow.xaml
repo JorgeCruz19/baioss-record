@@ -45,6 +45,24 @@
                     </StackPanel>
                     <TextBlock Text="{Binding DetailText}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"
                                Foreground="{StaticResource TextSecondaryBrush}"/>
+                    <!-- Integridad de los binarios: verde si coinciden con el manifiesto firmado, gris si no se pudo
+                         comprobar (no afecta a nada), rojo si hay evidencia positiva de modificación (la licencia no se aplica). -->
+                    <TextBlock Text="{Binding IntegrityText}" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsIntegrityVerified}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource SignalGreenBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsTampered}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                        <Setter Property="FontWeight" Value="Bold"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </Border>
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -21,6 +22,9 @@ namespace Baioss.Record.UnitTests;
 /// cuanto la huella vuelve.</item>
 /// <item>Borrar o manipular una copia no reinicia la prueba: manda la copia más estricta.</item>
 /// <item>Al caducar solo se bloquean las grabaciones NUEVAS, y el motivo lleva el código de equipo.</item>
+/// <item>Integridad de los binarios: un fallo NUESTRO al comprobarla (sin manifiesto, firma de otra clave, archivo
+/// bloqueado, resumen no calculable, comprobación lenta) no cambia NADA; solo la evidencia POSITIVA de modificación
+/// anula la licencia, y aun así mandan las reglas de la prueba (nunca se corta nada en curso).</item>
 /// </list>
 /// </summary>
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
@@ -48,7 +52,53 @@ public sealed class LicenseStoreServiceTests
             var signature = _ecdsa.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
             return LicenseKey.Encode(LicenseKey.CurrentVersion, LicenseType.Lifetime, issuedOn, channels, signature);
         }
+        /// <summary>El manifiesto de integridad se firma con la MISMA clave que las licencias, como en producción.</summary>
+        public string SignManifest(IReadOnlyDictionary<string, string> hashes) => IntegrityManifest.Sign(hashes, _ecdsa, DateTimeOffset.UtcNow);
         public void Dispose() => _ecdsa.Dispose();
+    }
+
+    /// <summary>Una «instalación» de mentira: los cinco archivos sensibles con bytes aleatorios, en una carpeta propia,
+    /// y su manifiesto si se pide. La autocomprobación REAL resume estos archivos del disco.</summary>
+    private sealed class Install : IDisposable
+    {
+        public string Dir { get; } = Path.Combine(Path.GetTempPath(), "baioss-license-tests", "install-" + Guid.NewGuid().ToString("N"));
+        public string ManifestPath => Path.Combine(Dir, IntegrityManifest.FileName);
+
+        public Install()
+        {
+            Directory.CreateDirectory(Dir);
+            var rng = new Random(7);
+            foreach (var name in IntegrityManifest.SensitiveFiles)
+            {
+                var bytes = new byte[4096];
+                rng.NextBytes(bytes);
+                File.WriteAllBytes(Path.Combine(Dir, name), bytes);
+            }
+        }
+
+        public Dictionary<string, string> Hashes() => IntegrityManifest.SensitiveFiles.ToDictionary(n => n, n =>
+        {
+            using var stream = File.OpenRead(Path.Combine(Dir, n));
+            return IntegrityManifest.HashStream(stream);
+        }, StringComparer.Ordinal);
+
+        /// <summary>Firma el manifiesto de lo que hay AHORA en el disco.</summary>
+        public void SignManifest(Issuer issuer) => File.WriteAllText(ManifestPath, issuer.SignManifest(Hashes()));
+
+        /// <summary>«Parchea» un archivo: un byte más al final.</summary>
+        public void Patch(string name)
+        {
+            using var stream = new FileStream(Path.Combine(Dir, name), FileMode.Append, FileAccess.Write, FileShare.None);
+            stream.WriteByte(0x90);
+        }
+
+        public AssemblyIntegrity Check(string publicKey, Func<string, string?>? hashFile = null, TimeSpan? firstWait = null)
+            => new(NullLogger.Instance, Dir, publicKey, hashFile, firstWait ?? TimeSpan.FromSeconds(10));
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch { /* best-effort */ }
+        }
     }
 
     /// <summary>Archivo y rama del registro de ESTA prueba, borrados al terminar. Jamás los del producto.</summary>
@@ -63,8 +113,8 @@ public sealed class LicenseStoreServiceTests
 
         public LicenseStore Store(byte[] fingerprint) => new(new FakeFingerprint(fingerprint), NullLogger.Instance, FilePath, RegistryPath);
 
-        public LicenseService Service(byte[] fingerprint, string publicKey)
-            => new(new FakeFingerprint(fingerprint), Store(fingerprint), NullLogger<LicenseService>.Instance, publicKey);
+        public LicenseService Service(byte[] fingerprint, string publicKey, AssemblyIntegrity? integrity = null)
+            => new(new FakeFingerprint(fingerprint), Store(fingerprint), NullLogger<LicenseService>.Instance, publicKey, integrity);
 
         public string? UserRegistryValue()
         {
@@ -383,5 +433,220 @@ public sealed class LicenseStoreServiceTests
         Assert.Equal(LicenseState.Licensed, svc.Current.State);
         Assert.False(svc.ShouldBlockNewRecordings);
         Assert.Null(svc.BlockReason);
+    }
+
+    // --- Integridad de los binarios: un fallo nuestro no cambia nada; la evidencia positiva anula la licencia ---
+
+    [Fact]
+    public void WithAnIntactInstall_TheLicenseAppliesAsAlways()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        using var install = new Install();
+        install.SignManifest(issuer);
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-30), key: issuer.Issue(MachineA, channels: 2))));
+
+        using var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey));
+
+        Assert.Equal(LicenseState.Licensed, svc.Current.State);
+        Assert.Equal(IntegrityVerdict.Intact, svc.Current.Integrity);
+        Assert.Equal(2, svc.Current.LicensedChannels);
+        Assert.False(svc.ShouldBlockNewRecordings);
+        Assert.False(svc.Current.NeedsAttention);
+        Assert.DoesNotContain("modificada", svc.Current.Summary);
+    }
+
+    [Fact]
+    public void AGenuineFailureToCheckIntegrity_ChangesNothing()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        // Prueba caducada hace tiempo: SOLO la clave mantiene el equipo grabando. Si algún fallo nuestro al comprobar
+        // la integridad anulara la clave, aquí se vería como un bloqueo.
+        string key = issuer.Issue(MachineA);
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-30), key: key)));
+
+        // Sin manifiesto (desarrollo, copia portable).
+        using (var install = new Install())
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+            Assert.Contains("no hay manifiesto", svc.Current.IntegrityDetail);
+            Assert.False(svc.ShouldBlockNewRecordings);
+        }
+
+        // Manifiesto firmado con OTRA clave (error de empaquetado, o un manifiesto fabricado): tampoco se afirma nada.
+        using (var install = new Install())
+        {
+            using var other = new Issuer();
+            install.SignManifest(other);
+            using var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey));
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+            Assert.False(svc.ShouldBlockNewRecordings);
+        }
+
+        // Un ensamblado bloqueado en exclusiva (antivirus) justo al comprobar.
+        using (var install = new Install())
+        {
+            install.SignManifest(issuer);
+            using var lockHandle = new FileStream(Path.Combine(install.Dir, "Baioss.Record.Infrastructure.dll"), FileMode.Open, FileAccess.Read, FileShare.None);
+            using var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey));
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+            Assert.False(svc.ShouldBlockNewRecordings);
+        }
+
+        // El resumen no se puede calcular (un disco que falla al leer).
+        using (var install = new Install())
+        {
+            install.SignManifest(issuer);
+            using var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey, hashFile: _ => throw new IOException("E/S")));
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+            Assert.False(svc.ShouldBlockNewRecordings);
+        }
+
+        // Y sin autocomprobación registrada en absoluto (como hasta ahora).
+        using (var svc = box.Service(MachineA, issuer.PublicKey))
+        {
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+        }
+    }
+
+    [Fact]
+    public void PositiveEvidenceOfTampering_VoidsTheLicense_AndTheTrialRulesApply()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        using var install = new Install();
+        install.SignManifest(issuer);
+        install.Patch("Baioss.Record.Infrastructure.dll");
+        string key = issuer.Issue(MachineA);
+
+        // Prueba en curso: la clave NO se aplica, pero la prueba sigue → no se bloquea; se avisa para reinstalar a tiempo.
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-3), key: key)));
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            Assert.Equal(LicenseState.Trial, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Tampered, svc.Current.Integrity);
+            Assert.True(svc.Current.IsTampered);
+            Assert.Null(svc.Current.LicensedChannels);
+            Assert.Contains("Baioss.Record.Infrastructure.dll", svc.Current.IntegrityDetail);
+            Assert.False(svc.ShouldBlockNewRecordings);
+            Assert.True(svc.Current.CanStartRecording);
+            Assert.True(svc.Current.NeedsAttention);
+            Assert.Contains("instalación modificada", svc.Current.Summary);
+            Assert.Equal(key, box.Store(MachineA).Read().Record?.LicenseKey); // la clave no se pierde
+        }
+
+        // Prueba terminada: se trata como NO licenciada → bloquea grabaciones nuevas, y el motivo dice la verdad y la salida.
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-30), key: key)));
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            Assert.Equal(LicenseState.Expired, svc.Current.State);
+            Assert.True(svc.ShouldBlockNewRecordings);
+            Assert.False(svc.Current.CanStartRecording);
+            Assert.Contains("no coincide", svc.BlockReason);
+            Assert.Contains("reinstala", svc.BlockReason);
+            Assert.Contains(svc.MachineCode, svc.BlockReason);
+        }
+
+        // Reinstalada (los archivos vuelven a coincidir con un manifiesto firmado): la misma clave vuelve a valer sin tocar nada.
+        install.SignManifest(issuer);
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            Assert.Equal(LicenseState.Licensed, svc.Current.State);
+            Assert.Equal(IntegrityVerdict.Intact, svc.Current.Integrity);
+            Assert.False(svc.ShouldBlockNewRecordings);
+            Assert.Null(svc.BlockReason);
+        }
+    }
+
+    [Fact]
+    public void TamperingPlusAnUnreadableStore_IsUnknown_AndDoesNotBlock()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        using var install = new Install();
+        install.SignManifest(issuer);
+        install.Patch("Baioss.Record.App.dll");
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-30))));
+        box.DeleteUserRegistryCopy();
+
+        using (File.Open(box.FilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            Assert.Equal(LicenseState.Unknown, svc.Current.State);          // sin certeza de que la prueba terminó…
+            Assert.Equal(IntegrityVerdict.Tampered, svc.Current.Integrity); // …aunque la evidencia se informe…
+            Assert.False(svc.ShouldBlockNewRecordings);                     // …no hay nada que bloquear
+            Assert.True(svc.Current.CanStartRecording);
+        }
+    }
+
+    [Fact]
+    public void ActivatingOnATamperedInstall_SavesTheKey_ButDoesNotClaimSuccess()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        using var install = new Install();
+        install.SignManifest(issuer);
+        install.Patch("Baioss.Record.App.exe");
+        string key = issuer.Issue(MachineA, channels: 3);
+
+        using (var svc = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey)))
+        {
+            var result = svc.Activate(key);
+            Assert.False(result.Success);
+            Assert.Equal(LicenseRejection.None, result.Rejection); // no es «clave mala»: válida pero no aplicable
+            Assert.Contains("reinstala", result.Message);
+            Assert.Equal(LicenseState.Trial, svc.Current.State);
+            Assert.Null(svc.Current.LicensedChannels);
+        }
+        Assert.Equal(key, box.Store(MachineA).Read().Record?.LicenseKey); // guardada: sobrevive a la reinstalación
+
+        install.SignManifest(issuer); // la instalación vuelve a coincidir
+        using var fresh = box.Service(MachineA, issuer.PublicKey, install.Check(issuer.PublicKey));
+        Assert.Equal(LicenseState.Licensed, fresh.Current.State);
+        Assert.Equal(3, fresh.Current.LicensedChannels);
+    }
+
+    [Fact]
+    public void ASlowIntegrityCheck_NeverHoldsTheServiceBeyondItsBudget_AndIsAppliedInTheNextCycle()
+    {
+        using var box = new Sandbox();
+        using var issuer = new Issuer();
+        using var install = new Install();
+        install.SignManifest(issuer);
+        install.Patch("Baioss.Record.Application.dll");
+        Assert.True(box.Store(MachineA).Write(TrialStarted(Now.AddDays(-30), key: issuer.Issue(MachineA))));
+        using var disk = new ManualResetEventSlim(false); // «el disco no responde»
+        var hashes = install.Hashes();
+        var check = install.Check(issuer.PublicKey, hashFile: n => { disk.Wait(); return hashes.GetValueOrDefault(n); },
+            firstWait: TimeSpan.FromMilliseconds(300));
+
+        var sw = Stopwatch.StartNew();
+        using var svc = box.Service(MachineA, issuer.PublicKey, check);
+        sw.Stop();
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"el servicio tardó {sw.Elapsed} en arrancar");
+        Assert.Equal(LicenseState.Licensed, svc.Current.State);           // sin evidencia todavía, la clave vale
+        Assert.Equal(IntegrityVerdict.Unverified, svc.Current.Integrity);
+        Assert.False(svc.ShouldBlockNewRecordings);
+
+        var states = new List<LicenseState>();
+        svc.Changed += (_, info) => states.Add(info.State);
+        disk.Set(); // el disco responde; el siguiente ciclo recoge el veredicto
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (svc.Current.Integrity != IntegrityVerdict.Tampered && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(20);
+            svc.RefreshForTests(TimeSpan.Zero);
+        }
+        Assert.Equal(IntegrityVerdict.Tampered, svc.Current.Integrity);
+        Assert.Equal(LicenseState.Expired, svc.Current.State);
+        Assert.True(svc.ShouldBlockNewRecordings);
+        Assert.Contains(LicenseState.Expired, states); // la UI se entera
     }
 }

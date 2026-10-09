@@ -413,6 +413,10 @@ public partial class App : System.Windows.Application
             s.AddSingleton(sp => new Baioss.Record.Infrastructure.Licensing.LicenseStore(
                 sp.GetRequiredService<Baioss.Record.Application.Licensing.IMachineFingerprint>(),
                 sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Licensing.LicenseStore>>()));
+            // Autocomprobación de integridad de los binarios (manifiesto firmado junto al exe, generado al publicar).
+            // Nunca lanza ni retrasa el arranque más de 3 s; sin manifiesto (desarrollo/portable) no afirma nada.
+            // Solo una evidencia POSITIVA de modificación tiene efecto, y lo decide el servicio de licencia.
+            s.AddSingleton<Baioss.Record.Infrastructure.Licensing.AssemblyIntegrity>();
             s.AddSingleton<Baioss.Record.Infrastructure.Licensing.LicenseService>();
             s.AddSingleton<Baioss.Record.Application.Licensing.ILicenseService>(sp =>
                 sp.GetRequiredService<Baioss.Record.Infrastructure.Licensing.LicenseService>());

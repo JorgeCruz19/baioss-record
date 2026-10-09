@@ -16,6 +16,17 @@ using Baioss.Record.Application.Licensing;
 //       El código dice además si el equipo está anclado a su chip TPM (una copia del disco no valida la
 //       licencia) o no; sin TPM la herramienta avisa antes de entregar la licencia. Los códigos son los de
 //       la huella v2: los que mostraban las builds anteriores a 2026-10 ya no sirven.
+//
+//   baioss-license integrity sign --dir <CARPETA-PUBLICADA> --private <CLAVE-PRIVADA-BASE64>
+//       Genera el manifiesto de integridad (baioss-record.integrity): el SHA-256 de los ensamblados sensibles de
+//       esa carpeta, FIRMADO con la privada. Es el ÚLTIMO paso de la publicación, sobre los bytes finales (después
+//       de ofuscar y, si se firman digitalmente los binarios, después de firmarlos). Verifica el manifiesto al
+//       instante con la clave pública de ESTA build y no deja nada si no cuadra. La app lo recalcula al arrancar:
+//       una DLL parcheada se detecta y la licencia deja de aplicarse (ver docs/LICENCIAMIENTO.md).
+//
+//   baioss-license integrity verify --dir <CARPETA-PUBLICADA>
+//       Comprueba la carpeta exactamente como lo hará la app. Código de salida: 0 intacta, 2 MODIFICADA,
+//       3 sin verificar (no hay manifiesto, firma de otra clave, archivo ilegible…).
 
 // La consola de Windows usa la codepage del sistema: sin esto, los acentos de los mensajes salen como signos
 // raros (el mismo problema de codificación que ya se corrigió al leer la salida de FFmpeg).
@@ -27,6 +38,7 @@ switch (args[0].ToLowerInvariant())
 {
     case "keygen": return KeyGen();
     case "issue": return Issue(args);
+    case "integrity": return Integrity(args);
     default: PrintUsage(); return 1;
 }
 
@@ -121,6 +133,130 @@ static int Issue(string[] args)
     return 0;
 }
 
+static int Integrity(string[] args)
+{
+    string? sub = args.Length > 1 ? args[1].ToLowerInvariant() : null;
+    string? dir = ValueOf(args, "--dir");
+    if (sub is not ("sign" or "verify") || dir is null)
+    {
+        Console.Error.WriteLine("Uso: integrity sign --dir <CARPETA-PUBLICADA> --private <CLAVE-PRIVADA-BASE64>");
+        Console.Error.WriteLine("     integrity verify --dir <CARPETA-PUBLICADA>");
+        return 1;
+    }
+    dir = Path.GetFullPath(dir);
+    if (!Directory.Exists(dir))
+    {
+        Console.Error.WriteLine($"La carpeta «{dir}» no existe.");
+        return 1;
+    }
+    string manifestPath = Path.Combine(dir, IntegrityManifest.FileName);
+    return sub == "sign" ? IntegritySign(args, dir, manifestPath) : IntegrityVerify(dir, manifestPath);
+}
+
+/// <summary>SHA-256 hex de un archivo de la carpeta publicada; null si no existe; lanza si no se puede leer.</summary>
+static string? HashFileIn(string dir, string name)
+{
+    string path = Path.Combine(dir, name);
+    if (!File.Exists(path)) return null;
+    using var stream = File.OpenRead(path);
+    return IntegrityManifest.HashStream(stream);
+}
+
+static int IntegritySign(string[] args, string dir, string manifestPath)
+{
+    string? priv = ValueOf(args, "--private");
+    if (priv is null)
+    {
+        Console.Error.WriteLine("Falta --private <CLAVE-PRIVADA-BASE64> (la misma con la que se emiten las licencias).");
+        return 1;
+    }
+    using var ecdsa = ECDsa.Create();
+    try { ecdsa.ImportPkcs8PrivateKey(Convert.FromBase64String(priv), out _); }
+    catch (Exception ex) when (ex is FormatException or CryptographicException)
+    {
+        Console.Error.WriteLine("La clave privada no es válida.");
+        return 1;
+    }
+
+    // TODOS los archivos sensibles deben estar: un manifiesto parcial dejaría sin cubrir justo lo que importa, y
+    // que falte alguno significa que la carpeta no es una publicación completa.
+    var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
+    Console.WriteLine($"Carpeta: {dir}");
+    foreach (string name in IntegrityManifest.SensitiveFiles)
+    {
+        string? hex;
+        try { hex = HashFileIn(dir, name); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"No se pudo leer «{name}»: {ex.Message}");
+            return 1;
+        }
+        if (hex is null)
+        {
+            Console.Error.WriteLine($"Falta «{name}» en la carpeta: ¿es la carpeta publicada (scripts\\publish.ps1)?");
+            return 1;
+        }
+        hashes[name] = hex;
+        Console.WriteLine($"  {hex}  {name}");
+    }
+
+    string blob = IntegrityManifest.Sign(hashes, ecdsa, DateTimeOffset.UtcNow);
+    File.WriteAllText(manifestPath, blob); // UTF-8 sin BOM, una línea
+
+    // Verificación INMEDIATA con la clave pública compilada en esta build: si la privada no es su pareja, el
+    // manifiesto quedaría «sin verificar» EN SILENCIO en casa del cliente (la app no bloquea nada, pero tampoco
+    // protege). Mejor fallar aquí, ruidosamente, y no dejar nada.
+    var report = IntegrityManifest.Verify(File.ReadAllText(manifestPath), LicensePublicKey.ProviderPublicKeyBase64, n => HashFileIn(dir, n));
+    if (report.Verdict != IntegrityVerdict.Intact)
+    {
+        try { File.Delete(manifestPath); } catch { /* best-effort */ }
+        Console.Error.WriteLine($"El manifiesto recién firmado NO verifica con la clave pública de esta build ({report.Detail}).");
+        Console.Error.WriteLine("¿Es la clave privada correcta (la pareja de LicensePublicKey.cs)? No se deja ningún manifiesto.");
+        return 1;
+    }
+    Console.WriteLine();
+    Console.WriteLine($"Manifiesto firmado y verificado: {manifestPath}");
+    return 0;
+}
+
+static int IntegrityVerify(string dir, string manifestPath)
+{
+    if (!File.Exists(manifestPath))
+    {
+        Console.Error.WriteLine($"No hay manifiesto en «{manifestPath}»: la app arrancaría con la integridad SIN VERIFICAR");
+        Console.Error.WriteLine("(no bloquea nada, pero tampoco detectaría una DLL parcheada). Genéralo con «integrity sign».");
+        return 3;
+    }
+    var report = IntegrityManifest.Verify(File.ReadAllText(manifestPath), LicensePublicKey.ProviderPublicKeyBase64, n => HashFileIn(dir, n));
+    Console.WriteLine($"Carpeta: {dir}");
+    foreach (var f in report.Files)
+    {
+        string label = f.Status switch
+        {
+            IntegrityFileStatus.Match => "coincide     ",
+            IntegrityFileStatus.Mismatch => "NO COINCIDE  ",
+            IntegrityFileStatus.Missing => "no existe    ",
+            _ => "no se pudo leer",
+        };
+        Console.WriteLine($"  [{label}] {f.File}");
+    }
+    Console.WriteLine();
+    switch (report.Verdict)
+    {
+        case IntegrityVerdict.Intact:
+            Console.WriteLine($"INTACTA: {report.Detail}.");
+            return 0;
+        case IntegrityVerdict.Tampered:
+            Console.Error.WriteLine($"MODIFICADA: {report.Detail}. La app NO aplicará la licencia en esta carpeta.");
+            Console.Error.WriteLine("Si acabas de reemplazar DLL a mano (o de ofuscar), vuelve a firmar el manifiesto con «integrity sign».");
+            return 2;
+        default:
+            Console.Error.WriteLine($"SIN VERIFICAR: {report.Detail}.");
+            Console.Error.WriteLine("La app no bloquearía nada, pero el manifiesto no protege así: revisa la firma/clave y vuelve a firmarlo.");
+            return 3;
+    }
+}
+
 static string? ValueOf(string[] args, string name)
 {
     int i = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
@@ -136,4 +272,10 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("  baioss-license issue --machine <CÓDIGO-DE-EQUIPO> [--channels <1-4>] --private <CLAVE-PRIVADA-BASE64>");
     Console.WriteLine("      Emite una licencia perpetua para ese equipo con los canales PAGADOS (sin --channels: 4).");
+    Console.WriteLine();
+    Console.WriteLine("  baioss-license integrity sign --dir <CARPETA-PUBLICADA> --private <CLAVE-PRIVADA-BASE64>");
+    Console.WriteLine("      Genera el manifiesto de integridad firmado (último paso de la publicación, sobre los bytes finales).");
+    Console.WriteLine();
+    Console.WriteLine("  baioss-license integrity verify --dir <CARPETA-PUBLICADA>");
+    Console.WriteLine("      Comprueba la carpeta como lo hará la app (0 intacta, 2 modificada, 3 sin verificar).");
 }

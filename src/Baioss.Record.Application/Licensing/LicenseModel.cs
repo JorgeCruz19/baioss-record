@@ -37,19 +37,29 @@ public enum LicenseRejection
 /// <see cref="LicenseState.Trial"/> (una licencia es perpetua y no caduca). <see cref="LicensedChannels"/>
 /// solo tiene valor en <see cref="LicenseState.Licensed"/>: es el techo de canales PAGADO (viene firmado
 /// dentro de la clave); <c>null</c> = sin techo por licencia (prueba, caducada o no verificable — recortar
-/// canales por un fallo nuestro iría contra el principio de no estorbar jamás a un grabador 24/7).</summary>
+/// canales por un fallo nuestro iría contra el principio de no estorbar jamás a un grabador 24/7).
+/// <para><see cref="Integrity"/> es el veredicto de la autocomprobación de los binarios (ver
+/// <see cref="IntegrityManifest"/>). Con <see cref="IntegrityVerdict.Tampered"/> la clave de licencia guardada
+/// NO se aplica (el estado sigue las marcas de la prueba) y <see cref="IntegrityDetail"/> nombra los archivos que
+/// no coinciden; con <see cref="IntegrityVerdict.Unverified"/> no cambia nada y el detalle dice por qué no se pudo
+/// comprobar.</para></summary>
 public sealed record LicenseInfo(
     LicenseState State,
     int DaysRemaining,
     DateTimeOffset? TrialStartedAt,
     string MachineCode,
-    int? LicensedChannels = null)
+    int? LicensedChannels = null,
+    IntegrityVerdict Integrity = IntegrityVerdict.Unverified,
+    string? IntegrityDetail = null)
 {
     /// <summary>¿Se pueden iniciar grabaciones nuevas? Solo se bloquea al CADUCAR el periodo de prueba.</summary>
     public bool CanStartRecording => State is not LicenseState.Expired;
 
+    /// <summary>¿Hay evidencia POSITIVA de que los binarios no son los originales? (nunca por un fallo nuestro).</summary>
+    public bool IsTampered => Integrity is IntegrityVerdict.Tampered;
+
     /// <summary>Texto corto para la barra superior de la app, en el idioma vigente.</summary>
-    public string Summary => State switch
+    public string Summary => (State switch
     {
         LicenseState.Licensed => LicensedChannels is int c
             ? Localization.Localizer.Plural("Lic_Summary_LicensedChannels_One", "Lic_Summary_LicensedChannels_Many", c)
@@ -59,11 +69,13 @@ public sealed record LicenseInfo(
             : Localization.Localizer.F("Lic_Summary_TrialDays", DaysRemaining),
         LicenseState.Unknown => Localization.Localizer.T("Lic_Summary_Unknown"),
         _ => Localization.Localizer.T("Lic_Summary_Expired"),
-    };
+    }) + (IsTampered ? Localization.Localizer.T("Lic_Summary_Tampered_Suffix") : "");
 
-    /// <summary>¿Conviene avisar al operador de forma visible? (últimos días de prueba, caducada o no verificable).</summary>
+    /// <summary>¿Conviene avisar al operador de forma visible? (últimos días de prueba, caducada, no verificable
+    /// o instalación modificada: en este último caso, para que reinstale ANTES de que importe).</summary>
     public bool NeedsAttention => State is LicenseState.Expired or LicenseState.Unknown
-                                  || (State is LicenseState.Trial && DaysRemaining <= 7);
+                                  || (State is LicenseState.Trial && DaysRemaining <= 7)
+                                  || IsTampered;
 }
 
 /// <summary>
@@ -74,7 +86,8 @@ public sealed record LicenseInfo(
 /// </summary>
 public interface ILicenseGate
 {
-    /// <summary>True solo si el periodo de prueba CADUCÓ y no hay licencia. Ante cualquier duda devuelve false.</summary>
+    /// <summary>True solo si el periodo de prueba CADUCÓ y no hay licencia APLICABLE (una clave válida no se aplica
+    /// en una instalación con evidencia positiva de modificación). Ante cualquier duda devuelve false.</summary>
     bool ShouldBlockNewRecordings { get; }
 
     /// <summary>Motivo legible del bloqueo, o null.</summary>

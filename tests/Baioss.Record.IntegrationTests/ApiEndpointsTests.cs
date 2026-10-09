@@ -82,6 +82,7 @@ public sealed class ApiEndpointsTests
         Assert.Equal((int)LicenseState.Trial, info.GetProperty("state").GetInt32());
         Assert.Equal(9, info.GetProperty("daysRemaining").GetInt32());
         Assert.True(info.GetProperty("canStartRecording").GetBoolean());
+        Assert.Equal((int)IntegrityVerdict.Unverified, info.GetProperty("integrity").GetInt32()); // sin autocomprobación: «sin verificar»
 
         // Una clave rechazada es un 422 con el motivo, nunca un 500.
         var activate = await client.PostAsJsonAsync("/api/v1/license/activate", new { key = "ABCD" });
@@ -89,6 +90,26 @@ public sealed class ApiEndpointsTests
         var body = await activate.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("OtherMachine", body.GetProperty("reason").GetString());
         Assert.Equal("ABCD", license.LastKey);
+    }
+
+    [Fact]
+    public async Task License_ReportsAModifiedInstallation_WithTheFilesThatDoNotMatch()
+    {
+        // Evidencia positiva de modificación con la prueba terminada: el panel web ve que no se puede grabar, por qué,
+        // y qué archivos no coinciden (para que soporte sepa decir «reinicia o reinstala»).
+        var code = MachineFingerprintComposer.ToCode(MachineFingerprintComposer.ComposeTpm(new byte[] { 1, 2, 3 }));
+        var license = new FakeLicense(new LicenseInfo(LicenseState.Expired, 0, DateTimeOffset.UtcNow.AddDays(-30), code,
+            Integrity: IntegrityVerdict.Tampered, IntegrityDetail: "Baioss.Record.Infrastructure.dll"));
+        var (app, _) = BuildApi(s => s.AddSingleton<ILicenseService>(license));
+        await using var __ = app;
+        await app.StartAsync();
+
+        var info = await app.GetTestClient().GetFromJsonAsync<JsonElement>("/api/v1/license");
+        Assert.Equal((int)LicenseState.Expired, info.GetProperty("state").GetInt32());
+        Assert.False(info.GetProperty("canStartRecording").GetBoolean());
+        Assert.Equal((int)IntegrityVerdict.Tampered, info.GetProperty("integrity").GetInt32());
+        Assert.Equal("Baioss.Record.Infrastructure.dll", info.GetProperty("integrityDetail").GetString());
+        Assert.Contains("modificada", info.GetProperty("summary").GetString());
     }
 
     [Fact]

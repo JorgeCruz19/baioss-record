@@ -20,15 +20,27 @@
 .PARAMETER Version
     Versión que se estampa en el instalador y en el nombre del archivo.
 
+.PARAMETER PrivateKey
+    Clave privada del proveedor (Base64) para FIRMAR el manifiesto de integridad de los binarios (ver
+    scripts\sign-integrity.ps1). Por defecto, la variable de entorno BAIOSS_LICENSE_PRIVATE_KEY. Sin ella, el
+    script solo COMPRUEBA el manifiesto que ya haya en publish\ y se niega a empaquetar si no está intacto.
+
+.PARAMETER NoIntegrityManifest
+    Empaqueta a sabiendas SIN manifiesto de integridad (la build no detectará DLL parcheadas). Solo para
+    pruebas internas; nunca para una build de venta.
+
 .EXAMPLE
     .\scripts\build-installer.ps1
     .\scripts\build-installer.ps1 -SkipPublish -Version 1.0.1
+    .\scripts\build-installer.ps1 -Obfuscate -PrivateKey <clave> -Version 1.0.1
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipPublish,
     [switch]$Obfuscate,
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.0.0',
+    [string]$PrivateKey = $env:BAIOSS_LICENSE_PRIVATE_KEY,
+    [switch]$NoIntegrityManifest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,8 +90,23 @@ if ($SkipPublish) {
 # Cifra las cadenas y renombra los internos de los ensamblados con lógica sensible (licenciamiento incluido).
 # Sube la barrera contra el crackeo casual; NO lo hace imposible (fuera del modelo de amenaza, ver docs).
 if ($Obfuscate) {
-    & (Join-Path $PSScriptRoot 'obfuscate.ps1')
+    & (Join-Path $PSScriptRoot 'obfuscate.ps1') -PrivateKey $PrivateKey
     if ($LASTEXITCODE -ne 0) { Write-Error 'Falló la ofuscación.' }
+}
+
+# --- 1c) Manifiesto de integridad de los binarios (ÚLTIMO paso sobre los bytes finales) ---
+# La app recalcula al arrancar el SHA-256 de sus ensamblados sensibles y lo compara con un manifiesto FIRMADO
+# con la clave privada del proveedor: una DLL parcheada se detecta y la licencia deja de aplicarse. Sin
+# manifiesto la app arranca y graba igual («sin verificar»), pero no protege: por eso NO se empaqueta sin él
+# salvo opt-out explícito. Con clave se (re)firma ahora, sobre los bytes finales; sin clave se comprueba el que
+# haya. OJO: si se firman digitalmente los binarios, hacerlo ANTES de este paso (cambia los bytes).
+if ($NoIntegrityManifest) {
+    Write-Warning 'Se empaqueta SIN manifiesto de integridad (-NoIntegrityManifest): esta build NO detectará DLL parcheadas.'
+} else {
+    $signArgs = @{ PublishDir = $publishDir }
+    if ($PrivateKey) { $signArgs.PrivateKey = $PrivateKey } else { $signArgs.VerifyOnly = $true }
+    & (Join-Path $PSScriptRoot 'sign-integrity.ps1') @signArgs
+    if ($LASTEXITCODE -ne 0) { Write-Error 'El manifiesto de integridad no está en orden; no se empaqueta.' }
 }
 
 # FFmpeg NO se empaqueta: su licencia no permite redistribuirlo (ver docs\FFMPEG.md). El instalador crea la

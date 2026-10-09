@@ -154,6 +154,10 @@ Name: "startupicon"; Description: "{cm:Task_Startup,{#AppName}}"; GroupDescripti
 ; legalmente redistribuible. Lo descarga e instala el CLIENTE en su equipo —usarlo él es legal; distribuirlo
 ; nosotros no—. La carpeta se crea vacía con un LÉEME que explica exactamente qué bajar y dónde ponerlo.
 ; (Ver docs\CHECKLIST-VENTA.md y docs\FFMPEG.md.)
+;
+; «baioss-record.integrity» (manifiesto de integridad FIRMADO de los binarios, generado por scripts\sign-integrity.ps1
+; como último paso de la publicación) viaja con el comodín: la app lo compara al arrancar con sus propios ensamblados.
+; build-installer.ps1 se niega a compilar este instalador si el manifiesto no está intacto.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; \
     Excludes: "data\*,logs\*,recordings\*,_obfuscated\*,Mapping.txt,tools\ffmpeg\*,*.log,*.db,*.db-shm,*.db-wal"; \
     Flags: ignoreversion recursesubdirs createallsubdirs

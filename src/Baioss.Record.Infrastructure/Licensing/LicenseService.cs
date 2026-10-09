@@ -20,28 +20,44 @@ namespace Baioss.Record.Infrastructure.Licensing;
 ///
 /// <para><b>Nunca se persiste «activado».</b> Del disco solo sale el TEXTO de la clave; que la licencia sea válida
 /// se decide verificando la firma contra la huella del equipo en cada recálculo.</para>
+///
+/// <para><b>Manipulación evidente ≠ fallo propio.</b> La autocomprobación de los binarios
+/// (<see cref="AssemblyIntegrity"/>) distingue dos cosas que hasta ahora se confundían bajo «no verificable»: un
+/// fallo GENUINO al comprobar (sin manifiesto, firma ilegible, archivo bloqueado por el antivirus, resumen no
+/// calculable) sigue siendo fail-open y no cambia nada; una evidencia POSITIVA (manifiesto auténtico y un archivo
+/// leído con éxito que no coincide) hace que la clave de licencia guardada NO se aplique: la instalación se trata
+/// como no licenciada y manda el periodo de prueba. Ni aun así se interrumpe nada en curso, y el operador recibe
+/// el motivo y la salida (reiniciar o reinstalar).</para>
 /// </summary>
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public sealed class LicenseService : BackgroundService, ILicenseService, ILicenseGate
 {
+    private static readonly IntegrityReport NotChecked = IntegrityReport.Unverified("sin autocomprobación de integridad");
+
     private readonly IMachineFingerprint _fingerprint;
     private readonly LicenseStore _store;
+    private readonly AssemblyIntegrity? _integrity;
     private readonly ILogger<LicenseService> _log;
     private readonly object _sync = new();
 
     // Publicado por el bucle de fondo y leído sin lock por el pre-vuelo y la UI.
     private volatile LicenseInfo _current;
     private long _lastTickTicks;   // reloj MONOTÓNICO: mide el uso real, inmune a que cambien la hora del sistema
+    private bool _tamperIgnoredLogged; // el aviso «clave válida pero no aplicada» se escribe una vez, no cada minuto
 
-    public LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log)
-        : this(fingerprint, store, log, LicensePublicKey.ProviderPublicKeyBase64) { }
+    /// <summary>Composición de producción. La autocomprobación de los binarios es opcional: sin ella (o si no se
+    /// registró) todo queda «sin verificar», que no cambia nada.</summary>
+    public LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log, AssemblyIntegrity? integrity = null)
+        : this(fingerprint, store, log, LicensePublicKey.ProviderPublicKeyBase64, integrity) { }
 
     /// <summary>Para las pruebas: verificar contra una clave pública de usar y tirar (la privada del proveedor no está en
     /// el repositorio, así que con la pública real no se puede fabricar ninguna licencia válida en una prueba).</summary>
-    internal LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log, string publicKeyBase64)
+    internal LicenseService(IMachineFingerprint fingerprint, LicenseStore store, ILogger<LicenseService> log, string publicKeyBase64,
+        AssemblyIntegrity? integrity = null)
     {
         _fingerprint = fingerprint;
         _store = store;
+        _integrity = integrity;
         _log = log;
         _publicKeyBase64 = publicKeyBase64;
         _current = new LicenseInfo(LicenseState.Unknown, 0, null, fingerprint.Code);
@@ -66,9 +82,19 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
 
     // --- ILicenseGate: lectura de campo, sin E/S, sin excepciones posibles ---
     public bool ShouldBlockNewRecordings => _current.State is LicenseState.Expired;
-    public string? BlockReason => ShouldBlockNewRecordings
-        ? Application.Localization.Localizer.F("Lic_Blocked", MachineCode)
-        : null;
+    public string? BlockReason
+    {
+        get
+        {
+            var current = _current; // una sola lectura del campo volatile: estado y veredicto de la MISMA instantánea
+            if (current.State is not LicenseState.Expired) return null;
+            // Con la instalación modificada, el motivo dice la verdad útil: la licencia (si la hay) no se aplica
+            // y cómo recuperarse; «activa la licencia» a secas despistaría a un cliente que ya la tiene.
+            return current.IsTampered
+                ? Application.Localization.Localizer.F("Lic_Blocked_Tampered", MachineCode)
+                : Application.Localization.Localizer.F("Lic_Blocked", MachineCode);
+        }
+    }
 
     public LicenseActivationResult Activate(string licenseKey)
     {
@@ -96,6 +122,18 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
                 _log.LogError("Licencias: la clave es válida pero NO se pudo guardar en ninguna ubicación (¿permisos de «{Path}»?).", _store.FilePath);
                 return new LicenseActivationResult(false, LicenseRejection.None,
                     Application.Localization.Localizer.F("Lic_Msg_NotSaved", _store.FilePath));
+            }
+
+            var after = _current;
+            if (after.State is not LicenseState.Licensed && after.IsTampered)
+            {
+                // La clave es auténtica y QUEDÓ GUARDADA (sobrevive a reinstalar), pero no se aplica mientras haya
+                // evidencia positiva de modificación. Decir «activada» y reiniciar «para aplicar los canales» sería
+                // engañar: la app volvería en periodo de prueba. Success=false + Rejection.None, como «válida pero
+                // sin guardar»: la licencia pendiente del instalador se conserva y se reintenta al próximo arranque.
+                _log.LogWarning("Licencias: clave válida GUARDADA pero NO aplicada: la instalación está modificada ({Files}).", after.IntegrityDetail);
+                return new LicenseActivationResult(false, LicenseRejection.None,
+                    Application.Localization.Localizer.T("Lic_Msg_SavedButTampered"));
             }
 
             _log.LogInformation("Licencia ACTIVADA para el equipo {Code}.", MachineCode);
@@ -134,23 +172,31 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
     {
         lock (_sync)
         {
+            // Veredicto de integridad de los binarios (una vez por proceso; la primera consulta espera acotadamente).
+            // Viaja en cada LicenseInfo para la UI/API; solo Tampered tiene consecuencias (más abajo).
+            var integrity = _integrity?.Current ?? NotChecked;
+            string integrityDetail = integrity.Verdict is IntegrityVerdict.Tampered
+                ? string.Join(", ", integrity.MismatchedFiles)
+                : integrity.Detail;
+
             LicenseReadResult read;
             try { read = _store.Read(); }
             catch (Exception ex)
             {
                 // No se pudo leer: NO se bloquea. Se avisa y se sigue grabando.
                 _log.LogError(ex, "Licencias: no se pudo leer el estado; no se bloqueará la grabación.");
-                Publish(new LicenseInfo(LicenseState.Unknown, 0, null, MachineCode));
+                Publish(new LicenseInfo(LicenseState.Unknown, 0, null, MachineCode, null, integrity.Verdict, integrityDetail));
                 return;
             }
 
             // Lectura fallida TRANSITORIA (archivo bloqueado por antivirus/copia de seguridad, registro
             // inaccesible) sin ninguna copia buena: NI se bloquea NI —crucial— se siembra una prueba nueva,
             // porque eso sobrescribiría el estado bueno que volverá a ser legible en el próximo ciclo (y con
-            // él, la clave de licencia). Se publica Unknown (que no bloquea) y se reintenta.
+            // él, la clave de licencia). Se publica Unknown (que no bloquea) y se reintenta. Con la instalación
+            // modificada TAMBIÉN: sin saber con certeza que la prueba terminó, no hay nada que bloquear.
             if (read.Record is null && read.HadReadErrors)
             {
-                Publish(new LicenseInfo(LicenseState.Unknown, 0, null, MachineCode));
+                Publish(new LicenseInfo(LicenseState.Unknown, 0, null, MachineCode, null, integrity.Verdict, integrityDetail));
                 return;
             }
 
@@ -172,16 +218,26 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
 
             LicenseInfo next;
             // Licencia: se VERIFICA siempre, nunca se confía en un estado guardado.
-            if (!string.IsNullOrWhiteSpace(record.LicenseKey) &&
-                LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, _publicKeyBase64) == LicenseRejection.None)
+            bool keyValid = !string.IsNullOrWhiteSpace(record.LicenseKey) &&
+                LicenseKey.Verify(record.LicenseKey, _fingerprint.Raw.Span, _publicKeyBase64) == LicenseRejection.None;
+            if (keyValid && integrity.Verdict is not IntegrityVerdict.Tampered)
             {
                 // Los canales pagados viajan FIRMADOS dentro de la clave: se releen de ella (la firma ya validó,
                 // así que el TryDecode no puede fallar aquí; el ?: es solo cinturón).
                 int? channels = LicenseKey.TryDecode(record.LicenseKey, out var payload) ? payload!.Channels : null;
-                next = new LicenseInfo(LicenseState.Licensed, 0, record.StartedAt, MachineCode, channels);
+                next = new LicenseInfo(LicenseState.Licensed, 0, record.StartedAt, MachineCode, channels, integrity.Verdict, integrityDetail);
             }
             else
             {
+                // Evidencia POSITIVA de modificación de los binarios: la clave, aunque sea auténtica, NO se aplica.
+                // La instalación se trata como no licenciada y manda el periodo de prueba (que sigue contando y
+                // caducando como siempre). Un fallo NUESTRO al comprobar (Unverified) no entra aquí jamás.
+                if (keyValid && !_tamperIgnoredLogged)
+                {
+                    _tamperIgnoredLogged = true;
+                    _log.LogError("Licencias: la clave guardada es válida pero NO se aplica porque la instalación está modificada ({Files}). Reinicia el equipo o reinstala desde el instalador original.", integrityDetail);
+                }
+
                 var advanced = TrialPeriod.Advance(record.ToMark(), now, elapsed);
                 if (advanced != record.ToMark()) _store.Write(record with
                 {
@@ -190,7 +246,8 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
                 });
 
                 var (days, expired) = TrialPeriod.Evaluate(advanced, now, TrialDays);
-                next = new LicenseInfo(expired ? LicenseState.Expired : LicenseState.Trial, days, record.StartedAt, MachineCode);
+                next = new LicenseInfo(expired ? LicenseState.Expired : LicenseState.Trial, days, record.StartedAt, MachineCode,
+                    null, integrity.Verdict, integrityDetail);
             }
             Publish(next);
         }
@@ -206,7 +263,9 @@ public sealed class LicenseService : BackgroundService, ILicenseService, ILicens
     {
         var previous = _current;
         _current = info;
-        if (previous.State != info.State || previous.DaysRemaining != info.DaysRemaining)
+        // El veredicto de integridad también cuenta como cambio: pasa de «en curso» al real en el primer ciclo
+        // tras un arranque lento, y la UI/API deben reflejarlo (el detalle lo registra ya AssemblyIntegrity).
+        if (previous.State != info.State || previous.DaysRemaining != info.DaysRemaining || previous.Integrity != info.Integrity)
         {
             if (previous.State != info.State)
                 _log.LogInformation("Estado de licencia: {Previous} → {State} ({Summary}).", previous.State, info.State, info.Summary);
