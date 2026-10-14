@@ -23,9 +23,11 @@ using Baioss.Record.Infrastructure.Preview;
 
 namespace Baioss.Record.App;
 
-/// <summary>Entorno de composición (modo real, rutas, códec demo y nº de canales), calculado al arrancar.</summary>
+/// <summary>Entorno de composición (modo real, rutas, códec demo, nº de canales, contenedor y cola de escritura de la
+/// grabación), calculado al arrancar.</summary>
 public sealed record ChannelCompositionContext(
-    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true);
+    bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true,
+    TimeSpan WriteQueue = default);
 
 /// <summary>
 /// Compone y MANTIENE el runtime de cada canal (fuente + grabador + monitor + preview + motor), y
@@ -410,6 +412,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             // Carpeta de destino: la ruta PERSISTIDA por el operador si la hay; si no, el default <raíz>/recordings.
             OutputRoot = string.IsNullOrWhiteSpace(outputDirectory) ? Path.Combine(_ctx.Root, "recordings") : outputDirectory,
             FragmentedMp4 = _ctx.FragmentedMp4, // fMP4 robusto vs MP4 estándar (moov, sin remux) según config
+            WriteQueue = _ctx.WriteQueue,       // un disco lento no congela el preview ni atasca la entrada (si FFmpeg la admite)
         };
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 
