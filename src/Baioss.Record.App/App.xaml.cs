@@ -221,7 +221,7 @@ public partial class App : System.Windows.Application
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
         // Selección de encoder (una sola vez): GPU dedicada (NVENC) → GPU integrada (QSV/AMF) → CPU (libx264).
-        var (real, codec, encoderNotes) = await ProbeEngineAsync(ffmpegDir, clipPath);
+        var (real, codec, encoderNotes, outputQueue) = await ProbeEngineAsync(ffmpegDir, clipPath);
 
         var gpuEncoders = real && codec == VideoCodec.H264Nvenc; // NVENC utilizable → ofrecer códecs GPU en la UI
 
@@ -308,6 +308,11 @@ public partial class App : System.Windows.Application
         // y SIN remux ni saturación de disco, pero un corte antes del cierre limpio lo deja sin índice → poner
         // false SOLO en máquinas con SAI/UPS, como pidió el operador). (Recording:FragmentedMp4.)
         bool fragmentedMp4 = builder.Configuration.GetValue("Recording:FragmentedMp4", true);
+        // Cola de escritura de la grabación (s): un disco que tarda en aceptar escrituras (uno que despierta de la suspensión)
+        // ya no para el proceso entero —preview congelado, relé DeckLink descartando frames: medido en producción—. Solo si el
+        // FFmpeg instalado la admite como opción de salida (FFmpeg ≥ 6); si no, lo de siempre. 0 = desactivada.
+        double writeQueueSeconds = builder.Configuration.GetValue("Recording:WriteQueueSeconds", 10.0);
+        var writeQueue = real && outputQueue && writeQueueSeconds > 0 ? TimeSpan.FromSeconds(writeQueueSeconds) : TimeSpan.Zero;
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente. El nº de canales
         // EFECTIVO se decide al RESOLVER este contexto: si hay licencia válida, su techo de canales —que viaja
         // FIRMADO dentro de la clave— acota lo elegido en la instalación (lo pagado manda sobre lo elegido).
@@ -324,7 +329,7 @@ public partial class App : System.Windows.Application
                 Serilog.Log.Information("Canales acotados por la LICENCIA: {Paid} (la instalación pedía {Chosen}).", paid, channels);
                 channels = paid;
             }
-            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4);
+            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4, writeQueue);
         });
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());
@@ -545,6 +550,10 @@ public partial class App : System.Windows.Application
         Serilog.Log.Information("Cascada de encoder: {Count} GPU(s) descartada(s) antes del elegido.", encoderNotes.Count);
         foreach (var note in encoderNotes) Serilog.Log.Information(" - {Note}", note);
         Serilog.Log.Information("Encoder de video por defecto: {Codec} ({Mode}).", codec, real ? "real" : "simulado");
+        if (real && !outputQueue)
+            Serilog.Log.Warning("Cola de escritura de la grabación DESACTIVADA: este FFmpeg no admite -thread_queue_size en las salidas (FFmpeg anterior a la 6). Un disco que tarde en responder congelará el preview y podrá dejar huecos; conviene un FFmpeg 6 o posterior.");
+        else if (real)
+            Serilog.Log.Information("Cola de escritura de la grabación: {Seconds:0.#} s (Recording:WriteQueueSeconds; 0 = desactivada).", writeQueueSeconds > 0 ? writeQueueSeconds : 0);
         var mainWindow = app.Services.GetRequiredService<MainWindow>();
         mainWindow.Closing += OnMainWindowClosing; // finaliza las grabaciones ANTES de cerrar la app (N2)
         mainWindow.Show();
@@ -753,13 +762,15 @@ public partial class App : System.Windows.Application
         });
     }
 
-    private static async Task<(bool Real, VideoCodec Codec, IReadOnlyList<string> Notes)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
+    private static async Task<(bool Real, VideoCodec Codec, IReadOnlyList<string> Notes, bool OutputQueue)> ProbeEngineAsync(string? ffmpegDir, string? clipPath)
     {
         var notes = new List<string>();
-        if (ffmpegDir is null || clipPath is null) return (false, VideoCodec.H264x264, notes);
+        if (ffmpegDir is null || clipPath is null) return (false, VideoCodec.H264x264, notes, false);
         try
         {
             var locator = new FfmpegLocator(ffmpegDir);
+            // ¿Admite la cola de escritura en las salidas (FFmpeg ≥ 6)? Si no, la grabación sigue como siempre, sin ella.
+            bool outputQueue = await locator.SupportsOutputThreadQueueAsync();
             // Cascada: GPU dedicada (NVIDIA NVENC) → GPU integrada (Intel QSV → AMD AMF) → CPU (libx264).
             var cascade = new[]
             {
@@ -770,15 +781,15 @@ public partial class App : System.Windows.Application
             foreach (var (name, codecOption) in cascade)
             {
                 var (ok, detail) = await locator.ProbeVideoEncoderAsync(name);
-                if (ok) return (true, codecOption, notes);
+                if (ok) return (true, codecOption, notes, outputQueue);
                 notes.Add($"Encoder GPU «{name}» no utilizable: {detail}");
             }
-            return (true, VideoCodec.H264x264, notes); // ninguna GPU utilizable → software (CPU)
+            return (true, VideoCodec.H264x264, notes, outputQueue); // ninguna GPU utilizable → software (CPU)
         }
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "FFmpeg no utilizable; los canales caerán a modo simulado.");
-            return (false, VideoCodec.H264x264, notes); // sin FFmpeg utilizable → simulado
+            return (false, VideoCodec.H264x264, notes, false); // sin FFmpeg utilizable → simulado
         }
     }
 

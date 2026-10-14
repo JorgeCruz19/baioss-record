@@ -34,6 +34,12 @@ referencia del final del documento; los demás son estimaciones prudentes.
   lo registra como «No se pudo lanzar FFmpeg» y reintenta).
 - **Energía:** plan «Alto rendimiento», suspensión e hibernación desactivadas y sin apagado de discos: la aplicación no
   impide que Windows duerma y una suspensión corta la grabación. Apagar el monitor sí es seguro.
+  Con el apagado de discos activo (Windows lo trae a 20 minutos), el disco de grabación se duerme si nadie escribe en él y
+  la primera escritura de la siguiente grabación espera unos segundos a que despierte (visto en producción el
+  2026-10-12: preview congelado, «Frames perdidos» y 2–4 s perdidos al inicio de grabaciones DeckLink). Desde
+  2026-10 la grabación lleva una cola de escritura (`Recording:WriteQueueSeconds`, 10 s; necesita FFmpeg 6 o
+  posterior) que absorbe esa espera sin congelar nada, pero el ajuste correcto sigue siendo «Apagar el disco duro tras:
+  Nunca» (`powercfg /change disk-timeout-ac 0`).
 - **Actualizaciones de Windows:** horas activas cubriendo el horario de grabación (un reinicio automático a mitad de
   una programada cierra las piezas en curso; con fMP4 no se pierde material, pero sí la continuidad).
 - **Reloj:** sincronizado por NTP si se usa segmentación por reloj o programación (las piezas se cortan a la hora).

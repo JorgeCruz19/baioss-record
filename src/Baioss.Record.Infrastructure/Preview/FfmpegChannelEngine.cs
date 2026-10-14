@@ -186,6 +186,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// Configurable en «Recording:FragmentedMp4».</summary>
     public bool FragmentedMp4 { get; init; } = true;
 
+    /// <summary>Cola de escritura de la salida de grabación (ver <see cref="FfmpegArgumentBuilder.WithWriteQueue"/>): cuánto puede
+    /// tardar el disco en aceptar escrituras sin que se congele el preview ni se atasque la entrada. Cero = sin cola. El
+    /// cableado solo la pone si el FFmpeg instalado la admite. Configurable en «Recording:WriteQueueSeconds».</summary>
+    public TimeSpan WriteQueue { get; init; } = TimeSpan.Zero;
+
     public RecordingState State => _state;
     public RecorderStats Stats { get; private set; } = RecorderStats.Empty;
     public string? LastOutputFile { get; private set; }
@@ -636,7 +641,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var builder = new FfmpegArgumentBuilder()
             .From(_source!).Using(profile).ForChannel(_channelKey)
             .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{sink.Port}")
-            .WithFragmentedMp4(FragmentedMp4);
+            .WithFragmentedMp4(FragmentedMp4)
+            .WithWriteQueue(WriteQueue);
 
         // Nombre del archivo. Si hay un nombre base (manual/programada), lo aplica; si no, el builder usa
         // el de por defecto {canal}_{fecha_hora}. Se resuelve POR proceso para que cada pieza nueva (corte

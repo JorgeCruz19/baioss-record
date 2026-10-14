@@ -33,6 +33,7 @@ public sealed class FfmpegArgumentBuilder
     private string? _baseName;
     private int _segmentStartNumber = 1;
     private bool _fragmentedMp4 = true; // true = fMP4 robusto ante corte; false = MP4 estándar (moov, seekable, sin remux)
+    private TimeSpan _writeQueue = TimeSpan.Zero; // cola de escritura de la salida de grabación (0 = la de FFmpeg, 8 paquetes)
 
     // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
     // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
@@ -73,6 +74,17 @@ public sealed class FfmpegArgumentBuilder
     /// el <c>moov</c> al final (100% seekable en reproducción local, cierre rápido y SIN remux, pero un corte
     /// abrupto ANTES del cierre limpio deja el archivo sin índice → apto para máquinas con SAI/UPS).</summary>
     public FfmpegArgumentBuilder WithFragmentedMp4(bool on) { _fragmentedMp4 = on; return this; }
+
+    /// <summary>
+    /// Cola de ESCRITURA de la salida de grabación de <see cref="BuildLive"/>/<see cref="BuildSlate"/>: cuánto material ya
+    /// codificado puede esperar a que el disco acepte escrituras sin frenar al resto del proceso. Sin ella (la de FFmpeg es
+    /// de 8 paquetes), un disco que tarda unos segundos en responder —uno que despierta de la suspensión, por ejemplo— para
+    /// el proceso ENTERO: el preview se congela con la grabación y la entrada deja de leerse (con el relé DeckLink, a ~1 s
+    /// se descartan frames y la grabación tiene un hueco; medido en producción). Se emite como <c>-thread_queue_size</c> de
+    /// salida, que FFmpeg cuenta en PAQUETES (ver <see cref="WriteQueuePackets"/>); solo existe desde FFmpeg 6 y el llamador
+    /// debe comprobar que el FFmpeg instalado la admite. <see cref="TimeSpan.Zero"/> = sin cola (lo de siempre).
+    /// </summary>
+    public FfmpegArgumentBuilder WithWriteQueue(TimeSpan time) { _writeQueue = time; return this; }
 
     /// <summary>
     /// Nombre base del archivo (sin extensión) elegido por el operador (manual) o derivado de la
@@ -347,10 +359,34 @@ public sealed class FfmpegArgumentBuilder
                 };
                 if (fieldOrder is not null) { args.Add("-field_order"); args.Add(fieldOrder); }
             }
+            // Solo esta salida escribe a disco: la cola la separa del preview y de la entrada (ver WithWriteQueue).
+            double recFps = profile.AudioOnly ? 0 : (profile.OutputFrameRate ?? source.CurrentSignal.FrameRate)?.Value ?? 60;
+            args.AddRange(WriteQueueArgs(recFps, profile.AudioOnly || hasAudio ? recAudio.Count : 0));
             args.AddRange(RecordOutputTail(profile, recMux, recExt));
         }
 
         return args;
+    }
+
+    /// <summary>
+    /// Paquetes de la cola de escritura para cubrir <paramref name="time"/> en una salida con estos flujos: FFmpeg la mide en
+    /// paquetes, no en tiempo, y el ritmo depende de lo que lleve la salida. Vídeo: un paquete por frame. Audio: ~50 por
+    /// segundo y pista, por arriba (AAC 47 a 48 kHz, MP2/MP3 42, Opus 50, PCM uno por bloque de la fuente: ≤ 60), para que
+    /// la cola cubra al menos el tiempo pedido. Acotada a [64, 32768]; 0 si no se pide cola.
+    /// </summary>
+    internal static int WriteQueuePackets(TimeSpan time, double videoFps, int audioStreams)
+    {
+        if (time <= TimeSpan.Zero) return 0;
+        double perSecond = Math.Max(0, videoFps) + 50.0 * Math.Max(0, audioStreams);
+        return (int)Math.Clamp(Math.Ceiling(time.TotalSeconds * perSecond), 64, 32768);
+    }
+
+    private IEnumerable<string> WriteQueueArgs(double videoFps, int audioStreams)
+    {
+        int packets = WriteQueuePackets(_writeQueue, videoFps, audioStreams);
+        return packets > 0
+            ? new[] { "-thread_queue_size", packets.ToString(CultureInfo.InvariantCulture) }
+            : Array.Empty<string>();
     }
 
     /// <summary>
@@ -543,6 +579,7 @@ public sealed class FfmpegArgumentBuilder
                 args.Add("-r");
                 args.Add(string.Create(CultureInfo.InvariantCulture, $"{fr.Numerator}/{fr.Denominator}"));
             }
+            args.AddRange(WriteQueueArgs(rate.Value, routes is null ? 1 : routes.Count));
             args.AddRange(RecordOutputTail(profile, recMux, recExt));
         }
         return args;

@@ -92,6 +92,25 @@ public sealed class FfmpegLocator : IFfmpegLocator
     }
 
     /// <summary>
+    /// ¿Admite este FFmpeg <c>-thread_queue_size</c> como opción de SALIDA (la cola hacia el hilo de cada muxer, que usa
+    /// <see cref="FfmpegArgumentBuilder.WithWriteQueue"/>)? Existe desde FFmpeg 6.0, cuando cada muxer pasó a su propio
+    /// hilo; antes era solo de entrada y FFmpeg se NEGARÍA a arrancar con ella en una salida (la grabación no empezaría). Se
+    /// comprueba de verdad con un proceso de una fracción de segundo, no por la versión: el cliente aporta su propio FFmpeg y
+    /// las compilaciones de git no llevan un número de versión comparable.
+    /// </summary>
+    public async Task<bool> SupportsOutputThreadQueueAsync(CancellationToken ct = default)
+    {
+        var args = new[]
+        {
+            "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "nullsrc=s=16x16:r=25",
+            "-frames:v", "1", "-thread_queue_size", "64", "-f", "null", "-"
+        };
+        var (_, exit) = await RunAsync(FfmpegPath, args, ct, timeout: TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        return exit == 0;
+    }
+
+    /// <summary>
     /// Sondea un archivo con ffprobe para VERIFICAR su integridad tras cerrarlo: lee las pistas
     /// (codec_type/codec_name) y la duración del contenedor en JSON. Un archivo corrupto o sin índice
     /// (p. ej. un MP4 al que le falta el <c>moov</c>) devuelve <see cref="MediaProbe.Unreadable"/> o sin
