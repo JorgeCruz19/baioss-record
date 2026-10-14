@@ -45,9 +45,11 @@ public sealed class FfmpegProgressParser
         long dup = GetLong("dup_frames");
         long bitrate = (long)(GetLeadingDouble("bitrate") * 1000); // "2046.7kbits/s" → bps
         // Tiempo real transcurrido de la salida. 'out_time_us' es el campo moderno; algunos builds solo
-        // emiten 'out_time_ms' (que, por un histórico de FFmpeg, también está en microsegundos).
-        long outTimeUs = GetLong("out_time_us");
-        if (outTimeUs == 0) outTimeUs = GetLong("out_time_ms");
+        // emiten 'out_time_ms' (que, por un histórico de FFmpeg, también está en microsegundos). Al arrancar
+        // FFmpeg escribe «N/A»: para el timecode vale 0, pero quien mide el ritmo necesita saber que aún no hay dato.
+        bool knownTime = TryGetLong("out_time_us", out long outTimeUs);
+        if (!knownTime || outTimeUs == 0) knownTime = TryGetLong("out_time_ms", out outTimeUs) || knownTime;
+        if (!knownTime) outTimeUs = 0;
 
         // Heurística simple de salud de buffer: caída de fps respecto a la nominal.
         long delta = frame - _lastFrame;
@@ -66,7 +68,10 @@ public sealed class FfmpegProgressParser
             Bitrate: new Bitrate(bitrate),
             BufferHealth: bufferHealth,
             Timecode: tc,
-            FrameCount: frame);
+            FrameCount: frame)
+        {
+            MediaTimeUs = knownTime ? outTimeUs : -1,
+        };
     }
 
     private double GetDouble(string key) =>
@@ -81,6 +86,11 @@ public sealed class FfmpegProgressParser
         return double.TryParse(v[..i], NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0;
     }
 
-    private long GetLong(string key) =>
-        _kv.TryGetValue(key, out var v) && long.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out var l) ? l : 0;
+    private long GetLong(string key) => TryGetLong(key, out var l) ? l : 0;
+
+    private bool TryGetLong(string key, out long value)
+    {
+        value = 0;
+        return _kv.TryGetValue(key, out var v) && long.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+    }
 }

@@ -249,6 +249,11 @@ public sealed class DecklinkCaptureSource : ICaptureSource
     /// </summary>
     public bool SelfReportsRecovery => _receiverFactory is not null;
 
+    /// <summary>La tarjeta entrega a la cadencia del modo SDI, en captura directa y a través del relé: si el proceso del canal
+    /// avanza de forma sostenida más despacio que el reloj, el que no da abasto es el equipo. (Si la tarjeta deja de entregar,
+    /// el proceso se queda sin nada que procesar —no se atrasa— y eso lo vigilan el receptor y la señal.)</summary>
+    public bool DeliversInRealTime => true;
+
     /// <summary>El relé tuvo que descartar frames del proceso del canal (no daba abasto): la grabación tendrá un salto.</summary>
     public event EventHandler<long>? InputDataDropped;
 

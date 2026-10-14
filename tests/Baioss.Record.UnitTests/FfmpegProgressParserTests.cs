@@ -64,6 +64,28 @@ public class FfmpegProgressParserTests
     }
 
     [Fact]
+    public void Feed_ExposesTheMediaTime_AndMinusOneWhileFfmpegDoesNotKnowIt()
+    {
+        // Al arrancar FFmpeg escribe «N/A»: para el timecode vale 0, pero quien mide si el proceso va al día debe saber que
+        // aún no hay dato (no que el proceso esté parado en el segundo 0).
+        var parser = new FfmpegProgressParser();
+        parser.Feed("frame=0");
+        parser.Feed("out_time_us=N/A");
+        parser.Feed("out_time_ms=N/A");
+        var start = parser.Feed("progress=continue");
+        Assert.Equal(-1, start!.MediaTimeUs);
+        Assert.Equal("00:00:00:00", start.Timecode.ToString());
+
+        parser.Feed("frame=50");
+        parser.Feed("out_time_us=2000000");
+        Assert.Equal(2_000_000, parser.Feed("progress=continue")!.MediaTimeUs);
+
+        parser.Feed("frame=75");
+        parser.Feed("out_time_ms=3000000"); // builds que solo dan out_time_ms (también en µs)
+        Assert.Equal(3_000_000, parser.Feed("progress=continue")!.MediaTimeUs);
+    }
+
+    [Fact]
     public void Feed_IgnoresLinesWithoutKeyValue()
     {
         var parser = new FfmpegProgressParser();

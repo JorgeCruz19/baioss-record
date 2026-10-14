@@ -22,6 +22,10 @@ public sealed class FileCaptureSource(InputSource definition) : ICaptureSource
 
     public int AudioChannelCount => _audio.Auto ? 2 : _audio.RequestedChannels;
 
+    /// <summary>Leído con <c>-re</c>, el archivo entrega a su ritmo nativo y nunca se queda sin datos: si el proceso se atrasa,
+    /// es el equipo. Sin <c>-re</c> va tan deprisa como puede y la velocidad no significa nada.</summary>
+    public bool DeliversInRealTime => Definition.Parameters.GetValueOrDefault("realtime") == "1";
+
     public Task OpenAsync(CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(Definition.Uri) || !File.Exists(Definition.Uri))

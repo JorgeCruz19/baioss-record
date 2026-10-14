@@ -73,7 +73,7 @@ Cada panel te muestra, de arriba a abajo:
 - **Cuatro cajas de métricas:**
   - **FPS OUT:** cuántos cuadros por segundo se están grabando.
   - **BITRATE:** la "cantidad de datos" del vídeo (a más bitrate, más calidad y más peso).
-  - **DROPPED:** cuadros perdidos. Si sube mucho, el equipo va justo de potencia o de disco.
+  - **DROPPED:** cuadros perdidos mientras se graba. Si sube, el equipo va justo de potencia o de disco. No cuenta los que el preset descarta a propósito para cambiar la cadencia (ver *CADENCIA* más abajo).
   - **DISCO / ESTADO:** mientras grabas, el **tiempo que queda** de espacio en disco; en reposo, el estado del canal (Inactivo, Grabando…).
 
 - **La vista previa (el monitor):** la imagen en vivo del canal. Sobre ella verás:
@@ -93,6 +93,7 @@ Cada panel te muestra, de arriba a abajo:
   - **■ Detener:** para la grabación manual (solo aparece cuando estás grabando a mano).
   - **⏏ Detener grabación automática:** aparece solo si hay una grabación **programada** en curso; sirve para saltarte *esa* grabación sin afectar a las siguientes.
   - A la derecha, la etiqueta **PRESET** dice **con qué formato se grabará** al pulsar Grabar (por ejemplo «ProRes 422 · 1080p25»). Al pasar el ratón por encima ves el resumen técnico (códec · tasa · tamaño · contenedor). Se cambia en **⚙ Presets de grabación** (ver punto 4).
+  - Si el preset graba a otra cadencia que la de la señal, debajo aparece en ámbar **CADENCIA ⚠ 59,94 → 29,97 fps**: el programa convertirá la cadencia descartando cuadros (preset más lento que la señal: el movimiento puede verse a saltos) o repitiéndolos (preset más rápido: cuadros duplicados). No es un error ni bloquea nada —puede ser justo lo que buscas, por ejemplo una entrega a 25 fps—; al pasar el ratón explica cuántos cuadros se descartan o se repiten. Si no es lo que quieres, elige un preset con la cadencia de la señal.
 
 - **Recuadro de programación:** muestra la grabación programada que está **en curso** ahora mismo (en verde, "EN CURSO"), o "Sin grabación en curso". El botón **🕒 Mostrar programación** abre la lista completa del día.
 
@@ -443,6 +444,7 @@ El programa te avisa con un cartel sobre la vista previa cuando detecta:
 - **Silencio:** no hay sonido.
 - **Carta de ajuste:** se está grabando la pantalla de aviso por pérdida de señal.
 - **Disco:** queda poco espacio.
+- **Frames perdidos:** el equipo no da abasto (CPU, GPU o disco) y la grabación puede perder cuadros: la entrada o la tarjeta tiraron cuadros que no se recogían a tiempo, o, con una tarjeta o un archivo, el proceso va de forma sostenida por detrás del tiempo real. Los cuadros que el preset descarta a propósito para cambiar la cadencia **no** la encienden. Si aparece, baja la carga (menos canales a la vez, un preset más ligero o codificación por GPU) o revisa el disco; el registro dice qué la encendió.
 - **El disco no responde:** el disco de destino ha dejado de aceptar escrituras. La grabación **espera sin cortar** y reanuda sola cuando el disco vuelve; si dura más de unos segundos, revisa ese disco (cable, USB, antivirus).
 
 ---

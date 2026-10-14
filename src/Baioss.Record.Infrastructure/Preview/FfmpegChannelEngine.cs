@@ -207,6 +207,18 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// Para la AUDITORÍA, además de la alarma en pantalla.</summary>
     public event EventHandler<(string FilePath, long SizeBytes)>? FileUnverified;
 
+    /// <summary>
+    /// Mientras se graba, el DISPOSITIVO de captura que abre este proceso (DirectShow, DeckLink en captura directa) tiró
+    /// frames porque el proceso no los recogía a tiempo (<see cref="FfmpegLogLines.IsInputOverrun"/>): cuántos desde el aviso
+    /// anterior. FFmpeg escribe una línea por frame tirado; aquí se agrupan en como mucho un aviso por
+    /// <see cref="InputOverrunNoticeInterval"/>.
+    /// </summary>
+    public event EventHandler<long>? InputOverrun;
+
+    private static readonly TimeSpan InputOverrunNoticeInterval = TimeSpan.FromSeconds(1);
+    private long _overrunsPending;
+    private long _lastOverrunNoticeTicks;
+
     /// <summary>True mientras el canal rellena con carta de ajuste por pérdida de señal.</summary>
     public bool IsSlate => _slate;
 
@@ -331,6 +343,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _slate = false; _slatePending = false;
             _encoderOpenError = false; _fallbackPending = false;
             _recovering = false; _recordRestartCount = 0; // backoff de recuperación limpio para esta grabación (N1)
+            Interlocked.Exchange(ref _overrunsPending, 0); // frames tirados de una grabación anterior: no son de esta
+            Interlocked.Exchange(ref _lastOverrunNoticeTicks, 0);
             RaiseAlarm(AlarmType.EncoderFallback, false);     // limpia un fallback de una sesión previa
             RaiseAlarm(AlarmType.RecordingUnverified, false); // y el aviso de archivo dañado de la anterior
             _recordStart = DateTimeOffset.UtcNow;
@@ -1000,6 +1014,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnLog(object? sender, string line)
     {
+        // El dispositivo tiró frames porque este proceso no los recogía a tiempo: pérdida segura en la grabación.
+        if (FfmpegLogLines.IsInputOverrun(line)) { CountInputOverrun(); return; }
+
         // DeckLink en autodetección: FFmpeg cuenta al abrir qué modo detectó la tarjeta («Found Decklink mode 1920 x 1080
         // with rate 29.97(i)») o que no detectó nada. Se lo pasa a la fuente, que lo publica en su señal: el panel enseña
         // el formato real (antes decía «—» con la tarjeta capturando) y pasa a SIN SEÑAL cuando no hay nada que
@@ -1067,6 +1084,22 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // Niveles de audio del filtro ebur128 ("… FTPK: -16.6 -16.9 dBFS …"): un true-peak por canal capturado
         // (2 estéreo; 8/16 con audio embebido multicanal). Los consumidores reparten por pares.
         if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks) AudioPeaksUpdated?.Invoke(this, peaks);
+    }
+
+    /// <summary>Cuenta un frame tirado por el dispositivo y, como mucho una vez por <see cref="InputOverrunNoticeInterval"/>,
+    /// avisa con los acumulados. Solo grabando: en preview no se pierde nada que importe.</summary>
+    private void CountInputOverrun()
+    {
+        if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
+        Interlocked.Increment(ref _overrunsPending);
+        long now = Stopwatch.GetTimestamp();
+        long last = Interlocked.Read(ref _lastOverrunNoticeTicks);
+        if (last != 0 && Stopwatch.GetElapsedTime(last, now) < InputOverrunNoticeInterval) return;
+        if (Interlocked.CompareExchange(ref _lastOverrunNoticeTicks, now, last) != last) return; // otro hilo ya avisa
+        long count = Interlocked.Exchange(ref _overrunsPending, 0);
+        if (count <= 0) return;
+        try { InputOverrun?.Invoke(this, count); }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: un suscriptor del aviso de frames tirados falló.", _channelKey); }
     }
 
     // --- Segmentación: cada archivo de segmento completo se emite como un Segment ---

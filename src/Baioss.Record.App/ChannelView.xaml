@@ -290,6 +290,20 @@
                                                TextTrimming="CharacterEllipsis" MaxWidth="180" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Border>
+                            <!-- Conversión de cadencia: la fuente llega a una tasa y el preset graba a otra (FFmpeg descarta o
+                                 repite frames). Aviso en ámbar, no alarma: el tooltip lo explica entero. -->
+                            <Border Background="#B3000000" CornerRadius="4" Padding="7,3" HorizontalAlignment="Left" Margin="0,0,0,4"
+                                    ToolTip="{Binding CadenceToolTip}"
+                                    Visibility="{Binding HasCadenceNotice, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{loc:T Ch_Cadence}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,6,0"/>
+                                    <TextBlock Text="⚠" FontSize="11" Foreground="{StaticResource SignalAmberBrush}"
+                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBlock Text="{Binding CadenceBadge}" FontSize="11" FontWeight="SemiBold"
+                                               Foreground="{StaticResource SignalAmberBrush}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
                             <TextBlock Text="{Binding FrameCount, StringFormat=frame {0}}" FontFamily="Consolas" FontSize="12"
                                        Foreground="{StaticResource TextSecondaryBrush}"
                                        Visibility="{Binding IsRecording, Converter={StaticResource BoolToVis}}"/>
