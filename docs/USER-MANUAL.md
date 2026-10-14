@@ -311,6 +311,7 @@ This is the **folder where that channel's recordings are saved**.
 
 This is a checkbox: **"Test pattern on signal loss (keeps recording bars)"**.
 - If it is **ticked** and the source loses signal in the middle of a recording, the program **keeps recording** a bars/warning screen instead of cutting. That way the file is not interrupted and there is a record that the signal was lost.
+- The bars are recorded **in real time**: if the signal is missing for 10 minutes, you get 10 minutes of bars (in a separate piece of the recording).
 - If it is **unticked**, losing the signal simply means no new picture reaches the recording.
 
 ### 6.3. Web panel and API (opening the web panel from another computer)

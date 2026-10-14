@@ -471,6 +471,23 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.DoesNotContain("in.mp4", joined);                            // NO abre el dispositivo/fuente
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BuildSlate_GeneratesBarsAndSilenceInOneInputAtTheWallClockRate(bool recording)
+    {
+        // Sin -re, lavfi genera tan deprisa como codifica la máquina: la carta de ajuste escribía barras a ~14× el tiempo real
+        // (medido con el FFmpeg empaquetado) y una caída de señal de minutos dejaba horas de barras en el disco. Y en UNA sola
+        // entrada: con un generador por entrada, al cerrar la pieza el audio acababa 0,6 s antes que el vídeo.
+        var args = NewLiveBuilder(SoftwareMp4()).BuildSlate(recording, 640, 360);
+        var joined = string.Join(' ', args);
+
+        Assert.Contains("-re -f lavfi -i smptebars=size=1920x1080:rate=25/1[out0];anullsrc=channel_layout=stereo:sample_rate=48000[out1]", joined);
+        Assert.Equal(1, args.Count(a => a == "-i"));
+        Assert.Equal(1, args.Count(a => a == "-re"));  // opción de ENTRADA: delante de una salida, FFmpeg aborta
+        Assert.Contains("-map 0:a:0 -af ebur128=peak=true -f null -", joined); // el silencio sale de la misma entrada
+    }
+
     // --- Nombre del archivo: manual (nombre del operador) y programada (dd-MM-yyyy_Título_N) ---
 
     [Fact]
@@ -865,7 +882,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
             .WithPreviewSink("tcp://127.0.0.1:9001").BuildSlate(recording: true, 640, 360));
 
         Assert.Contains("anullsrc=channel_layout=8c", joined);                        // silencio con los canales de la fuente
-        Assert.Contains("[1:a]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined);
+        Assert.Contains("[0:a]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined);
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[aslate1];[r2]pan=stereo|c0=c4|c1=c5[aslate2]", joined);
         Assert.Contains("-map [vrec] -map [aslate1] -map [aslate2]", joined);          // mismas pistas que en vivo
         Assert.Contains("-metadata:s:a:1 title=Canales 5-6", joined);
@@ -878,7 +895,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var joined = string.Join(' ', NewLiveBuilder(SoftwareMp4()).BuildSlate(recording: true, 640, 360));
 
         Assert.Contains("anullsrc=channel_layout=stereo", joined);
-        Assert.Contains("-map 1:a:0 -af ebur128=peak=true -f null -", joined);
+        Assert.Contains("-map 0:a:0 -af ebur128=peak=true -f null -", joined);
         Assert.Contains("-ac 2", joined);
     }
 
