@@ -21,6 +21,10 @@ public sealed record RecorderStats(
     /// ritmo de escritura sin escanear O(nº archivos) toda la carpeta. 0 fuera de grabación. (Auditoría N16.)</summary>
     public long RecordedBytes { get; init; }
 
+    /// <summary>Tiempo de medios que el proceso ya procesó (<c>out_time</c> de FFmpeg, en µs); -1 mientras FFmpeg no lo sabe
+    /// («N/A» al arrancar). Frente al reloj de pared dice si el proceso va al día: lo usa la alarma de frames perdidos.</summary>
+    public long MediaTimeUs { get; init; } = -1;
+
     public static readonly RecorderStats Empty =
         new(0, 0, 0, 0, new Bitrate(0), 1, Timecode.Zero, 0);
 }

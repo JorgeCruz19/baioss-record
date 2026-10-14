@@ -146,6 +146,15 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     /// <summary>Explicación del badge, con el resumen técnico del perfil.</summary>
     [ObservableProperty] private string _presetToolTip = "";
 
+    /// <summary>
+    /// El preset graba a otra cadencia que la de la fuente («59,94 → 29,97 fps»): FFmpeg descartará o repetirá frames para
+    /// convertir. Es un aviso, no una alarma —puede ser lo que se quiere—, visible en reposo y grabando para que no pille por
+    /// sorpresa una grabación «a saltos». El tooltip lo explica entero.
+    /// </summary>
+    [ObservableProperty] private bool _hasCadenceNotice;
+    [ObservableProperty] private string _cadenceBadge = "";
+    [ObservableProperty] private string _cadenceToolTip = "";
+
     [ObservableProperty] private double _leftLevel;
     [ObservableProperty] private double _rightLevel;
     [ObservableProperty] private double _leftPeak;
@@ -445,6 +454,14 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
 
         // Nombre de la ENTRADA activa (fuente asignada): se muestra en el preview.
         InputText = string.IsNullOrWhiteSpace(status.InputName) ? "—" : status.InputName;
+
+        // Conversión de cadencia: la tasa de la señal frente a la que fija el preset (solo con señal y un preset con vídeo).
+        var cadence = FrameRateConversion.For(
+            status.Signal.State == SignalState.Locked ? status.Signal.FrameRate : null,
+            _config is { Profile.AudioOnly: false } config ? config.Profile.OutputFrameRate : null);
+        HasCadenceNotice = cadence.IsMismatch;
+        CadenceBadge = cadence.Badge() ?? "";
+        CadenceToolTip = cadence.Describe() ?? "";
 
         // Resumen de audio en la cabecera de la franja: lo elegido si la fuente trae más de un estéreo y, con ello, las
         // pistas que irán al archivo («Los 16 canales · PCM · 8 pistas», «Par 3-4 de 8 · PCM · 1 pista estéreo»); si no,

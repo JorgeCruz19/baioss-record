@@ -19,6 +19,21 @@ namespace Baioss.Record.Engine.FFmpeg;
 /// </summary>
 public static partial class FfmpegLogLines
 {
+    /// <summary>
+    /// True si la línea dice que el DISPOSITIVO de captura tiró frames porque el proceso no los recogía a tiempo (su cola se
+    /// llenó): pérdida segura, la grabación tendrá saltos. Literales del FFmpeg empaquetado:
+    /// <list type="bullet">
+    ///   <item>DeckLink en captura directa: «Decklink input buffer overrun!».</item>
+    ///   <item>DirectShow: «real-time buffer [dispositivo] [video input] too full or near too full (85% of size: 3041280
+    ///   [rtbufsize parameter])! frame dropped!» (y la variante antigua «real-time buffer 85% full! frame dropped!»).</item>
+    /// </list>
+    /// FFmpeg la escribe por cada frame tirado: quien la cuente debe agrupar.
+    /// </summary>
+    public static bool IsInputOverrun(string? line)
+        => !string.IsNullOrEmpty(line) &&
+           (line.Contains("input buffer overrun", StringComparison.OrdinalIgnoreCase) ||
+            (line.Contains("real-time buffer", StringComparison.Ordinal) && line.Contains("frame dropped", StringComparison.Ordinal)));
+
     /// <summary>True si la línea anuncia que FFmpeg abrió la entrada cuyo <c>-i</c> es <paramref name="inputUri"/>.</summary>
     public static bool IsInputOpened(string line, string? inputUri)
         => !string.IsNullOrEmpty(inputUri) && string.Equals(InputUrl(line), inputUri, StringComparison.Ordinal);

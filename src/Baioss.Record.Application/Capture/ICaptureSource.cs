@@ -88,6 +88,15 @@ public interface ICaptureSource : IAsyncDisposable
     bool RestartsAfterEndOfStream => false;
 
     /// <summary>
+    /// True si la fuente entrega a ritmo CONSTANTE de tiempo real y no se para por su cuenta: una tarjeta (DeckLink) o un
+    /// archivo leído con <c>-re</c>. Con ella, si el proceso del canal avanza de forma sostenida más despacio que el reloj, el
+    /// que no da abasto es el equipo, y la alarma de frames perdidos lo cuenta (ver <c>SaturationDetector</c>). Una entrada
+    /// de red o NDI puede llegar a trompicones por su lado (el emisor, la red) y una cámara DirectShow sella con el reloj de
+    /// pared (su ritmo no dice nada): en ellas la velocidad del proceso no se juzga.
+    /// </summary>
+    bool DeliversInRealTime => false;
+
+    /// <summary>
     /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
     /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
     /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal

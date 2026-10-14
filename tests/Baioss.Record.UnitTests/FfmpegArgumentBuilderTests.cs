@@ -303,6 +303,30 @@ public class FfmpegArgumentBuilderTests : IDisposable
     }
 
     [Fact]
+    public void BuildLive_AndSlate_ThePreviewIsTheFirstOutput_SoProgressFramesAreInputFrames()
+    {
+        // FFmpeg informa frame/fps/drop_frames del progreso con la PRIMERA salida de vídeo (las versiones ≤ 6.0 suman además
+        // los descartes de todas). Con el preview primero —en passthrough, un frame por frame de entrada— «frame» cuenta frames
+        // de ENTRADA: la alarma de frames perdidos descuenta la conversión de cadencia sobre esa base (SaturationDetector).
+        // Si alguien reordena las salidas, la cuenta cambia de significado: este test lo avisa.
+        var profile = SoftwareMp4();
+        profile.OutputFrameRate = FrameRate.P25;
+        foreach (var args in new[]
+                 {
+                     NewLiveBuilder(profile).BuildLive(recording: true, 640, 360),
+                     NewLiveBuilder(profile).BuildSlate(recording: true, 640, 360),
+                 })
+        {
+            int firstMap = args.ToList().IndexOf("-map");
+            Assert.Equal("[pv]", args[firstMap + 1]);
+            Assert.Equal("passthrough", args[firstMap + 3]);
+            int rate = args.ToList().LastIndexOf("-r");
+            Assert.True(rate > firstMap, "la conversión de cadencia (-r) va en la salida de grabación, detrás del preview");
+            Assert.Equal("25/1", args[rate + 1]);
+        }
+    }
+
+    [Fact]
     public void BuildLive_Recording_Nvenc_ConvertsRecordBranchToEncoderFormat()
     {
         // Regresión (NDI): la fuente sirve uyvy422 y h264_nvenc lo RECHAZA con EINVAL (-22) si la rama de

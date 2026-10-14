@@ -46,6 +46,20 @@ public class DropAlarmTrackerTests
     }
 
     [Fact]
+    public void Observe_AppliesTheSameStreak_ToSymptomsDecidedElsewhere()
+    {
+        // La racha la reutiliza SaturationDetector, que decide por su cuenta si una muestra trae síntomas.
+        var t = new DropAlarmTracker(onAfter: 3, offAfter: 2);
+        Assert.False(t.Observe(true));
+        Assert.False(t.Observe(true));
+        Assert.True(t.Observe(true));   // 3 seguidas → alarma
+        Assert.True(t.Observe(false));  // 1 sin síntomas
+        Assert.False(t.Observe(false)); // 2 → se apaga
+        Assert.False(t.Observe(true));  // una suelta no basta
+        Assert.False(t.Observe(false));
+    }
+
+    [Fact]
     public void Reset_ClearsState()
     {
         var t = new DropAlarmTracker(onAfter: 2, offAfter: 5);

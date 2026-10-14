@@ -130,6 +130,23 @@ presente, reconstruye la fuente viva en vez de grabar barras. Si un relé tiene 
 abasto, el canal lo sabe (`ICaptureSource.InputDataDropped`): alarma «Frames perdidos» y un error en el registro.
 (Auditoría de estabilidad 2026-09, `docs/AUDITORIA-ESTABILIDAD-2026-09.md`.)
 
+**Alarma «Frames perdidos» (2026-10).** El contador `drop_frames` del progreso de FFmpeg no sirve tal cual: (1) cuenta
+también los frames que FFmpeg tira A PROPÓSITO cuando el preset fija una cadencia menor que la de la fuente (`-r`: de 30 a
+25 fps, 5 por segundo con la CPU sobrada); (2) FFmpeg ≥ 6.1 lo informa solo de la PRIMERA salida de vídeo —en el canal, el
+preview en passthrough, que nunca descarta: con el FFmpeg empaquetado vale siempre 0— y FFmpeg ≤ 6.0, que el cliente puede
+traer, lo suma de todas, conversión de la grabación incluida (la falsa alarma); (3) una saturación real casi nunca lo sube
+(medido: 1080p60 en x265 va a 0,55–0,73x con 0 descartes). `SaturationDetector` (Application) decide por muestra: descartes
+por encima de lo que explica la conversión (`FrameRateConversion`, por frame de ENTRADA: el `frame` del progreso es el del
+preview) más un margen de fase, y, con fuentes que entregan a ritmo de tiempo real (`ICaptureSource.DeliversInRealTime`:
+DeckLink, archivo con `-re`), velocidad media (tiempo de medios ÷ pared) de 8 muestras con avance por debajo de 0,85x; la
+racha de `DropAlarmTracker` (3 para encender, 5 para apagar). Siguen aparte, como pérdida segura con 10 s de retención, los
+descartes del relé (`InputDataDropped`) y los del dispositivo que abre el proceso del canal («Decklink input buffer
+overrun!», «real-time buffer … frame dropped!» de DirectShow → `FfmpegChannelEngine.InputOverrun`). El panel, la API y el
+registro de salud muestran como «perdidos» solo los que la conversión no explica; el pre-vuelo avisa de la conversión en el
+registro y el panel la enseña en ámbar (CADENCIA). Pruebas: `SaturationDetectorTests`, `FrameRateConversionTests`,
+integración `FrameDropAlarmTests` (30→25 sin alarma y archivo a 25; 1080p60→x265 con alarma; contadores reales con la
+conversión incluida, donde la regla antigua saltaba).
+
 **Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando: con una
 entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; hasta 10 s de `SettleTimeout` o 15 s de
 `HandoffTimeout` si la máquina va saturada y el proceso nuevo no llega a «al día»), porque su entrada trae pre-roll

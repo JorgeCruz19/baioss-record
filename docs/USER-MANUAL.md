@@ -73,7 +73,7 @@ Each panel shows you, from top to bottom:
 - **Four metric boxes:**
   - **FPS OUT:** how many frames per second are being recorded.
   - **BITRATE:** the "amount of data" in the video (more bitrate means more quality and a bigger file).
-  - **DROPPED:** lost frames. If this climbs, the machine is short of power or disk throughput.
+  - **DROPPED:** frames lost while recording. If this climbs, the machine is short of power or disk throughput. It does not count the frames the preset drops on purpose to change the frame rate (see *FRAME RATE* below).
   - **DISK / STATUS:** while recording, the **time left** of disk space; when idle, the channel status (Idle, Recording…).
 
 - **The preview (the monitor):** the live picture of the channel. Over it you will see:
@@ -93,6 +93,7 @@ Each panel shows you, from top to bottom:
   - **■ Stop:** stops the manual recording (it only appears while you are recording by hand).
   - **⏏ Stop scheduled recording:** appears only if a **scheduled** recording is running; it lets you skip *that* recording without affecting the following ones.
   - On the right, the **PRESET** tag tells you **which format will be recorded** when you press Record (for example "ProRes 422 · 1080p25"). Hovering over it shows the technical summary (codec · rate · size · container). It is changed in **⚙ Recording presets** (see section 4).
+  - If the preset records at a different frame rate from the signal, an amber **FRAME RATE ⚠ 59.94 → 29.97 fps** tag appears below it: the program will convert the frame rate by dropping frames (preset slower than the signal: motion may look jerky) or repeating them (preset faster: duplicated frames). It is not an error and blocks nothing —it may be exactly what you want, for example a 25 fps delivery—; hovering over it explains how many frames are dropped or repeated. If it is not what you want, choose a preset with the signal's frame rate.
 
 - **Schedule box:** shows the scheduled recording that is **running** right now (in green, "RUNNING"), or "No recording in progress". The **🕒 Show schedule** button opens the full list for the day.
 
@@ -445,6 +446,7 @@ The program warns you with a banner over the preview when it detects:
 - **Audio silence:** there is no sound.
 - **Test pattern:** the warning screen is being recorded because the signal was lost.
 - **Disk:** there is little space left.
+- **Dropped frames:** the machine cannot keep up (CPU, GPU or disk) and the recording may lose frames: the input or the card dropped frames that were not picked up in time, or, with a card or a file, the process is steadily falling behind real time. Frames the preset drops on purpose to change the frame rate do **not** trigger it. If it appears, lower the load (fewer channels at once, a lighter preset or GPU encoding) or check the disk; the log says what triggered it.
 - **Disk not responding:** the destination disk has stopped accepting writes. The recording **waits without cutting** and resumes on its own when the disk comes back; if it lasts more than a few seconds, check that disk (cable, USB, antivirus).
 
 ---

@@ -4,7 +4,8 @@ namespace Baioss.Record.Application.Channels;
 /// Decide cuándo encender/apagar la alarma de FRAMES PERDIDOS a partir de la telemetría ACUMULADA del
 /// encoder. Exige una racha para no parpadear: enciende tras varias muestras consecutivas con nuevos
 /// descartes (saturación sostenida de CPU/GPU/disco) y apaga tras varias sin descartes. Puro y testeable
-/// (una muestra ≈ 1 s, el ritmo de <c>-stats_period</c>).
+/// (una muestra ≈ 1 s, el ritmo de <c>-stats_period</c>). La racha también sirve a quien ya decidió por su cuenta si una
+/// muestra tiene síntomas (<see cref="Observe"/>): así lo hace <see cref="SaturationDetector"/>.
 /// </summary>
 public sealed class DropAlarmTracker
 {
@@ -27,8 +28,13 @@ public sealed class DropAlarmTracker
         if (_last < 0) { _last = cumulativeDropped; return _active; } // primera muestra: solo fija la línea base
         bool grew = cumulativeDropped > _last;
         _last = cumulativeDropped;
+        return Observe(grew);
+    }
 
-        if (grew)
+    /// <summary>Procesa una muestra que ya se sabe si trae síntomas de saturación; devuelve si la alarma debe estar activa.</summary>
+    public bool Observe(bool symptom)
+    {
+        if (symptom)
         {
             _withoutDrops = 0;
             if (!_active && ++_withDrops >= _onAfter) { _active = true; _withDrops = 0; }

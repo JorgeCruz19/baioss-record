@@ -68,9 +68,14 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private double[] _peakHold = { -60, -60 };
     private IReadOnlyList<AudioMeter> _audio = new[] { AudioMeter.Silent, AudioMeter.Silent };
 
-    // Saturación: racha de frames perdidos → alarma FramesDropped (ver DropAlarmTracker). Se reinicia en
-    // cada start/stop para no arrastrar el conteo de una grabación a otra.
-    private readonly DropAlarmTracker _drops = new();
+    // Saturación: descartes que la conversión de cadencia del preset no explica y, con una fuente a ritmo de tiempo real,
+    // atraso sostenido del proceso → alarma FramesDropped (ver SaturationDetector). Se reinicia en cada start/stop para no
+    // arrastrar el conteo de una grabación a otra. Bajo candado: en un relevo de procesos pueden llegar muestras de dos hilos.
+    private readonly SaturationDetector _saturation = new();
+    private readonly object _saturationLock = new();
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    // Tasa de salida del perfil con el que se graba AHORA (la que decide la conversión de cadencia); null = la de la fuente.
+    private FrameRate? _recordingOutputRate;
 
     // Alarmas activas del canal (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
     private readonly object _alarmLock = new();
@@ -124,6 +129,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _engine.AlarmChanged += OnEngineAlarm;
         _engine.RecordingInterrupted += OnRecordingInterrupted;
         _engine.FileUnverified += OnFileUnverified;
+        _engine.InputOverrun += OnInputOverrun;
         _onSourceSignal = (_, _) => Raise();
         _source.SignalChanged += _onSourceSignal;
         _source.InputDataDropped += OnInputDataDropped;
@@ -183,7 +189,11 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             // de la aplicación y del panel web marcan lo que acaba en el archivo, y no hay que abrirlo para descubrirlo.
             if (signal.AudioSelectedPairs is not null && profile is not null && AudioTrackPlan.For(_source, profile) is { } plan)
                 signal = signal with { AudioSelectedPairs = plan.Pairs, AudioTracksLabel = plan.Label };
-            return new(ChannelId, _key, _engine.State, signal, _engine.Stats, session?.Id, _audio, alarms, _storage,
+            // Durante la grabación, los «perdidos» que ve el operador (panel, API, registro de salud) son los que la conversión
+            // de cadencia del preset NO explica: los que FFmpeg tira a propósito para pasar de 30 a 25 fps no son pérdidas.
+            var stats = _engine.Stats;
+            if (session is not null) stats = stats with { DroppedFrames = _saturation.UnexplainedDrops };
+            return new(ChannelId, _key, _engine.State, signal, stats, session?.Id, _audio, alarms, _storage,
                 _source.Definition.Name, RecordingProfileSummary.DisplayName(profile), RecordingProfileSummary.Describe(profile),
                 session?.Trigger);
         }
@@ -249,8 +259,12 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // apagado del programador): a medias quedaba una sesión abierta en la base de datos (al reiniciar, un «corte» falso
         // en la auditoría) o una grabación arrancada sin su evento. Por eso lo que sigue usa CancellationToken.None.
         ct = CancellationToken.None;
-        _drops.Reset();
-        _lastRelayDropUtc = DateTimeOffset.MinValue;
+        lock (_saturationLock)
+        {
+            _saturation.Reset(_source.DeliversInRealTime);
+            _recordingOutputRate = profile.OutputFrameRate;
+        }
+        _lastInputDropUtc = DateTimeOffset.MinValue;
         _lastDiskLevel = DiskLevel.Ok; // que la grabación nueva publique StorageLow si ya empieza con el disco bajo
 
         var signal = _source.CurrentSignal;
@@ -423,7 +437,29 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // 4) Señal presente (la UI ya exige lock para grabar; cubre la ruta de API/programada).
         if (_source.CurrentSignal.State != SignalState.Locked)
             _log?.LogWarning("Canal {Key}: iniciando grabación sin señal bloqueada (estado {State}).", _key, _source.CurrentSignal.State);
+
+        // 5) Cadencia: si el preset graba a otra tasa que la de la fuente, FFmpeg convierte descartando o repitiendo frames.
+        //    No bloquea (puede ser justo lo que se quiere: una entrega a 25 desde una fuente a 29,97), pero queda dicho: es lo
+        //    primero que hay que saber ante una grabación «a saltos», y la alarma de frames perdidos descuenta esos descartes.
+        if (!profile.AudioOnly) LogCadence(FrameRateConversion.For(_source.CurrentSignal.FrameRate, profile.OutputFrameRate));
     }
+
+    private void LogCadence(FrameRateConversion cadence)
+    {
+        if (_log is null) return;
+        if (cadence.DropsFrames)
+            _log.LogWarning("Canal {Key}: la fuente llega a {Source} fps y el preset graba a {Output} fps: FFmpeg descartará el {Percent:0.#} % de los frames para convertir la cadencia. Es la conversión que pide el preset, no saturación del equipo (la alarma de frames perdidos la descuenta).",
+                _key, LogFps(cadence.Source), LogFps(cadence.Output), cadence.DroppedFraction * 100);
+        else if (cadence.DuplicatesFrames)
+            _log.LogWarning("Canal {Key}: la fuente llega a {Source} fps y el preset graba a {Output} fps: FFmpeg repetirá frames para rellenar la cadencia (el {Percent:0.#} % de los frames grabados serán copias).",
+                _key, LogFps(cadence.Source), LogFps(cadence.Output), cadence.DuplicatedFraction * 100);
+        else if (cadence.IsUnknown)
+            _log.LogInformation("Canal {Key}: el preset graba a {Output} fps y no se conoce la tasa de la fuente; si no coinciden, FFmpeg convertirá la cadencia, así que sus descartes no cuentan para la alarma de frames perdidos.",
+                _key, LogFps(cadence.Output));
+    }
+
+    private static string LogFps(FrameRate? rate)
+        => rate is { } r ? r.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "?";
 
     public async Task StopRecordingAsync(RecordingStopReason reason, CancellationToken ct = default)
     {
@@ -478,7 +514,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         SetAlarm(AlarmType.DiskCritical, false);
         SetAlarm(AlarmType.DiskEmergency, false);
         SetAlarm(AlarmType.FramesDropped, false);
-        _drops.Reset();
+        lock (_saturationLock) _saturation.Reset(_source.DeliversInRealTime);
         _storage = StorageInfo.Unknown;
 
         if (_session is not null)
@@ -753,32 +789,69 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     }
 
     /// <summary>
-    /// Telemetría del encoder: vigila los FRAMES PERDIDOS para alarmar ante saturación sostenida (la causa
-    /// típica de degradación al grabar varios canales). Solo durante la grabación; en preview los descartes
-    /// no corrompen nada. Refresca la UI en cualquier caso.
+    /// Telemetría del encoder: vigila la SATURACIÓN para alarmar cuando el equipo no da abasto (la causa típica de degradación
+    /// al grabar varios canales) sin confundirla con los descartes que pide la conversión de cadencia del preset (ver
+    /// <see cref="SaturationDetector"/>). Solo durante la grabación; en preview los descartes no corrompen nada. Refresca la
+    /// UI en cualquier caso.
     /// </summary>
     private void OnStats(object? sender, RecorderStats stats)
     {
         if (_engine.State is RecordingState.Recording)
         {
-            // También cuenta lo que el relé de la fuente tuvo que DESCARTAR porque el proceso no daba abasto: esos frames no
-            // llegan a FFmpeg, así que su contador no los ve. La alarma se mantiene un rato tras el último descarte.
-            bool relayDrops = DateTimeOffset.UtcNow - _lastRelayDropUtc < RelayDropAlarmHold;
-            SetAlarm(AlarmType.FramesDropped, _drops.Update(stats.DroppedFrames) || relayDrops);
+            // También cuenta lo que el relé o el dispositivo tuvieron que DESCARTAR porque el proceso no daba abasto: esos frames
+            // no llegan a FFmpeg, así que su contador no los ve. La alarma se mantiene un rato tras el último descarte.
+            bool inputDrops = DateTimeOffset.UtcNow - _lastInputDropUtc < InputDropAlarmHold;
+            bool saturated;
+            lock (_saturationLock)
+            {
+                bool wasSaturated = _saturation.Active;
+                // La tasa de la fuente se relee en cada muestra: una tarjeta en autodetección puede redetectar el modo a mitad.
+                var cadence = FrameRateConversion.For(_source.CurrentSignal.FrameRate, _recordingOutputRate);
+                saturated = _saturation.Update(
+                    new SaturationSample(stats.DroppedFrames, stats.FrameCount, stats.MediaTimeUs, _clock.Elapsed), cadence);
+                if (saturated != wasSaturated) LogSaturation(saturated, cadence);
+            }
+            SetAlarm(AlarmType.FramesDropped, saturated || inputDrops);
         }
         Raise();
     }
 
-    private static readonly TimeSpan RelayDropAlarmHold = TimeSpan.FromSeconds(10);
-    private DateTimeOffset _lastRelayDropUtc = DateTimeOffset.MinValue;
+    /// <summary>Deja dicho en el registro POR QUÉ se enciende (o se apaga) la alarma de frames perdidos: es lo primero que se
+    /// mira cuando un operador pregunta por ella.</summary>
+    private void LogSaturation(bool saturated, FrameRateConversion cadence)
+    {
+        if (_log is null) return;
+        if (!saturated)
+            _log.LogInformation("Canal {Key}: el proceso vuelve a ir al día; se apaga la alarma de frames perdidos.", _key);
+        else if (_saturation.LastSymptom == SaturationSymptom.BehindRealTime)
+            _log.LogWarning("Canal {Key}: frames perdidos — el proceso va al {Speed:0} % del tiempo real de forma sostenida con una fuente que entrega a ritmo constante: el equipo no da abasto (CPU/GPU/disco) y la entrada acumula atraso.",
+                _key, (_saturation.Speed ?? 0) * 100);
+        else
+            _log.LogWarning("Canal {Key}: frames perdidos — FFmpeg descartó {Lost} frames que la conversión de cadencia no explica{Cadence}: el equipo no da abasto (CPU/GPU/disco).",
+                _key, _saturation.UnexplainedDrops,
+                cadence.DropsFrames ? $" (el preset convierte de {LogFps(cadence.Source)} a {LogFps(cadence.Output)} fps y esos descartes ya están descontados)" : "");
+    }
+
+    private static readonly TimeSpan InputDropAlarmHold = TimeSpan.FromSeconds(10);
+    private DateTimeOffset _lastInputDropUtc = DateTimeOffset.MinValue;
 
     /// <summary>El relé de la fuente descartó datos del proceso del canal (disco o CPU atascados): si se graba, la grabación
     /// tendrá un salto. Se registra (es lo que explica el hueco) y enciende la alarma de frames perdidos.</summary>
     private void OnInputDataDropped(object? sender, long dropped)
     {
         if (_engine.State is not (RecordingState.Recording or RecordingState.Paused)) return;
-        _lastRelayDropUtc = DateTimeOffset.UtcNow;
+        _lastInputDropUtc = DateTimeOffset.UtcNow;
         _log?.LogError("Canal {Key}: la entrada descartó {Count} unidades porque la grabación no daba abasto (disco o CPU atascados); el archivo tendrá un salto.", _key, dropped);
+        SetAlarm(AlarmType.FramesDropped, true);
+    }
+
+    /// <summary>El dispositivo de captura (DirectShow, DeckLink en captura directa) tiró frames porque el proceso del canal no
+    /// los recogía a tiempo: pérdida segura, igual que un descarte del relé.</summary>
+    private void OnInputOverrun(object? sender, long dropped)
+    {
+        if (_engine.State is not (RecordingState.Recording or RecordingState.Paused)) return;
+        _lastInputDropUtc = DateTimeOffset.UtcNow;
+        _log?.LogError("Canal {Key}: el dispositivo de captura tiró {Count} frames porque el proceso no los recogía a tiempo (CPU/GPU/disco saturados); el archivo tendrá saltos.", _key, dropped);
         SetAlarm(AlarmType.FramesDropped, true);
     }
 
@@ -808,6 +881,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     {
         _engine.RecordingInterrupted -= OnRecordingInterrupted;
         _engine.FileUnverified -= OnFileUnverified;
+        _engine.InputOverrun -= OnInputOverrun;
         // Nada de lo que llegue tarde del motor o de la fuente debe tocar ya este canal (estado, alarmas, bus).
         _engine.StatsUpdated -= OnStats;
         _engine.AudioPeaksUpdated -= OnAudioLevels;
