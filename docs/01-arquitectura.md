@@ -151,6 +151,26 @@ motor: un antivirus que escanea el archivo al cerrarlo (crece con el tamaño), S
 Para saberlo sin adivinar, el registro deja dos líneas por cada Detener: «Canal X: relevo del preview en A s y archivo
 cerrado en B s» (motor) y «Canal X: grabación detenida en T s (motor, base de datos, eventos)» (canal).
 
+**Carta de ajuste a tiempo real.** Al perder la señal grabando con «Carta de ajuste al perder señal», el motor cambia el
+proceso del canal por el de `FfmpegArgumentBuilder.BuildSlate`: barras SMPTE con el rótulo «SIN SEÑAL» y silencio (con
+tantos canales como la fuente y los mismos pans), en el formato del preset y con las mismas salidas (preview, medidores y
+una pieza nueva de grabación). Si el preset no fija resolución y tasa (los de fábrica sí), se toman de la señal que publica
+la fuente en ese momento, y una fuente sin señal puede no publicar ninguna (NDI y las entradas de red no lo hacen nunca):
+entonces la carta sale a 1080p25 y sus piezas no se unirían sin recodificar con las de la fuente (limitación conocida).
+Las dos señales salen de UNA entrada lavfi a ritmo de reloj:
+`-re -f lavfi -i "smptebars=…[out0];anullsrc=…[out1]"`. Sin `-re`, lavfi genera tan deprisa como codifica la máquina
+(medido hasta 2026-10-13 con el FFmpeg empaquetado: 14,1–14,8× con x264 veryfast a 720p25; 10 s sin señal dejaban 147 s
+de barras): una caída de minutos llenaba el disco con horas de barras, el canal en barras acaparaba la CPU de los demás
+y, con una entrada con pre-roll (relevo con asentamiento), el preview no pasaba a las barras hasta el tope de 10 s porque
+nunca llegaban «a cadencia real». Una sola entrada y no una por generador: con dos, FFmpeg retiene el silencio para no
+adelantarse al vídeo (que sale del codificador con retraso) y al cerrar la pieza el audio acababa 0,6 s antes que el
+vídeo (1,2 s sin `-re`); con una, acaba como las piezas de la fuente real (+0,07 s, un bloque de AAC).
+`SlateRealTimeTests` lo comprueba con FFmpeg real: el argv (progreso = reloj + el empujón inicial de 0,5 s de `-re`,
+archivo = lo que estuvo en marcha, en estéreo y con 8 canales) y el motor completo fuente → barras → fuente con un
+dispositivo (sondeo de recuperación), un relé (relevo con el primer frame) y una entrada con pre-roll (relevo con
+asentamiento): X s de barras = X s de archivo, el mismo formato en las tres piezas y una unión con `-f concat -c copy`
+que se decodifica limpia.
+
 **Colchón de preview (`PreviewPacer`).** El preview pinta cada frame según llega; una fuente que entrega a ráfagas
 (un servidor RTMP que se para y luego descarga de golpe) se ve a saltos aunque el motor esté sano. Por eso cada
 fuente de red admite un colchón opcional (Entradas → Fuentes de red → «Colchón de preview», 0 = sin colchón): los

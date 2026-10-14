@@ -496,10 +496,11 @@ public sealed class FfmpegArgumentBuilder
 
     /// <summary>
     /// Argv de la CARTA DE AJUSTE (slate): al perder la señal en vivo durante la grabación, sustituye la
-    /// entrada del dispositivo por barras SMPTE + silencio generados con <c>lavfi</c>, conservando las
-    /// MISMAS salidas (preview + medidores + grabación) y la misma resolución/tasa de destino. Así la
-    /// grabación continúa (un nuevo segmento) sin romper la base de tiempo; las barras llevan el rótulo
-    /// «SIN SEÑAL» como evidencia. Pensado para fuentes de vídeo; se reanuda la fuente al volver la señal.
+    /// entrada del dispositivo por barras SMPTE + silencio generados con <c>lavfi</c> a tiempo real (X s sin
+    /// señal = X s de barras), conservando las MISMAS salidas (preview + medidores + grabación) y la misma
+    /// resolución/tasa de destino. Así la grabación continúa (un nuevo segmento) sin romper la base de tiempo;
+    /// las barras llevan el rótulo «SIN SEÑAL» como evidencia. Pensado para fuentes de vídeo; se reanuda la
+    /// fuente al volver la señal.
     /// </summary>
     public IReadOnlyList<string> BuildSlate(bool recording, int previewWidth, int previewHeight)
     {
@@ -524,11 +525,17 @@ public sealed class FfmpegArgumentBuilder
             : string.Create(CultureInfo.InvariantCulture, $"{_source!.AudioChannelCount}c");
 
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
-        // Entradas generadas: barras de ajuste (0:v) + silencio (1:a), con base de tiempo continua.
-        args.Add("-f"); args.Add("lavfi");
-        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"smptebars=size={size}:rate={r}"));
-        args.Add("-f"); args.Add("lavfi");
-        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture, $"anullsrc=channel_layout={silence}:sample_rate={profile.AudioSampleRate}"));
+        // UNA entrada generada con las barras de ajuste (0:v) y el silencio (0:a), con base de tiempo continua y AL RITMO DEL
+        // RELOJ (-re), como la fuente a la que sustituye. Sin freno, lavfi genera tan deprisa como codifica la máquina: medido
+        // con el FFmpeg empaquetado, barras a ~14× el tiempo real (x264 a 720p25) → una caída de señal de minutos dejaba HORAS
+        // de barras en el disco, la pieza no duraba lo que el hueco y el canal en barras acaparaba la CPU de los demás. Una
+        // sola entrada y no una por generador: con dos, FFmpeg retiene el silencio para no adelantarse al vídeo (que sale del
+        // codificador con retraso) y al cerrar la pieza el audio acababa 0,6 s antes que el vídeo (1,2 s sin -re); así acaba
+        // como las piezas de la fuente real. -re y no -readrate: vale con cualquier FFmpeg (el cliente puede traer el suyo y
+        // -readrate llegó en la 5.0).
+        args.Add("-re"); args.Add("-f"); args.Add("lavfi");
+        args.Add("-i"); args.Add(string.Create(CultureInfo.InvariantCulture,
+            $"smptebars=size={size}:rate={r}[out0];anullsrc=channel_layout={silence}:sample_rate={profile.AudioSampleRate}[out1]"));
 
         string label = "drawtext=text='SIN SEÑAL':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:" +
                        "x=(w-text_w)/2:y=h*0.12";
@@ -550,7 +557,7 @@ public sealed class FfmpegArgumentBuilder
         if (routes is not null)
         {
             filter.Append(';');
-            filter.Append(AudioGraph("[1:a]", recording ? routes : null, "ebur128=peak=true", "aslate"));
+            filter.Append(AudioGraph("[0:a]", recording ? routes : null, "ebur128=peak=true", "aslate"));
         }
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
@@ -561,7 +568,7 @@ public sealed class FfmpegArgumentBuilder
         args.Add(_previewSink);
 
         // Salida B — medidores sobre el silencio (marcará -inf; sin silencedetect para no duplicar alarma).
-        args.Add("-map"); args.Add(routes is null ? "1:a:0" : "[amout]");
+        args.Add("-map"); args.Add(routes is null ? "0:a:0" : "[amout]");
         if (routes is null) { args.Add("-af"); args.Add("ebur128=peak=true"); }
         args.Add("-f"); args.Add("null"); args.Add("-");
 
@@ -570,7 +577,7 @@ public sealed class FfmpegArgumentBuilder
         {
             var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
             args.Add("-map"); args.Add(recLabel);
-            foreach (var a in routes is null ? new[] { "1:a:0" } : RouteLabels(routes, "aslate")) { args.Add("-map"); args.Add(a); }
+            foreach (var a in routes is null ? new[] { "0:a:0" } : RouteLabels(routes, "aslate")) { args.Add("-map"); args.Add(a); }
             args.AddRange(VideoEncoderArgs(profile));
             args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
             if (routes is not null) args.AddRange(TrackTitles(routes));

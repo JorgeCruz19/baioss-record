@@ -311,6 +311,7 @@ Es la **carpeta donde se guardan las grabaciones** de ese canal.
 
 Es una casilla: **"Carta de ajuste al perder señal (sigue grabando barras)"**.
 - Si está **activada** y la fuente pierde señal en mitad de una grabación, el programa **sigue grabando** una pantalla de barras/aviso en lugar de cortar. Así el archivo no se interrumpe y queda constancia de que hubo un corte de señal.
+- Las barras se graban **al ritmo del reloj**: si la señal falta 10 minutos, quedan 10 minutos de barras (en una pieza aparte de la grabación).
 - Si está **desactivada**, al perder señal la grabación simplemente se queda sin imagen nueva.
 
 ### 6.3. Panel web y API (abrir el panel web desde otro equipo)
