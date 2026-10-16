@@ -104,8 +104,12 @@ public sealed class SlateRealTimeTests
             var last = s[^1];
             Assert.True(last.Media <= last.Wall + 1.0,
                 FormattableString.Invariant($"la carta de ajuste va por delante del reloj: {last.Media:0.0} s de barras en {last.Wall:0.0} s"));
-            // …y en régimen avanza un segundo por segundo (barras a 720p25: la máquina va sobrada).
-            var steady = s.Where(x => x.Wall >= 2).ToList();
+            // …y en régimen avanza un segundo por segundo (barras a 720p25: la máquina va sobrada). En régimen = desde los 2 s
+            // hasta que se pide el cierre: el bloque de progreso del cierre suma de golpe lo que el codificador retenía, y eso
+            // no es velocidad. FFmpeg 8.0 da out_time ~1,2 s por detrás del reloj mientras graba y lo alcanza al cerrar, cuando
+            // x264 vacía su búfer (+2,4 s de out_time en 1 s: con ese bloque salía 1,26); el FFmpeg incluido va ~0,4 s por
+            // delante todo el rato (el empujón inicial de -re) y su cierre no salta.
+            var steady = s.Where(x => x.Wall >= 2 && x.Wall <= ran).ToList();
             Assert.True(steady.Count >= 3, $"pocas muestras en régimen: {steady.Count}");
             double rate = (steady[^1].Media - steady[0].Media) / (steady[^1].Wall - steady[0].Wall);
             Assert.InRange(rate, 0.8, 1.2);
