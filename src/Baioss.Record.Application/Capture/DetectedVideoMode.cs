@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.ValueObjects;
 
 namespace Baioss.Record.Application.Capture;
@@ -14,10 +15,14 @@ namespace Baioss.Record.Application.Capture;
 /// <param name="Resolution">Ancho × alto del modo.</param>
 /// <param name="FrameRate">Tasa de CUADRO exacta (30000/1001 para 1080i59.94), no la de campos.</param>
 /// <param name="Interlaced">True si la señal es entrelazada.</param>
-public sealed record DetectedVideoMode(Resolution Resolution, FrameRate FrameRate, bool Interlaced)
+/// <param name="BottomFieldFirst">Entrelazada con el campo INFERIOR primero (NTSC 480i/486i en DeckLink); si no, el superior.</param>
+public sealed record DetectedVideoMode(Resolution Resolution, FrameRate FrameRate, bool Interlaced, bool BottomFieldFirst = false)
 {
     /// <summary>«1920×1080 · 59.94i»: la misma etiqueta que el gestor de entradas da a los modos de la lista.</summary>
     public string Label => VideoModes.Label(Resolution, FrameRate, Interlaced);
+
+    /// <summary>El barrido como lo entiende un perfil de grabación (progresivo, TFF o BFF).</summary>
+    public ScanType Scan => !Interlaced ? ScanType.Progressive : BottomFieldFirst ? ScanType.InterlacedBff : ScanType.InterlacedTff;
 }
 
 /// <summary>Qué pasó al preguntarle a la tarjeta por su señal («Detectar señal»).</summary>

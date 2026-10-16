@@ -27,10 +27,12 @@ public static class EncoderFallbackChain
         VideoCodec.H264Qsv   => VideoCodec.H264Amf,
         VideoCodec.H264Amf   => VideoCodec.H264x264,
 
-        // HEVC/AV1 por NVENC: sin equivalente por hardware en el catálogo → directo a CPU. HEVC mantiene el
-        // códec (libx265); AV1 no tiene codificador CPU práctico configurado, así que cae a H.264 (libx264):
-        // cambia el códec, pero «grabar algo legible» supera a «no grabar».
-        VideoCodec.HevcNvenc => VideoCodec.H265x265,
+        // HEVC por NVENC → QuickSync → CPU (libx265). Antes saltaba directo a libx265, que en un equipo de referencia
+        // (Core i7-8700) no llega a 1080p29.97 en tiempo real: medido con una DeckLink, el relé descartó 267 cuadros en
+        // 15 s. La GPU integrada de Intel codifica HEVC de sobra. AV1 no tiene codificador CPU práctico configurado,
+        // así que cae a H.264 (libx264): cambia el códec, pero «grabar algo legible» supera a «no grabar».
+        VideoCodec.HevcNvenc => VideoCodec.HevcQsv,
+        VideoCodec.HevcQsv   => VideoCodec.H265x265,
         VideoCodec.Av1Nvenc  => VideoCodec.H264x264,
 
         // Ya es CPU/intra (libx264/265, ProRes, DNxHD/HR, MPEG-2): sin degradación.

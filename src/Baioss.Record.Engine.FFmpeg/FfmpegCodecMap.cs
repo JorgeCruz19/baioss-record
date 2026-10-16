@@ -14,6 +14,7 @@ public static class FfmpegCodecMap
         VideoCodec.H265x265  => "libx265",
         VideoCodec.H264Qsv   => "h264_qsv",  // Intel QuickSync (GPU integrada)
         VideoCodec.H264Amf   => "h264_amf",  // AMD AMF (GPU integrada)
+        VideoCodec.HevcQsv   => "hevc_qsv",  // Intel QuickSync HEVC (GPU integrada)
         VideoCodec.ProRes    => "prores_ks",
         VideoCodec.DnxHd     => "dnxhd",
         VideoCodec.DnxHr     => "dnxhd", // DNxHR vía -profile dnxhr_hq

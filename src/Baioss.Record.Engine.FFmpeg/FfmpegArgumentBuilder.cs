@@ -260,6 +260,8 @@ public sealed class FfmpegArgumentBuilder
         {
             // Bifurca el vídeo: una rama a grabación (con su escala/escaneo/burn-in), otra a preview.
             var recChain = new List<string>();
+            // Desentrelazar ANTES de escalar: escalar en vertical cuadros con dos campos entretejidos los mezcla.
+            if (DeinterlaceFilter(source.CurrentSignal, profile) is { } deinterlace) recChain.Add(deinterlace);
             if (profile.TargetResolution is { } r)
                 recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
             if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
@@ -366,6 +368,25 @@ public sealed class FfmpegArgumentBuilder
         }
 
         return args;
+    }
+
+    /// <summary>
+    /// Desentrelazado de la rama de grabación cuando la señal es ENTRELAZADA y el preset PROGRESIVO (todos los NVENC, los
+    /// 1080p…). Sin él, los dos campos de un 1080i se grababan entretejidos en cuadros marcados progresivos: peine en todo lo
+    /// que se mueve (medido con una DeckLink en 1080i59.94 y el preset NVENC 1080p29.97: idet, 300 de 301 cuadros TFF). El
+    /// relé en crudo no conserva la marca de entrelazado en los cuadros, así que el orden de campos sale de la señal (lo que
+    /// la tarjeta o el emisor dijeron al abrir) y se procesan todos los cuadros. Si el preset dobla la tasa de cuadro de la
+    /// señal (1080i59.94 → 1080p59.94) sale un cuadro por CAMPO —movimiento real a 59.94— en vez de repetir cada cuadro
+    /// entretejido. Señal progresiva o desconocida, o preset entrelazado: null (como siempre).
+    /// </summary>
+    internal static string? DeinterlaceFilter(SignalInfo signal, RecordingProfile profile)
+    {
+        if (profile.AudioOnly || profile.ScanType is not ScanType.Progressive) return null;
+        string? parity = signal.Scan switch { ScanType.InterlacedTff => "tff", ScanType.InterlacedBff => "bff", _ => null };
+        if (parity is null) return null;
+        bool perField = profile.OutputFrameRate is { Value: > 0 } output && signal.FrameRate is { Value: > 0 } input
+                        && Math.Abs(output.Value - 2 * input.Value) < 0.01 * output.Value;
+        return $"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all";
     }
 
     /// <summary>
@@ -666,10 +687,10 @@ public sealed class FfmpegArgumentBuilder
             // con EINVAL (-22) «Unable to choose an output format for 'aac'». Debe ir como «-no-scenecut 1».
             if (p.ClosedGop) list.AddRange(new[] { "-no-scenecut", "1" });
         }
-        else if (p.VideoCodec is VideoCodec.H264Qsv or VideoCodec.H264Amf)
+        else if (p.VideoCodec is VideoCodec.H264Qsv or VideoCodec.H264Amf or VideoCodec.HevcQsv)
         {
-            // GPU INTEGRADA (Intel QuickSync / AMD AMF): H.264 por bitrate. Args mínimos y portables entre
-            // ambos encoders (evita -preset/-crf/-rc, que difieren); el ritmo va por -b:v/-maxrate/-bufsize.
+            // GPU INTEGRADA (Intel QuickSync H.264/HEVC / AMD AMF): por bitrate. Args mínimos y portables entre
+            // los encoders (evita -preset/-crf/-rc, que difieren); el ritmo va por -b:v/-maxrate/-bufsize.
             switch (p.RateControl)
             {
                 case RateControlMode.VariableBitrate:
@@ -713,6 +734,10 @@ public sealed class FfmpegArgumentBuilder
                 _ => "3", // Auto = ProRes 422 HQ (comportamiento previo)
             };
             list.AddRange(new[] { "-profile:v", proresProfile });
+            // prores_ks codifica cuadros PROGRESIVOS salvo que se le pida DCT entrelazada: sin esto, un preset «1080i»
+            // grababa los campos entretejidos en cuadros marcados progresivos (medido con una DeckLink en 1080i59.94).
+            // (DNxHR no tiene equivalente: el codificador de FFmpeg no admite entrelazado en los perfiles DNxHR.)
+            if (interlaced) { list.Add("-flags"); list.Add("+ildct"); }
         }
         else // libx264 / libx265
         {
@@ -769,7 +794,7 @@ public sealed class FfmpegArgumentBuilder
         VideoCodec.ProRes => "yuv422p10le",
         VideoCodec.DnxHd or VideoCodec.DnxHr => "yuv422p",
         VideoCodec.Mpeg2Video or VideoCodec.H264x264 or VideoCodec.H265x265 => "yuv420p",
-        VideoCodec.H264Qsv or VideoCodec.H264Amf => "nv12", // formato nativo de QSV/AMF
+        VideoCodec.H264Qsv or VideoCodec.H264Amf or VideoCodec.HevcQsv => "nv12", // formato nativo de QSV/AMF
         _ => null // NVENC: el encoder elige (nv12/p010)
     };
 

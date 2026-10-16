@@ -302,8 +302,8 @@ public sealed class DecklinkCaptureSource : ICaptureSource
         if (_receiverFactory is not null || !Autodetects) return;
         var current = CurrentSignal;
         var next = mode is null
-            ? current with { State = SignalState.NoSignal, Resolution = null, FrameRate = null, FormatLabel = null }
-            : current with { State = SignalState.Locked, Resolution = mode.Resolution, FrameRate = mode.FrameRate, FormatLabel = mode.Label };
+            ? current with { State = SignalState.NoSignal, Resolution = null, FrameRate = null, FormatLabel = null, Scan = null }
+            : current with { State = SignalState.Locked, Resolution = mode.Resolution, FrameRate = mode.FrameRate, FormatLabel = mode.Label, Scan = mode.Scan };
         if (next.State == current.State && next.FormatLabel == current.FormatLabel) return;
         RaiseSignal(next);
     }
@@ -341,7 +341,9 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             FormatLabel: formatLabel,
             AudioChannels: _channels,
             AudioSelectionLabel: _channels > 2 ? _audio.Describe(_channels) : null,
-            AudioSelectedPairs: _channels > 2 ? _audio.SelectedPairs(_channels) : null);
+            AudioSelectedPairs: _channels > 2 ? _audio.SelectedPairs(_channels) : null,
+            // El orden de campos, del volcado de la tarjeta («uyvy422(top first)»); la línea del modo detectado no lo dice.
+            Scan: (_description?.Video ?? mode)?.Scan);
     }
 
     /// <summary>Sin señal, con el motivo en palabras (abriendo, en uso, sin detección, reabriendo).</summary>

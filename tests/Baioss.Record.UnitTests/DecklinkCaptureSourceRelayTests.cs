@@ -64,6 +64,19 @@ public class DecklinkCaptureSourceRelayTests
     }
 
     [Fact]
+    public async Task TheFieldOrderTheCardReports_ReachesTheSignal_SoProgressivePresetsCanDeinterlace()
+    {
+        // El relé en crudo no conserva la marca de entrelazado en los cuadros: el barrido solo llega por la señal.
+        var (source, receiver) = RelaySource();
+        await source.OpenAsync();
+        receiver.RaiseOpened(Description); // «uyvy422(top first)» de una Duo 2 en 1080i59.94
+        Assert.Equal(ScanType.InterlacedTff, source.CurrentSignal.Scan);
+        receiver.RaiseLost();
+        receiver.RaiseOpened(Description with { Video = new DetectedVideoMode(new Resolution(1280, 720), VideoModes.RateFromDisplay(59.94), false) });
+        Assert.Equal(ScanType.Progressive, source.CurrentSignal.Scan);
+    }
+
+    [Fact]
     public async Task FramesDroppedByTheRelay_ReachTheChannelAsInputDataDropped_OnlyFromTheCurrentReceiver()
     {
         var (source, receiver) = RelaySource();

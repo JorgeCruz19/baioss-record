@@ -1496,9 +1496,21 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _log.LogWarning("Canal {Key}: codificador '{From}' no disponible → degradando a '{To}' y reiniciando la grabación.",
                 _channelKey, FfmpegCodecMap.VideoEncoder(from), FfmpegCodecMap.VideoEncoder(next.Value));
 
+            // El proceso cuyo codificador no abrió no grabó nada: FFmpeg crea el archivo al arrancar y lo deja VACÍO. No es
+            // una pieza de la grabación: emitirlo lo verificaba —falsa alarma «grabación sin verificar», segmento marcado
+            // dañado y aviso a la auditoría—; si el degradado arrancaba en el mismo segundo (nombre por defecto) era además
+            // SU archivo, leído a medio escribir; y con un nombre elegido el degradado acababa en «Nombre 1» junto a un
+            // «Nombre» vacío. Medido con una DeckLink y NVENC sin driver compatible: pasaba en cada Grabar.
+            string? failedFile = _recordFile;
+            if (failedFile is not null && await DiscardEmptyAttemptAsync(failedFile).ConfigureAwait(false))
+                _recordFile = null; // ni se emite, ni se verifica, ni entra en el renombrado de la sesión
+
             // ReplaceProcessAsync resetea _encoderOpenError: el proceso entrante (con el códec degradado) se
             // re-evalúa por su propio stderr; si tampoco abre, disparará otro escalón.
             await ReplaceProcessAsync(recording: true, slate: _slate, CancellationToken.None).ConfigureAwait(false);
+            // Si su proceso aún lo tenía abierto y no se pudo borrar antes, y el degradado escribe con otro nombre: ahora.
+            if (failedFile is not null && !string.Equals(failedFile, _recordFile, StringComparison.OrdinalIgnoreCase))
+                TryDeleteEmptyFile(failedFile);
             RaiseAlarm(AlarmType.EncoderFallback, true);
         }
         catch (Exception ex)
@@ -1514,6 +1526,35 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             _gate.Release();
             if (resumeRecovery) { _encoderOpenError = false; OnRecordingProcessDied(this, -1); }
         }
+    }
+
+    /// <summary>
+    /// El archivo del proceso cuyo codificador no abrió: espera (poco: FFmpeg sale solo al fallar el codificador) a que su
+    /// proceso termine y, si el archivo no tiene nada, lo borra y devuelve true (no es una pieza). Si tiene datos, false: se
+    /// trata como siempre (se emite y se verifica).
+    /// </summary>
+    private async Task<bool> DiscardEmptyAttemptAsync(string path)
+    {
+        var wait = Stopwatch.StartNew();
+        while (_supervisor is { IsRunning: true } && wait.Elapsed < TimeSpan.FromSeconds(2))
+            await Task.Delay(25).ConfigureAwait(false);
+        try
+        {
+            if (new FileInfo(path) is { Exists: true, Length: > 0 }) return false;
+        }
+        catch { return false; }
+        TryDeleteEmptyFile(path);
+        return true;
+    }
+
+    private void TryDeleteEmptyFile(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            if (file.Exists && file.Length == 0) file.Delete();
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: no se pudo borrar el archivo vacío {File}.", _channelKey, path); }
     }
 
     /// <summary>

@@ -73,13 +73,21 @@ Los **H.264 NVENC** y **HEVC NVENC** graban con el codificador de la tarjeta NVI
 H.264/HEVC de fábrica codifica por CPU (libx264/libx265). Los H.264 NVENC son los gemelos por GPU de los H.264 de CPU:
 misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); todos en MP4 + AAC.
 
-- **Solo progresivos:** NVENC no codifica entrelazado. Para 1080i/576i/480i siguen los de x264, MPEG-2, ProRes y DNxHR.
+- **Solo progresivos:** NVENC no codifica entrelazado. Para 1080i/576i/480i siguen los de x264, MPEG-2 y ProRes (DNxHR no:
+  el codificador de FFmpeg no admite entrelazado en sus perfiles y guarda los dos campos en cuadros progresivos).
+- **Señal entrelazada con un preset progresivo** (una DeckLink en 1080i59.94 grabando con un NVENC 1080p): la rama de
+  grabación **desentrelaza** con `bwdif` antes de escalar, con el orden de campos que la tarjeta da al abrir
+  (`SignalInfo.Scan`; el relé en crudo no conserva la marca en los cuadros). Si el preset dobla la cadencia (1080i59.94 →
+  1080p59.94) sale un cuadro por campo. Antes se grababan los campos entretejidos en cuadros progresivos: peine en todo lo
+  que se mueve.
 - **8 bits:** NVENC pide `p010` para 10 bits y no acepta el `yuv420p10le` del catálogo, así que los HEVC 4K de 10 bits
   siguen siendo de CPU.
 - **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.
 - **Sin NVIDIA**, o con un driver más antiguo que el que exige el FFmpeg empaquetado (el actual, SDK 13.1, pide
   **≥ 610**), el canal **degrada solo** (`EncoderFallbackChain`, alarma *EncoderFallback*): H.264 → QuickSync → AMF →
-  CPU (libx264); HEVC → CPU (libx265). Lo permite el píxel Auto: cada codificador recibe su formato nativo, porque un
+  CPU (libx264); HEVC → QuickSync (`hevc_qsv`) → CPU (libx265). El escalón QuickSync de HEVC importa: libx265 no llega a
+  1080p29.97 en tiempo real en un Core i7-8700 (medido con una DeckLink: 267 cuadros perdidos en 15 s), la GPU integrada
+  sí. Lo permite el píxel Auto: cada codificador recibe su formato nativo, porque un
   `yuv420p` fijo haría fallar a `h264_qsv`. Lo cubre `BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat`.
 - En la ventana de presets, escribir **NVENC** en el buscador los lista todos.
 

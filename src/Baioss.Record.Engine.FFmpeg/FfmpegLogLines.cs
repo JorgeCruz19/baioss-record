@@ -60,11 +60,12 @@ public static partial class FfmpegLogLines
         if (!rate.Success) rate = TbrRegex().Match(line);
         if (!rate.Success) return null;
         if (!double.TryParse(rate.Groups["r"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var fps) || fps <= 0) return null;
-        bool interlaced = line.Contains("top first", StringComparison.Ordinal) || line.Contains("bottom first", StringComparison.Ordinal)
+        bool bottomFirst = line.Contains("bottom first", StringComparison.Ordinal);
+        bool interlaced = bottomFirst || line.Contains("top first", StringComparison.Ordinal)
                           || line.Contains("interlaced", StringComparison.OrdinalIgnoreCase);
         var res = new Resolution(int.Parse(size.Groups["w"].Value, CultureInfo.InvariantCulture),
                                  int.Parse(size.Groups["h"].Value, CultureInfo.InvariantCulture));
-        return new DetectedVideoMode(res, VideoModes.RateFromDisplay(fps), interlaced);
+        return new DetectedVideoMode(res, VideoModes.RateFromDisplay(fps), interlaced, bottomFirst);
     }
 
     // "Input #0, mpegts, from 'srt://127.0.0.1:9710':"

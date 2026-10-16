@@ -48,6 +48,13 @@ public sealed class FfmpegEncoderFallbackTests
             // Señal del fallback: la alarma EncoderFallback pasa a activa SOLO cuando el motor degrada.
             var fellBack = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             engine.AlarmChanged += (_, a) => { if (a.Type == AlarmType.EncoderFallback && a.Active) fellBack.TrySetResult(); };
+            // El intento que no abrió el codificador no es una pieza: ni alarma de archivo dañado, ni segmento, ni aviso.
+            bool unverifiedAlarm = false;
+            var unverified = new List<string>();
+            var segments = new List<string>();
+            engine.AlarmChanged += (_, a) => { if (a.Type == AlarmType.RecordingUnverified && a.Active) unverifiedAlarm = true; };
+            engine.FileUnverified += (_, f) => { lock (unverified) unverified.Add($"{f.FilePath} ({f.SizeBytes} B)"); };
+            engine.SegmentClosed += (_, s) => { lock (segments) segments.Add(s.FilePath); };
 
             // Tras el fallback, el preview/grabación debe SEGUIR fluyendo (proceso libx264 vivo).
             int framesAfterFallback = 0;
@@ -86,6 +93,17 @@ public sealed class FfmpegEncoderFallbackTests
             Assert.True(file is not null && File.Exists(file), $"No se generó el archivo: {file}");
             Assert.True(new FileInfo(file!).Length > 0, "El archivo de grabación está vacío.");
             Assert.Equal("h264", await ProbeCodecAsync(locator.FfprobePath, file!));
+
+            // 4) Un solo archivo, con el nombre pedido: el intento fallido no deja un «fallback_amf.mp4» de 0 bytes ni
+            //    empuja la grabación buena a «fallback_amf 1.mp4».
+            await Task.Delay(1000); // la verificación de la pieza corre en segundo plano
+            var files = Directory.GetFiles(outputRoot);
+            Assert.True(files.Length == 1, "Archivos: " + string.Join(", ", files.Select(f => $"{Path.GetFileName(f)} ({new FileInfo(f).Length} B)")));
+            Assert.Equal("fallback_amf.mp4", Path.GetFileName(files[0]));
+            // 5) Sin falsa alarma de archivo dañado y con la pieza buena como único segmento.
+            Assert.False(unverifiedAlarm, "Falsa alarma «grabación sin verificar» tras degradar el codificador.");
+            lock (unverified) Assert.True(unverified.Count == 0, "Aviso de archivo sin verificar: " + string.Join(", ", unverified));
+            lock (segments) Assert.Equal(new[] { files[0] }, segments);
         }
         finally
         {

@@ -343,6 +343,71 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-c:v h264_nvenc", joined);
     }
 
+    // --- Fuente entrelazada (1080i de una DeckLink) ---
+
+    private static string BuildLiveFrom(SignalInfo signal, RecordingProfile profile)
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4");
+        source.Emit(signal);
+        return string.Join(' ', new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001").BuildLive(recording: true, 640, 360));
+    }
+
+    private static SignalInfo Signal1080(FrameRate rate, ScanType? scan) => new(SignalState.Locked, new Resolution(1920, 1080), rate,
+        AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null, Scan: scan);
+
+    private static RecordingProfile Progressive(VideoCodec codec, FrameRate rate) => new()
+    {
+        Name = "p", VideoCodec = codec, HwAccel = HwAccel.None, VideoBitrate = Bitrate.FromMbps(16), GopSize = 50,
+        TargetResolution = new Resolution(1920, 1080), OutputFrameRate = rate,
+        AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+    };
+
+    [Fact]
+    public void BuildLive_InterlacedSignal_ProgressivePreset_DeinterlacesBeforeScaling()
+    {
+        // Medido con una Duo 2 en 1080i59.94 y el preset NVENC 1080p29.97: sin esto, idet daba 300 de 301 cuadros TFF (peine).
+        var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264Nvenc, FrameRate.P2997));
+        Assert.Contains("[vrec]bwdif=mode=send_frame:parity=tff:deint=all,scale=1920:1080,format=nv12[vmain]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_InterlacedSignal_PresetAtTheFieldRate_GetsOneFramePerField()
+    {
+        // 1080i59.94 → 1080p59.94: un cuadro por campo (movimiento real), no cada cuadro entretejido repetido.
+        var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P5994));
+        Assert.Contains("[vrec]bwdif=mode=send_field:parity=tff:deint=all,scale=1920:1080", joined);
+        Assert.Contains("-r 60000/1001", joined);
+    }
+
+    [Fact]
+    public void BuildLive_BottomFieldFirstSignal_DeinterlacesWithThatParity()
+        => Assert.Contains("bwdif=mode=send_frame:parity=bff:deint=all",
+            BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedBff), Progressive(VideoCodec.H264x264, FrameRate.P2997)));
+
+    [Theory]
+    [InlineData(ScanType.Progressive, ScanType.Progressive)]    // señal progresiva: nada que desentrelazar
+    [InlineData(null, ScanType.Progressive)]                    // barrido desconocido (archivo, NDI…): como siempre
+    [InlineData(ScanType.InterlacedTff, ScanType.InterlacedTff)] // preset entrelazado: se graban los campos tal cual
+    public void BuildLive_DoesNotDeinterlace_WhenThereIsNothingToFix(ScanType? signalScan, ScanType presetScan)
+    {
+        var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
+        profile.ScanType = presetScan;
+        Assert.DoesNotContain("bwdif", BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile));
+    }
+
+    [Fact]
+    public void Build_InterlacedProRes_AsksForInterlacedDct()
+    {
+        // prores_ks codifica progresivo salvo que se le pida DCT entrelazada: un «1080i» grababa cuadros progresivos.
+        var profile = ProResMov(EncoderProfile.ProResHq);
+        profile.ScanType = ScanType.InterlacedTff;
+        var joined = Build(profile).Joined;
+        Assert.Contains("-c:v prores_ks -profile:v 3 -flags +ildct", joined);
+        Assert.Contains("-field_order tt", joined);
+        Assert.DoesNotContain("+ildct", Build(ProResMov(EncoderProfile.ProResHq)).Joined);
+    }
+
     [Fact]
     public void BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat()
     {

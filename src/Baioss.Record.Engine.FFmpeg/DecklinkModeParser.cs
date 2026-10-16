@@ -76,7 +76,10 @@ public static partial class DecklinkModeParser
         var res = new Resolution(int.Parse(m.Groups["w"].Value, CultureInfo.InvariantCulture),
                                  int.Parse(m.Groups["h"].Value, CultureInfo.InvariantCulture));
         var rate = VideoModes.RateFromDisplay(double.Parse(m.Groups["r"].Value, CultureInfo.InvariantCulture));
-        return new DetectedVideoMode(res, rate, m.Groups["i"].Success);
+        bool interlaced = m.Groups["i"].Success;
+        // La línea no dice el orden de campos: en DeckLink el NTSC (480/486 líneas) va con el campo inferior primero y el
+        // resto (PAL, 1080i) con el superior, que es lo que el demuxer anota luego en el flujo («top first»/«bottom first»).
+        return new DetectedVideoMode(res, rate, interlaced, BottomFieldFirst: interlaced && res.Height is 480 or 486);
     }
 
     /// <summary>Sobre la salida completa de un ffmpeg de sondeo: el modo si lo encontró, null si no.</summary>

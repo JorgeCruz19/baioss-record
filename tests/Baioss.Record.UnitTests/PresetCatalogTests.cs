@@ -46,7 +46,7 @@ public sealed class PresetCatalogTests
         VideoCodec[] forbidden =
         {
             VideoCodec.H264Nvenc, VideoCodec.HevcNvenc, VideoCodec.Av1Nvenc,
-            VideoCodec.H264Qsv, VideoCodec.H264Amf, VideoCodec.H265x265,
+            VideoCodec.H264Qsv, VideoCodec.H264Amf, VideoCodec.H265x265, VideoCodec.HevcQsv,
         };
         var bad = Catalog.Where(IsInterlaced)
                          .Where(p => forbidden.Contains(p.VideoCodec))

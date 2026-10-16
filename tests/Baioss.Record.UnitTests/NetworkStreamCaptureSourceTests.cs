@@ -382,6 +382,14 @@ public class NetworkStreamCaptureSourceTests : IDisposable
     }
 
     [Theory]
+    [InlineData("  Stream #0:1: Video: rawvideo (UYVY / 0x59565955), uyvy422(top first), 1920x1080, 994333 kb/s, 29.97 tbr, 1000k tbn", ScanType.InterlacedTff)]
+    [InlineData("  Stream #0:1: Video: rawvideo (UYVY / 0x59565955), uyvy422(bottom first), 720x486, 167832 kb/s, 29.97 tbr, 1000k tbn", ScanType.InterlacedBff)]
+    [InlineData("  Stream #0:0: Video: h264 (High), yuv420p(tv, bt709, top first), 1920x1080 [SAR 1:1 DAR 16:9], 29.97 fps, 59.94 tbr, 90k tbn", ScanType.InterlacedTff)]
+    [InlineData("  Stream #0:0: Video: h264 (Constrained Baseline), yuv420p(progressive), 640x360 [SAR 1:1 DAR 16:9], 25 fps, 25 tbr, 90k tbn", ScanType.Progressive)]
+    public void VideoStreamLine_GivesTheFieldOrder(string line, ScanType scan)
+        => Assert.Equal(scan, FfmpegLogLines.TryParseVideoStream(line)!.Scan);
+
+    [Theory]
     [InlineData("  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo, fltp, 96 kb/s")]
     [InlineData("Input #0, mpegts, from 'srt://0.0.0.0:9000':")]
     [InlineData("  Stream #0:0: Video: h264, yuv420p")] // sin tamaño ni tasa

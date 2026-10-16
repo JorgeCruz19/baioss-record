@@ -466,7 +466,7 @@ public static class PresetCatalog
 
     // Cola de la descripción de los presets NVENC: qué hace el preset si el equipo no tiene NVIDIA (EncoderFallbackChain).
     private const string NvencH264Note = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync, AMF o CPU.";
-    private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a CPU (x265).";
+    private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync o a CPU (x265).";
 
     private static EncodingPreset Make(string name, PresetCategory category, string description, Action<EncodingPreset> configure)
     {

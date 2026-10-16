@@ -40,6 +40,15 @@ public class DecklinkAutodetectTests : IDisposable
     }
 
     [Theory]
+    [InlineData("Found Decklink mode 1920 x 1080 with rate 29.97(i)", ScanType.InterlacedTff)]
+    [InlineData("Found Decklink mode 1920 x 1080 with rate 25.00(i)", ScanType.InterlacedTff)]
+    [InlineData("Found Decklink mode 720 x 576 with rate 25.00(i)", ScanType.InterlacedTff)]
+    [InlineData("Found Decklink mode 720 x 486 with rate 29.97(i)", ScanType.InterlacedBff)] // NTSC: campo inferior primero
+    [InlineData("Found Decklink mode 1280 x 720 with rate 59.94", ScanType.Progressive)]
+    public void FoundModeLine_GivesTheFieldOrder(string line, ScanType scan)
+        => Assert.Equal(scan, DecklinkModeParser.TryParseFoundMode(line)!.Scan);
+
+    [Theory]
     [InlineData("Stream #0:1: Video: rawvideo (UYVY / 0x59565955), uyvy422(top first), 1920x1080, 29.97 fps")]
     [InlineData("Autodetected the input mode")]
     [InlineData("Supported formats for 'DeckLink Duo (1)':")]

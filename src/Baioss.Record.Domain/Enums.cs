@@ -40,7 +40,8 @@ public enum VideoCodec
     Mpeg2Video, // MPEG-2 (PS/TS, XDCAM HD422)
     // Encoders por GPU INTEGRADA (al final para no desplazar los enteros ya persistidos en la BD).
     H264Qsv,    // Intel QuickSync H.264
-    H264Amf     // AMD AMF H.264
+    H264Amf,    // AMD AMF H.264
+    HevcQsv     // Intel QuickSync HEVC (escalón de HEVC NVENC antes de la CPU)
 }
 
 /// <summary>Códec de audio de grabación.</summary>

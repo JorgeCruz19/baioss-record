@@ -11,8 +11,9 @@ public class EncoderFallbackChainTests
     [InlineData(VideoCodec.H264Nvenc, VideoCodec.H264Qsv)]
     [InlineData(VideoCodec.H264Qsv, VideoCodec.H264Amf)]
     [InlineData(VideoCodec.H264Amf, VideoCodec.H264x264)]
-    // HEVC/AV1 por NVENC → CPU.
-    [InlineData(VideoCodec.HevcNvenc, VideoCodec.H265x265)]
+    // HEVC por NVENC → QuickSync → CPU; AV1 por NVENC → CPU (H.264).
+    [InlineData(VideoCodec.HevcNvenc, VideoCodec.HevcQsv)]
+    [InlineData(VideoCodec.HevcQsv, VideoCodec.H265x265)]
     [InlineData(VideoCodec.Av1Nvenc, VideoCodec.H264x264)]
     public void Next_DegradesHardwareEncoders(VideoCodec current, VideoCodec expected)
         => Assert.Equal(expected, EncoderFallbackChain.Next(current));
@@ -38,6 +39,19 @@ public class EncoderFallbackChainTests
 
         Assert.Equal(new[] { VideoCodec.H264Qsv, VideoCodec.H264Amf, VideoCodec.H264x264 }, seen);
         Assert.Null(EncoderFallbackChain.Next(c)); // libx264 = último recurso, sin siguiente
+    }
+
+    [Fact]
+    public void Next_HevcHardwareChain_TriesQuickSyncBeforeTheCpu_AndKeepsTheCodec()
+    {
+        // libx265 no llega a 1080p29.97 en tiempo real en un i7-8700 (medido con una DeckLink: 267 cuadros perdidos en 15 s);
+        // la GPU integrada de Intel sí. Sin Intel, hevc_qsv no abre y se baja a CPU como antes. Siempre HEVC.
+        var c = VideoCodec.HevcNvenc;
+        var seen = new System.Collections.Generic.List<VideoCodec>();
+        for (int i = 0; i < 10 && EncoderFallbackChain.Next(c) is { } n; i++) { c = n; seen.Add(c); }
+
+        Assert.Equal(new[] { VideoCodec.HevcQsv, VideoCodec.H265x265 }, seen);
+        Assert.Equal("hevc_qsv", FfmpegCodecMap.VideoEncoder(VideoCodec.HevcQsv));
     }
 }
 
