@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Baioss.Record.App.Preview;
 using Baioss.Record.Infrastructure.Preview;
 
@@ -10,11 +13,23 @@ public partial class ChannelView : UserControl
 {
     private IChannelPreviewSource? _preview;
     private PreviewSurface? _surface;
-    // volatile: OnFrameReady corre en un hilo de FONDO y el callback del Dispatcher en el de UI. Sin barrera,
-    // el hilo de fondo podía cachear _renderQueued=true para siempre y dejar de re-encolar render → preview
-    // CONGELADO de forma permanente. (Auditoría #52.)
-    private volatile PreviewFrame? _pending;
-    private volatile bool _renderQueued;
+
+    // PRESENTACIÓN. Los frames llegan en un hilo de fondo y se copian a búferes propios (el del motor se reutiliza en
+    // seguida); el planificador les da turno a la cadencia de la fuente y en cada refresco de pantalla
+    // (CompositionTarget.Rendering) se sube a la superficie el que toca. Pintar cada frame al llegar repartía el jitter de
+    // la llegada entre los refrescos: en un monitor de 60 Hz, uno de cada cinco cuadros se veía uno o tres refrescos en vez
+    // de dos (ver PreviewPresentationScheduler). Todo lo compartido entre los dos hilos va bajo _sync.
+    private readonly object _sync = new();
+    private readonly PreviewPresentationScheduler<byte[]> _scheduler = new();
+    private readonly Stack<byte[]> _free = new();
+    private readonly List<byte[]> _recycled = new();
+    private int _width, _height, _frameBytes;
+    private bool _rendering;
+    private TimeSpan _lastRenderingTime = TimeSpan.MinValue;
+
+    // Diagnóstico (registro): el primero a los 30 s de enlazar, luego cada PreviewPresentationSettings.DiagnosticsIntervalSeconds.
+    private readonly PreviewPresentationStats _stats = new();
+    private double _nextReport;
 
     public ChannelView()
     {
@@ -31,6 +46,8 @@ public partial class ChannelView : UserControl
     }
 
     private IChannelPreviewSource? CurrentPreview => (DataContext as ChannelViewModel)?.Preview;
+
+    private static double Now() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
     // La superficie cambió su ImageSource (cayó a CPU porque la GPU no se recuperó): re-apunta el control.
     private void OnSurfaceImageSourceChanged(object? sender, EventArgs e)
@@ -51,10 +68,21 @@ public partial class ChannelView : UserControl
         // Desengancha la fuente anterior y libera su superficie.
         if (_preview is not null) _preview.FrameReady -= OnFrameReady;
         if (_surface is not null) _surface.ImageSourceChanged -= OnSurfaceImageSourceChanged;
+        StopRendering();
         _surface?.Dispose();
         _surface = null;
-        _pending = null;           // descarta cualquier frame en cola de la fuente anterior
-        _preview = preview;
+        lock (_sync)
+        {
+            // Los frames en cola son de la fuente anterior (quizá de otro tamaño): fuera, con sus búferes.
+            _scheduler.Clear(_recycled);
+            _recycled.Clear();
+            _free.Clear();
+            _preview = preview;
+            _width = preview?.FrameWidth ?? 0;
+            _height = preview?.FrameHeight ?? 0;
+            _frameBytes = _width * 4 * _height;
+            _stats.Close(Now(), _scheduler.LatePushes, _scheduler.Skipped);
+        }
 
         if (preview is null) { PreviewImage.Source = null; return; }
 
@@ -63,26 +91,97 @@ public partial class ChannelView : UserControl
         PreviewImage.Source = surface.ImageSource;
         surface.ImageSourceChanged += OnSurfaceImageSourceChanged; // p. ej. si la GPU no vuelve y cae a CPU
         preview.FrameReady += OnFrameReady;
+        _nextReport = Now() + 30;
+        StartRendering();
         Serilog.Log.Information("Preview canal {Key}: render {Mode}.",
             (DataContext as ChannelViewModel)?.Key, surface.IsGpu ? "D3D11/D3DImage (GPU)" : "WriteableBitmap (CPU)");
     }
 
-    // Llega en un hilo de fondo (~25 fps). Patrón "último frame": si la UI no ha consumido el
-    // anterior, lo sustituimos y descartamos el obsoleto, evitando acumular trabajo en el Dispatcher.
+    private void StartRendering()
+    {
+        if (_rendering) return;
+        CompositionTarget.Rendering += OnRendering;
+        _rendering = true;
+    }
+
+    // CompositionTarget.Rendering es un evento ESTÁTICO: sin desuscribirse, la vista no se liberaría nunca.
+    private void StopRendering()
+    {
+        if (!_rendering) return;
+        CompositionTarget.Rendering -= OnRendering;
+        _rendering = false;
+    }
+
+    // Llega en un hilo de fondo, a la cadencia de la fuente (con su jitter): se copia el frame y se le da turno.
     private void OnFrameReady(object? sender, PreviewFrame frame)
     {
-        // Un FrameReady YA en curso (invocación capturada antes del `-=` de BindPreview) puede llegar tras un
-        // rebind: descártalo si NO viene de la fuente vigente, para no empujar un frame de la fuente VIEJA (quizá
-        // de otra resolución) a la superficie NUEVA —lo que dispararía un falso «GPU perdido» o una excepción. (N25.)
-        if (!ReferenceEquals(sender, _preview)) return;
-        _pending = frame;
-        if (_renderQueued) return;
-        _renderQueued = true;
-        Dispatcher.BeginInvoke(() =>
+        double now = Now(); // la llegada: antes de copiar
+        byte[]? buffer;
+        int bytes;
+        lock (_sync)
         {
-            _renderQueued = false;
-            var latest = _pending;
-            if (latest is not null) _surface?.Push(latest);
-        });
+            // Un FrameReady YA en curso (invocación capturada antes del `-=` de BindPreview) puede llegar tras un rebind:
+            // se descarta si NO viene de la fuente vigente (quizá de otra resolución). (N25.)
+            if (!ReferenceEquals(sender, _preview) || frame.Width != _width || frame.Height != _height) return;
+            bytes = _frameBytes;
+            buffer = _free.Count > 0 ? _free.Pop() : null;
+        }
+        if (frame.Bgra.Length < bytes) return;
+        buffer ??= new byte[bytes];
+        Buffer.BlockCopy(frame.Bgra, 0, buffer, 0, bytes);
+        lock (_sync)
+        {
+            if (!ReferenceEquals(sender, _preview) || buffer.Length != _frameBytes) return; // rebind durante la copia
+            _scheduler.Enqueue(buffer, now, _recycled);
+            _stats.OnArrival(now, _scheduler.LastLead);
+            Recycle();
+        }
+    }
+
+    // Un refresco de pantalla (hilo de UI): se sube el frame cuyo turno llegó, si lo hay.
+    private void OnRendering(object? sender, EventArgs e)
+    {
+        var surface = _surface;
+        if (surface is null) return;
+        // WPF puede elevar Rendering más de una vez para el mismo fotograma (mismo RenderingTime): subir dos frames en un
+        // mismo refresco dejaría uno sin verse.
+        if (e is RenderingEventArgs r)
+        {
+            if (r.RenderingTime == _lastRenderingTime) return;
+            _lastRenderingTime = r.RenderingTime;
+        }
+        double now = Now();
+        byte[]? show;
+        lock (_sync)
+        {
+            show = _scheduler.Take(now, _recycled);
+            _stats.OnTick(now, show is not null);
+            Recycle();
+        }
+        if (show is not null)
+        {
+            // La superficie COPIA el frame (WritePixels / textura de subida): después el búfer se puede reutilizar.
+            try { surface.Push(new PreviewFrame(show, _width, _height, _width * 4)); }
+            finally { lock (_sync) { if (show.Length == _frameBytes) _free.Push(show); } }
+        }
+        if (now >= _nextReport) ReportPresentation(now, surface.IsGpu);
+    }
+
+    private void Recycle()
+    {
+        foreach (var b in _recycled)
+            if (b.Length == _frameBytes) _free.Push(b);
+        _recycled.Clear();
+    }
+
+    private void ReportPresentation(double now, bool gpu)
+    {
+        int interval = PreviewPresentationSettings.DiagnosticsIntervalSeconds;
+        _nextReport = interval > 0 ? now + interval : double.MaxValue;
+        PreviewPresentationReport? r;
+        lock (_sync) r = _stats.Close(now, _scheduler.LatePushes, _scheduler.Skipped);
+        if (interval <= 0 || r is not { } x) return;
+        Serilog.Log.Information(string.Create(CultureInfo.InvariantCulture,
+            $"Preview canal {(DataContext as ChannelViewModel)?.Key}: fuente {x.SourceFps:0.00} fps, pantalla {x.DisplayHz:0.0} Hz, {x.IrregularPercent:0.0} % de cuadros con duración irregular, retardo {x.MedianLeadMs:0} ms (máx {x.MaxLeadMs:0}), {x.Late} tarde, {x.Skipped} sin enseñar, render {(gpu ? "GPU" : "CPU")}."));
     }
 }

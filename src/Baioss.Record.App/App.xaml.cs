@@ -554,6 +554,9 @@ public partial class App : System.Windows.Application
             Serilog.Log.Warning("Cola de escritura de la grabación DESACTIVADA: este FFmpeg no admite -thread_queue_size en las salidas (FFmpeg anterior a la 6). Un disco que tarde en responder congelará el preview y podrá dejar huecos; conviene un FFmpeg 6 o posterior.");
         else if (real)
             Serilog.Log.Information("Cola de escritura de la grabación: {Seconds:0.#} s (Recording:WriteQueueSeconds; 0 = desactivada).", writeQueueSeconds > 0 ? writeQueueSeconds : 0);
+        // Cómo se está viendo cada preview, en el registro (PreviewPresentationSettings): antes de crear las vistas.
+        PreviewPresentationSettings.DiagnosticsIntervalSeconds =
+            Math.Max(0, builder.Configuration.GetValue("Preview:DiagnosticsIntervalSeconds", PreviewPresentationSettings.DiagnosticsIntervalSeconds));
         var mainWindow = app.Services.GetRequiredService<MainWindow>();
         mainWindow.Closing += OnMainWindowClosing; // finaliza las grabaciones ANTES de cerrar la app (N2)
         mainWindow.Show();

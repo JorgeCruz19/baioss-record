@@ -490,6 +490,19 @@ Sí, ese es el objetivo. Cada canal graba de forma independiente.
 **¿Por qué no puedo cambiar la entrada de un canal?**
 Porque está grabando. Detén la grabación y podrás reasignarla.
 
+**¿Por qué el preview no se ve fluido en algún equipo?**
+El preview enseña cada cuadro al ritmo de la señal, sincronizado con los refrescos de la pantalla: retrasa lo que ves
+unos 20–40 ms (la grabación no cambia) para que los cuadros que llegan a trompicones salgan regulares. Si aun así se ve a
+tirones, mira el registro (`logs\`): cada canal escribe cada 5 minutos una línea como «Preview canal A: fuente 29.97 fps,
+pantalla 60.0 Hz, 0.4 % de cuadros con duración irregular, retardo 24 ms…».
+- Si **pantalla** está claramente por debajo de la frecuencia del monitor (45 Hz en uno de 60), es la pantalla la que no
+  llega a sus refrescos, no la señal. Pasa al mirar el equipo por escritorio remoto (RustDesk, AnyDesk…) o en un equipo sin
+  monitor con una pantalla virtual, y el escritorio remoto recorta además la fluidez de lo que llega a tu pantalla.
+  Compruébalo con un monitor conectado al equipo.
+- Si **fuente** está por debajo de la cadencia de la señal, llegan menos cuadros: revisa la señal y la carga del equipo.
+- Un 25 o 50 fps en un monitor de 60 Hz siempre se ve con un leve vaivén (unos cuadros duran dos refrescos y otros tres):
+  es la diferencia entre cadencias, no un fallo.
+
 ---
 
 *Baioss Record — grabación broadcast multicanal. Este manual describe el uso operativo del programa.*

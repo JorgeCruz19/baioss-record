@@ -491,6 +491,20 @@ Yes, that is the whole point. Each channel records independently.
 **Why can't I change a channel's input?**
 Because it is recording. Stop the recording and you will be able to reassign it.
 
+**Why doesn't the preview look smooth on some computer?**
+The preview shows each frame at the signal's cadence, in step with the screen's refreshes: it delays what you see by
+about 20–40 ms (the recording does not change) so that frames arriving in fits and starts come out evenly. If it still
+looks jerky, check the log (`logs\`): every 5 minutes each channel writes a line like "Preview canal A: fuente 29.97 fps,
+pantalla 60.0 Hz, 0.4 % de cuadros con duración irregular, retardo 24 ms…" (the log is always in Spanish: *fuente* is the
+source, *pantalla* the screen).
+- If **pantalla** is clearly below the monitor's refresh rate (45 Hz on a 60 Hz one), the screen is not keeping up with
+  its refreshes, not the signal. It happens when you watch the computer over remote desktop (RustDesk, AnyDesk…) or on a
+  computer without a monitor that uses a virtual display, and the remote desktop also trims the smoothness of what reaches
+  your screen. Check it with a monitor plugged into the computer.
+- If **fuente** is below the signal's frame rate, fewer frames are arriving: check the signal and the computer's load.
+- 25 or 50 fps on a 60 Hz monitor always shows a slight judder (some frames last two refreshes, others three): that is
+  the difference between the two rates, not a fault.
+
 ---
 
 *Baioss Record — multi-channel broadcast recording. This manual describes the operational use of the program.*
