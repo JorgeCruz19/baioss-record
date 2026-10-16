@@ -28,15 +28,35 @@ public sealed class NetworkPreviewContinuityTests
         AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
     };
 
+    /// <summary>¿Conoce este FFmpeg <c>-readrate_catchup</c>? Uno que no la conozca no arrancaría con ella. Se comprueba con un
+    /// proceso de una fracción de segundo, como <see cref="FfmpegLocator.SupportsOutputThreadQueueAsync"/>, y no por la versión.</summary>
+    private static readonly Lazy<bool> AcceptsReadrateCatchup = new(() =>
+    {
+        var psi = new ProcessStartInfo(Path.Combine(TestAssets.FfmpegDir!, "ffmpeg.exe")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in new[] { "-hide_banner", "-loglevel", "error", "-re", "-readrate_catchup", "1", "-f", "lavfi", "-i", "nullsrc=s=16x16:r=25", "-frames:v", "1", "-f", "null", "-" })
+            psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        var output = Task.WhenAll(p.StandardOutput.ReadToEndAsync(), p.StandardError.ReadToEndAsync());
+        if (!p.WaitForExit(15000)) { try { p.Kill(entireProcessTree: true); } catch { /* ya salió */ } return false; }
+        output.Wait();
+        return p.ExitCode == 0;
+    });
+
     /// <summary>Emisor RTMP local (servidor <c>-listen 1</c>); <paramref name="progress"/> recibe el instante de cada bloque de progreso
     /// (uno por segundo): dice si el emisor sigue produciendo o se quedó bloqueado.</summary>
     internal static Process LightSender(int port, Action<string>? progress = null)
     {
         var psi = new ProcessStartInfo(Path.Combine(TestAssets.FfmpegDir!, "ffmpeg.exe")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true };
-        foreach (var a in new[] { "-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.5", "-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-                                  "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "2M", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
-                                  "-f", "flv", "-listen", "1", $"rtmp://127.0.0.1:{port}/live/test" })
-            psi.ArgumentList.Add(a);
+        var args = new List<string> { "-hide_banner", "-nostdin", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.5", "-re" };
+        // Al ritmo del reloj y NUNCA por encima: con -re, FFmpeg 8.0 toma su propio empujón inicial (0,5 s) por un retraso y lee
+        // los primeros ~10 s a 1,05× para «recuperarlo» («Resumed reading at pts 0.000 with rate 1.050 after a lag of 0.500s»).
+        // Medido: ~31,5 fps en vez de 30 justo mientras se mide, y el colchón de preview, que entrega a 30, descartaba lo que
+        // sobraba (7–9 cuadros). -readrate_catchup 1 le quita esa recuperación; el FFmpeg incluido no la hace y va igual.
+        if (AcceptsReadrateCatchup.Value) args.AddRange(new[] { "-readrate_catchup", "1" });
+        args.AddRange(new[] { "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+                              "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "2M", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
+                              "-f", "flv", "-listen", "1", $"rtmp://127.0.0.1:{port}/live/test" });
+        foreach (var a in args) psi.ArgumentList.Add(a);
         var sender = Process.Start(psi)!;
         // En hilos propios (no BeginOutputReadLine): el banco no debe ocupar hilos del pool que el motor necesita.
         ProcessOutput.ReadLines(sender.StandardOutput, l => { if (l.StartsWith("frame=", StringComparison.Ordinal)) progress?.Invoke(l); }, "sender-progress");
