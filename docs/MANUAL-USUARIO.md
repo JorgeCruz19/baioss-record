@@ -33,11 +33,12 @@ del instalador: hay que descargarlo y dejarlo en su carpeta. Es un momento y **s
    - **Sin NVIDIA**, o con una **GeForce GTX 16xx o RTX, Quadro RTX o T400/T600/T1000, RTX A-series** o más nueva: la
      **más reciente**. Para grabar con la NVIDIA (presets NVENC) pide el **driver 610 o posterior**.
    - **GeForce GTX 750, 9xx o 10xx, Quadro M o P, Titan X, Xp o V:** NVIDIA no les da el driver 610, así que descarga
-     **exactamente** la del 12 de marzo de 2026,
-     [`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
-     (archivo `ffmpeg-afcde65-c6e5733-win64-nonfree.7z`, driver 570 o posterior), y no una del 15 de marzo al 6 de abril
-     de 2026: esas pueden grabar MP4 dañados cuando codifica la gráfica Intel. La del 12 de marzo no trae soporte para
-     gráficas AMD.
+     **FFmpeg 8.0**, la versión estable que el mismo autor publica en **ffmpeg-stable-autobuild**: **exactamente** la
+     del 3 de septiembre de 2025,
+     [`2025-09-03-16-39-ae69ef0-8.0`](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0)
+     (archivo `ffmpeg-8.0-ae69ef0-win64-nonfree.7z`, driver 570 o posterior). Si ya tienes la de ffmpeg-autobuild del
+     12 de marzo de 2026, también sirve (aunque no trae soporte para gráficas AMD); pero no uses una de ffmpeg-autobuild
+     del 15 de marzo al 6 de abril de 2026: esas pueden grabar MP4 dañados cuando codifica la gráfica Intel.
 2. Descomprime el archivo (Windows 11 abre los `.7z` con doble clic; en Windows 10 hace falta un programa como 7-Zip,
    <https://www.7-zip.org>) y busca dentro (a veces en una carpeta `bin`) **`ffmpeg.exe`** y **`ffprobe.exe`**.
 3. Copia esos **dos** archivos a la carpeta `tools\ffmpeg\` de la instalación (por defecto
@@ -253,7 +254,7 @@ formato habitual (720p, 1080p y 4K a 25, 29.97, 50, 59.94…). Escribe **NVENC**
 - Solo son **progresivos** (1080p, no 1080i): para grabar entrelazado usa los H.264 normales, MPEG-2, ProRes o DNxHD (los DNxHR son solo progresivos).
 - Si el equipo no tiene NVIDIA o su driver es antiguo, **no pasa nada**: el canal cambia solo a la gráfica Intel/AMD o al
   procesador y sigue grabando, con el aviso «Codificador por GPU no disponible — grabando con codificador alternativo».
-  Con una GTX 750/9xx/10xx, Quadro M/P o Titan X/Xp/V, NVENC necesita la versión de FFmpeg del 12 de marzo de 2026 (ver
+  Con una GTX 750/9xx/10xx, Quadro M/P o Titan X/Xp/V, NVENC necesita FFmpeg 8.0 y no la versión más reciente (ver
   punto 1.1).
 
 **Pistas de audio (solo cuenta con entradas de 8 o 16 canales):** en el editor de un preset, el campo **Pistas de audio**

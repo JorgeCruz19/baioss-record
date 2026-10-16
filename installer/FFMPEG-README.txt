@@ -37,16 +37,17 @@ WHAT YOU HAVE TO DO
    · GeForce GTX 750, 9xx or 10xx, Quadro M... or P... (for example Quadro P400, P620 or
      P2000), Titan X, Xp or V: NVIDIA does not offer driver 610 for them (their last
      driver is the 580 series). With the latest release the program still records, but
-     with the Intel graphics or the processor, and it warns you. Download EXACTLY the
-     release of 12 March 2026 instead, which works with driver 570 or later:
+     with the Intel graphics or the processor, and it warns you. Download FFmpeg 8.0
+     instead, the stable build that the same author publishes in "ffmpeg-stable-autobuild".
+     Get EXACTLY this release, which works with driver 570 or later:
 
-       https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733
-       file: ffmpeg-afcde65-c6e5733-win64-nonfree.7z
+       https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0
+       file: ffmpeg-8.0-ae69ef0-win64-nonfree.7z
 
-     We tested it with a Quadro P400 and driver 582.78. Do not use the releases between
-     15 March and 6 April 2026: they write damaged MP4 files when the Intel graphics does
-     the encoding. This release has no support for AMD graphics: use it only on computers
-     with an NVIDIA card from this list.
+     We tested it with a Quadro P400 and driver 582.78. If you already have the
+     "ffmpeg-autobuild" release of 12 March 2026, it works too (although it has no support
+     for AMD graphics). Do not use the "ffmpeg-autobuild" releases between 15 March and
+     6 April 2026: they write damaged MP4 files when the Intel graphics does the encoding.
 
    · GeForce GTX 600 or 700 (except the 750) and Quadro K...: their last driver (470)
      cannot run NVENC with any of these releases. The program records with the Intel
@@ -84,8 +85,8 @@ WHAT YOU HAVE TO DO
 
    If no error appears, NVENC works. If it says "Driver does not support the required
    nvenc API version. Required: 13.1 Found: 13.0", the build is too new for your driver:
-   update the driver or, if your card is in the second list of step 1, use the release
-   of 12 March 2026.
+   update the driver or, if your card is in the second list of step 1, use FFmpeg 8.0
+   (the release given in that step).
 
 5. Open Baioss Record. If the files were copied correctly the warning is gone and you can
    record normally.

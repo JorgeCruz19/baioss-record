@@ -35,7 +35,8 @@ es perfectamente legal, y es lo que hace todo el mundo que usa FFmpeg con tarjet
 [AnimMouse/ffmpeg-autobuild](https://github.com/AnimMouse/ffmpeg-autobuild/releases) (GitHub, hechas con
 ffmpeg-windows-build-helpers), archivo `ffmpeg-<commit>-<commit>-win64-nonfree.7z`. La variante *nonfree* es la que trae
 `decklink` y `libfdk_aac`; las compilaciones más conocidas (gyan.dev, BtbN) son GPL/LGPL y no traen DeckLink. La de
-`tools\ffmpeg` en desarrollo es la del 2026-06-14 (`git-2026-06-14-b1d2190`).
+`tools\ffmpeg` en desarrollo es la del 2026-06-14 (`git-2026-06-14-b1d2190`). La excepción son las NVIDIA Maxwell, Pascal
+y Volta: para ellas, FFmpeg 8.0 estable, del mismo autor (ver abajo).
 
 **El nivel de API de NVENC lo fija la compilación, no la versión de FFmpeg.** FFmpeg se compila contra las cabeceras
 `nv-codec-headers` de un Video Codec SDK y, al abrir el codificador, exige que el driver admita al menos esa API. Si no la
@@ -57,7 +58,9 @@ admite, el codificador no abre:
 ffmpeg-windows-build-helpers compila la rama principal de nv-codec-headers, que pasó al SDK 13.1 el 2026-06-09 (la
 etiqueta `n13.1.15.0` llegó el 2026-07-14). Por eso las releases de ffmpeg-autobuild **desde la del 2026-06-14 piden
 driver ≥ 610**, y las releases **hasta la del 2026-04-06** (la última anterior; entre ambas no hay ninguna) **se conforman
-con ≥ 570** (de esas, ver abajo cuál usar).
+con ≥ 570** (de esas, ver abajo cuál usar). Las herramientas usan esa misma rama al compilar FFmpeg estable (desde la
+6.1), así que en [AnimMouse/ffmpeg-stable-autobuild](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases) vale
+igual: el SDK lo decide la fecha de la release, no la versión de FFmpeg.
 
 **Maxwell, Pascal y Volta no pasan de la rama R580.** NVIDIA cerró su soporte en esa rama (GeForce GTX 750/9xx/10xx,
 Titan X/Xp/V, Quadro M y P, Quadro GV100), que llega a la API 13.0 de NVENC. Con una compilación de SDK 13.1, NVENC no
@@ -67,26 +70,41 @@ se pierde nada, pero la CPU paga: x264 cuesta unos 4 núcleos lógicos por canal
 posteriores (GTX 16xx, RTX, Quadro RTX y T, RTX A-series, Ada, Blackwell) sí reciben drivers ≥ 610. Kepler (driver 470)
 no abre NVENC con ninguna de estas compilaciones.
 
-**Para un cliente con Maxwell, Pascal o Volta:** exactamente la release
-[`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733),
-archivo `ffmpeg-afcde65-c6e5733-win64-nonfree.7z` (109 841 674 bytes; SHA-256
+**Para un cliente con Maxwell, Pascal o Volta: FFmpeg 8.0 estable**, exactamente la release
+[`2025-09-03-16-39-ae69ef0-8.0`](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0)
+de ffmpeg-stable-autobuild, archivo `ffmpeg-8.0-ae69ef0-win64-nonfree.7z` (109 826 526 bytes; SHA-256
+`7ad859c418b9dc0d954585092d3eb62a51921f63d44946ace1461039e22d7d14`, el que publica GitHub). Es la versión oficial
+`n8.0` (libavcodec 62.11.100) compilada con el SDK 13.0, así que NVENC abre con driver ≥ 570 (probado con el 582.78). Su
+`-buildconf` es idéntico al de la del 2026-06-14 (decklink, nonfree, fdk-aac, nvenc/nvdec, AMF, libmfx/QSV, libsrt,
+x264/x265, svt-av1, dav1d, zimg, freetype/harfbuzz) y, como ella, es *nonfree*: la descarga el cliente, no se
+redistribuye. Es la última release de ese proyecto a 2026-10-16, pero está hecho para publicar otra cuando cambian la
+versión de FFmpeg o las herramientas, y una compilada después del 2026-06-09 traería el SDK 13.1 y pediría ≥ 610: de ahí
+el «exactamente».
+
+**La del 2026-03-12 también sirve** (era la recomendada antes): release
+[`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
+de ffmpeg-autobuild, archivo `ffmpeg-afcde65-c6e5733-win64-nonfree.7z` (109 841 674 bytes; SHA-256
 `5fc564b337a0facd398eb5d143c21f91b3b51fc80d06d94b8fb25dfed08fa797`, el que publica GitHub). Es FFmpeg
-`git-2026-03-12-afcde65` con el SDK 13.0. Frente a la del 2026-06-14, lo único que cambia en lo que usa la app es que **no
-trae AMF** (`--disable-amf`, sin `h264_amf`/`hevc_amf`): no sirve para equipos con gráfica AMD. El resto de `-buildconf`
-es idéntico (decklink, nonfree, fdk-aac, libmfx/QSV, nvenc/nvdec, x264/x265, libsrt).
+`git-2026-03-12-afcde65`, también con el SDK 13.0 y probada en el mismo equipo, pero **no trae AMF** (`--disable-amf`,
+sin `h264_amf`/`hevc_amf`): no sirve para equipos con gráfica AMD. El resto de `-buildconf` es idéntico. Un equipo que ya
+la tenga puede quedarse con ella.
 
-**Las releases del 2026-03-15 al 2026-04-06 no:** también abren NVENC con driver 58x, pero llevan un fallo de FFmpeg que
-deja **ilegibles los MP4/MOV de QuickSync**. El commit `6bc257e` («avformat/nal: remove trailing zeroes from NALUs»,
-2026-03-15) quita los ceros finales de cada NAL al escribirla, pero sigue contando su tamaño original. El muxer MP4 suma
-ese tamaño al de `mdat`, así que el archivo anuncia un `mdat` mayor que lo escrito: ffprobe salta más allá del final y
-dice «moov atom not found». Lo arregló `2948acd` el 2026-05-09 (issue #23010), y ya está en las de junio. Le pasa a lo
-que acaba sus NAL en ceros, como el relleno del CBR de QuickSync con imagen fija o negro; en lo medido, NVENC y x264 no lo
-provocan. Medido con la del 2026-04-06: un negro de 8 s a 16 Mbps con `h264_qsv` o `hevc_qsv` no se lee; con la del
-2026-03-12 y con la de junio, sí. Con DeckLink, la grabación por QuickSync (la degradación de un canal NVENC sin sesión libre) salió con 52 KB y sin
-índice, y la alarma «grabación sin verificar» lo avisó. Por eso, para Pascal, la del 2026-03-12 y no una posterior.
+**Las releases de ffmpeg-autobuild del 2026-03-15 al 2026-04-06 no:** también abren NVENC con driver 58x, pero llevan
+un fallo de FFmpeg que deja **ilegibles los MP4/MOV de QuickSync**. El commit `6bc257e` («avformat/nal: remove trailing
+zeroes from NALUs», 2026-03-15) quita los ceros finales de cada NAL al escribirla, pero sigue contando su tamaño original.
+El muxer MP4 suma ese tamaño al de `mdat`, así que el archivo anuncia un `mdat` mayor que lo escrito: ffprobe salta más
+allá del final y dice «moov atom not found». Lo arregló `2948acd` el 2026-05-09 (issue #23010), y ya está en las de
+junio; FFmpeg 8.0 es anterior al fallo y no lo lleva. Le pasa a lo que acaba sus NAL en ceros, como el relleno del CBR
+de QuickSync con imagen fija o negro; en lo medido, NVENC y x264 no lo provocan. Medido con la del 2026-04-06: un negro
+de 8 s a 16 Mbps con `h264_qsv` o `hevc_qsv` no se lee, y con DeckLink la grabación por QuickSync (la degradación de un
+canal NVENC sin sesión libre) salió con 52 KB y sin índice (la alarma «grabación sin verificar» lo avisó). Con la del
+2026-03-12 y con la de junio, ese negro se lee; con la 8.0 se leen los 6 MP4/MOV sintéticos de QuickSync con negro o
+imagen fija, y también la carta fija real de LiveU llegada por la DeckLink. Por eso, para Pascal, la 8.0 o la del
+2026-03-12, y no una release de ffmpeg-autobuild posterior.
 
-**Verificada el 2026-10-16** en el equipo de pruebas DeckLink (Quadro P400 con driver 582.78, Core i7-8700, DeckLink Duo 2
-con dos señales 1080i59.94 de emisión) con `DecklinkHardwareTests`, que monta el mismo cableado que la app:
+**Verificadas las dos el 2026-10-16** en el equipo de pruebas DeckLink (Quadro P400 con driver 582.78, Core i7-8700,
+DeckLink Duo 2 con dos señales 1080i59.94 de emisión) con `DecklinkHardwareTests`, que monta el mismo cableado que la app.
+Las cifras de los primeros puntos son de la del 2026-03-12; el último resume la pasada con la 8.0:
 
 - **Los 16 presets NVENC de fábrica** (H.264 a 720p, 1080p y 2160p; HEVC a 1080p y 2160p) graban de verdad con NVENC: el
   archivo dice `h264_nvenc` o `hevc_nvenc` y no salta la alarma *EncoderFallback*. La cadencia es exacta (p. ej. 926 cuadros
@@ -101,6 +119,13 @@ con dos señales 1080i59.94 de emisión) con `DecklinkHardwareTests`, que monta 
   P400 al 20–57 %. Lo que limita es la CPU, ver `REQUISITOS.md`.
 - **Sesiones agotadas:** con las 8 ocupadas, el canal que no encuentra sesión degrada solo a `h264_qsv`, con la alarma, y
   su archivo es válido; el que la tenía sigue en NVENC.
+- **Con FFmpeg 8.0**, la batería entera: 43 de 43 (solo queda fuera la grabación larga, que se lanza aparte). Sus 21
+  archivos NVENC (13 `h264_nvenc` y 8 `hevc_nvenc`: los 16 presets, los dos pares de canales a la vez y el canal que
+  conserva su sesión cuando se agotan) se codificaron en la GPU, en tiempo real y sin descartes, 4K 2160p50 y 2160p59.94
+  incluidos; con las sesiones agotadas, el otro canal degradó a QuickSync con su alarma. En .NET 8.0.32, unitarias 969 de
+  969 e integración 105 de 109: las cuatro que fallan son del banco de pruebas, no de la app (con la 8.0, el `out_time`
+  de `-progress` va unos 1,2 s por detrás del reloj y lo alcanza al cerrar, y el emisor RTMP del test, con `-re`, solo
+  se recupera a unos 32 fps).
 
 **Comprobar una compilación** (es lo mismo que sondea la app al arrancar):
 
@@ -109,6 +134,8 @@ ffmpeg -hide_banner -f lavfi -i nullsrc -frames:v 1 -c:v h264_nvenc -f null -
 ```
 
 Sin errores, NVENC abre. «Required: 13.1 Found: 13.0» quiere decir que la compilación es demasiado nueva para el driver.
+Con `-v verbose` sale además «Loaded Nvenc version 13.0»: es la API que admite el **driver** (13.0 en la rama R580), no
+la de la compilación, y lo imprimen todas, también la que luego falla.
 
 ### NVENC de Pascal: lo que no hace (y la app no le pide)
 

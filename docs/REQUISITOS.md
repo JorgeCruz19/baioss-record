@@ -25,16 +25,20 @@ prudentes.
   `Baioss.Record.App.runtimeconfig.json`) y el runtime de NDI (`Processing.NDI.Lib.x64.dll`).
 - **FFmpeg lo descarga el cliente** (la compilación con DeckLink no es redistribuible, ver `FFMPEG.md`): la de
   [ffmpeg-autobuild](https://github.com/AnimMouse/ffmpeg-autobuild/releases), archivo `…-win64-nonfree.7z` (DeckLink,
-  libsrt, NVENC/QSV/AMF), en `tools\ffmpeg`. Las instrucciones están en `FFMPEG-LEEME.txt`, en esa carpeta.
+  libsrt, NVENC/QSV/AMF), o FFmpeg 8.0 estable con una NVIDIA Maxwell, Pascal o Volta (ver abajo), en `tools\ffmpeg`.
+  Las instrucciones están en `FFMPEG-LEEME.txt`, en esa carpeta.
 - **Driver NVIDIA** si se graba con NVENC. Lo que pide lo fija la compilación de FFmpeg, no la aplicación:
   - Las releases de ffmpeg-autobuild **desde la del 2026-06-14** usan el SDK de vídeo 13.1 y piden **driver ≥ 610**.
     Sirven para Turing y posteriores (GTX 16xx, RTX, Quadro RTX y T, RTX A-series…), que reciben ese driver.
   - **Maxwell, Pascal y Volta** (GTX 750/9xx/10xx, Titan X/Xp/V, Quadro M y P) se quedan en la rama de drivers **R580**
-    (58x.xx), que llega a la API 13.0 de NVENC. Necesitan exactamente la release del **2026-03-12**
-    (`ffmpeg-afcde65-c6e5733-win64-nonfree.7z`, SDK 13.0, driver ≥ 570), probada en un Quadro P400 con el 582.78. Las
-    del 2026-03-15 al 2026-04-06 también abren NVENC, pero dejan ilegibles los MP4/MOV de QuickSync (ver `FFMPEG.md`).
-    Esa release no trae AMF: no sirve para gráficas AMD.
-  - Kepler (GTX 600/700 salvo la 750, Quadro K; driver 470) no abre NVENC con ninguna de las dos.
+    (58x.xx), que llega a la API 13.0 de NVENC. Necesitan una compilación con el SDK 13.0 (driver ≥ 570): **FFmpeg 8.0**
+    estable, exactamente la release del 2025-09-03 de
+    [ffmpeg-stable-autobuild](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0)
+    (`ffmpeg-8.0-ae69ef0-win64-nonfree.7z`), con las mismas opciones que la de `tools\ffmpeg`, AMF incluido; probada en
+    un Quadro P400 con el 582.78. También sirve la release de ffmpeg-autobuild del **2026-03-12**
+    (`ffmpeg-afcde65-c6e5733-win64-nonfree.7z`), que no trae AMF. Las de ffmpeg-autobuild del 2026-03-15 al 2026-04-06
+    también abren NVENC, pero dejan ilegibles los MP4/MOV de QuickSync (ver `FFMPEG.md`).
+  - Kepler (GTX 600/700 salvo la 750, Quadro K; driver 470) no abre NVENC con ninguna de ellas.
   - Con un driver que no llega, NVENC no abre («Required: 13.1 Found: 13.0»): el canal degrada solo a QSV → AMF → CPU y
     avisa, y la CPU paga la codificación.
 - **Sesiones NVENC:** las GeForce y las Quadro de entrada admiten **8 a la vez en todo el equipo** con driver ≥ 551.76 (con
@@ -92,10 +96,11 @@ de 5 s, finalización de cada segmento y un clip cada 4 s durante dos minutos, s
 - **NVENC** es lo que permite 4–8 canales 1080p con CPU modesta: una GTX 1650 Ti (**referencia**) graba 1080p H.264 a
   8 Mbps con la CPU al mínimo. HEVC y 4K cargan más el codificador; un motor NVENC de Turing/Ampere da para varios
   canales 1080p30 H.264. Para 8 canales 1080p50 o 4K, RTX de gama alta o RTX A-series.
-- **Pascal también sirve**, con la compilación de FFmpeg del 2026-03-12 (ver Software). **Medido** en un Quadro P400
-  (Pascal de entrada, 2 GB): los 16 presets NVENC de fábrica graban en tiempo real desde una DeckLink 1080i59.94, 4K
-  incluido; dos canales a la vez ocupan el 20–57 % de su codificador y unos 70 MB de memoria de vídeo por sesión 1080p.
-  Límites de Pascal que la aplicación ya respeta: sin B-frames en HEVC y sin AV1, y 8 sesiones por equipo.
+- **Pascal también sirve**, con FFmpeg 8.0 estable (o la release de ffmpeg-autobuild del 2026-03-12; ver Software).
+  **Medido** en un Quadro P400 (Pascal de entrada, 2 GB), con las dos: los 16 presets NVENC de fábrica graban en tiempo
+  real desde una DeckLink 1080i59.94, 4K incluido, y dos canales a la vez no pierden nada (con la del 2026-03-12 ocupaban
+  el 20–57 % de su codificador y unos 70 MB de memoria de vídeo por sesión 1080p). Límites de Pascal que la aplicación
+  ya respeta: sin B-frames en HEVC y sin AV1, y 8 sesiones por equipo.
 - El clip en caliente, la finalización, el colchón de preview y el relé de red **no usan la GPU**.
 - Sin NVIDIA, la aplicación usa Intel Quick Sync (QSV) o AMD AMF si los presets lo piden, y si no, x264 por CPU.
 
@@ -172,7 +177,7 @@ Recomendaciones:
 | Uso | CPU | GPU | RAM | Disco de grabación | Notas |
 |---|---|---|---|---|---|
 | 1 canal SRT/RTMP 1080p, MP4 8–12 Mbps | Core i5 / Ryzen 5 (4 núcleos) | GTX 1650 o x264 | 8 GB | Disco duro CMR dedicado o SSD SATA | Colchón de preview si el servidor va a ráfagas |
-| 2 canales SDI 1080i/p, MP4 NVENC 20 Mbps | Core i5 / Ryzen 5; 6 núcleos / 12 hilos si la señal es 1080i y el preset 1080p50/59.94 | GTX 1650 Ti (o Pascal con la compilación del 2026-03-12) | 16 GB | Disco duro CMR 7200 rpm dedicado | CPU y GPU del equipo de referencia; con 1080i el desentrelazado va por CPU (medido en el equipo DeckLink) |
+| 2 canales SDI 1080i/p, MP4 NVENC 20 Mbps | Core i5 / Ryzen 5; 6 núcleos / 12 hilos si la señal es 1080i y el preset 1080p50/59.94 | GTX 1650 Ti (o Pascal con FFmpeg 8.0 estable) | 16 GB | Disco duro CMR 7200 rpm dedicado | CPU y GPU del equipo de referencia; con 1080i el desentrelazado va por CPU (medido en el equipo DeckLink) |
 | 4 canales mixtos (SDI + NDI + SRT), MP4 NVENC | Core i7 / Ryzen 7 (8 núcleos) | RTX 3060 o superior | 16–32 GB | Disco duro CMR 7200 rpm dedicado; SSD si los segmentos son cortos | 2,5 GbE si hay varias NDI |
 | 8 canales 1080p50, MP4/MXF 50 Mbps | Core i9 / Ryzen 9 / Xeon (12–16 núcleos) | RTX 4070 o RTX A4000 | 32 GB | NVMe ≥ 2 TB o RAID de discos CMR | 50 MB/s de escritura continua más finalizaciones; 10 GbE con NDI |
 | 24/7 con programación y retención | Como el escenario correspondiente | — | +8 GB | Un 20 % de margen de espacio | SAI, NTP, horas activas de Windows, optimización de unidades fuera del horario, disco de sistema aparte |
@@ -192,9 +197,10 @@ Recomendaciones:
 - Dell Precision 3930 Rack: Intel Core i7-8700 (6 núcleos / 12 hilos), 8 GB de RAM, un solo SSD, Windows 11 Pro.
 - NVIDIA Quadro P400 (Pascal, 2 GB, driver 582.78 de la rama R580) e Intel UHD Graphics 630 (QuickSync).
 - Blackmagic DeckLink Duo 2 (Desktop Video 16.4) con dos señales 1080i59.94 de emisión.
-- FFmpeg: la release de ffmpeg-autobuild del 2026-03-12 para NVENC (con la de junio, NVENC no abre con este driver).
-- Resultados: los 16 presets NVENC en tiempo real, dos canales NVENC a la vez y la degradación a QuickSync con las sesiones
-  agotadas (ver `FFMPEG.md`); cifras de CPU por canal en «CPU».
+- FFmpeg para NVENC: 8.0 estable de ffmpeg-stable-autobuild y la release de ffmpeg-autobuild del 2026-03-12 (con la de
+  junio, NVENC no abre con este driver).
+- Resultados, con las dos: los 16 presets NVENC en tiempo real, dos canales NVENC a la vez y la degradación a QuickSync
+  con las sesiones agotadas (ver `FFMPEG.md`); cifras de CPU por canal en «CPU».
 
 ## Qué NO cubre
 

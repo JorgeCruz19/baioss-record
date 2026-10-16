@@ -33,11 +33,13 @@ the installer: it has to be downloaded and left in its folder. It takes a moment
    - **No NVIDIA card**, or a **GeForce GTX 16xx or RTX, Quadro RTX or T400/T600/T1000, RTX A-series** or newer: the
      **latest** release. To record with the NVIDIA card (NVENC presets) it needs **driver 610 or later**.
    - **GeForce GTX 750, 9xx or 10xx, Quadro M or P, Titan X, Xp or V:** NVIDIA does not offer driver 610 for them, so
-     download **exactly** the release of 12 March 2026,
-     [`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
-     (file `ffmpeg-afcde65-c6e5733-win64-nonfree.7z`, driver 570 or later), and not one from 15 March to 6 April 2026:
-     those can write damaged MP4 files when the Intel graphics does the encoding. The 12 March release has no support
-     for AMD graphics.
+     download **FFmpeg 8.0**, the stable version that the same author publishes in **ffmpeg-stable-autobuild**:
+     **exactly** the release of 3 September 2025,
+     [`2025-09-03-16-39-ae69ef0-8.0`](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0)
+     (file `ffmpeg-8.0-ae69ef0-win64-nonfree.7z`, driver 570 or later). If you already have the ffmpeg-autobuild
+     release of 12 March 2026, it works too (although it has no support for AMD graphics); but do not use an
+     ffmpeg-autobuild release from 15 March to 6 April 2026: those can write damaged MP4 files when the Intel graphics
+     does the encoding.
 2. Unzip the file (Windows 11 opens `.7z` files with a double click; on Windows 10 you need a program such as 7-Zip,
    <https://www.7-zip.org>) and look inside (sometimes in a `bin` folder) for **`ffmpeg.exe`** and **`ffprobe.exe`**.
 3. Copy those **two** files into the `tools\ffmpeg\` folder of the installation (by default
@@ -253,8 +255,8 @@ each common format (720p, 1080p and 4K at 25, 29.97, 50, 59.94…). Type **NVENC
 - They are **progressive only** (1080p, not 1080i): to record interlaced, use the regular H.264, MPEG-2, ProRes or DNxHD ones (DNxHR ones are progressive only).
 - If the machine has no NVIDIA card or its driver is old, **nothing breaks**: the channel switches by itself to the
   Intel/AMD graphics or to the processor and keeps recording, showing "GPU encoder unavailable — recording with a
-  fallback encoder". With a GTX 750/9xx/10xx, Quadro M/P or Titan X/Xp/V, NVENC needs the FFmpeg release of 12 March
-  2026 (see section 1.1).
+  fallback encoder". With a GTX 750/9xx/10xx, Quadro M/P or Titan X/Xp/V, NVENC needs FFmpeg 8.0 rather than the
+  latest release (see section 1.1).
 
 **Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
 how the pairs chosen on the input (see section 3) are stored:

@@ -37,16 +37,17 @@ QUÉ TIENES QUE HACER
    · GeForce GTX 750, 9xx o 10xx, Quadro M... o P... (por ejemplo Quadro P400, P620 o
      P2000), Titan X, Xp o V: NVIDIA no les da el driver 610 (su último driver es el de la
      serie 580). Con la versión más reciente el programa graba igual, pero con la gráfica
-     Intel o con el procesador, y avisa. Descarga en su lugar EXACTAMENTE la versión del
-     12 de marzo de 2026, que funciona con el driver 570 o posterior:
+     Intel o con el procesador, y avisa. Descarga en su lugar FFmpeg 8.0, la versión
+     estable que el mismo autor publica en "ffmpeg-stable-autobuild". EXACTAMENTE esta,
+     que funciona con el driver 570 o posterior:
 
-       https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733
-       archivo: ffmpeg-afcde65-c6e5733-win64-nonfree.7z
+       https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases/tag/2025-09-03-16-39-ae69ef0-8.0
+       archivo: ffmpeg-8.0-ae69ef0-win64-nonfree.7z
 
-     La hemos probado con un Quadro P400 y el driver 582.78. No uses las versiones de
-     entre el 15 de marzo y el 6 de abril de 2026: graban archivos MP4 dañados cuando
-     codifica la gráfica Intel. Esta versión no trae soporte para gráficas AMD: úsala solo
-     en equipos con una NVIDIA de esa lista.
+     La hemos probado con un Quadro P400 y el driver 582.78. Si ya tienes la versión de
+     "ffmpeg-autobuild" del 12 de marzo de 2026, también sirve (aunque no trae soporte
+     para gráficas AMD). No uses las de "ffmpeg-autobuild" de entre el 15 de marzo y el
+     6 de abril de 2026: graban archivos MP4 dañados cuando codifica la gráfica Intel.
 
    · GeForce GTX 600 o 700 (salvo la 750) y Quadro K...: su último driver (el 470) no
      sirve para NVENC con ninguna de estas versiones. El programa graba con la gráfica
@@ -85,7 +86,7 @@ QUÉ TIENES QUE HACER
    Si no aparece ningún error, NVENC funciona. Si dice "Driver does not support the
    required nvenc API version. Required: 13.1 Found: 13.0", la compilación es demasiado
    nueva para tu driver: actualiza el driver o, si tu tarjeta es de la segunda lista del
-   paso 1, usa la versión del 12 de marzo de 2026.
+   paso 1, usa FFmpeg 8.0 (la versión que indica ese paso).
 
 5. Abre Baioss Record. Si los archivos están bien copiados, ya no aparecerá el aviso y podrás
    grabar con normalidad.
