@@ -582,6 +582,60 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
         profile.ScanType = presetScan;
         Assert.DoesNotContain("bwdif", BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile));
+        // …ni el scale sin tamaño que acompaña a bwdif: a resolución nativa la rama sigue sin escalar.
+        profile.TargetResolution = null;
+        Assert.DoesNotContain("scale", RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile)));
+    }
+
+    /// <summary>Los filtros de la rama de grabación, en orden: «;[vrec]a,b,c[vmain]» → a, b, c.</summary>
+    private static string[] RecordChain(string joined)
+    {
+        int start = joined.IndexOf(";[vrec]", StringComparison.Ordinal) + ";[vrec]".Length;
+        return joined[start..joined.IndexOf("[vmain]", start, StringComparison.Ordinal)].Split(',');
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.H264x264, "yuv420p")]
+    [InlineData(VideoCodec.H265x265, "yuv420p")]
+    [InlineData(VideoCodec.Mpeg2Video, "yuv420p")]
+    [InlineData(VideoCodec.HevcNvenc, "nv12")] // el perfil por defecto: HEVC NVENC a resolución nativa
+    public void BuildLive_InterlacedSignal_PresetWithoutFixedSize_ConvertsAfterDeinterlacing(VideoCodec codec, string encoderFormat)
+    {
+        // Con bwdif seguido directamente del format= final, FFmpeg convertía la fuente (uyvy422 de la DeckLink) a 4:2:0 ANTES
+        // de desentrelazar: el croma de los dos campos se mezclaba en una franja de color en cada borde que se mueve. El scale
+        // sin tamaño hace la conversión detrás de bwdif.
+        var profile = Progressive(codec, FrameRate.P2997);
+        profile.TargetResolution = null;
+        var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile);
+        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity=tff:deint=all,scale,format={encoderFormat}[vmain]", joined);
+    }
+
+    [Fact]
+    public void BuildLive_InterlacedSignal_EveryProgressiveCatalogPreset_ConvertsOnlyAfterDeinterlacing()
+    {
+        // bwdif (y drawtext) salen en el formato en que entran: el filtro que sigue a bwdif tiene que ser un scale, con el
+        // tamaño del preset o sin tamaño, para que la conversión al formato del encoder ocurra DESPUÉS de desentrelazar.
+        // Cada preset progresivo del catálogo, con su tamaño y a resolución nativa, con el timecode quemado.
+        var presets = Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns()
+            .Select(p => p.ToProfile())
+            .Where(p => !p.AudioOnly && p.ScanType is ScanType.Progressive)
+            .ToList();
+        Assert.NotEmpty(presets);
+
+        foreach (var preset in presets)
+        {
+            foreach (bool nativeSize in new[] { false, true })
+            {
+                var profile = preset.Clone();
+                if (nativeSize) profile.TargetResolution = null;
+                profile.BurnTimecode = true;
+                var chain = RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile));
+                string why = $"{preset.Name}{(nativeSize ? " (nativa)" : "")}: {string.Join(',', chain)}";
+                Assert.True(chain[0].StartsWith("bwdif=", StringComparison.Ordinal), why);
+                Assert.True(chain[1] == "scale" || chain[1].StartsWith("scale=", StringComparison.Ordinal), why);
+                Assert.True(chain[^1].StartsWith("format=", StringComparison.Ordinal), why);
+            }
+        }
     }
 
     [Fact]

@@ -273,9 +273,19 @@ public sealed class FfmpegArgumentBuilder
             // Bifurca el vídeo: una rama a grabación (con su escala/escaneo/burn-in), otra a preview.
             var recChain = new List<string>();
             // Desentrelazar ANTES de escalar: escalar en vertical cuadros con dos campos entretejidos los mezcla.
-            if (DeinterlaceFilter(source.CurrentSignal, profile) is { } deinterlace) recChain.Add(deinterlace);
+            string? deinterlace = DeinterlaceFilter(source.CurrentSignal, profile);
+            if (deinterlace is not null) recChain.Add(deinterlace);
             if (profile.TargetResolution is { } r)
                 recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
+            // …y convertir al formato del encoder DESPUÉS de bwdif, también sin tamaño fijo. bwdif sale en el formato en que
+            // entra: sin un scale detrás, el format= final se lo impone y FFmpeg convierte la fuente ANTES de desentrelazar. Con
+            // la DeckLink (uyvy422) y un destino 4:2:0, el croma de los dos campos se promediaba: una franja de color tan ancha
+            // como el movimiento entre campos en cada borde que se mueve (medido: 26 px a 1500 px/s; croma a 32 dB de PSNR, 56
+            // con el scale). Un scale sin tamaño deja a bwdif en el submuestreo de la fuente (yuv422p desde uyvy422, yuv420p
+            // desde un H.264 4:2:0 de red, sin tocarlo) y hace él la conversión; si no hay nada que convertir, no hace nada.
+            // (Un format=yuv422p fijo delante de bwdif no sirve: a una fuente 4:2:0 le mezclaría los campos al subirla a 4:2:2.)
+            else if (deinterlace is not null)
+                recChain.Add("scale");
             if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
             else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
             if (profile.BurnTimecode)
