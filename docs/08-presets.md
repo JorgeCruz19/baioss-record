@@ -85,9 +85,9 @@ misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); 
 - **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.
 - **Driver:** lo fija la compilación de FFmpeg, que descarga el cliente (no va en el instalador). Las de SDK 13.1
   (ffmpeg-autobuild desde la del 2026-06-14, como la de `tools\ffmpeg`) piden **≥ 610**, que Turing y posteriores sí
-  reciben. Maxwell, Pascal y Volta no pasan de la rama R580: usan la del 2026-03-12 (SDK 13.0, **≥ 570**) y no una del
-  2026-03-15 al 2026-04-06, que con imagen fija o negro deja ilegibles los MP4/MOV de QuickSync. Ver
-  [FFMPEG.md](FFMPEG.md).
+  reciben. Maxwell, Pascal y Volta no pasan de la rama R580: usan FFmpeg 8.0 estable, de ffmpeg-stable-autobuild (SDK
+  13.0, **≥ 570**; también sirve la de ffmpeg-autobuild del 2026-03-12), y no una de ffmpeg-autobuild del 2026-03-15 al
+  2026-04-06, que con imagen fija o negro deja ilegibles los MP4/MOV de QuickSync. Ver [FFMPEG.md](FFMPEG.md).
 - **Sin NVIDIA**, o con un driver más antiguo que el que exige la compilación de FFmpeg, el canal **degrada solo**
   (`EncoderFallbackChain`, alarma *EncoderFallback*): H.264 → QuickSync → AMF → CPU (libx264); HEVC → QuickSync
   (`hevc_qsv`) → CPU (libx265). El escalón QuickSync de HEVC importa: libx265 no llega a 1080p29.97 en tiempo real en un
