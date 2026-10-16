@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
@@ -28,6 +29,8 @@ namespace Baioss.Record.IntegrationTests;
 ///   <item><c>BAIOSS_HW_OUT</c>: carpeta donde CONSERVAR las grabaciones (si no, se borran).</item>
 ///   <item><c>BAIOSS_HW_LONG_MINUTES</c>: minutos de la grabación larga (deriva A/V); sin ella, se omite.</item>
 /// </list>
+/// Las de NVENC se omiten además si este FFmpeg no abre NVENC en el equipo (sin GPU NVIDIA, o con un SDK de NVENC más nuevo
+/// que el driver).
 /// </summary>
 public sealed class DecklinkHardwareTests
 {
@@ -243,9 +246,10 @@ public sealed class DecklinkHardwareTests
             .Where(v => !double.IsNaN(v)).OrderBy(v => v).ToArray();
     }
 
-    /// <summary>Cuadros que <c>idet</c> ve entrelazados (TFF+BFF) y progresivos en los primeros segundos del archivo. La
-    /// detección por cuadro, no la «multi»: esa arrastra estado y en escenas oscuras y ruidosas da falsos positivos al inicio.</summary>
-    private static async Task<(int Interlaced, int Progressive)> DetectInterlaceAsync(string file)
+    /// <summary>Cuadros que <c>idet</c> ve entrelazados (TFF+BFF), progresivos e indeterminados en los primeros segundos del
+    /// archivo. La detección por cuadro, no la «multi»: esa arrastra estado y en escenas oscuras y ruidosas da falsos positivos al
+    /// inicio. idet solo clasifica lo que se mueve: un cuadro igual al anterior y al siguiente queda indeterminado.</summary>
+    private static async Task<(int Interlaced, int Progressive, int Undetermined)> DetectInterlaceAsync(string file)
     {
         var (_, err, _) = await RunAsync(Locator().FfmpegPath, "-hide_banner", "-nostats", "-i", file, "-t", "8", "-map", "0:v:0", "-vf", "idet", "-f", "null", "-");
         var line = err.Split('\n').LastOrDefault(l => l.Contains("Single frame detection", StringComparison.Ordinal)) ?? "";
@@ -256,7 +260,7 @@ public sealed class DecklinkHardwareTests
             var rest = line[(i + key.Length + 1)..].TrimStart();
             return int.Parse(new string(rest.TakeWhile(char.IsDigit).ToArray()), CultureInfo.InvariantCulture);
         }
-        return (Count("TFF") + Count("BFF"), Count("Progressive"));
+        return (Count("TFF") + Count("BFF"), Count("Progressive"), Count("Undetermined"));
     }
 
     /// <summary>Marcas de entrelazado y de campo superior primero del primer cuadro DECODIFICADO (las del códec, no las del
@@ -327,6 +331,112 @@ public sealed class DecklinkHardwareTests
         foreach (var l in lines) _out.WriteLine(l);
     }
 
+    /// <summary>Argumentos del último proceso de grabación de un canal, tal como los registró el motor.</summary>
+    private static string LastRecordingPipeline(List<string> log, string key)
+    {
+        lock (log) return log.LastOrDefault(l => l.Contains($"Pipeline canal {key} (grabación+preview)", StringComparison.Ordinal)) ?? "";
+    }
+
+    // ------------------------------------------------------------------------------------------------------------------
+    // NVENC: si abre, carga de CPU/GPU y sesiones
+    // ------------------------------------------------------------------------------------------------------------------
+
+    /// <summary>Omite la prueba si este FFmpeg no abre el codificador en este equipo: sin GPU NVIDIA, o con un SDK de NVENC
+    /// más nuevo que el driver (el FFmpeg empaquetado, SDK 13.1, no abre en una Quadro P400 con el driver 582).</summary>
+    private static async Task SkipUnlessEncoderOpensAsync(string encoder)
+    {
+        var (ok, detail) = await Locator().ProbeVideoEncoderAsync(encoder);
+        Skip.IfNot(ok, $"{encoder} no abre con este FFmpeg en este equipo: {detail}");
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+
+    /// <summary>CPU media (núcleos lógicos) entre <see cref="Start"/> y <see cref="Stop"/>: la de los ffmpeg del FFmpeg bajo
+    /// prueba (por ruta: no cuentan los de otros programas), la del testhost (receptores y relés DeckLink) y la del sistema.</summary>
+    private sealed class CpuSampler
+    {
+        private readonly string _ffmpegPath;
+        private readonly Stopwatch _wall = new();
+        private Dictionary<int, TimeSpan> _ffmpeg = new();
+        private TimeSpan _self;
+        private long _idle, _kernel, _user;
+
+        public CpuSampler(string ffmpegPath) => _ffmpegPath = Path.GetFullPath(ffmpegPath);
+
+        private Dictionary<int, TimeSpan> FfmpegTimes()
+        {
+            var times = new Dictionary<int, TimeSpan>();
+            foreach (var p in Process.GetProcessesByName("ffmpeg"))
+            {
+                try
+                {
+                    if (string.Equals(p.MainModule?.FileName, _ffmpegPath, StringComparison.OrdinalIgnoreCase))
+                        times[p.Id] = p.TotalProcessorTime;
+                }
+                catch { /* salió entre medias, o sin acceso */ }
+                finally { p.Dispose(); }
+            }
+            return times;
+        }
+
+        public void Start()
+        {
+            _ffmpeg = FfmpegTimes();
+            using (var me = Process.GetCurrentProcess()) _self = me.TotalProcessorTime;
+            GetSystemTimes(out _idle, out _kernel, out _user);
+            _wall.Restart();
+        }
+
+        /// <summary>Núcleos ocupados de media; de los ffmpeg, solo los que vivieron todo el intervalo (y cuántos eran).</summary>
+        public (double Ffmpeg, double Testhost, double System, int Processes) Stop()
+        {
+            double wall = _wall.Elapsed.TotalSeconds;
+            double ffmpeg = 0; int processes = 0;
+            foreach (var (pid, time) in FfmpegTimes())
+                if (_ffmpeg.TryGetValue(pid, out var before)) { ffmpeg += (time - before).TotalSeconds; processes++; }
+            double self;
+            using (var me = Process.GetCurrentProcess()) self = (me.TotalProcessorTime - _self).TotalSeconds;
+            GetSystemTimes(out long idle, out long kernel, out long user);
+            double total = (kernel - _kernel) + (user - _user); // el tiempo de kernel incluye el ocioso
+            double system = total > 0 ? (total - (idle - _idle)) / total * Environment.ProcessorCount : double.NaN;
+            return (ffmpeg / wall, self / wall, system, processes);
+        }
+    }
+
+    /// <summary>«uso de la GPU %, uso del codificador %, sesiones NVENC, fps medios, MiB usados», según nvidia-smi.</summary>
+    private static async Task<string> NvidiaSmiAsync()
+    {
+        try
+        {
+            var (o, _, _) = await RunAsync("nvidia-smi",
+                "--query-gpu=utilization.gpu,utilization.encoder,encoder.stats.sessionCount,encoder.stats.averageFps,memory.used",
+                "--format=csv,noheader,nounits");
+            return o.Trim();
+        }
+        catch (Exception ex) { return "nvidia-smi: " + ex.Message; }
+    }
+
+    /// <summary>Un proceso que ocupa una sesión NVENC: codifica gris a tiempo real (sin cargar la GPU) durante 15 min como
+    /// mucho, por si la prueba muere sin matarlo. Si la GPU no tiene sesiones libres, sale enseguida con el error de NVENC.</summary>
+    private static Process StartDummyNvencSession()
+    {
+        var psi = new ProcessStartInfo(Locator().FfmpegPath)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
+        };
+        foreach (var arg in new[] { "-hide_banner", "-nostats", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25",
+                     "-t", "900", "-c:v", "h264_nvenc", "-f", "null", "-" })
+            psi.ArgumentList.Add(arg);
+        return Process.Start(psi)!;
+    }
+
+    private static void KillQuietly(Process p)
+    {
+        try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { /* ya salió */ }
+        p.Dispose();
+    }
+
     // ==================================================================================================================
 
     [SkippableFact]
@@ -377,9 +487,24 @@ public sealed class DecklinkHardwareTests
     [SkippableTheory]
     [InlineData("H.264 Broadcast · 1080i59.94 MP4", "h264", "libx264", false)]
     [InlineData("H.264 Broadcast · 1080i59.94 TS", "h264", null, false)]
-    [InlineData("H.264 NVENC · FullHD 1080p29.97", "h264", null, null)]
-    [InlineData("H.264 NVENC · FullHD 1080p59.94", "h264", null, null)]
-    [InlineData("HEVC NVENC · FullHD 1080p29.97", "hevc", null, null)]
+    // Todos los NVENC de fábrica. Si este FFmpeg abre NVENC aquí, el archivo tiene que ser de NVENC de verdad (no una
+    // degradación silenciosa) y con sus argumentos; si no, el canal degrada solo y la alarma EncoderFallback lo dice.
+    [InlineData("H.264 NVENC · HD 720p50", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · HD 720p59.94", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p23.98", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p25", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p29.97", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p50", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p59.94", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · FullHD 1080p60", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · 4K UHD 2160p50", "h264", "h264_nvenc", null)]
+    [InlineData("H.264 NVENC · 4K UHD 2160p59.94", "h264", "h264_nvenc", null)]
+    [InlineData("HEVC NVENC · FullHD 1080p25", "hevc", "hevc_nvenc", null)]
+    [InlineData("HEVC NVENC · FullHD 1080p29.97", "hevc", "hevc_nvenc", null)]
+    [InlineData("HEVC NVENC · FullHD 1080p50", "hevc", "hevc_nvenc", null)]
+    [InlineData("HEVC NVENC · FullHD 1080p59.94", "hevc", "hevc_nvenc", null)]
+    [InlineData("HEVC NVENC · 4K UHD 2160p50", "hevc", "hevc_nvenc", null)]
+    [InlineData("HEVC NVENC · 4K UHD 2160p59.94", "hevc", "hevc_nvenc", null)]
     [InlineData("H.264 Broadcast · FullHD 1080p25", "h264", "libx264", false)]
     [InlineData("XDCAM HD422 · 1080i59.94 50 Mbps", "mpeg2video", null, false)]
     [InlineData("MPEG-2 TS · HD 1080i59.94", "mpeg2video", null, false)]
@@ -457,13 +582,15 @@ public sealed class DecklinkHardwareTests
                 // (ProRes HQ 1080p59.94: 2,1 s medidos). Con fallback se pierde el arranque del intento que no abrió: más margen.
                 double handover = Math.Max(0, tStopped - tStop - 0.6);
                 double expectedSeconds = tStop - tStarted + 0.3 + handover / 2;
-                var media = await AssertContinuousRecordingAsync(files[0], expectedSeconds, expectedFps, (fallback ? 2.5 : 1.5) + handover / 2, codec, encoder);
+                // Degradado, el archivo es del codificador de la cadena que abrió, no del pedido.
+                var media = await AssertContinuousRecordingAsync(files[0], expectedSeconds, expectedFps, (fallback ? 2.5 : 1.5) + handover / 2,
+                    codec, fallback ? null : encoder);
                 bool sourceInterlaced = rig.Source.CurrentSignal.Scan is ScanType.InterlacedTff or ScanType.InterlacedBff;
-                var (combed, progressive) = await DetectInterlaceAsync(files[0]);
+                var (combed, progressive, undetermined) = await DetectInterlaceAsync(files[0]);
                 var coded = await FirstFrameScanAsync(files[0]);
                 _out.WriteLine($"Barrido: señal {rig.Source.CurrentSignal.Scan}, preset {profile.ScanType}, contenedor «{media.Video!.FieldOrder}», " +
                                $"perfil «{media.Video.Profile}», cuadro codificado {(coded.Interlaced ? (coded.TopFieldFirst ? "entrelazado TFF" : "entrelazado BFF") : "progresivo")}, " +
-                               $"idet {combed} entrelazados / {progressive} progresivos");
+                               $"idet {combed} entrelazados / {progressive} progresivos / {undetermined} indeterminados");
                 if (profile.ScanType is ScanType.InterlacedTff)
                 {
                     // Entrelazado de verdad: el CÓDEC marca los cuadros entrelazados TFF (no solo el contenedor). El MOV de FFmpeg
@@ -478,18 +605,34 @@ public sealed class DecklinkHardwareTests
                 }
                 else if (profile.ScanType is ScanType.Progressive && sourceInterlaced)
                 {
-                    // Preset progresivo con señal 1080i: desentrelazado, sin peine (idet casi todo progresivo). Con una imagen
-                    // estática (la carta de la emisora fuera de emisión) idet no clasifica ningún cuadro: nada que comprobar.
-                    if (combed + progressive >= 30)
-                        Assert.True(combed < (combed + progressive) / 10, $"Peine en un preset progresivo: idet ve {combed} cuadros entrelazados y {progressive} progresivos.");
-                    else _out.WriteLine("idet no clasifica los cuadros (imagen estática): sin comprobación de peine.");
+                    // Preset progresivo con señal 1080i: desentrelazado, sin peine (de lo que idet clasifica, menos del 10 %
+                    // entrelazado). Solo se mide si la imagen se mueve: con la carta casi fija de la emisora fuera de emisión, idet
+                    // deja indeterminados más de 7 de cada 10 cuadros, y de los pocos que clasifica llegó a dar un 28 % «entrelazados»
+                    // con bwdif en marcha (ruido: por la misma cadena, un 1080i sintético en movimiento sale 121 de 121 progresivo).
+                    int classified = combed + progressive;
+                    if (classified >= 30 && classified >= undetermined)
+                        Assert.True(combed < classified / 10.0, $"Peine en un preset progresivo: idet ve {combed} cuadros entrelazados y {progressive} progresivos.");
+                    else _out.WriteLine($"idet solo clasifica {classified} de {classified + undetermined} cuadros (imagen casi fija): el peine no se puede medir con esta señal.");
+                    // Con cualquier imagen: la rama de grabación desentrelaza con bwdif, con la paridad de la señal y, si el preset
+                    // dobla su cadencia (1080i59.94 → 1080p59.94), un cuadro por campo.
+                    bool perField = Math.Abs(expectedFps - 2 * sourceFps) < 0.01 * expectedFps;
+                    string parity = rig.Source.CurrentSignal.Scan is ScanType.InterlacedBff ? "bff" : "tff";
+                    Assert.Contains($"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all", LastRecordingPipeline(log, "A"));
+                }
+                if (nvenc && !fallback)
+                {
+                    // Los argumentos de NVENC que una Pascal (P400) tiene que aceptar: que el archivo sea de NVENC prueba que abrió con ellos.
+                    string pipeline = LastRecordingPipeline(log, "A");
+                    Assert.Contains($"-c:v {FfmpegCodecMap.VideoEncoder(profile.VideoCodec)} -preset p5 -tune hq", pipeline);
+                    Assert.Contains(" -bf 0", pipeline);
                 }
                 // El par grabado suena… salvo que la propia señal esté en silencio (emisora fuera de emisión): lo dice la alarma
                 // de silencio del motor, que mide el audio de ENTRADA. Si la entrada suena y el archivo no, es un fallo.
+                double volume = await MaxVolumeAsync(files[0], 0);
                 if (rig.AlarmActiveBetween(AlarmType.AudioSilence, tStarted, tStop))
-                    _out.WriteLine("La señal está en silencio (alarma AudioSilence): sin comprobación de nivel.");
+                    _out.WriteLine($"La señal está en silencio (alarma AudioSilence; pico grabado {volume:0.0} dBFS): el nivel no se puede medir con esta señal.");
                 else
-                    Assert.True(await MaxVolumeAsync(files[0], 0) > -40, "La pista de audio grabada está en silencio.");
+                    Assert.True(volume > -40, $"La pista de audio grabada está en silencio ({volume:0.0} dBFS).");
                 Assert.Equal(0, Interlocked.Read(ref rig.Overruns));
                 long dropsWhileRecording = rig.RelayDropsBetween(tStart, tStop);
                 Assert.True(dropsWhileRecording == 0,
@@ -587,6 +730,186 @@ public sealed class DecklinkHardwareTests
             }
         }
         finally { Dump("registro", log); Cleanup(dirA); Cleanup(dirB); }
+    }
+
+    /// <summary>
+    /// Dos entradas grabando con NVENC a la vez: las dos siguen en la GPU (sin degradar) y sin descartes del relé. Informa de la
+    /// carga, solo preview y grabando: CPU de los ffmpeg de la prueba, del testhost y del sistema, y la GPU según nvidia-smi.
+    /// Medido en el i7-8700 (12 hilos) con una Quadro P400: grabar añade ≈1,3–1,7 núcleos lógicos por canal a 1080p29.97 y
+    /// ≈2,4–3,1 a 1080p59.94 (bwdif saca un cuadro por campo). Dos canales a 1080p59.94 llevan ese equipo a su techo (11,9–12
+    /// hilos ocupados contando previews y drivers): una pasada sin descartes, otra con 9. Por eso esa pareja no es una fila.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("H.264 NVENC · FullHD 1080p29.97", "H.264 NVENC · FullHD 1080p29.97")]
+    [InlineData("HEVC NVENC · FullHD 1080p29.97", "HEVC NVENC · FullHD 1080p59.94")]
+    public async Task TwoInputs_RecordingWithNvencAtTheSameTime_StayOnTheGpu_WithoutDrops(string presetA, string presetB)
+    {
+        Skip.If(Device is null || Device2 is null || TestAssets.FfmpegDir is null, "Hacen falta dos entradas con señal (BAIOSS_DECKLINK y BAIOSS_DECKLINK_2).");
+        var pa = Preset(presetA).ToProfile();
+        var pb = Preset(presetB).ToProfile();
+        foreach (var encoder in new[] { pa, pb }.Select(p => FfmpegCodecMap.VideoEncoder(p.VideoCodec)).Distinct())
+            await SkipUnlessEncoderOpensAsync(encoder);
+        var log = new List<string>();
+        var dirA = NewOutputDir("nvenc2-A");
+        var dirB = NewOutputDir("nvenc2-B");
+        var cpu = new CpuSampler(Locator().FfmpegPath);
+        try
+        {
+            var a = await Rig.OpenAsync(Device!, dirA, pa, "A", l => { lock (log) log.Add(l); });
+            await using (a)
+            {
+                var b = await Rig.OpenAsync(Device2!, dirB, pb, "B", l => { lock (log) log.Add(l); });
+                await using (b)
+                {
+                    await WaitUntilAsync(() => a.Source.CurrentSignal.State == SignalState.Locked && b.Source.CurrentSignal.State == SignalState.Locked,
+                        TimeSpan.FromSeconds(20), "SEÑAL OK en las dos");
+                    await WaitUntilAsync(() => a.FramesBetween(0, double.MaxValue) > 30 && b.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en las dos");
+                    await Task.Delay(3000);
+                    cpu.Start();
+                    await Task.Delay(10_000);
+                    var previewOnly = cpu.Stop();
+                    string gpuPreviewOnly = await NvidiaSmiAsync();
+
+                    var t = Stopwatch.StartNew();
+                    double recFromA = a.Clock.Elapsed.TotalSeconds, recFromB = b.Clock.Elapsed.TotalSeconds;
+                    await Task.WhenAll(a.Engine.StartRecordingAsync(Guid.NewGuid(), pa), b.Engine.StartRecordingAsync(Guid.NewGuid(), pb));
+                    double started = t.Elapsed.TotalSeconds;
+                    await Task.Delay(6_000); // que se retiren los procesos de solo preview y se asiente la carga
+                    cpu.Start();
+                    var gpu = new List<string>();
+                    for (int i = 0; i < 4; i++) { await Task.Delay(5_000); gpu.Add(await NvidiaSmiAsync()); }
+                    var recording = cpu.Stop();
+                    await Task.Delay(4_000);
+                    double stop = t.Elapsed.TotalSeconds;
+                    double recToA = a.Clock.Elapsed.TotalSeconds, recToB = b.Clock.Elapsed.TotalSeconds;
+                    await Task.WhenAll(a.Engine.StopRecordingAsync(), b.Engine.StopRecordingAsync());
+                    await Task.Delay(1500);
+
+                    _out.WriteLine($"A «{presetA}» + B «{presetB}» ({Environment.ProcessorCount} núcleos lógicos)");
+                    _out.WriteLine($"  Solo preview: ffmpeg {previewOnly.Ffmpeg:0.00} núcleos ({previewOnly.Processes} procesos), testhost {previewOnly.Testhost:0.00}, sistema {previewOnly.System:0.00}");
+                    _out.WriteLine($"  Grabando las dos: ffmpeg {recording.Ffmpeg:0.00} núcleos ({recording.Processes} procesos), testhost {recording.Testhost:0.00}, sistema {recording.System:0.00} · " +
+                                   $"lo que añade grabar ≈ {(recording.Ffmpeg - previewOnly.Ffmpeg) / 2:0.00} núcleos por canal");
+                    _out.WriteLine($"  GPU [uso %, codificador %, sesiones, fps, MiB] solo preview: {gpuPreviewOnly} · grabando: {string.Join(" | ", gpu)}");
+                    foreach (var (rig, key) in new[] { (a, "A"), (b, "B") })
+                        lock (rig.Alarms) foreach (var al in rig.Alarms) _out.WriteLine($"  [{key}] alarma @{al.At:0.0} s {al.Type} {(al.Active ? "ON" : "off")}");
+
+                    foreach (var (rig, dir, profile, from, to, key) in new[] { (a, dirA, pa, recFromA, recToA, "A"), (b, dirB, pb, recFromB, recToB, "B") })
+                    {
+                        long drops = rig.RelayDropsBetween(from, to);
+                        _out.WriteLine($"  [{key}] descartes del relé grabando: {drops} · desbordes {rig.Overruns} · reaperturas de la tarjeta {rig.Receiver.Restarts}");
+                        var files = Directory.GetFiles(dir);
+                        Assert.Single(files);
+                        Assert.False(rig.AlarmRaised(AlarmType.EncoderFallback), $"[{key}] degradó de NVENC.");
+                        double fps = profile.OutputFrameRate?.Value ?? rig.Source.CurrentSignal.FrameRate!.Value.Value;
+                        await AssertContinuousRecordingAsync(files[0], stop - started + 0.3, fps, 1.5, null, FfmpegCodecMap.VideoEncoder(profile.VideoCodec));
+                        Assert.Equal(0, drops);
+                        Assert.Equal(0, Interlocked.Read(ref rig.Overruns));
+                        Assert.Equal(0, rig.Receiver.Restarts);
+                        Assert.Empty(rig.Unverified);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Dump("registro (pipelines y avisos)", log.Where(l => l.Contains("Pipeline", StringComparison.Ordinal) ||
+                l.Contains("[Warning]", StringComparison.Ordinal) || l.Contains("[Error]", StringComparison.Ordinal)).TakeLast(40));
+            Cleanup(dirA); Cleanup(dirB);
+        }
+    }
+
+    /// <summary>
+    /// Sesiones NVENC agotadas (la P400, como las GeForce, admite 8 en todo el equipo, y RustDesk ya usa una): el canal que
+    /// encuentra la GPU llena degrada solo a QuickSync, con la alarma, y su archivo es válido; el que tenía sesión sigue en
+    /// NVENC. Las sesiones se ocupan con procesos ficticios hasta que la GPU rechaza uno («incompatible client key»); luego se
+    /// suelta uno, así que queda UNA libre para A.
+    /// </summary>
+    [SkippableFact]
+    public async Task NvencSessionsExhausted_TheChannelThatFindsNoneFallsBackToQuickSync_AndBothFilesAreValid()
+    {
+        Skip.If(Device is null || Device2 is null || TestAssets.FfmpegDir is null, "Hacen falta dos entradas con señal (BAIOSS_DECKLINK y BAIOSS_DECKLINK_2).");
+        await SkipUnlessEncoderOpensAsync("h264_nvenc");
+        // B baja al siguiente de la cadena que abra: QuickSync si el equipo lo tiene (el i7-8700 de pruebas, sí); si no, AMF o CPU.
+        string? fallbackEncoder = (await Locator().ProbeVideoEncoderAsync("h264_qsv")).Ok ? "h264_qsv" : null;
+        var log = new List<string>();
+        var dummies = new List<Process>();
+        var dirA = NewOutputDir("nvenc-full-A");
+        var dirB = NewOutputDir("nvenc-full-B");
+        var profile = Preset("H.264 NVENC · FullHD 1080p29.97").ToProfile();
+        try
+        {
+            _out.WriteLine($"Antes: [uso %, codificador %, sesiones, fps, MiB] {await NvidiaSmiAsync()}");
+            string? refusal = null;
+            for (int i = 0; i < 16 && refusal is null; i++)
+            {
+                var p = StartDummyNvencSession();
+                await Task.Delay(2500);
+                if (p.HasExited)
+                {
+                    refusal = (await p.StandardError.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .FirstOrDefault() ?? $"exit {p.ExitCode}";
+                    p.Dispose();
+                }
+                else dummies.Add(p);
+            }
+            _out.WriteLine($"La GPU admitió {dummies.Count} sesiones ficticias además de las ajenas; la siguiente: «{refusal}» · {await NvidiaSmiAsync()}");
+            Assert.True(dummies.Count > 0, $"El primer proceso NVENC ficticio no arrancó: «{refusal}».");
+            Skip.If(refusal is null, $"La GPU admitió {dummies.Count} sesiones NVENC sin agotarse (sin límite de sesiones): no hay nada que agotar.");
+            KillQuietly(dummies[^1]);
+            dummies.RemoveAt(dummies.Count - 1);
+            await Task.Delay(2000);
+            _out.WriteLine($"Con una libre: {await NvidiaSmiAsync()}");
+
+            var a = await Rig.OpenAsync(Device!, dirA, profile, "A", l => { lock (log) log.Add(l); });
+            await using (a)
+            {
+                var b = await Rig.OpenAsync(Device2!, dirB, profile, "B", l => { lock (log) log.Add(l); });
+                await using (b)
+                {
+                    await WaitUntilAsync(() => a.Source.CurrentSignal.State == SignalState.Locked && b.Source.CurrentSignal.State == SignalState.Locked,
+                        TimeSpan.FromSeconds(20), "SEÑAL OK en las dos");
+                    await WaitUntilAsync(() => a.FramesBetween(0, double.MaxValue) > 30 && b.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en las dos");
+                    // A se lleva la única sesión libre; B, tres segundos después, ya no encuentra ninguna.
+                    var t = Stopwatch.StartNew();
+                    await a.Engine.StartRecordingAsync(Guid.NewGuid(), profile);
+                    double startedA = t.Elapsed.TotalSeconds;
+                    await Task.Delay(3000);
+                    double startB = t.Elapsed.TotalSeconds;
+                    await b.Engine.StartRecordingAsync(Guid.NewGuid(), profile);
+                    double startedB = t.Elapsed.TotalSeconds;
+                    await Task.Delay(15_000);
+                    _out.WriteLine($"Grabando las dos: {await NvidiaSmiAsync()}");
+                    double stop = t.Elapsed.TotalSeconds;
+                    await Task.WhenAll(a.Engine.StopRecordingAsync(), b.Engine.StopRecordingAsync());
+                    await Task.Delay(1500);
+                    _out.WriteLine($"Grabar B tardó {startedB - startB:0.00} s");
+                    foreach (var (rig, key) in new[] { (a, "A"), (b, "B") })
+                        lock (rig.Alarms) foreach (var al in rig.Alarms) _out.WriteLine($"  [{key}] alarma @{al.At:0.0} s {al.Type} {(al.Active ? "ON" : "off")}");
+
+                    Assert.False(a.AlarmRaised(AlarmType.EncoderFallback), "A tenía sesión y aun así degradó.");
+                    Assert.True(b.AlarmRaised(AlarmType.EncoderFallback), "B no encontró sesión NVENC y no avisó de la degradación.");
+                    var fa = Directory.GetFiles(dirA);
+                    var fb = Directory.GetFiles(dirB);
+                    _out.WriteLine("Archivos A: " + string.Join(", ", fa.Select(Path.GetFileName)) + " · B: " + string.Join(", ", fb.Select(Path.GetFileName)));
+                    // Una pieza por canal: el intento de B que no abrió no deja un archivo vacío.
+                    Assert.Single(fa);
+                    Assert.Single(fb);
+                    double fps = profile.OutputFrameRate!.Value.Value;
+                    await AssertContinuousRecordingAsync(fa[0], stop - startedA + 0.3, fps, 1.5, "h264", "h264_nvenc");
+                    // B pierde el arranque del intento que no abrió: algo más de margen.
+                    await AssertContinuousRecordingAsync(fb[0], stop - startedB + 0.3, fps, 2.5, "h264", fallbackEncoder);
+                    Assert.Empty(a.Unverified);
+                    Assert.Empty(b.Unverified);
+                }
+            }
+        }
+        finally
+        {
+            foreach (var d in dummies) KillQuietly(d);
+            Dump("registro (pipelines y avisos)", log.Where(l => l.Contains("Pipeline", StringComparison.Ordinal) ||
+                l.Contains("[Warning]", StringComparison.Ordinal) || l.Contains("[Error]", StringComparison.Ordinal)).TakeLast(40));
+            Cleanup(dirA); Cleanup(dirB);
+        }
     }
 
     [SkippableFact]
