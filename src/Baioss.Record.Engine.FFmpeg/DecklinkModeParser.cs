@@ -14,7 +14,8 @@ namespace Baioss.Record.Engine.FFmpeg;
 ///   <c>-format_code</c> es el que la tarjeta DETECTÓ en la señal (autodetección: FFmpeg espera hasta 3 s a que la
 ///   tarjeta lo diga); con <c>-format_code</c> es el pedido, se corresponda o no con la señal.</item>
 ///   <item>«Cannot Autodetect input stream or No signal» (error): en autodetección la tarjeta no dijo nada en esos 3 s
-///   —sin señal, dispositivo en uso por otro proceso, o tarjeta/conector sin detección de formato— y FFmpeg sale.</item>
+///   —sin señal, dispositivo en uso por otro proceso, o tarjeta/conector sin detección de formato— y FFmpeg sale. Lo que el
+///   texto no distingue lo distingue el tiempo (ver <see cref="IsAutodetectRefusal"/>).</item>
 ///   <item>«Cannot enable video input» (error): con modo fijo, la tarjeta está en uso por otro proceso (medido en una
 ///   Duo 2 con la aplicación capturando: en autodetección ese mismo caso sale como el fallo genérico de arriba).</item>
 ///   <item>«Input #0, decklink, from 'DeckLink Duo (1)':» (info): el dispositivo ABRIÓ y hay captura, en ambos modos.</item>
@@ -28,6 +29,20 @@ public static partial class DecklinkModeParser
 
     /// <summary>True si la línea es el fallo de autodetección de FFmpeg.</summary>
     public static bool IsAutodetectFailure(string line) => line.Contains(AutodetectFailure, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Para la autodetección FFmpeg pone la tarjeta a ESCUCHAR la entrada y espera hasta 3 s a que detecte un formato: si no
+    /// lo detecta (sin señal, o una que no engancha), da el fallo de autodetección pasados esos 3 s. Si la tarjeta ni siquiera
+    /// pudo ponerse a escuchar —en uso por otro programa, conector que no es entrada, modelo sin autodetección— da LA MISMA
+    /// línea al instante. Medido en una Duo 2 desde que arranca el proceso: con la entrada abierta por otro proceso, 50 ms (y
+    /// con modo fijo, «Cannot enable video input» a los mismos 50 ms); con un conector que no es entrada, 50–80 ms; libre y con
+    /// señal, la autodetección encuentra el modo en 0,16 s. Por debajo de esto es lo segundo.
+    /// </summary>
+    public static readonly TimeSpan AutodetectListenTime = TimeSpan.FromSeconds(2);
+
+    /// <summary>¿Un fallo de autodetección llegado <paramref name="sinceProcessStart"/> después de arrancar FFmpeg es de una
+    /// tarjeta que no llegó a escuchar (en uso por otro programa, o sin entrada/autodetección) y no de una sin señal?</summary>
+    public static bool IsAutodetectRefusal(TimeSpan sinceProcessStart) => sinceProcessStart < AutodetectListenTime;
 
     public const string DeviceBusy = "Cannot enable video input";
 

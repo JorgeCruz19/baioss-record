@@ -110,6 +110,8 @@ public class SchedulerServiceTests
         await svc.TickAsync(default);
         Assert.NotNull(engine.Profile.Segmentation);   // aplicada al perfil del canal al arrancar
         Assert.Equal(TimeSpan.FromMinutes(10), engine.Profile.Segmentation!.Duration);
+        // Con el fin previsto de la franja: el motor no corta un segmento un instante antes del auto-stop (30 min = 3 × 10).
+        Assert.Equal(At(20, 30), engine.Profile.Segmentation.PlannedEnd);
 
         clock.UtcNow = At(20, 31);
         await svc.TickAsync(default);

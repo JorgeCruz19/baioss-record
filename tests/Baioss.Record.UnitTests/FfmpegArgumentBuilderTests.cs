@@ -210,10 +210,35 @@ public class FfmpegArgumentBuilderTests : IDisposable
     {
         var (joined, outFile) = Build(ProResMov(EncoderProfile.ProRes4444));
 
-        Assert.Contains("-c:v prores_ks", joined);
+        Assert.Contains("-c:v prores_aw", joined);
         Assert.Contains("-profile:v 4", joined);                // 4 = ProRes 4444
         Assert.Contains("-pix_fmt yuv444p10le", joined);        // 4:4:4 obligatorio para 4444
         Assert.EndsWith(".mov", outFile);
+    }
+
+    [Fact]
+    public void Build_ProRes_UsesTheRealTimeEncoder()
+    {
+        // prores_ks no llega a tiempo real en un i7-8700 (1080i29.97 HQ a 0,8–1,2× con todos los hilos): una captura en vivo
+        // perdía 149–302 cuadros en 15 s. prores_aw da 5–6× con los mismos perfiles (medido con una DeckLink, 2026-10-15).
+        var joined = Build(ProResMov(EncoderProfile.ProResHq)).Joined;
+        Assert.Contains("-c:v prores_aw -profile:v 3", joined);
+        Assert.DoesNotContain("prores_ks", joined);
+    }
+
+    [Theory]
+    [InlineData(EncoderProfile.ProRes4444, PixelFormat.Yuv422p10le, "4", "yuv444p10le")]   // prores_aw no abre 4444 con 4:2:2
+    [InlineData(EncoderProfile.ProRes4444Xq, PixelFormat.Yuv420p, "5", "yuv444p10le")]
+    [InlineData(EncoderProfile.ProResHq, PixelFormat.Yuv444p10le, "3", "yuv422p10le")]      // ni convierte un 422 en 4444
+    [InlineData(EncoderProfile.ProResLt, PixelFormat.Yuv422p, "1", "yuv422p10le")]          // ProRes solo es de 10 bits
+    [InlineData(EncoderProfile.Auto, PixelFormat.Yuv444p10le, "4", "yuv444p10le")]          // Auto con 4:4:4 → 4444
+    [InlineData(EncoderProfile.Auto, PixelFormat.Auto, "3", "yuv422p10le")]                 // Auto → 422 HQ
+    public void Build_ProRes_ChromaFollowsTheProfile_NotALoosePixelFormat(EncoderProfile profile, PixelFormat pix,
+        string expectedProfile, string expectedPix)
+    {
+        var joined = Build(ProResMov(profile, pix)).Joined;
+        Assert.Contains($"-profile:v {expectedProfile}", joined);
+        Assert.Contains($"-pix_fmt {expectedPix}", joined);
     }
 
     [Fact]
@@ -253,6 +278,169 @@ public class FfmpegArgumentBuilderTests : IDisposable
     [InlineData(EncoderProfile.DnxHrHq, "dnxhr_hq")]
     public void Build_DnxHrFamily_MapsProfileName(EncoderProfile profile, string expected)
         => Assert.Contains($"-profile:v {expected}", Build(DnxhrMov(profile)).Joined);
+
+    [Fact]
+    public void Build_DnxHrAuto_With444PixelFormat_Uses444Profile()
+    {
+        // 4:4:4 solo lo admite dnxhr_444: con hqx el codificador no abre («pixel format is incompatible with DNxHD profile»).
+        var joined = Build(DnxhrMov(EncoderProfile.Auto, PixelFormat.Yuv444p10le)).Joined;
+        Assert.Contains("-profile:v dnxhr_444", joined);
+        Assert.Contains("-pix_fmt yuv444p10le", joined);
+    }
+
+    private static RecordingProfile Dnxhr1080(EncoderProfile profile, FrameRate rate, ScanType scan, PixelFormat pix = PixelFormat.Yuv422p)
+    {
+        var p = DnxhrMov(profile, pix);
+        p.TargetResolution = new Resolution(1920, 1080);
+        p.OutputFrameRate = rate;
+        p.ScanType = scan;
+        return p;
+    }
+
+    [Theory]
+    // DNxHR no entrelaza (FFmpeg rechaza +ildct en sus perfiles) y grababa los campos en cuadros progresivos. Un perfil DNxHR
+    // entrelazado —los canales que aplicaron los antiguos «DNxHR HQ · 1080i…» guardan esa copia— se graba como su DNxHD.
+    [InlineData(EncoderProfile.DnxHrHq, 30000, 1001, PixelFormat.Yuv422p, "220000000 -flags +ildct -pix_fmt yuv422p")]
+    [InlineData(EncoderProfile.DnxHrHq, 25, 1, PixelFormat.Yuv422p, "185000000 -flags +ildct -pix_fmt yuv422p")]
+    [InlineData(EncoderProfile.DnxHrSq, 30000, 1001, PixelFormat.Yuv422p, "145000000 -flags +ildct -pix_fmt yuv422p")]
+    [InlineData(EncoderProfile.DnxHrSq, 25, 1, PixelFormat.Yuv422p, "120000000 -flags +ildct -pix_fmt yuv422p")]
+    [InlineData(EncoderProfile.DnxHrHqx, 30000, 1001, PixelFormat.Yuv422p10le, "220000000 -flags +ildct -pix_fmt yuv422p10le")]
+    [InlineData(EncoderProfile.Auto, 25, 1, PixelFormat.Auto, "185000000 -flags +ildct -pix_fmt yuv422p")]
+    public void Build_InterlacedDnxHr_RecordsTheEquivalentClassicDnxhd(EncoderProfile profile, int num, int den, PixelFormat pix, string expected)
+    {
+        var joined = Build(Dnxhr1080(profile, new FrameRate(num, den), ScanType.InterlacedTff, pix)).Joined;
+        Assert.Contains($"-c:v dnxhd -profile:v dnxhd -b:v {expected}", joined);
+        Assert.DoesNotContain("dnxhr", joined);
+    }
+
+    [Theory]
+    [InlineData(EncoderProfile.DnxHrLb, PixelFormat.Yuv422p, "dnxhr_lb")]      // no hay DNxHD 1080i por debajo de 145
+    [InlineData(EncoderProfile.DnxHr444, PixelFormat.Yuv444p10le, "dnxhr_444")] // ni DNxHD 444 en FFmpeg
+    public void Build_InterlacedDnxHr_WithoutADnxhdEquivalent_StaysDnxHrWithoutInterlacedDct(EncoderProfile profile, PixelFormat pix, string expected)
+    {
+        // Pedir +ildct a un perfil DNxHR impediría grabar («Interlaced encoding is not supported for DNxHR profiles»).
+        var joined = Build(Dnxhr1080(profile, FrameRate.P2997, ScanType.InterlacedTff, pix)).Joined;
+        Assert.Contains($"-profile:v {expected}", joined);
+        Assert.DoesNotContain("ildct", joined);
+    }
+
+    [Fact]
+    public void Build_ProgressiveDnxHr_StaysDnxHr()
+    {
+        var joined = Build(Dnxhr1080(EncoderProfile.DnxHrHq, FrameRate.P25, ScanType.Progressive)).Joined;
+        Assert.Contains("-c:v dnxhd -profile:v dnxhr_hq -pix_fmt yuv422p", joined);
+        Assert.DoesNotContain("-b:v", joined);
+    }
+
+    // --- DNxHD clásico: el bitrate elige el CID ---
+
+    private static RecordingProfile Dnxhd(int width, int height, FrameRate rate, ScanType scan, double mbps, PixelFormat pix = PixelFormat.Yuv422p) => new()
+    {
+        Name = "dnxhd", VideoCodec = VideoCodec.DnxHd, HwAccel = HwAccel.None, GopSize = 1,
+        TargetResolution = new Resolution(width, height), OutputFrameRate = rate, ScanType = scan,
+        VideoBitrate = Bitrate.FromMbps(mbps), PixelFormat = pix,
+        AudioCodec = AudioCodec.Pcm, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mxf,
+    };
+
+    [Fact]
+    public void BuildLive_Dnxhd1080i_RecordsClassicDnxhdWithBothFields()
+    {
+        // DNxHR no puede entrelazar: los presets «1080i» de DNxHR grababan cuadros progresivos (MXF los declaraba progresivos).
+        // DNxHD clásico sí: CID 1243 (220 Mbps a 29.97) con DCT entrelazada y los cuadros marcados TFF.
+        var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff),
+            Dnxhd(1920, 1080, FrameRate.P2997, ScanType.InterlacedTff, 220));
+        Assert.Contains("[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p[vmain]", joined);
+        Assert.Contains("-c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p", joined);
+        Assert.Contains("-field_order tt", joined);
+        Assert.DoesNotContain("dnxhr", joined);
+        Assert.DoesNotContain("bwdif", joined);
+    }
+
+    [Theory]
+    // Los nombres de Avid: mismo CID, distinto nombre según la cadencia (los Mbps reales son tamaño de cuadro × cadencia).
+    [InlineData(30000, 1001, 145, 145)]   // CID 1242 · DNxHD 145
+    [InlineData(30000, 1001, 220, 220)]   // CID 1243 · DNxHD 220
+    [InlineData(25, 1, 120, 120)]         // CID 1242 · DNxHD 120
+    [InlineData(25, 1, 185, 185)]         // CID 1243 · DNxHD 185
+    [InlineData(25, 1, 220, 220)]         // una clave válida se respeta (FFmpeg da el mismo CID 1243 que con 185)
+    // Fuera de la lista de FFmpeg la grabación no arrancaría: se ajusta al CID de Mbps reales más cercanos.
+    [InlineData(30000, 1001, 200, 220)]
+    [InlineData(25, 1, 160, 185)]         // 160 queda más cerca de los 183,5 reales del CID 1243 que de los 121 del 1242
+    [InlineData(25, 1, 150, 120)]         // …y 150, de los 121
+    [InlineData(30000, 1001, 16, 145)]    // un bitrate que quedó de otro códec
+    // Sin bitrate (un preset DNxHD que confiaba en el perfil, como antes): el CID de más calidad, el de DNxHR HQ.
+    [InlineData(30000, 1001, 0, 220)]
+    [InlineData(25, 1, 0, 185)]
+    public void Build_Dnxhd1080i_BitrateSelectsAValidCid(int num, int den, double requested, int expected)
+    {
+        var joined = Build(Dnxhd(1920, 1080, new FrameRate(num, den), ScanType.InterlacedTff, requested)).Joined;
+        Assert.Contains($"-c:v dnxhd -profile:v dnxhd -b:v {expected * 1_000_000L} -flags +ildct -pix_fmt yuv422p", joined);
+    }
+
+    [Fact]
+    public void Build_Dnxhd10Bit_UsesTheXCidsWithTenBitPixels()
+    {
+        // DNxHD 220x (CID 1241, 1080i 10 bits).
+        var joined = Build(Dnxhd(1920, 1080, FrameRate.P2997, ScanType.InterlacedTff, 220, PixelFormat.Yuv422p10le)).Joined;
+        Assert.Contains("-profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p10le", joined);
+    }
+
+    [Fact]
+    public void Build_Dnxhd1080p10Bit_At2997_AvoidsTheKeyFfmpegRejects()
+    {
+        // El CID 1235 (1080p 10 bits) da 220 Mbps a 29.97, pero FFmpeg no tiene «220» en su lista para él: con -b:v 220M no
+        // abre (comprobado). Se pide con la clave más próxima del mismo CID.
+        var joined = Build(Dnxhd(1920, 1080, FrameRate.P2997, ScanType.Progressive, 220, PixelFormat.Yuv422p10le)).Joined;
+        Assert.Contains("-profile:v dnxhd -b:v 185000000 -pix_fmt yuv422p10le", joined);
+        Assert.DoesNotContain("ildct", joined);
+    }
+
+    [Theory]
+    [InlineData(3840, 2160, PixelFormat.Yuv422p)]       // 4K: DNxHD clásico no existe
+    [InlineData(720, 576, PixelFormat.Yuv422p)]         // SD tampoco
+    [InlineData(1920, 1080, PixelFormat.Yuv444p10le)]   // DNxHD 444: el dnxhd de FFmpeg solo admite 4:4:4 con dnxhr_444
+    public void Build_DnxhdWithoutAClassicCid_RecordsDnxHrLikeBefore(int width, int height, PixelFormat pix)
+    {
+        var profile = Dnxhd(width, height, FrameRate.P25, ScanType.Progressive, 185, pix);
+        var joined = Build(profile).Joined;
+        Assert.Contains("-c:v dnxhd -profile:v dnxhr_", joined);
+        Assert.DoesNotContain("-profile:v dnxhd", joined);
+    }
+
+    [Fact]
+    public void Build_DnxhdAtNativeSizeFromAnUnknownSource_RecordsDnxHr()
+    {
+        // Sin tamaño (preset en nativo y una fuente que aún no lo ha dicho) no hay CID que elegir: DNxHR, como siempre.
+        var profile = Dnxhd(1920, 1080, FrameRate.P25, ScanType.Progressive, 185);
+        profile.TargetResolution = null;
+        Assert.Contains("-profile:v dnxhr_hq", Build(profile).Joined);
+    }
+
+    [Fact]
+    public void Build_CatalogDnxhdPresets_AskFfmpegForExactlyTheirBitrate_WithBothFields()
+    {
+        // El bitrate de cada DNxHD del catálogo es una clave válida de su CID: la línea de comandos dice lo que dice el preset.
+        var dnxhd = Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns().Where(p => p.VideoCodec == VideoCodec.DnxHd).ToList();
+        Assert.NotEmpty(dnxhd);
+        foreach (var preset in dnxhd)
+        {
+            var profile = preset.ToProfile();
+            Assert.Equal((int)preset.VideoBitrateMbps, FfmpegArgumentBuilder.DnxhdBitrateMbps(profile, profile.TargetResolution, profile.OutputFrameRate));
+            var joined = Build(profile).Joined;
+            Assert.Contains($"-c:v dnxhd -profile:v dnxhd -b:v {(long)preset.VideoBitrateMbps * 1_000_000} -flags +ildct -pix_fmt yuv422p", joined);
+            Assert.Contains("setfield=mode=tff", joined);
+        }
+    }
+
+    [Fact]
+    public void BuildLive_DnxhdAtNativeSize_TakesTheSizeAndRateFromTheSignal()
+    {
+        var profile = Dnxhd(1920, 1080, FrameRate.P25, ScanType.InterlacedTff, 0);
+        profile.TargetResolution = null;
+        profile.OutputFrameRate = null;
+        var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile);
+        Assert.Contains("-profile:v dnxhd -b:v 220000000 -flags +ildct", joined); // 1080i29.97 de la señal → CID 1243
+    }
 
     // --- Pipeline en vivo: preview + grabación en un solo proceso ---
 
@@ -399,13 +587,36 @@ public class FfmpegArgumentBuilderTests : IDisposable
     [Fact]
     public void Build_InterlacedProRes_AsksForInterlacedDct()
     {
-        // prores_ks codifica progresivo salvo que se le pida DCT entrelazada: un «1080i» grababa cuadros progresivos.
+        // ProRes codifica progresivo salvo que se le pida DCT entrelazada: un «1080i» grababa cuadros progresivos.
         var profile = ProResMov(EncoderProfile.ProResHq);
         profile.ScanType = ScanType.InterlacedTff;
         var joined = Build(profile).Joined;
-        Assert.Contains("-c:v prores_ks -profile:v 3 -flags +ildct", joined);
+        Assert.Contains("-c:v prores_aw -profile:v 3 -flags +ildct", joined);
         Assert.Contains("-field_order tt", joined);
         Assert.DoesNotContain("+ildct", Build(ProResMov(EncoderProfile.ProResHq)).Joined);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedTff, "setfield=mode=tff")]
+    [InlineData(ScanType.InterlacedBff, "setfield=mode=bff")]
+    public void BuildSlate_InterlacedPreset_MarksTheBarsWithTheFieldOrder(ScanType scan, string setfield)
+    {
+        // Las barras de lavfi son cuadros progresivos, sin marca de campo: con un preset 1080i TFF, x264 codificaba las piezas
+        // de la carta de ajuste en BFF y el MOV de ProRes las declaraba con el campo inferior primero («bt»).
+        var profile = ProResMov(EncoderProfile.ProResHq);
+        profile.ScanType = scan;
+        var joined = string.Join(' ', NewLiveBuilder(profile).BuildSlate(recording: true, 640, 360));
+        Assert.Contains($";[vrec]{setfield}[vslate]", joined);
+        Assert.Contains("-map [vslate]", joined);
+        Assert.Contains("-flags +ildct", joined);
+    }
+
+    [Fact]
+    public void BuildSlate_ProgressivePreset_RecordsTheBarsAsTheyAre()
+    {
+        var joined = string.Join(' ', NewLiveBuilder(ProResMov(EncoderProfile.ProResHq)).BuildSlate(recording: true, 640, 360));
+        Assert.DoesNotContain("setfield", joined);
+        Assert.Contains("-map [vrec]", joined);
     }
 
     [Fact]

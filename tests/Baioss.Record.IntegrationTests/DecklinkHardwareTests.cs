@@ -151,6 +151,17 @@ public sealed class DecklinkHardwareTests
 
         public bool AlarmRaised(AlarmType type) { lock (Alarms) return Alarms.Any(a => a.Type == type && a.Active); }
 
+        /// <summary>¿Estuvo activa la alarma en algún momento entre dos instantes (ya lo estaba, o saltó entre medias)?</summary>
+        public bool AlarmActiveBetween(AlarmType type, double from, double to)
+        {
+            lock (Alarms)
+            {
+                var events = Alarms.Where(a => a.Type == type).OrderBy(a => a.At).ToList();
+                bool activeAtStart = events.Where(a => a.At <= from).Select(a => a.Active).LastOrDefault();
+                return activeAtStart || events.Any(a => a.Active && a.At > from && a.At <= to);
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             try { await Engine.DisposeAsync(); } catch (Exception ex) { _log("Dispose motor: " + ex.Message); }
@@ -163,7 +174,7 @@ public sealed class DecklinkHardwareTests
     // ------------------------------------------------------------------------------------------------------------------
 
     private sealed record StreamInfo(string Type, string Codec, string? Encoder, string? FieldOrder, string? Title,
-        int Width, int Height, int Channels, double StartTime, double Duration, double AvgFps, long Packets);
+        int Width, int Height, int Channels, double StartTime, double Duration, double AvgFps, long Packets, string? Profile = null);
 
     private sealed record MediaInfo(double Duration, IReadOnlyList<StreamInfo> Streams, string Raw)
     {
@@ -204,7 +215,7 @@ public sealed class DecklinkHardwareTests
     private static async Task<MediaInfo> ProbeAsync(string file)
     {
         var (json, err, exit) = await RunAsync(Locator().FfprobePath, "-v", "error", "-count_packets", "-of", "json",
-            "-show_entries", "format=duration:stream=codec_type,codec_name,field_order,width,height,channels,start_time,duration,avg_frame_rate,nb_read_packets:stream_tags=encoder,title,handler_name",
+            "-show_entries", "format=duration:stream=codec_type,codec_name,profile,field_order,width,height,channels,start_time,duration,avg_frame_rate,nb_read_packets:stream_tags=encoder,title,handler_name",
             file);
         Assert.True(exit == 0, $"ffprobe falló con {Path.GetFileName(file)}: {err}");
         using var doc = JsonDocument.Parse(json);
@@ -216,7 +227,8 @@ public sealed class DecklinkHardwareTests
             streams.Add(new StreamInfo(Str(s, "codec_type") ?? "", Str(s, "codec_name") ?? "", Tag("encoder"), Str(s, "field_order"),
                 Tag("title") ?? Tag("handler_name"), (int)(Num(s, "width") is var w && !double.IsNaN(w) ? w : 0),
                 (int)(Num(s, "height") is var h && !double.IsNaN(h) ? h : 0), (int)(Num(s, "channels") is var c && !double.IsNaN(c) ? c : 0),
-                Num(s, "start_time"), Num(s, "duration"), Num(s, "avg_frame_rate"), (long)(Num(s, "nb_read_packets") is var n && !double.IsNaN(n) ? n : 0)));
+                Num(s, "start_time"), Num(s, "duration"), Num(s, "avg_frame_rate"), (long)(Num(s, "nb_read_packets") is var n && !double.IsNaN(n) ? n : 0),
+                Str(s, "profile")));
         }
         double duration = doc.RootElement.TryGetProperty("format", out var f) ? Num(f, "duration") : double.NaN;
         return new MediaInfo(duration, streams, json);
@@ -247,12 +259,14 @@ public sealed class DecklinkHardwareTests
         return (Count("TFF") + Count("BFF"), Count("Progressive"));
     }
 
-    /// <summary>Marca de entrelazado del primer cuadro DECODIFICADO (la del códec, no la del contenedor).</summary>
-    private static async Task<bool> FirstFrameIsInterlacedAsync(string file)
+    /// <summary>Marcas de entrelazado y de campo superior primero del primer cuadro DECODIFICADO (las del códec, no las del
+    /// contenedor).</summary>
+    private static async Task<(bool Interlaced, bool TopFieldFirst)> FirstFrameScanAsync(string file)
     {
         var (csv, _, _) = await RunAsync(Locator().FfprobePath, "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
-            "-show_entries", "frame=interlaced_frame", "-of", "csv=p=0", file);
-        return csv.Trim().TrimEnd(',').StartsWith('1');
+            "-show_entries", "frame=interlaced_frame,top_field_first", "-of", "csv=p=0", file);
+        var fields = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault()?.Split(',') ?? Array.Empty<string>();
+        return (fields.ElementAtOrDefault(0) == "1", fields.ElementAtOrDefault(1) == "1");
     }
 
     /// <summary>Pico máximo (dBFS) de una pista de audio del archivo, decodificándola.</summary>
@@ -369,16 +383,38 @@ public sealed class DecklinkHardwareTests
     [InlineData("H.264 Broadcast · FullHD 1080p25", "h264", "libx264", false)]
     [InlineData("XDCAM HD422 · 1080i59.94 50 Mbps", "mpeg2video", null, false)]
     [InlineData("MPEG-2 TS · HD 1080i59.94", "mpeg2video", null, false)]
-    [InlineData("ProRes 422 HQ · 1080i59.94", "prores", null, false)]
-    [InlineData("DNxHR HQ · 1080i59.94 (MOV)", "dnxhd", null, false)]
-    [InlineData("MXF OP1A · DNxHR HQ 1080i59.94", "dnxhd", null, false)]
-    public async Task Recording_WithFactoryPreset_IsContinuousAndPlayable(string presetName, string codec, string? encoder, bool? expectFallback)
+    // ProRes con prores_aw: con prores_ks ninguno llegaba a tiempo real en el i7-8700 (149–302 cuadros perdidos en 15 s).
+    [InlineData("ProRes 422 HQ · 1080i59.94", "prores", "prores_aw", false)]
+    [InlineData("ProRes 422 Proxy · 1080p25", "prores", "prores_aw", false)]   // con prores_ks, el más lento (0,76×)
+    [InlineData("ProRes 4444 XQ · 1080p25", "prores", "prores_aw", false)]     // el más pesado en 1080 (4:4:4)
+    [InlineData("ProRes 422 HQ · 1080p59.94", "prores", "prores_aw", false)]   // un cuadro por campo: el doble de cuadros
+    [InlineData("DNxHD 220 · 1080i59.94 (MOV)", "dnxhd", "dnxhd", false)]
+    [InlineData("MXF OP1A · DNxHD 220 1080i59.94", "dnxhd", null, false)]
+    public Task Recording_WithFactoryPreset_IsContinuousAndPlayable(string presetName, string codec, string? encoder, bool? expectFallback)
+        => RecordAndVerifyAsync(presetName, Preset(presetName).ToProfile(), codec, encoder, expectFallback);
+
+    /// <summary>
+    /// Un canal que aplicó uno de los antiguos presets «DNxHR HQ · 1080i…» guarda su copia del perfil: DNxHR entrelazado, que
+    /// FFmpeg no sabe entrelazar (grababa los campos en cuadros progresivos). El motor lo graba como su DNxHD clásico (220 a
+    /// 29.97) con los dos campos de verdad, sin que nadie vuelva a aplicar el preset.
+    /// </summary>
+    [SkippableFact]
+    public Task Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd()
+    {
+        var legacy = new EncodingPreset
+        {
+            Name = "DNxHR HQ · 1080i59.94 (MOV)", Container = ContainerFormat.Mov, VideoCodec = VideoCodec.DnxHr,
+            Width = 1920, Height = 1080, FrameRateNum = 30000, FrameRateDen = 1001, GopSize = 1, PixelFormat = PixelFormat.Yuv422p,
+            EncoderProfile = EncoderProfile.DnxHrHq, ScanType = ScanType.InterlacedTff, AudioCodec = AudioCodec.Pcm,
+        };
+        return RecordAndVerifyAsync(legacy.Name, legacy.ToProfile(), "dnxhd", "dnxhd", false);
+    }
+
+    private async Task RecordAndVerifyAsync(string presetName, RecordingProfile profile, string codec, string? encoder, bool? expectFallback)
     {
         Skip.If(Device is null || TestAssets.FfmpegDir is null, "Sin DeckLink configurada (BAIOSS_DECKLINK).");
         var log = new List<string>();
         var dir = NewOutputDir("rec-" + string.Concat(presetName.Where(char.IsLetterOrDigit)));
-        var preset = Preset(presetName);
-        var profile = preset.ToProfile();
         // NVENC: si la GPU no puede (driver/sesiones), el canal degrada solo y la alarma EncoderFallback lo dice.
         bool nvenc = FfmpegCodecMap.IsGpuEncoder(profile.VideoCodec);
         bool nvencUsable = nvenc && (await Locator().ProbeVideoEncoderAsync(FfmpegCodecMap.VideoEncoder(profile.VideoCodec))).Ok;
@@ -416,26 +452,44 @@ public sealed class DecklinkHardwareTests
                 Assert.Equal(0, rig.Receiver.Restarts);
 
                 double expectedFps = profile.OutputFrameRate?.Value ?? sourceFps;
-                // Con fallback se pierde el arranque del intento que no abrió: algo más de margen por abajo.
-                double expectedSeconds = tStop - tStarted + 0.3;
-                var media = await AssertContinuousRecordingAsync(files[0], expectedSeconds, expectedFps, fallback ? 2.5 : 1.5, codec, encoder);
+                // El motor sigue grabando hasta que el proceso de preview nuevo toma el relevo (así el preview no se congela al
+                // detener): el archivo acaba entre el Detener y el final de ese relevo, que con un preset pesado tarda más
+                // (ProRes HQ 1080p59.94: 2,1 s medidos). Con fallback se pierde el arranque del intento que no abrió: más margen.
+                double handover = Math.Max(0, tStopped - tStop - 0.6);
+                double expectedSeconds = tStop - tStarted + 0.3 + handover / 2;
+                var media = await AssertContinuousRecordingAsync(files[0], expectedSeconds, expectedFps, (fallback ? 2.5 : 1.5) + handover / 2, codec, encoder);
                 bool sourceInterlaced = rig.Source.CurrentSignal.Scan is ScanType.InterlacedTff or ScanType.InterlacedBff;
                 var (combed, progressive) = await DetectInterlaceAsync(files[0]);
-                bool codedInterlaced = await FirstFrameIsInterlacedAsync(files[0]);
+                var coded = await FirstFrameScanAsync(files[0]);
                 _out.WriteLine($"Barrido: señal {rig.Source.CurrentSignal.Scan}, preset {profile.ScanType}, contenedor «{media.Video!.FieldOrder}», " +
-                               $"cuadro codificado {(codedInterlaced ? "entrelazado" : "progresivo")}, idet {combed} entrelazados / {progressive} progresivos");
-                if (profile.ScanType is ScanType.InterlacedTff && profile.VideoCodec is not VideoCodec.DnxHr)
+                               $"perfil «{media.Video.Profile}», cuadro codificado {(coded.Interlaced ? (coded.TopFieldFirst ? "entrelazado TFF" : "entrelazado BFF") : "progresivo")}, " +
+                               $"idet {combed} entrelazados / {progressive} progresivos");
+                if (profile.ScanType is ScanType.InterlacedTff)
                 {
-                    // Entrelazado de verdad: el códec marca los cuadros como entrelazados TFF (no solo el contenedor).
-                    Assert.True(media.Video.FieldOrder is "tt" or "tb", $"Se grabó como {media.Video.FieldOrder}, no entrelazado TFF.");
-                    Assert.True(codedInterlaced, "Preset entrelazado, pero el códec escribió cuadros progresivos.");
+                    // Entrelazado de verdad: el CÓDEC marca los cuadros entrelazados TFF (no solo el contenedor). El MOV de FFmpeg
+                    // declara el entrelazado de DNxHD en el átomo ARES de Avid, no en «fiel»: ahí ffprobe dice «unknown».
+                    Assert.True(coded.Interlaced, "Preset entrelazado, pero el códec escribió cuadros progresivos.");
+                    Assert.True(coded.TopFieldFirst, "Preset TFF, pero el códec marcó los cuadros como BFF.");
+                    bool dnxhdInMov = media.Video.Codec == "dnxhd" && profile.Container is ContainerFormat.Mov;
+                    Assert.True(media.Video.FieldOrder is "tt" or "tb" || (dnxhdInMov && media.Video.FieldOrder is null or "unknown"),
+                        $"El contenedor declara «{media.Video.FieldOrder}», no entrelazado TFF.");
+                    // DNxHD clásico (CID entrelazado), no DNxHR con los campos guardados en cuadros progresivos.
+                    if (media.Video.Codec == "dnxhd") Assert.Equal("DNXHD", media.Video.Profile);
                 }
                 else if (profile.ScanType is ScanType.Progressive && sourceInterlaced)
                 {
-                    // Preset progresivo con señal 1080i: desentrelazado, sin peine (idet casi todo progresivo).
-                    Assert.True(combed < (combed + progressive) / 10, $"Peine en un preset progresivo: idet ve {combed} cuadros entrelazados y {progressive} progresivos.");
+                    // Preset progresivo con señal 1080i: desentrelazado, sin peine (idet casi todo progresivo). Con una imagen
+                    // estática (la carta de la emisora fuera de emisión) idet no clasifica ningún cuadro: nada que comprobar.
+                    if (combed + progressive >= 30)
+                        Assert.True(combed < (combed + progressive) / 10, $"Peine en un preset progresivo: idet ve {combed} cuadros entrelazados y {progressive} progresivos.");
+                    else _out.WriteLine("idet no clasifica los cuadros (imagen estática): sin comprobación de peine.");
                 }
-                Assert.True(await MaxVolumeAsync(files[0], 0) > -40, "La pista de audio grabada está en silencio.");
+                // El par grabado suena… salvo que la propia señal esté en silencio (emisora fuera de emisión): lo dice la alarma
+                // de silencio del motor, que mide el audio de ENTRADA. Si la entrada suena y el archivo no, es un fallo.
+                if (rig.AlarmActiveBetween(AlarmType.AudioSilence, tStarted, tStop))
+                    _out.WriteLine("La señal está en silencio (alarma AudioSilence): sin comprobación de nivel.");
+                else
+                    Assert.True(await MaxVolumeAsync(files[0], 0) > -40, "La pista de audio grabada está en silencio.");
                 Assert.Equal(0, Interlocked.Read(ref rig.Overruns));
                 long dropsWhileRecording = rig.RelayDropsBetween(tStart, tStop);
                 Assert.True(dropsWhileRecording == 0,
@@ -586,6 +640,9 @@ public sealed class DecklinkHardwareTests
                 await Task.Delay(8_000);
                 _out.WriteLine($"Segundo con la tarjeta ocupada: {second.Source.CurrentSignal.State} «{second.Source.CurrentSignal.FormatLabel}»");
                 Assert.Equal(SignalState.NoSignal, second.Source.CurrentSignal.State);
+                // En autodetección FFmpeg no dice «en uso», solo el fallo genérico, pero al instante: el panel lo nombra así y no
+                // como «La tarjeta no detecta señal».
+                Assert.Equal(Baioss.Record.Application.Localization.Localizer.T("Dl_State_Refused"), second.Source.CurrentSignal.FormatLabel);
                 Assert.Equal(SignalState.Locked, first.Source.CurrentSignal.State);
                 Assert.True(first.LongestPreviewGap(first.Clock.Elapsed.TotalSeconds - 7, first.Clock.Elapsed.TotalSeconds) < 0.25, "El intento del segundo interrumpió al primero.");
             }
@@ -645,7 +702,13 @@ public sealed class DecklinkHardwareTests
                         Assert.Contains(rig.Alarms, a => a.Type == AlarmType.Slate && !a.Active);
                     }
                 }
-                else Assert.Single(rig.Interruptions); // sin carta: el proceso acaba por EOF y se recupera en pieza nueva
+                else
+                {
+                    Assert.Single(rig.Interruptions); // sin carta: el proceso acaba por EOF y se recupera en pieza nueva
+                    // …en cuanto la tarjeta reabre (~1,3 s), no al siguiente backoff: antes, el reintento que salía justo antes de que
+                    // volviera la señal fallaba y el siguiente llegaba 2 s después (3,3 s de hueco medidos).
+                    Assert.True(backAt - tKill < 2.5, $"La grabación volvió {backAt - tKill:0.0} s después de la caída: esperó al backoff.");
+                }
                 Assert.Equal(RecordingState.Idle, rig.Engine.State);
                 Assert.Empty(rig.Unverified);
                 foreach (var f in files)

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Domain;
 using Xunit;
@@ -8,7 +10,7 @@ namespace Baioss.Record.UnitTests;
 /// Valida el catálogo de presets de fábrica. Protege dos invariantes que, de romperse, fallarían
 /// en silencio: (1) identidad estable de los built-in (Id/Nombre únicos → favoritos no colisionan),
 /// y (2) que el entrelazado SOLO se ofrece donde es técnicamente válido (SD/1080, códecs que lo
-/// codifican). NVENC/QSV/AMF NO codifican entrelazado y 720/4K no existen entrelazados en broadcast.
+/// codifican). NVENC/QSV/AMF y DNxHR NO codifican entrelazado y 720/4K no existen entrelazados en broadcast.
 /// </summary>
 public sealed class PresetCatalogTests
 {
@@ -41,12 +43,14 @@ public sealed class PresetCatalogTests
     [Fact]
     public void InterlacedPresets_NeverUseEncodersThatCannotInterlace()
     {
-        // NVENC/QuickSync/AMF no codifican entrelazado; HEVC entrelazado está mal soportado por los
-        // reproductores. El entrelazado se codifica por software intra/long-GOP: x264, MPEG-2, ProRes, DNxHR.
+        // NVENC/QuickSync/AMF no codifican entrelazado; HEVC entrelazado está mal soportado por los reproductores; y el
+        // codificador DNxHR de FFmpeg rechaza la DCT entrelazada («Interlaced encoding is not supported for DNxHR profiles»):
+        // un DNxHR «1080i» guardaba los campos en cuadros progresivos. El entrelazado se codifica por software intra/long-GOP:
+        // x264, MPEG-2, ProRes y DNxHD clásico.
         VideoCodec[] forbidden =
         {
             VideoCodec.H264Nvenc, VideoCodec.HevcNvenc, VideoCodec.Av1Nvenc,
-            VideoCodec.H264Qsv, VideoCodec.H264Amf, VideoCodec.H265x265, VideoCodec.HevcQsv,
+            VideoCodec.H264Qsv, VideoCodec.H264Amf, VideoCodec.H265x265, VideoCodec.HevcQsv, VideoCodec.DnxHr,
         };
         var bad = Catalog.Where(IsInterlaced)
                          .Where(p => forbidden.Contains(p.VideoCodec))
@@ -69,6 +73,36 @@ public sealed class PresetCatalogTests
         // La familia NTSC entrelazada debe existir tanto en 1080 como en SD.
         Assert.Contains(interlaced, p => p is { Height: 1080, FrameRateNum: 30000, FrameRateDen: 1001 });
         Assert.Contains(interlaced, p => p is { Height: 480, FrameRateNum: 30000, FrameRateDen: 1001 });
+    }
+
+    [Theory]
+    // Los 1080i de DNxHR pasaron a DNxHD (2026-10): conservan el GUID del nombre anterior para que un favorito siga en su sitio.
+    [InlineData("DNxHD 185 · 1080i25 (MXF)", "DNxHR HQ · 1080i25 (MXF)")]
+    [InlineData("DNxHD 185 · 1080i25 (MOV)", "DNxHR HQ · 1080i25 (MOV)")]
+    [InlineData("DNxHD 220 · 1080i59.94 (MOV)", "DNxHR HQ · 1080i59.94 (MOV)")]
+    [InlineData("MXF OP1A · DNxHD 220 1080i59.94", "MXF OP1A · DNxHR HQ 1080i59.94")]
+    public void RenamedPresets_KeepTheIdOfTheirFormerName(string name, string formerName)
+    {
+        var preset = Assert.Single(Catalog, p => p.Name == name);
+        Assert.Equal(new Guid(MD5.HashData(Encoding.UTF8.GetBytes("preset:" + formerName))), preset.Id);
+        Assert.DoesNotContain(Catalog, p => p.Name == formerName);
+    }
+
+    [Fact]
+    public void InterlacedDnxhdPresets_UseTheAvidBitrateOfTheirCadence()
+    {
+        // DNxHD clásico: el bitrate elige el CID y Avid lo nombra por los Mbps reales a cada cadencia —1080i29.97: 145/220;
+        // 1080i25: 120/185 (los mismos CID 1242/1243)—. El nombre del preset dice cuál.
+        var dnxhd = Catalog.Where(p => p.VideoCodec == VideoCodec.DnxHd).ToList();
+        Assert.Equal(4, dnxhd.Count);
+        foreach (var p in dnxhd)
+        {
+            Assert.True(IsInterlaced(p), $"{p.Name}: los DNxHD del catálogo son los 1080i.");
+            int[] valid = p.FrameRateNum == 25 ? new[] { 120, 185 } : new[] { 145, 220 };
+            Assert.Contains((int)p.VideoBitrateMbps, valid);
+            Assert.Contains($"DNxHD {p.VideoBitrateMbps}", p.Name);
+            Assert.Equal(PixelFormat.Yuv422p, p.PixelFormat);
+        }
     }
 
     private static bool IsNvenc(EncodingPreset p) =>

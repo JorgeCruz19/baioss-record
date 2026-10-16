@@ -15,8 +15,8 @@ public static class RecordingProfileValidator
     {
         var errors = new List<string>();
 
-        // Los códecs intra (ProRes/DNxHD/HR) van por -profile, no por bitrate; calidad constante (CRF/CQ)
-        // tampoco usa -b:v. En esos casos un bitrate 0 es legítimo.
+        // Los códecs intra van por -profile (ProRes/DNxHR) o por un CID fijo (DNxHD: sin bitrate, el motor toma el de más
+        // calidad del formato), no por un bitrate libre; calidad constante (CRF/CQ) tampoco usa -b:v. Ahí un bitrate 0 es legítimo.
         bool intra = p.VideoCodec is VideoCodec.ProRes or VideoCodec.DnxHd or VideoCodec.DnxHr;
         bool usesVideoBitrate = !intra && p.RateControl is not RateControlMode.ConstantQuality;
 

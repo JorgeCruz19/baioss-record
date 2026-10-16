@@ -158,6 +158,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private volatile bool _recovering;
     private int _recordRestartCount;
     private DateTimeOffset _lastRecordDeathUtc;
+    // Espera de cada reintento de recuperación: si la grabación cayó (o el intento falló) SIN señal en la fuente, el aviso de que
+    // la señal volvió la adelanta (OnSourceSignalChanged) en vez de esperar el backoff entero. Ver RecoveryWait.
+    private readonly RecoveryWait _recoveryWait = new();
+    /// <summary>Una pieza nueva nunca sale antes de esto desde la caída, aunque la señal vuelva antes: el nombre por defecto de
+    /// la pieza lleva la hora con precisión de SEGUNDO y debe diferir del de la anterior (con <c>-y</c> la pisaría).</summary>
+    private static readonly TimeSpan MinRecordRestartDelay = TimeSpan.FromSeconds(1);
     // Generación de la grabación: cambia en cada Grabar y cada Detener. Una cadena de recuperación (con backoff de hasta
     // 30 s) programada en una grabación NO debe actuar sobre la siguiente: antes, Detener + Grabar dentro de ese backoff
     // hacía que la cadena vieja partiera la grabación nueva en otra pieza (o la mandara a barras).
@@ -657,6 +663,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{sink.Port}")
             .WithFragmentedMp4(FragmentedMp4)
             .WithWriteQueue(WriteQueue);
+        // Grabación con fin previsto (programada con duración): lo que le queda desde ESTE proceso —también una pieza nueva o la
+        // carta de ajuste—, para no cortar un segmento un instante antes del Detener.
+        if (recording && profile.Segmentation?.PlannedEnd is { } plannedEnd)
+            builder.WithPlannedRemaining(plannedEnd - DateTimeOffset.UtcNow);
 
         // Nombre del archivo. Si hay un nombre base (manual/programada), lo aplica; si no, el builder usa
         // el de por defecto {canal}_{fecha_hora}. Se resuelve POR proceso para que cada pieza nueva (corte
@@ -1296,6 +1306,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         _recovering = true;
         int generation = _recordGeneration; // la recuperación es de ESTA grabación: si se detiene o empieza otra, no actúa
+        long diedAt = Stopwatch.GetTimestamp();
+        // ¿Cayó con la fuente SIN señal (el receptor perdió la tarjeta, se fue el emisor)? Entonces el reintento sale en cuanto
+        // la señal vuelva; si la fuente la sigue teniendo, la caída fue del proceso y se respeta el backoff.
+        bool untilSignal = !SourceHasSignal;
         _log.LogWarning("Canal {Key}: el proceso de grabación murió (código {Code}); recuperando en una PIEZA NUEVA (sin truncar la anterior).", _channelKey, exitCode);
         // A la auditoría: es el suceso que explica un archivo cortado y un hueco de segundos. −1 es el código con
         // el que sale un proceso MATADO (watchdog por estancamiento, o alguien desde fuera); cualquier otro es
@@ -1307,8 +1321,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 : $"FFmpeg salió con código {exitCode}"));
         }
         catch (Exception ex) { _log.LogError(ex, "Canal {Key}: fallo al notificar la interrupción; la recuperación sigue.", _channelKey); }
-        _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation));
+        _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation, diedAt, untilSignal));
     }
+
+    /// <summary>¿Dice la fuente que tiene señal? Es la condición para reconstruir una fuente que se auto-reporta (relé DeckLink, NDI,
+    /// red); las demás casi siempre la tienen (la publican al asignarse) y su recuperación sigue con el backoff de siempre.</summary>
+    private bool SourceHasSignal => _source?.CurrentSignal.State == SignalState.Locked;
 
     /// <summary>
     /// Reconstruye la grabación tras la caída del proceso: espera un backoff, y bajo el semáforo reconstruye vía
@@ -1316,13 +1334,22 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// segmento recalculado, sin reabrir el mismo archivo—. Si la reconstrucción falla (la fuente sigue caída),
     /// reintenta con más backoff hasta que la señal vuelva. <see cref="_recovering"/> se mantiene mientras dure
     /// la cadena de reintentos y se limpia al lograrlo o al dejar de grabar. (Auditoría N1.)
+    /// Con <paramref name="untilSignal"/> (la caída o el intento anterior fueron SIN señal) la espera acaba en cuanto la fuente
+    /// avisa de que la señal volvió (ver <see cref="RecoveryWait"/>), nunca antes de <see cref="MinRecordRestartDelay"/> desde la
+    /// caída (<paramref name="diedAt"/>).
     /// </summary>
-    private async Task RecoverRecordingAsync(int exitCode, int generation)
+    private async Task RecoverRecordingAsync(int exitCode, int generation, long diedAt, bool untilSignal)
     {
         bool retry = false;
+        bool retryUntilSignal = false;
         try
         {
-            try { await Task.Delay(NextRecordRestartDelay()).ConfigureAwait(false); } catch { /* noop */ }
+            try
+            {
+                var minimum = MinRecordRestartDelay - Stopwatch.GetElapsedTime(diedAt);
+                await _recoveryWait.WaitAsync(NextRecordRestartDelay(), untilSignal, () => SourceHasSignal, minimum).ConfigureAwait(false);
+            }
+            catch { /* noop */ }
             await _gate.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -1345,12 +1372,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 else
                     _log.LogError(ex, "Canal {Key}: fallo al recuperar la grabación tras la caída; se reintentará con backoff.", _channelKey);
                 retry = !_disposed && generation == _recordGeneration && _state is (RecordingState.Recording or RecordingState.Starting);
+                // Falló SIN señal: el siguiente reintento sale en cuanto vuelva. CON señal el fallo es otro (carpeta, codificador…)
+                // y se espera el backoff entero aunque la fuente avise; si no, cada aviso relanzaría la reconstrucción en bucle.
+                retryUntilSignal = !SourceHasSignal;
             }
             finally { _gate.Release(); }
         }
         finally
         {
-            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation)); // mantiene _recovering=true durante la cadena
+            if (retry) _ = Task.Run(() => RecoverRecordingAsync(exitCode, generation, diedAt, retryUntilSignal)); // mantiene _recovering=true durante la cadena
             else if (generation == _recordGeneration) _recovering = false; // si ya es otra grabación, la bandera es suya
         }
     }
@@ -1358,7 +1388,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// <summary>Backoff exponencial acotado (1→2→4→8→16→30 s) entre reintentos de recuperación de la grabación.
     /// Se resetea si el proceso anterior vivió sano &gt;60 s (una caída aislada no arrastra el retardo de una racha
     /// vieja; aborda también N24). El mínimo de 1 s garantiza además que el nombre por defecto de la pieza nueva
-    /// (precisión de SEGUNDO) difiera del de la anterior, evitando cualquier colisión con <c>-y</c>.</summary>
+    /// (precisión de SEGUNDO) difiera del de la anterior, evitando cualquier colisión con <c>-y</c>; cuando la vuelta de la
+    /// señal adelanta la espera, lo garantiza <see cref="MinRecordRestartDelay"/>.</summary>
     private TimeSpan NextRecordRestartDelay()
     {
         var now = DateTimeOffset.UtcNow;
@@ -1439,9 +1470,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (_disposed) return;
         if (info.State == SignalState.Locked)
         {
-            if (_slate) _ = ExitSlateAsync(); // la señal volvió: reanuda la fuente real
+            if (_slate) { _ = ExitSlateAsync(); return; } // la señal volvió: reanuda la fuente real
+            // La grabación cayó sin señal y su reintento espera el backoff: sale ya (ver RecoveryWait).
+            if (_recovering) _recoveryWait.SignalReturned();
             // Sin proceso aún (la fuente no tenía señal al enlazar): el bucle de espera levanta el preview ya.
-            else if (_awaitWake.CurrentCount == 0) { try { _awaitWake.Release(); } catch (SemaphoreFullException) { /* ya avisado */ } }
+            if (_awaitWake.CurrentCount == 0) { try { _awaitWake.Release(); } catch (SemaphoreFullException) { /* ya avisado */ } }
             return;
         }
         // Pérdida/inestabilidad: misma política y guardas que OnSupervisorRestarted, pero proactiva.

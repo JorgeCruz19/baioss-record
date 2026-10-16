@@ -30,18 +30,18 @@ Barra de herramientas: **Nuevo · Editar · Duplicar · Eliminar · Importar · 
 | Parámetro | Campo | Mapeo FFmpeg |
 |-----------|-------|--------------|
 | Contenedor | `Container` | muxer `-f` (mp4/mov/mxf/mkv/mpegts/avi/mpeg/wav/mp3) |
-| Códec de video | `VideoCodec` | `-c:v` (libx264, libx265, hevc/h264/av1_nvenc, prores_ks, dnxhd, mpeg2video) |
+| Códec de video | `VideoCodec` | `-c:v` (libx264, libx265, hevc/h264/av1_nvenc, prores_aw, dnxhd, mpeg2video) |
 | Códec de audio | `AudioCodec` | `-c:a` (aac, pcm_s24le, libfdk_aac, libopus, libmp3lame, mp2) |
 | Resolución | `Width`/`Height` | filtro `scale=W:H` (vacío = nativa) |
 | FPS | `FrameRateNum/Den` | `-r N/D` (vacío = la de la fuente) |
-| Bitrate | `VideoBitrateMbps` | `-b:v` |
+| Bitrate | `VideoBitrateMbps` | `-b:v` (en DNxHD clásico elige el CID; ProRes/DNxHR lo ignoran) |
 | Max bitrate | `MaxBitrateMbps` | `-maxrate` + `-bufsize` (VBV) |
 | GOP | `GopSize` | `-g` |
 | Pixel Format | `PixelFormat` | `-pix_fmt` (yuv420p, yuv422p, *p10le; Auto = el del códec) |
 | Audio Sample Rate | `AudioSampleRate` | `-ar` |
 | Audio Channels | `AudioLayout` | `-ac` (1/2/6/8) |
 | Audio Bitrate | `AudioBitrateKbps` | `-b:a` |
-| Field Order | `ScanType` | `setfield`/`-field_order` (tt/bb) + `-flags +ilme+ildct` |
+| Field Order | `ScanType` | `setfield`/`-field_order` (tt/bb) + `-flags +ilme+ildct` (x264, MPEG-2) o `+ildct` (ProRes, DNxHD) |
 | Control de tasa | `RateControl` | CBR / VBR / CRF-CQ |
 
 > El campo `AudioOnly` produce comandos sin video (`-vn`) para los presets de la categoría Audio.
@@ -56,10 +56,10 @@ grabando material real (ver más abajo).
 | **MPEG-2** (6) | PS SD PAL · PS SD NTSC 480i59.94 · TS HD 1080i25 · TS HD 1080i59.94 · TS SD PAL · TS SD NTSC 480i59.94 |
 | **H.264** (26) | **CPU (libx264):** HD 720p50 · 720p59.94 · FullHD 1080p23.98 · 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 1080p60 · 4K UHD 2160p50 · 2160p59.94 · **entrelazado:** 1080i25 MP4 · 1080i25 TS · 1080i59.94 MP4 · 1080i59.94 TS · SD PAL 576i25 · SD NTSC 480i59.94 · **GPU NVIDIA (NVENC):** 720p50 · 720p59.94 · 1080p23.98 · 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 1080p60 · 4K 2160p50 · 4K 2160p59.94 |
 | **H.265/HEVC** (10) | **CPU (libx265):** FullHD 1080p25 · 1080p59.94 · 4K UHD 2160p50 10-bit · 2160p59.94 10-bit · **GPU NVIDIA (NVENC, 8 bits):** 1080p25 · 1080p29.97 · 1080p50 · 1080p59.94 · 4K 2160p50 · 4K 2160p59.94 |
-| **DNxHD/DNxHR** (9) | LB 1080p25 (offline) · SQ 1080p25 · HQ 1080p25 · HQ 1080p59.94 (MOV) · HQX 1080p25 10-bit · 444 1080p25 10-bit · HQ 1080i25 (MXF) · HQ 1080i25 (MOV) · HQ 1080i59.94 (MOV) |
+| **DNxHD/DNxHR** (9) | **DNxHR (progresivo):** LB 1080p25 (offline) · SQ 1080p25 · HQ 1080p25 · HQ 1080p59.94 (MOV) · HQX 1080p25 10-bit · 444 1080p25 10-bit · **DNxHD (entrelazado):** 185 1080i25 (MXF) · 185 1080i25 (MOV) · 220 1080i59.94 (MOV) |
 | **ProRes** (10) | 422 Proxy 1080p25 · 422 LT 1080p25 · 422 1080p25 · 422 HQ 1080p25 · 4444 1080p25 · 4444 XQ 1080p25 · 422 HQ 4K 2160p25 · 422 HQ 1080p59.94 · 422 HQ 1080i25 · 422 HQ 1080i59.94 |
 | **XDCAM** (4) | HD422 1080i25 50 Mbps · HD 1080i25 35 Mbps · HD422 1080i59.94 50 Mbps · HD 1080i59.94 35 Mbps |
-| **MXF OP1A** (14) | XDCAM HD422 50 (1080i25) · DNxHR HQ 1080p25 · **59.94 (NTSC):** XDCAM HD422 1080i59.94 · 1080p59.94 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080p60 · DNxHR HQ 1080i59.94 · DNxHR HQ 1080p59.94 · DNxHR HQX 1080p59.94 10-bit · **50 Hz (PAL):** XDCAM HD422 1080p50 · 720p50 · DNxHR HQ 1080p50 |
+| **MXF OP1A** (14) | XDCAM HD422 50 (1080i25) · DNxHR HQ 1080p25 · **59.94 (NTSC):** XDCAM HD422 1080i59.94 · 1080p59.94 · 1080p29.97 · 1080p23.98 · 720p59.94 · 1080p60 · DNxHD 220 1080i59.94 · DNxHR HQ 1080p59.94 · DNxHR HQX 1080p59.94 10-bit · **50 Hz (PAL):** XDCAM HD422 1080p50 · 720p50 · DNxHR HQ 1080p50 |
 | **AVI** (2) | H.264 1080p25 · H.264 1080i25 |
 | **MKV** (3) | H.264 1080p25 · H.264 1080i25 · HEVC 4K 10-bit |
 | **Audio** (3) | WAV PCM 48k 24-bit · AAC 256k (M4A) · MP3 320k |
@@ -73,8 +73,8 @@ Los **H.264 NVENC** y **HEVC NVENC** graban con el codificador de la tarjeta NVI
 H.264/HEVC de fábrica codifica por CPU (libx264/libx265). Los H.264 NVENC son los gemelos por GPU de los H.264 de CPU:
 misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); todos en MP4 + AAC.
 
-- **Solo progresivos:** NVENC no codifica entrelazado. Para 1080i/576i/480i siguen los de x264, MPEG-2 y ProRes (DNxHR no:
-  el codificador de FFmpeg no admite entrelazado en sus perfiles y guarda los dos campos en cuadros progresivos).
+- **Solo progresivos:** NVENC no codifica entrelazado. Para 1080i/576i/480i siguen los de x264, MPEG-2, ProRes y DNxHD
+  clásico (DNxHR no: el codificador de FFmpeg no admite entrelazado en sus perfiles; ver más abajo).
 - **Señal entrelazada con un preset progresivo** (una DeckLink en 1080i59.94 grabando con un NVENC 1080p): la rama de
   grabación **desentrelaza** con `bwdif` antes de escalar, con el orden de campos que la tarjeta da al abrir
   (`SignalInfo.Scan`; el relé en crudo no conserva la marca en los cuadros). Si el preset dobla la cadencia (1080i59.94 →
@@ -83,12 +83,17 @@ misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); 
 - **8 bits:** NVENC pide `p010` para 10 bits y no acepta el `yuv420p10le` del catálogo, así que los HEVC 4K de 10 bits
   siguen siendo de CPU.
 - **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.
-- **Sin NVIDIA**, o con un driver más antiguo que el que exige el FFmpeg empaquetado (el actual, SDK 13.1, pide
-  **≥ 610**), el canal **degrada solo** (`EncoderFallbackChain`, alarma *EncoderFallback*): H.264 → QuickSync → AMF →
-  CPU (libx264); HEVC → QuickSync (`hevc_qsv`) → CPU (libx265). El escalón QuickSync de HEVC importa: libx265 no llega a
-  1080p29.97 en tiempo real en un Core i7-8700 (medido con una DeckLink: 267 cuadros perdidos en 15 s), la GPU integrada
-  sí. Lo permite el píxel Auto: cada codificador recibe su formato nativo, porque un
-  `yuv420p` fijo haría fallar a `h264_qsv`. Lo cubre `BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat`.
+- **Driver:** lo fija la compilación de FFmpeg, que descarga el cliente (no va en el instalador). Las de SDK 13.1
+  (ffmpeg-autobuild desde la del 2026-06-14, como la de `tools\ffmpeg`) piden **≥ 610**, que Turing y posteriores sí
+  reciben. Maxwell, Pascal y Volta no pasan de la rama R580: usan la del 2026-03-12 (SDK 13.0, **≥ 570**) y no una del
+  2026-03-15 al 2026-04-06, que con imagen fija o negro deja ilegibles los MP4/MOV de QuickSync. Ver
+  [FFMPEG.md](FFMPEG.md).
+- **Sin NVIDIA**, o con un driver más antiguo que el que exige la compilación de FFmpeg, el canal **degrada solo**
+  (`EncoderFallbackChain`, alarma *EncoderFallback*): H.264 → QuickSync → AMF → CPU (libx264); HEVC → QuickSync
+  (`hevc_qsv`) → CPU (libx265). El escalón QuickSync de HEVC importa: libx265 no llega a 1080p29.97 en tiempo real en un
+  Core i7-8700 (medido con una DeckLink: 267 cuadros perdidos en 15 s), la GPU integrada sí. Lo permite el píxel Auto:
+  cada codificador recibe su formato nativo, porque un `yuv420p` fijo haría fallar a `h264_qsv`. Lo cubre
+  `BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat`.
 - En la ventana de presets, escribir **NVENC** en el buscador los lista todos.
 
 ```text
@@ -100,6 +105,99 @@ ffmpeg ... -filter_complex "[0:v]scale=1920:1080[mainout]" -map "[mainout]" -map
 # HEVC NVENC · 4K UHD 2160p59.94
 ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
   -c:v hevc_nvenc -preset p5 -tune hq -rc vbr -b:v 45000000 -maxrate 60000000 -bufsize 120000000 -g 50 -bf 0 ...
+```
+
+### DNxHD clásico y DNxHR (Avid)
+
+- **DNxHR** (`VideoCodec.DnxHr`): por perfil (`-profile:v dnxhr_lb/sq/hq/hqx/444`), cualquier resolución y **solo
+  progresivo**: el `dnxhd` de FFmpeg rechaza la DCT entrelazada en sus perfiles («Interlaced encoding is not supported for
+  DNxHR profiles»). Los antiguos presets «DNxHR HQ · 1080i…» guardaban los dos campos en cuadros progresivos (el MXF los
+  declaraba progresivos; medido con una DeckLink en 1080i59.94).
+- **DNxHD clásico** (`VideoCodec.DnxHd`): un CID fijo por formato (tamaño, barrido, 8/10 bits) y **el bitrate elige el
+  CID**. FFmpeg busca la clave en la lista del CID sin mirar la cadencia; los Mbps reales son el tamaño de cuadro × la
+  cadencia, por eso Avid llama distinto al mismo CID en 59.94i y en 50i:
+
+  | 1920×1080i | a 29.97 (59.94i) | a 25 (50i) | CID | píxel |
+  |------------|------------------|------------|-----|-------|
+  | DNxHD 145 / 120 | 145 Mbps | 121 Mbps | 1242 | `yuv422p` |
+  | DNxHD 220 / 185 | 220 Mbps | 183,5 Mbps | 1243 | `yuv422p` |
+  | DNxHD 220x / 185x | 220 Mbps | 183,5 Mbps | 1241 | `yuv422p10le` |
+
+  El builder emite `-profile:v dnxhd -b:v <clave> -flags +ildct` tras un `setfield`: cuadros entrelazados TFF de verdad.
+  Comprobado con la DeckLink: en MXF `field_order tt`; en MOV el muxer de FFmpeg declara el entrelazado de DNxHD en el
+  átomo `ARES` de Avid y no en `fiel`, así que ffprobe dice `unknown`, pero el cuadro decodificado es entrelazado TFF.
+- **A prueba de bitrates libres** (`FfmpegArgumentBuilder.DnxhdBitrateMbps`, con los 13 CID que el FFmpeg empaquetado
+  acepta sin `-strict experimental`): una clave válida se respeta tal cual; cualquier otra —con FFmpeg sería «video
+  parameters incompatible with DNxHD» y la grabación no arrancaría— se ajusta al CID cuyos Mbps reales a esa cadencia
+  quedan más cerca, y sin bitrate se toma el CID de más calidad. Un DNxHD sin CID clásico (4K, SD, 4:4:4 —el `dnxhd` de
+  FFmpeg no codifica DNxHD 444— o tamaño desconocido) graba DNxHR por perfil, lo que hacía antes. Detalle: FFmpeg no
+  acepta «220» para el CID 1235 (1080p de 10 bits) aunque dé 220 Mbps a 29.97; el builder pide 185.
+- **Un DNxHR entrelazado se graba como su DNxHD.** Los canales que aplicaron los antiguos presets guardan su copia del
+  perfil (DNxHR entrelazado), igual que cualquier preset propio: el motor los graba como el DNxHD equivalente —SQ →
+  145/120, HQ → 220/185, HQX → 220x/185x— sin que nadie vuelva a aplicar el preset (el badge del canal mantiene el nombre
+  antiguo hasta entonces). LB y 444 no tienen equivalente entrelazado (no hay DNxHD 1080i por debajo de 145 ni DNxHD 444
+  en FFmpeg) y siguen en DNxHR progresivo.
+- **Presets renombrados (2026-10-16):** «DNxHR HQ · 1080i25 (MXF)» → «DNxHD 185 · 1080i25 (MXF)», «DNxHR HQ · 1080i25
+  (MOV)» → «DNxHD 185 · 1080i25 (MOV)», «DNxHR HQ · 1080i59.94 (MOV)» → «DNxHD 220 · 1080i59.94 (MOV)» y «MXF OP1A · DNxHR
+  HQ 1080i59.94» → «MXF OP1A · DNxHD 220 1080i59.94». Conservan el GUID del nombre anterior (`Make(..., formerName:)`), así
+  que un favorito sigue en su sitio, y la misma clase de bitrate que DNxHR HQ (CID 1243, 917 504 bytes por cuadro).
+
+```text
+# DNxHD 220 · 1080i59.94 (MOV), grabando de una DeckLink
+ffmpeg ... -filter_complex "[0:v]split=2[vrec][vprev];[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p[vmain];..." \
+  -map [vmain] -map 0:a:0? -c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p \
+  -c:a aac -ar 48000 -b:a 256000 -ac 2 -r 30000/1001 -field_order tt ... -f mov -y <salida>
+```
+
+### ProRes: prores_aw, en tiempo real
+
+`VideoCodec.ProRes` graba con **prores_aw** (antes prores_ks). En el PC de referencia (Core i7-8700, 6 núcleos/12 hilos)
+prores_ks no llega a tiempo real: con los 12 hilos codifica 1080i29.97 HQ a 0,8–1,2× y Proxy/LT aún más despacio, así que
+todos los presets ProRes perdían cuadros en vivo (prueba con DeckLink: 149–302 cuadros perdidos en 15 s). prores_aw hace lo
+mismo a 5–6×. Medido con 240 cuadros reales de TV en directo (DeckLink, 1080i29.97, `-flags +ildct`, 12 hilos):
+
+| Perfil | prores_aw | prores_ks | prores_aw: Mbps · PSNR | prores_ks: Mbps · PSNR |
+|--------|-----------|-----------|------------------------|------------------------|
+| 422 Proxy | 192 fps (6,4×) | 23 fps (0,76×) | 24,6 · 44,3 dB | 23,8 · 40,3 dB |
+| 422 LT | 157 fps (5,2×) | 22 fps (0,72×) | 38,0 · 52,5 dB | 45,4 · 49,9 dB |
+| 422 | 149 fps (5,0×) | 26 fps (0,87×) | 50,4 · 59,1 dB | 59,3 · 53,6 dB |
+| 422 HQ | 169 fps (5,6×) | 37 fps (1,24×) | 66,5 · 64,6 dB | 76,8 · 64,4 dB |
+| 4444 | 90 fps (3,0×) | 19 fps (0,64×) | 83,3 · 66,7 dB | 100,8 · 71,7 dB |
+| 4444 XQ | 93 fps (3,1×) | 22 fps (0,72×) | 97,3 · 70,5 dB | 105,6 · 75,4 dB |
+
+(SSIM ≥ 0,9992 en todos salvo Proxy: 0,9950 prores_aw, 0,9910 prores_ks. Los Mbps quedan lejos de los nominales de Apple
+—HQ 1080i29.97 ≈ 220— porque ProRes es VBR y la señal de TV es blanda.) El proceso de grabación completo (filtros +
+preview + codificación) sobre el mismo clip, en núcleos a tiempo real: 422 HQ 1080i29.97 ≈ 2,9 (3,2× de margen); 422 HQ
+1080p59.94 desde 1080i (`bwdif`, un cuadro por campo) ≈ 5 (1,7×); 4444 XQ 1080p25 ≈ 3,4 (2,5×). prores_ks HQ, solo el
+codificador: ≈ 9.
+
+- **Perfiles:** prores_aw admite los seis con su fourcc (`apco`/`apcs`/`apcn`/`apch`/`ap4h`/`ap4x`) y la DCT entrelazada
+  (`-flags +ildct`). Codifica en BFF los cuadros marcados BFF y en TFF el resto, y el MOV toma el orden de la marca del
+  primer cuadro (sin marca declara `bt`): de ahí el `setfield` de la rama de grabación y de la carta de ajuste, que sin él
+  salía con el contenedor en BFF (y en x264, con los cuadros en BFF). Comprobado con ffprobe: cuadros
+  `interlaced_frame=1`, `top_field_first=1`.
+- **Croma por perfil** (`FfmpegArgumentBuilder.ProResFormat`): prores_aw no abre un 4444/XQ con 4:2:2 (EINVAL «need
+  YUV444P10 input») y con 4:4:4 convierte un 422 en 4444 por su cuenta, así que el formato de píxel lo fija el perfil
+  —4444/XQ `yuv444p10le`, el resto `yuv422p10le`— y no un formato suelto del preset. Auto = 422 HQ, o 4444 si el preset
+  pide 4:4:4.
+- **Calidad:** de Proxy a HQ, igual o mejor PSNR que prores_ks con menos bitrate; en 4444/XQ algo menos (66–70 dB frente a
+  72–75), muy por encima de lo visible. prores_aw ajusta el cuantificador por slice dentro del rango de cada perfil (HQ:
+  1–6) y no impone un tope de tamaño de cuadro: con material muy complejo un archivo puede pasar del bitrate nominal antes
+  que perder calidad.
+- **Compatibilidad:** el flujo es ProRes estándar (mismos fourcc y cabeceras; el fabricante del cuadro dice `fmpg` en vez
+  del `Lavc` de prores_ks). Los dos son implementaciones de FFmpeg, no codificadores con licencia de Apple: en eso no cambia
+  nada. Verificado aquí que FFmpeg/ffprobe leen perfil y entrelazado; **no** se ha podido abrir en Final Cut, Premiere ni
+  Avid (este PC no los tiene). prores_aw es el que FFmpeg registra también con el nombre genérico `prores`.
+- **Descartado:** prores_ks con cuantificador fijo (`-qscale:v`) también es rápido (6,7× en HQ), pero un cuantificador fijo
+  ignora la tasa del perfil (un Proxy dejaría de pesar como un Proxy) y el tamaño dependería solo del contenido.
+- **Límite: 4K.** «ProRes 422 HQ · 4K 2160p25» no llega a tiempo real en el i7-8700 ni con prores_aw: desde una señal 1080i
+  (desentrelazar + escalar a 4K) va a 0,73×, y solo codificar 4K HQ a 25 cuadros pide unos 6 núcleos, los seis físicos de
+  esa CPU. Hace falta un procesador con más núcleos (y la Duo 2, 3G-SDI, no recibe 4K para probarlo con una fuente real).
+
+```text
+# ProRes 422 HQ · 1080i59.94
+ffmpeg ... "[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p10le[vmain]" ... \
+  -map [vmain] -c:v prores_aw -profile:v 3 -flags +ildct -pix_fmt yuv422p10le ... -r 30000/1001 -field_order tt -f mov ...
 ```
 
 ## Línea de comandos generada (ejemplos reales)
@@ -194,6 +292,16 @@ DNxHR)**, AVI, MKV, WAV/AAC/MP3, Proxy, Archive e IPTV/RTMP/SRT; todos producen 
 > `FfmpegRecorderEngine`, que no degrada de codificador (la degradación está en el motor de los canales). Último
 > resultado (2026-09-24): GTX 1650 Ti con driver 610.62 y el FFmpeg empaquetado. Los 4K NVENC se verificaron en la app:
 > HEVC NVENC 2160p59.94 grabó 826 frames en 13,78 s (59,94 fps), a la vez que H.264 NVENC 1080p29.97 en el otro canal.
+
+Con una DeckLink de verdad, [`DecklinkHardwareTests`](../tests/Baioss.Record.IntegrationTests/DecklinkHardwareTests.cs)
+(opcional: `BAIOSS_DECKLINK="DeckLink Duo (2)"`) graba 15 s por preset con el mismo cableado que la aplicación y comprueba
+el archivo: continuidad, cadencia, cuadros entrelazados TFF **en el códec** (no solo en el contenedor) y que el relé no
+descarta nada mientras graba, es decir, que el equipo da abasto en tiempo real. Para ProRes/DNxHD cubre ProRes 422 HQ
+1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, 422 HQ 1080p59.94, DNxHD 220 1080i59.94 (MOV y MXF OP1A) y un canal con el
+perfil DNxHR 1080i antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). Último resultado
+(2026-10-16, Core i7-8700, señal 1080i59.94): 7/7, sin un cuadro descartado. Esa noche la emisora estaba fuera de emisión
+(carta fija y sin audio): sin movimiento, idet no clasifica cuadros y la prueba omite el peine y el nivel de audio (lo
+anota en la salida); las cifras de tiempo real con contenido de verdad son las de la tabla de ProRes.
 
 ## Extender el catálogo
 

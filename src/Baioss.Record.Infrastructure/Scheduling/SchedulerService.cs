@@ -308,7 +308,7 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
 
         // Aplica la segmentación PROPIA de esta grabación programada al perfil del canal (la grabación
         // usa el perfil activo). Se fija siempre (política o null) para no heredar restos de otra.
-        if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = SegPolicy(job);
+        if (ch is IConfigurableRecording cfg) cfg.Profile.Segmentation = SegPolicy(job, stopAt);
 
         try
         {
@@ -426,9 +426,11 @@ public sealed class SchedulerService : BackgroundService, ISchedulerService
         return $"{date}_{title}";
     }
 
-    /// <summary>Política de segmentación del trabajo (corte por duración cada N minutos), o null si no segmenta.</summary>
-    private static SegmentationPolicy? SegPolicy(ScheduledJob job)
+    /// <summary>Política de segmentación del trabajo (corte por duración cada N minutos), o null si no segmenta. Lleva el fin
+    /// previsto de la franja (con duración): así el último corte no cae un instante antes del auto-stop y no queda un segmento
+    /// final de menos de un segundo.</summary>
+    private static SegmentationPolicy? SegPolicy(ScheduledJob job, DateTimeOffset? stopAt)
         => job.SegmentMinutes is { } m && m > 0
-            ? new SegmentationPolicy { Trigger = SegmentTrigger.Duration, Duration = TimeSpan.FromMinutes(m) }
+            ? new SegmentationPolicy { Trigger = SegmentTrigger.Duration, Duration = TimeSpan.FromMinutes(m), PlannedEnd = stopAt }
             : null;
 }

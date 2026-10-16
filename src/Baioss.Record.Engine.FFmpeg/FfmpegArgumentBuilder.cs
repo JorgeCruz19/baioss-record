@@ -34,6 +34,7 @@ public sealed class FfmpegArgumentBuilder
     private int _segmentStartNumber = 1;
     private bool _fragmentedMp4 = true; // true = fMP4 robusto ante corte; false = MP4 estándar (moov, seekable, sin remux)
     private TimeSpan _writeQueue = TimeSpan.Zero; // cola de escritura de la salida de grabación (0 = la de FFmpeg, 8 paquetes)
+    private TimeSpan? _plannedRemaining; // lo que le queda a la grabación hasta su fin previsto, desde que arranca este proceso
 
     // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
     // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
@@ -99,6 +100,13 @@ public sealed class FfmpegArgumentBuilder
     public FfmpegArgumentBuilder WithSegmentStartNumber(int n)
     { _segmentStartNumber = n < 1 ? 1 : n; return this; }
 
+    /// <summary>
+    /// Lo que le queda a la grabación hasta su fin previsto (<see cref="SegmentationPolicy.PlannedEnd"/>) contado desde que
+    /// arranca ESTE proceso, o null si no hay fin previsto. Con corte por duración, el corte que caería junto a ese fin no se
+    /// hace (ver <see cref="SegmentSplitTimes"/>).
+    /// </summary>
+    public FfmpegArgumentBuilder WithPlannedRemaining(TimeSpan? remaining) { _plannedRemaining = remaining; return this; }
+
     public IReadOnlyList<string> Build()
     {
         var source = _source ?? throw new InvalidOperationException("Falta la fuente de captura.");
@@ -145,7 +153,8 @@ public sealed class FfmpegArgumentBuilder
         args.Add("-map"); args.Add("0:a?");
 
         // 5) Encoders. Con pan, el nº de canales lo fija el filtro (no -ac).
-        args.AddRange(VideoEncoderArgs(profile));
+        args.AddRange(VideoEncoderArgs(profile, profile.TargetResolution ?? source.CurrentSignal.Resolution,
+            profile.OutputFrameRate ?? source.CurrentSignal.FrameRate));
         args.AddRange(AudioEncoderArgs(profile, channelCount: audioFilter is null));
 
         // 5b) Opciones de salida de video: frecuencia de cuadro y orden de campo (escaneo).
@@ -255,6 +264,9 @@ public sealed class FfmpegArgumentBuilder
         string previewChain = string.Create(CultureInfo.InvariantCulture, $"{skip}scale={previewWidth}:{previewHeight},{analyze}format=bgra");
         var filter = new StringBuilder();
         string recLabel = "0:v:0";
+        // Tamaño y cadencia de lo que se codifica: los del preset o, si los deja en nativo, los de la señal.
+        var recFrame = profile.TargetResolution ?? source.CurrentSignal.Resolution;
+        var recRate = profile.OutputFrameRate ?? source.CurrentSignal.FrameRate;
 
         if (recording && !profile.AudioOnly)
         {
@@ -279,7 +291,7 @@ public sealed class FfmpegArgumentBuilder
             // entregar un pixel format que el encoder por hardware NO acepta (NDI sirve uyvy422 y h264_nvenc lo
             // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
             // la hacemos explícita. Si el formato ya coincide, es un no-op barato.
-            recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={RecordingFilterPixelFormat(profile)}"));
+            recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={RecordingFilterPixelFormat(profile, recFrame, recRate)}"));
 
             filter.Append("[0:v]split=2[vrec][vprev];");
             if (recChain.Count > 0)
@@ -347,7 +359,7 @@ public sealed class FfmpegArgumentBuilder
             {
                 args.Add("-map"); args.Add(recLabel);
                 if (hasAudio) foreach (var a in recAudio) { args.Add("-map"); args.Add(a); }
-                args.AddRange(VideoEncoderArgs(profile));
+                args.AddRange(VideoEncoderArgs(profile, recFrame, recRate));
                 if (hasAudio) args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
                 if (hasAudio && routes is not null) args.AddRange(TrackTitles(routes));
                 if (profile.OutputFrameRate is { } fr)
@@ -451,13 +463,13 @@ public sealed class FfmpegArgumentBuilder
             // reinicios/slate (lo fija el motor). Sin nombre (legado): «{canal}_{fecha_hora}_%03d».
             // Nota: combinar `-strftime 1` con %03d rompe la cabecera del muxer (mpegts: "Could not write
             // header"); reset_timestamps deja cada segmento empezando en 0.
-            var a = new List<string>
-            {
-                "-f", "segment",
-                "-segment_time", seconds.ToString(CultureInfo.InvariantCulture),
-                "-segment_format", recMux,
-                "-reset_timestamps", "1",
-            };
+            var a = new List<string> { "-f", "segment" };
+            // Con fin previsto, sin el corte que caería junto a él (ver SegmentSplitTimes); si no, uno cada N segundos.
+            if (seg.Trigger is SegmentTrigger.Duration && SegmentSplitTimes(seconds, _plannedRemaining) is { } splits)
+                a.AddRange(new[] { "-segment_times", splits });
+            else
+                a.AddRange(new[] { "-segment_time", seconds.ToString(CultureInfo.InvariantCulture) });
+            a.AddRange(new[] { "-segment_format", recMux, "-reset_timestamps", "1" });
             // Robustez ante corte eléctrico: cada segmento MP4/MOV se escribe como fMP4 (fragmentos + moov al
             // inicio), igual que el archivo único. Sin esto, un corte a mitad de un segmento dejaba ese segmento
             // (hasta N minutos) SIN moov e ilegible; el fMP4 robusto solo cubría el archivo único. (Auditoría A6/#9.)
@@ -492,6 +504,51 @@ public sealed class FfmpegArgumentBuilder
             if (bps > 0) return Math.Max(1, bytes * 8 / bps);
         }
         return Math.Max(1, (long)(seg.Duration ?? TimeSpan.FromMinutes(15)).TotalSeconds);
+    }
+
+    /// <summary>Hasta dónde un corte cuenta como «junto al fin previsto»: cubre lo que tarda en llegar el Detener tras el fin (el
+    /// tick del programador y el relevo del preview, con tope de 15 s) y no deja un último segmento ridículo. Nunca más de un
+    /// cuarto de segmento.</summary>
+    internal static readonly TimeSpan EndSplitTolerance = TimeSpan.FromSeconds(30);
+
+    /// <summary>Tras el fin previsto se sigue cortando al mismo ritmo esto (al menos 6 cortes; con segmentos muy cortos, hasta
+    /// el tope de la lista), por si el Detener no llegara: el último segmento no crece sin límite.</summary>
+    internal static readonly TimeSpan SplitsAfterEnd = TimeSpan.FromHours(1);
+
+    /// <summary>Tope de cortes en <c>-segment_times</c> (unos 6 caracteres cada uno en la línea de comandos).</summary>
+    internal const int MaxListedSplits = 400;
+
+    /// <summary>
+    /// Cortes del muxer <c>segment</c> (<c>-segment_times</c>, en segundos desde el inicio del proceso) para una grabación con
+    /// fin previsto a <paramref name="remaining"/>: los de siempre, uno cada <paramref name="segmentSeconds"/>, MENOS el que
+    /// caiga a menos de <see cref="EndSplitTolerance"/> (o de un cuarto de segmento) de ese fin. El Detener llega un instante
+    /// DESPUÉS del fin (tick del programador, relevo del preview), así que ese corte dejaba un último segmento de menos de un
+    /// segundo: una programada de 30 min con segmentos de 10 salía en 3 de 600 s y uno de 0,6 s. Sin él, el último segmento
+    /// absorbe ese instante (600,6 s) y no se pierde nada: el Detener llega cuando siempre.
+    /// </summary>
+    /// <returns>La lista, o null si ningún corte cae junto al fin (o no hay fin previsto): entonces vale el <c>-segment_time</c>
+    /// de siempre. Null también si la lista pasaría de <see cref="MaxListedSplits"/> cortes (días de grabación con segmentos de un
+    /// minuto): ahí se prefiere el segmento corto a una línea de comandos desmesurada.</returns>
+    internal static string? SegmentSplitTimes(long segmentSeconds, TimeSpan? remaining)
+    {
+        if (remaining is not { } left || left <= TimeSpan.Zero || segmentSeconds <= 0) return null;
+        double end = left.TotalSeconds;
+        double tolerance = Math.Min(segmentSeconds / 4.0, EndSplitTolerance.TotalSeconds);
+        long atEnd = (long)Math.Round(end / segmentSeconds, MidpointRounding.AwayFromZero);
+        if (atEnd < 1 || Math.Abs(atEnd * segmentSeconds - end) > tolerance) return null;
+        const long MinSplitsAfterEnd = 6;
+        long after = Math.Min(Math.Max(MinSplitsAfterEnd, (long)Math.Ceiling(SplitsAfterEnd.TotalSeconds / segmentSeconds)),
+                              MaxListedSplits - (atEnd - 1));
+        if (after < MinSplitsAfterEnd) return null;
+        long last = atEnd + after;
+        var splits = new StringBuilder();
+        for (long k = 1; k <= last; k++)
+        {
+            if (k == atEnd) continue;
+            if (splits.Length > 0) splits.Append(',');
+            splits.Append((k * segmentSeconds).ToString(CultureInfo.InvariantCulture));
+        }
+        return splits.ToString();
     }
 
     /// <summary>Nombre del archivo único (con extensión): el base elegido o, por defecto, {canal}_{fecha_hora}.</summary>
@@ -569,6 +626,18 @@ public sealed class FfmpegArgumentBuilder
             filter.Append(CultureInfo.InvariantCulture, $"[0:v]{label},split=2[vrec][vprev];");
             filter.Append(CultureInfo.InvariantCulture, $"[vprev]{previewChain}[pv]");
             recLabel = "[vrec]";
+            // Preset entrelazado: las barras salen de lavfi como cuadros progresivos, sin marca de campo. Sin ella x264 las
+            // codificaba en BFF y el MOV de ProRes declaraba el campo inferior primero («bt»), entre piezas TFF de la señal
+            // (medido con el FFmpeg empaquetado). Misma marca que la rama de grabación en vivo.
+            string? field = profile.ScanType switch
+            {
+                ScanType.InterlacedTff => "setfield=mode=tff", ScanType.InterlacedBff => "setfield=mode=bff", _ => null
+            };
+            if (field is not null && !profile.AudioOnly)
+            {
+                filter.Append(CultureInfo.InvariantCulture, $";[vrec]{field}[vslate]");
+                recLabel = "[vslate]";
+            }
         }
         else
         {
@@ -599,7 +668,7 @@ public sealed class FfmpegArgumentBuilder
             var (recMux, recExt) = FfmpegCodecMap.Container(profile.Container);
             args.Add("-map"); args.Add(recLabel);
             foreach (var a in routes is null ? new[] { "0:a:0" } : RouteLabels(routes, "aslate")) { args.Add("-map"); args.Add(a); }
-            args.AddRange(VideoEncoderArgs(profile));
+            args.AddRange(VideoEncoderArgs(profile, res, rate));
             args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
             if (routes is not null) args.AddRange(TrackTitles(routes));
             if (profile.OutputFrameRate is { } fr)
@@ -657,7 +726,10 @@ public sealed class FfmpegArgumentBuilder
         return (sb.ToString(), "[mainout]");
     }
 
-    private IEnumerable<string> VideoEncoderArgs(RecordingProfile p)
+    /// <param name="p">Perfil de grabación.</param>
+    /// <param name="frame">Tamaño de lo que se codifica (el del preset o el de la señal), si se conoce.</param>
+    /// <param name="rate">Cadencia de lo que se codifica (la del preset o la de la señal), si se conoce.</param>
+    private IEnumerable<string> VideoEncoderArgs(RecordingProfile p, Resolution? frame, FrameRate? rate)
     {
         var list = new List<string> { "-c:v", FfmpegCodecMap.VideoEncoder(p.VideoCodec) };
         string bitrate = p.VideoBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture);
@@ -706,8 +778,18 @@ public sealed class FfmpegArgumentBuilder
             list.AddRange(new[] { "-b:v", bitrate, "-minrate", bitrate, "-maxrate", maxrate, "-bufsize", bufsize, "-g", gop });
             if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
+        else if (DnxhdBitrateMbps(p, frame, rate) is { } dnxhdMbps)
+        {
+            // DNxHD CLÁSICO (DnxHd, o un DNxHR entrelazado): el bitrate ELIGE el CID (1080i: 145/220 Mbps a 29.97, 120/185 a
+            // 25) y, a diferencia de DNxHR, admite DCT entrelazada: un «1080i» graba de verdad los dos campos.
+            list.AddRange(new[] { "-profile:v", "dnxhd", "-b:v", (dnxhdMbps * 1_000_000L).ToString(CultureInfo.InvariantCulture) });
+            if (interlaced) { list.Add("-flags"); list.Add("+ildct"); }
+        }
         else if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr)
         {
+            // DNxHR (por perfil, cualquier resolución): solo PROGRESIVO, FFmpeg rechaza +ildct en sus perfiles («Interlaced
+            // encoding is not supported for DNxHR profiles»). También un DNxHD de un formato sin CID clásico (4K, SD, 4:4:4)
+            // y un DNxHR entrelazado sin equivalente DNxHD (LB, 444), que guardan los campos en cuadros progresivos.
             string dnxProfile = p.EncoderProfile switch
             {
                 EncoderProfile.DnxHrLb  => "dnxhr_lb",
@@ -715,28 +797,22 @@ public sealed class FfmpegArgumentBuilder
                 EncoderProfile.DnxHrHq  => "dnxhr_hq",
                 EncoderProfile.DnxHrHqx => "dnxhr_hqx",
                 EncoderProfile.DnxHr444 => "dnxhr_444",
-                // Auto: heurística por profundidad (hqx si 10-bit, si no hq) — comportamiento previo.
-                _ => p.PixelFormat is PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le or PixelFormat.Yuv444p10le
-                        ? "dnxhr_hqx" : "dnxhr_hq",
+                // Auto: por el formato de píxel (444 si 4:4:4, hqx si 10 bits, si no hq): 4:4:4 solo lo admite dnxhr_444.
+                _ => p.PixelFormat switch
+                {
+                    PixelFormat.Yuv444p10le => "dnxhr_444",
+                    PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le => "dnxhr_hqx",
+                    _ => "dnxhr_hq",
+                },
             };
             list.AddRange(new[] { "-profile:v", dnxProfile });
         }
         else if (p.VideoCodec is VideoCodec.ProRes)
         {
-            string proresProfile = p.EncoderProfile switch
-            {
-                EncoderProfile.ProResProxy    => "0",
-                EncoderProfile.ProResLt       => "1",
-                EncoderProfile.ProResStandard => "2",
-                EncoderProfile.ProResHq       => "3",
-                EncoderProfile.ProRes4444     => "4",
-                EncoderProfile.ProRes4444Xq   => "5",
-                _ => "3", // Auto = ProRes 422 HQ (comportamiento previo)
-            };
-            list.AddRange(new[] { "-profile:v", proresProfile });
-            // prores_ks codifica cuadros PROGRESIVOS salvo que se le pida DCT entrelazada: sin esto, un preset «1080i»
-            // grababa los campos entretejidos en cuadros marcados progresivos (medido con una DeckLink en 1080i59.94).
-            // (DNxHR no tiene equivalente: el codificador de FFmpeg no admite entrelazado en los perfiles DNxHR.)
+            list.AddRange(new[] { "-profile:v", ProResFormat(p).Profile });
+            // Sin DCT entrelazada el codificador escribe cuadros PROGRESIVOS: un preset «1080i» grababa los campos entretejidos
+            // en cuadros marcados progresivos (medido con una DeckLink en 1080i59.94). prores_aw codifica en BFF los cuadros
+            // marcados BFF y en TFF el resto; la marca la pone el setfield de la rama de grabación.
             if (interlaced) { list.Add("-flags"); list.Add("+ildct"); }
         }
         else // libx264 / libx265
@@ -755,14 +831,141 @@ public sealed class FfmpegArgumentBuilder
             if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
 
-        // Formato de píxel: override explícito del perfil → píxel natural del perfil intra
-        // (p. ej. 4444/444 exigen 4:4:4) → predeterminado del códec.
-        var pix = FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
-                  ?? ProfilePixelFormat(p.EncoderProfile)
-                  ?? DefaultPixelFormat(p.VideoCodec);
+        var pix = EncoderPixelFormat(p, frame, rate);
         if (pix is not null) { list.Add("-pix_fmt"); list.Add(pix); }
         return list;
     }
+
+    /// <summary>
+    /// Formato de píxel del codificador: ProRes, el de su perfil (<see cref="ProResFormat"/>); DNxHD clásico, el de su CID
+    /// (<see cref="DnxhdPixelFormat"/>); el resto, el explícito del perfil → el natural del perfil intra (DNxHR 444/HQX)
+    /// → el predeterminado del códec. Null = que elija el codificador (NVENC).
+    /// </summary>
+    private static string? EncoderPixelFormat(RecordingProfile p, Resolution? frame, FrameRate? rate)
+    {
+        if (p.VideoCodec is VideoCodec.ProRes) return ProResFormat(p).PixelFormat;
+        if (DnxhdBitrateMbps(p, frame, rate) is not null) return DnxhdPixelFormat(p);
+        return FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
+               ?? ProfilePixelFormat(p.EncoderProfile)
+               ?? DefaultPixelFormat(p.VideoCodec);
+    }
+
+    /// <summary>
+    /// Perfil (<c>-profile:v</c> 0–5) y formato de píxel de ProRes. El croma lo fija el PERFIL —4444/XQ son 4:4:4, los demás
+    /// 4:2:2— y no un formato suelto del preset: prores_aw no abre un 4444 con 4:2:2 (EINVAL «need YUV444P10 input») y con
+    /// 4:4:4 convierte un 422 en 4444 por su cuenta. Auto = 422 HQ, o 4444 si el preset pide 4:4:4.
+    /// </summary>
+    internal static (string Profile, string PixelFormat) ProResFormat(RecordingProfile p)
+    {
+        string profile = p.EncoderProfile switch
+        {
+            EncoderProfile.ProResProxy    => "0",
+            EncoderProfile.ProResLt       => "1",
+            EncoderProfile.ProResStandard => "2",
+            EncoderProfile.ProResHq       => "3",
+            EncoderProfile.ProRes4444     => "4",
+            EncoderProfile.ProRes4444Xq   => "5",
+            _ => p.PixelFormat is PixelFormat.Yuv444p10le ? "4" : "3",
+        };
+        return (profile, profile is "4" or "5" ? "yuv444p10le" : "yuv422p10le");
+    }
+
+    /// <summary>Un CID del DNxHD clásico que codifica el <c>dnxhd</c> de FFmpeg: formato, tamaño FIJO de cuadro y las claves
+    /// de bitrate (Mbps) que lo eligen. Los Mbps reales son ese tamaño por la cadencia: el CID 1243 da 220 a 29.97 y 183,5 a 25,
+    /// de ahí los nombres de Avid «DNxHD 220» y «DNxHD 185» para el mismo formato.</summary>
+    private sealed record DnxhdCid(int Cid, int Width, int Height, bool Interlaced, string PixelFormat, int FrameBytes, int[] Mbps);
+
+    /// <summary>
+    /// Los CID que el FFmpeg empaquetado acepta sin <c>-strict experimental</c>, con las claves que lista al rechazar unos
+    /// parámetros («Valid DNxHD profiles») y el tamaño de cuadro medido codificando cada uno (2026-10-15). FFmpeg busca la
+    /// clave en la lista del CID SIN mirar la cadencia: 145 a 25 cuadros da el CID 1242 (121 Mbps reales), como 120. No hay
+    /// DNxHD 444 (el codificador solo admite 4:4:4 con dnxhr_444), ni 1440×1080i por debajo de 120 (exige experimental).
+    /// </summary>
+    private static readonly DnxhdCid[] DnxhdCids =
+    {
+        new(1243, 1920, 1080, true,  "yuv422p",     917504, new[] { 185, 220 }),
+        new(1242, 1920, 1080, true,  "yuv422p",     606208, new[] { 120, 145 }),
+        new(1241, 1920, 1080, true,  "yuv422p10le", 917504, new[] { 185, 220 }),
+        new(1244, 1440, 1080, true,  "yuv422p",     606208, new[] { 120, 145 }),
+        new(1238, 1920, 1080, false, "yuv422p",     917504, new[] { 175, 185, 220, 365, 440 }),
+        new(1237, 1920, 1080, false, "yuv422p",     606208, new[] { 115, 120, 145, 240, 290 }),
+        new(1253, 1920, 1080, false, "yuv422p",     188416, new[] { 36, 45, 75, 90 }),
+        new(1235, 1920, 1080, false, "yuv422p10le", 917504, new[] { 175, 185, 365, 440 }), // FFmpeg no acepta 220 aquí
+        new(1259, 1440, 1080, false, "yuv422p",     417792, new[] { 63, 84, 100, 110 }),
+        new(1251, 1280,  720, false, "yuv422p",     458752, new[] { 90, 110, 180, 220 }),
+        new(1252, 1280,  720, false, "yuv422p",     303104, new[] { 60, 75, 120, 145 }),
+        new(1250, 1280,  720, false, "yuv422p10le", 458752, new[] { 90, 180, 220 }),
+        new(1258,  960,  720, false, "yuv422p",     212992, new[] { 42, 60, 75, 115 }),
+    };
+
+    /// <summary>
+    /// Bitrate (Mbps) con el que se le pide a FFmpeg el DNxHD CLÁSICO de un perfil, o null si se graba otra cosa.
+    /// <list type="bullet">
+    ///   <item><see cref="VideoCodec.DnxHd"/>: un bitrate que es clave de un CID del formato se respeta tal cual (lo que haría
+    ///   FFmpeg); cualquier otro —con FFmpeg sería «video parameters incompatible with DNxHD» y una grabación que no
+    ///   arranca— se ajusta al CID cuyos Mbps reales a esa cadencia quedan más cerca, y sin bitrate (un preset DNxHD que
+    ///   confiaba en el perfil) al CID de más calidad, el equivalente a DNxHR HQ/HQX. Si el formato no existe en DNxHD
+    ///   clásico (4K, SD, 4:4:4, tamaño desconocido), null: DNxHR por perfil, lo que hacía DnxHd antes de esta rama.</item>
+    ///   <item><see cref="VideoCodec.DnxHr"/> ENTRELAZADO: DNxHR no puede entrelazar (FFmpeg rechaza +ildct en sus perfiles) y
+    ///   grababa los campos en cuadros progresivos. Se graba el DNxHD clásico equivalente (<see cref="DnxhrInterlacedMbps"/>):
+    ///   así se arreglan sin tocar nada los canales que aplicaron los antiguos presets «DNxHR HQ · 1080i…» (guardan su copia
+    ///   del perfil) y los presets propios. Progresivo, o sin equivalente (LB, 444): null, DNxHR.</item>
+    /// </list>
+    /// </summary>
+    internal static int? DnxhdBitrateMbps(RecordingProfile p, Resolution? frame, FrameRate? rate)
+    {
+        if (p.AudioOnly || frame is not { } f) return null;
+        bool interlaced = p.ScanType is not ScanType.Progressive;
+        long requested;
+        if (p.VideoCodec is VideoCodec.DnxHd) requested = p.VideoBitrate.BitsPerSecond / 1_000_000; // como FFmpeg: Mbps enteros
+        else if (p.VideoCodec is VideoCodec.DnxHr && interlaced && DnxhrInterlacedMbps(p, rate) is { } equivalent) requested = equivalent;
+        else return null;
+
+        string pix = DnxhdPixelFormat(p);
+        var cids = DnxhdCids.Where(c => c.Width == f.Width && c.Height == f.Height && c.Interlaced == interlaced && c.PixelFormat == pix)
+                            .ToList();
+        if (cids.Count == 0) return null;
+        if (cids.Any(c => c.Mbps.Contains((int)requested))) return (int)requested;
+        if (rate is not { Value: > 0 } r)
+        {
+            // Sin cadencia no hay Mbps reales que comparar: la clave más próxima (las claves son los nombres de Avid). La
+            // mayor siempre es del CID de más calidad.
+            var keys = cids.SelectMany(c => c.Mbps).ToList();
+            return requested <= 0 ? keys.Max() : keys.MinBy(m => Math.Abs(m - requested));
+        }
+        double Real(DnxhdCid c) => c.FrameBytes * 8.0 * r.Value / 1_000_000;
+        var cid = requested <= 0 ? cids.MaxBy(c => c.FrameBytes)! : cids.MinBy(c => Math.Abs(Real(c) - requested))!;
+        // La clave de ese CID más próxima a sus Mbps reales: 185 a 25 cuadros y 220 a 29.97, como los nombra Avid.
+        return cid.Mbps.MinBy(m => Math.Abs(m - Real(cid)));
+    }
+
+    /// <summary>
+    /// Mbps del DNxHD clásico equivalente a un perfil DNxHR entrelazado, a la cadencia de la grabación: SQ, la clase 145 (120
+    /// a 25); HQ y HQX, la 220 (185 a 25), en 8 o 10 bits según el perfil (<see cref="DnxhdPixelFormat"/>). LB y 444 no tienen
+    /// equivalente entrelazado (no hay DNxHD 1080i por debajo de 145, ni DNxHD 444 en FFmpeg): null, siguen en DNxHR.
+    /// </summary>
+    private static long? DnxhrInterlacedMbps(RecordingProfile p, FrameRate? rate)
+    {
+        double? at2997 = p.EncoderProfile switch
+        {
+            EncoderProfile.DnxHrSq => 145,
+            EncoderProfile.DnxHrHq or EncoderProfile.DnxHrHqx => 220,
+            EncoderProfile.DnxHrLb or EncoderProfile.DnxHr444 => null,
+            _ => p.PixelFormat is PixelFormat.Yuv444p10le ? null : 220, // Auto: hq/hqx; 4:4:4 sería dnxhr_444
+        };
+        if (at2997 is not { } mbps) return null;
+        return rate is { Value: > 0 } r ? (long)Math.Round(mbps * r.Value / 29.97) : (long)mbps;
+    }
+
+    /// <summary>Formato de píxel del DNxHD clásico: 8 bits salvo que el preset pida 10 bits —en el formato de píxel o con el
+    /// perfil HQX— (los CID «x»: 220x…) o 4:4:4, que no tiene CID clásico en FFmpeg y deja el preset en DNxHR 444.</summary>
+    private static string DnxhdPixelFormat(RecordingProfile p)
+        => (FfmpegCodecMap.PixelFormatArg(p.PixelFormat) ?? ProfilePixelFormat(p.EncoderProfile)) switch
+        {
+            "yuv422p10le" or "yuv420p10le" => "yuv422p10le",
+            "yuv444p10le" => "yuv444p10le",
+            _ => "yuv422p",
+        };
 
     /// <summary>Comando de grabación solo-audio: sin video, codec de audio al contenedor elegido.</summary>
     private IReadOnlyList<string> BuildAudioOnly(ICaptureSource source, RecordingProfile profile, string recMux, string recExt)
@@ -806,11 +1009,8 @@ public sealed class FfmpegArgumentBuilder
     /// <c>-pix_fmt</c> de salida; para NVENC (que devuelve null porque «elige solo») cae a <c>nv12</c>, su
     /// formato nativo 8-bit. La conversión es necesaria de todos modos y desde uyvy422 es barata (4:2:2→4:2:0).
     /// </summary>
-    private static string RecordingFilterPixelFormat(RecordingProfile p)
-        => FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
-           ?? ProfilePixelFormat(p.EncoderProfile)
-           ?? DefaultPixelFormat(p.VideoCodec)
-           ?? "nv12";
+    private static string RecordingFilterPixelFormat(RecordingProfile p, Resolution? frame, FrameRate? rate)
+        => EncoderPixelFormat(p, frame, rate) ?? "nv12";
 
     /// <summary>
     /// Un flujo de audio de la grabación: el <c>pan</c> que lo produce, si lleva título de pista cuál, qué canales de la

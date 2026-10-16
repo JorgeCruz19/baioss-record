@@ -16,13 +16,47 @@ QUÉ TIENES QUE HACER
 
 1. Descarga una compilación de FFmpeg para Windows de 64 bits.
 
-   Las fuentes habituales son la página oficial de FFmpeg (https://ffmpeg.org/download.html),
-   que enlaza las compilaciones para Windows mantenidas por terceros.
+   La que usamos para probar Baioss Record es la de "ffmpeg-autobuild" (proyecto de
+   AnimMouse en GitHub), que trae soporte DeckLink:
 
-   IMPORTANTE si vas a capturar con tarjetas Blackmagic DeckLink: necesitas una compilación
-   que incluya soporte "decklink". No todas lo traen. Puedes comprobarlo con el paso 4.
+       https://github.com/AnimMouse/ffmpeg-autobuild/releases
 
-2. Descomprime lo que descargues. Dentro (normalmente en una carpeta "bin") encontrarás:
+   De la versión más reciente, descarga el archivo que termina en "-win64-nonfree.7z"
+   (unos 105 MB). Lee antes el apartado "SI GRABAS CON UNA TARJETA NVIDIA".
+
+   Hay otras compilaciones enlazadas desde la página oficial de FFmpeg
+   (https://ffmpeg.org/download.html), pero las más conocidas NO traen soporte "decklink".
+   Si capturas con tarjetas Blackmagic DeckLink, compruébalo con el paso 4.
+
+   SI GRABAS CON UNA TARJETA NVIDIA (presets "NVENC"), mira qué tarjeta tienes:
+
+   · GeForce GTX 16xx, RTX 20xx, 30xx, 40xx o 50xx, Quadro RTX, Quadro T400/T600/T1000,
+     RTX A-series o más nueva: sirve la versión más reciente. Necesita el driver de NVIDIA
+     610 o posterior; si el tuyo es más antiguo, actualízalo.
+
+   · GeForce GTX 750, 9xx o 10xx, Quadro M... o P... (por ejemplo Quadro P400, P620 o
+     P2000), Titan X, Xp o V: NVIDIA no les da el driver 610 (su último driver es el de la
+     serie 580). Con la versión más reciente el programa graba igual, pero con la gráfica
+     Intel o con el procesador, y avisa. Descarga en su lugar EXACTAMENTE la versión del
+     12 de marzo de 2026, que funciona con el driver 570 o posterior:
+
+       https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733
+       archivo: ffmpeg-afcde65-c6e5733-win64-nonfree.7z
+
+     La hemos probado con un Quadro P400 y el driver 582.78. No uses las versiones de
+     entre el 15 de marzo y el 6 de abril de 2026: graban archivos MP4 dañados cuando
+     codifica la gráfica Intel. Esta versión no trae soporte para gráficas AMD: úsala solo
+     en equipos con una NVIDIA de esa lista.
+
+   · GeForce GTX 600 o 700 (salvo la 750) y Quadro K...: su último driver (el 470) no
+     sirve para NVENC con ninguna de estas versiones. El programa graba con la gráfica
+     Intel o con el procesador.
+
+   Sin tarjeta NVIDIA, sirve la versión más reciente.
+
+2. Descomprime lo que descargues: Windows 11 abre los archivos .7z con doble clic; en
+   Windows 10 hace falta un programa como 7-Zip (https://www.7-zip.org). Dentro (a veces
+   en una carpeta "bin") encontrarás:
 
        ffmpeg.exe
        ffprobe.exe
@@ -44,6 +78,15 @@ QUÉ TIENES QUE HACER
 
    Si esto último lista tus tarjetas, la compilación es la correcta.
 
+   Y si grabas con NVIDIA (NVENC), además:
+
+       ffmpeg.exe -hide_banner -f lavfi -i nullsrc -frames:v 1 -c:v h264_nvenc -f null -
+
+   Si no aparece ningún error, NVENC funciona. Si dice "Driver does not support the
+   required nvenc API version. Required: 13.1 Found: 13.0", la compilación es demasiado
+   nueva para tu driver: actualiza el driver o, si tu tarjeta es de la segunda lista del
+   paso 1, usa la versión del 12 de marzo de 2026.
+
 5. Abre Baioss Record. Si los archivos están bien copiados, ya no aparecerá el aviso y podrás
    grabar con normalidad.
 
@@ -63,6 +106,12 @@ PROBLEMAS FRECUENTES
 · "Falta ffprobe.exe."
   Los dos archivos son necesarios: ffmpeg.exe graba y ffprobe.exe verifica que las grabaciones
   hayan quedado correctas al cerrarlas.
+
+· "Tengo una NVIDIA, pero el programa avisa de que graba con otro codificador."
+  Haz la comprobación de NVENC del paso 4. Si habla de "nvenc API version", sigue lo que dice
+  el paso 1 para tu tarjeta. Si dice "incompatible client key", la tarjeta tiene ocupadas
+  todas sus sesiones de codificación: las GeForce y las Quadro sencillas admiten 8 en todo el
+  equipo, y un escritorio remoto como RustDesk o Parsec también gasta una.
 
 
 Ante cualquier duda, ponte en contacto con tu proveedor de Baioss.

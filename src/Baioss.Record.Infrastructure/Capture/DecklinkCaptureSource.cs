@@ -113,6 +113,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             receiver.Lost += OnReceiverLost;
             receiver.ModeDetected += OnReceiverModeDetected;
             receiver.DeviceBusy += OnReceiverDeviceBusy;
+            receiver.AutodetectRefused += OnReceiverAutodetectRefused;
             receiver.SignalPresence += OnReceiverSignalPresence;
             receiver.AudioChannelsRejected += OnReceiverAudioRejected;
             receiver.DataDropped += OnReceiverDataDropped;
@@ -165,6 +166,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
                 receiver.Lost -= OnReceiverLost;
                 receiver.ModeDetected -= OnReceiverModeDetected;
                 receiver.DeviceBusy -= OnReceiverDeviceBusy;
+                receiver.AutodetectRefused -= OnReceiverAutodetectRefused;
                 receiver.SignalPresence -= OnReceiverSignalPresence;
                 receiver.AudioChannelsRejected -= OnReceiverAudioRejected;
                 receiver.DataDropped -= OnReceiverDataDropped;
@@ -416,6 +418,25 @@ public sealed class DecklinkCaptureSource : ICaptureSource
         Publish(signal);
     }
 
+    /// <summary>
+    /// En autodetección la tarjeta no llegó a escuchar la entrada (el fallo de autodetección fue inmediato): casi siempre porque
+    /// la tiene otro programa —FFmpeg no dice «en uso» en autodetección, solo el fallo genérico—, o porque el conector no es una
+    /// entrada o no autodetecta. Antes salía como «La tarjeta no detecta señal» y el operador buscaba el problema en el cable.
+    /// </summary>
+    private void OnReceiverAutodetectRefused(object? sender, EventArgs e)
+    {
+        SignalInfo? signal = null;
+        lock (_sync)
+        {
+            if (!ReferenceEquals(sender, _receiver)) return;
+            _detected = null;
+            if (_waitingReason != "Dl_State_Refused") signal = CurrentSignal = Waiting("Dl_State_Refused");
+        }
+        if (signal is not null)
+            _log.LogWarning("DeckLink «{Name}»: la tarjeta no llegó a escuchar la entrada en autodetección: la tiene otro programa (Media Express, OBS, vMix…, u otra instancia), o el conector no es una entrada o no autodetecta. Se reintenta hasta que quede libre; con un modo fijo en Entradas → Modo/formato, una tarjeta ocupada se identifica como tal.", Definition.Name);
+        Publish(signal);
+    }
+
     private void OnReceiverSignalPresence(object? sender, bool present)
     {
         SignalInfo? signal = null;
@@ -444,7 +465,7 @@ public sealed class DecklinkCaptureSource : ICaptureSource
             _description = null;
             _inputSignal = true; // proceso nuevo: hasta que la tarjeta diga lo contrario
             // Si ya se sabe POR QUÉ no abre (en uso, sin detección), se mantiene ese motivo; si no, «reabriendo».
-            if (_waitingReason is "Dl_State_Busy" or "Dl_State_NoDetect") return;
+            if (_waitingReason is "Dl_State_Busy" or "Dl_State_NoDetect" or "Dl_State_Refused") return;
             signal = CurrentSignal = Waiting("Dl_State_Reopening");
         }
         Publish(signal);

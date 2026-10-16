@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Application.Capture;
@@ -27,6 +28,11 @@ public interface IRawCaptureReceiver : IAsyncDisposable
 
     /// <summary>La tarjeta está en uso por otro proceso («Cannot enable video input»).</summary>
     event EventHandler? DeviceBusy;
+
+    /// <summary>DeckLink en autodetección: la tarjeta no llegó a ESCUCHAR la entrada (el fallo de autodetección llegó al instante,
+    /// no tras los 3 s de espera): en uso por otro programa, o el conector no es una entrada o no autodetecta. Con autodetección
+    /// FFmpeg no da «Cannot enable video input», solo el fallo genérico (ver <see cref="DecklinkModeParser.IsAutodetectRefusal"/>).</summary>
+    event EventHandler? AutodetectRefused { add { } remove { } }
 
     /// <summary>La señal en la entrada se perdió (false) o volvió (true), con la tarjeta abierta.</summary>
     event EventHandler<bool>? SignalPresence;
@@ -89,6 +95,7 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
     private FfmpegProcessSupervisor? _supervisor;
     private volatile bool _opened;
     private bool _audioRejectedThisRun;
+    private long _processStartedTicks; // cuándo arrancó el proceso de captura actual (Stopwatch), para fechar sus fallos
     private string? _lastErrorLine;
     private DateTimeOffset _lastFailureLogUtc;
     // Vigilancia de frames (ver FrameFlowWatch): generación del proceso actual y lo que la tarjeta dice de la señal.
@@ -132,6 +139,7 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
     public event EventHandler? Lost;
     public event EventHandler<DetectedVideoMode?>? ModeDetected;
     public event EventHandler? DeviceBusy;
+    public event EventHandler? AutodetectRefused;
     public event EventHandler<bool>? SignalPresence;
     public event EventHandler? AudioChannelsRejected;
 
@@ -222,6 +230,7 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         };
         _supervisor.LogLine += OnLog;
         _supervisor.Restarted += OnRestarted;
+        _supervisor.ProcessStarted += OnProcessStarted;
         var args = ArgumentsFor(_deviceArguments(), _copyStreams, _relay.SourcePort);
         _log.LogInformation("Receptor de captura {Name}: {Args}", _name, string.Join(' ', args));
         _dump.Reset();
@@ -255,13 +264,22 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         return args;
     }
 
+    private void OnProcessStarted(object? sender, int restarts) => Interlocked.Exchange(ref _processStartedTicks, Stopwatch.GetTimestamp());
+
     private void OnLog(object? sender, string line)
     {
         if (DecklinkModeParser.TryParseFoundMode(line) is { } mode) { ModeDetected?.Invoke(this, mode); return; }
         if (DecklinkModeParser.IsAutodetectFailure(line))
         {
-            _lastErrorLine = line.Trim();
-            ModeDetected?.Invoke(this, null);
+            // La misma línea para «escuchó 3 s y no detectó nada» que para «no pudo ni ponerse a escuchar» (en uso por otro
+            // programa…): lo distingue cuánto tardó desde que arrancó el proceso.
+            long started = Interlocked.Read(ref _processStartedTicks);
+            bool refused = started != 0 && DecklinkModeParser.IsAutodetectRefusal(Stopwatch.GetElapsedTime(started));
+            _lastErrorLine = refused
+                ? $"{line.Trim()} — al instante: la tarjeta no llegó a escuchar la entrada (¿en uso por otro programa?)"
+                : line.Trim();
+            if (refused) AutodetectRefused?.Invoke(this, EventArgs.Empty);
+            else ModeDetected?.Invoke(this, null);
             return;
         }
         if (DecklinkModeParser.IsDeviceBusy(line))
@@ -326,6 +344,7 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
         _supervisor = null;
         supervisor.LogLine -= OnLog;
         supervisor.Restarted -= OnRestarted;
+        supervisor.ProcessStarted -= OnProcessStarted;
         await supervisor.DisposeAsync().ConfigureAwait(false);
     }
 
