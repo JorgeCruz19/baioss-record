@@ -222,7 +222,8 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
             if (!ReferenceEquals(sender, _receiver)) return; // un receptor ya cerrado
             _rejected = false;
             signal = CurrentSignal = new SignalInfo(SignalState.Locked, description.Video?.Resolution, description.Video?.FrameRate,
-                AudioLayout.Stereo, HasAudio: description.HasAudio, Timecode: null, Bitrate: null, FormatLabel: description.Video?.Label);
+                AudioLayout.Stereo, HasAudio: description.HasAudio, Timecode: null, Bitrate: null, FormatLabel: description.Video?.Label,
+                Scan: description.Video?.Scan);
         }
         SignalChanged?.Invoke(this, signal);
     }

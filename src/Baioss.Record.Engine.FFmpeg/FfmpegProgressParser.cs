@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Recording;
@@ -12,6 +13,31 @@ public sealed class FfmpegProgressParser
 {
     private readonly Dictionary<string, string> _kv = new(StringComparer.Ordinal);
     private long _lastFrame;
+    private readonly Func<TimeSpan> _clock;
+    // Bloques recientes del proceso actual (cuándo llegó cada uno y su contador de frames) para el ritmo instantáneo.
+    private readonly List<(TimeSpan At, long Frame)> _recent = new();
+
+    public FfmpegProgressParser() : this(null) { }
+
+    /// <param name="clock">Reloj monotónico con el que se fecha cada bloque (los tests lo controlan); por defecto, el tiempo
+    /// transcurrido desde que se creó el parser.</param>
+    public FfmpegProgressParser(Func<TimeSpan>? clock)
+    {
+        if (clock is null)
+        {
+            var sw = Stopwatch.StartNew();
+            clock = () => sw.Elapsed;
+        }
+        _clock = clock;
+    }
+
+    /// <summary>
+    /// Tramo sobre el que se mide <see cref="RecorderStats.OutputFps"/>: los frames que FFmpeg contó entre el bloque más reciente
+    /// y el último que llegó hace al menos esto, por el tiempo de pared entre ambos. El <c>fps</c> que imprime FFmpeg es la MEDIA
+    /// desde que arrancó el proceso: tras vaciarse un atraso marcó 37,9–44 fps durante un minuto con una fuente de 29,97 (medido
+    /// con una DeckLink). Unos segundos bastan para que el ±1 frame entre bloques no haga bailar la cifra.
+    /// </summary>
+    public TimeSpan RateWindow { get; init; } = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Tasa nominal (entera: 24/25/30/50/60) de la fuente/salida. Solo determina la subdivisión de
@@ -62,7 +88,9 @@ public sealed class FfmpegProgressParser
         var tc = Timecode.FromMicroseconds(outTimeUs, NominalRate);
         return new RecorderStats(
             InputFps: fps,
-            OutputFps: fps,
+            // El ritmo de AHORA, no la media desde el arranque; mientras el proceso es demasiado nuevo para medirlo, la media
+            // de FFmpeg (que en un proceso recién nacido viene a ser lo mismo).
+            OutputFps: InstantRate(frame) ?? fps,
             DroppedFrames: drop,
             DuplicatedFrames: dup,
             Bitrate: new Bitrate(bitrate),
@@ -72,6 +100,27 @@ public sealed class FfmpegProgressParser
         {
             MediaTimeUs = knownTime ? outTimeUs : -1,
         };
+    }
+
+    /// <summary>Por debajo de este tramo entre dos bloques no se mide el ritmo (dos bloques que llegan de golpe).</summary>
+    private static readonly TimeSpan MinRateSpan = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// Frames por segundo de pared en el último <see cref="RateWindow"/>: el contador <c>frame</c> de este bloque menos el del
+    /// bloque de referencia (el más reciente con al menos esa antigüedad), entre el tiempo que los separa. Null mientras el
+    /// proceso actual no tenga dos bloques separados al menos <see cref="MinRateSpan"/>. El contador acumulado no se toca: es el
+    /// que usa la alarma de frames perdidos (<c>SaturationDetector</c>).
+    /// </summary>
+    private double? InstantRate(long frame)
+    {
+        var now = _clock();
+        // Proceso nuevo (relanzamiento, pieza nueva, Grabar/Detener): su contador empieza de cero y lo anterior no cuenta.
+        if (_recent.Count > 0 && frame < _recent[^1].Frame) _recent.Clear();
+        _recent.Add((now, frame));
+        while (_recent.Count > 2 && now - _recent[1].At >= RateWindow) _recent.RemoveAt(0);
+        var (at, reference) = _recent[0];
+        var span = now - at;
+        return span < MinRateSpan ? null : (frame - reference) / span.TotalSeconds;
     }
 
     private double GetDouble(string key) =>

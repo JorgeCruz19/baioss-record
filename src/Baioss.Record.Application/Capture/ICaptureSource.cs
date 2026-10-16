@@ -27,7 +27,11 @@ public sealed record SignalInfo(
     IReadOnlyList<int>? AudioSelectedPairs = null,
     // Cuántas pistas de audio llevará el archivo, en palabras y en el idioma de la aplicación («8 pistas», «1 pista 5.1»,
     // «1 pista · 16 canales»); lo pone el motor del canal con una fuente multicanal. Null con estéreo.
-    string? AudioTracksLabel = null)
+    string? AudioTracksLabel = null,
+    // Barrido de la señal (progresivo o entrelazado con su orden de campos), según lo que la tarjeta o el emisor dijeron al
+    // abrir; null si no se sabe. Con él la grabación desentrelaza cuando el preset es progresivo (el relé en crudo de
+    // DeckLink no conserva la marca de entrelazado en los cuadros: el orden de campos solo se sabe por aquí).
+    ScanType? Scan = null)
 {
     public static readonly SignalInfo None =
         new(SignalState.NoSignal, null, null, null, false, null, null);

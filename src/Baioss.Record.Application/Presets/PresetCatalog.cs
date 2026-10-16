@@ -212,7 +212,9 @@ public static class PresetCatalog
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 45; p.MaxBitrateMbps = 60; p.GopSize = 50;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
-        // ---------------- DNxHR (Avid, edición) ----------------
+        // ---------------- DNxHR / DNxHD (Avid, edición) ----------------
+        // DNxHR solo es progresivo (FFmpeg no entrelaza sus perfiles); los 1080i son DNxHD clásico, donde el bitrate elige el
+        // CID: 220 Mbps a 29.97 = 185 a 25 (CID 1243, la clase de DNxHR HQ), 145 = 120 (CID 1242).
         Make("DNxHR LB · 1080p25 (offline)", PresetCategory.DnxHd, "Low Bandwidth: 1920×1080p25 4:2:2 8-bit, intra, MOV, PCM. Edición offline/proxy.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrLb; p.AudioCodec = AudioCodec.Pcm; }),
@@ -237,20 +239,20 @@ public static class PresetCatalog
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.DnxHr444; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("DNxHR HQ · 1080i25 (MXF)", PresetCategory.DnxHd, "1920×1080i25 4:2:2 8-bit, MXF OP1A, audio PCM (entrega broadcast).", p =>
-        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
-          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+        Make("DNxHD 185 · 1080i25 (MXF)", PresetCategory.DnxHd, "DNxHD 185 (CID 1243): 1920×1080i25 4:2:2 8-bit entrelazado, intra, MXF OP1A, audio PCM (entrega broadcast).", p =>
+        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHd; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 185; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }, formerName: "DNxHR HQ · 1080i25 (MXF)"),
 
-        Make("DNxHR HQ · 1080i25 (MOV)", PresetCategory.DnxHd, "High Quality: 1920×1080i25 4:2:2 8-bit entrelazado, intra, MOV, PCM.", p =>
-        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
-          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+        Make("DNxHD 185 · 1080i25 (MOV)", PresetCategory.DnxHd, "DNxHD 185 (CID 1243): 1920×1080i25 4:2:2 8-bit entrelazado, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHd; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 25; p.VideoBitrateMbps = 185; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }, formerName: "DNxHR HQ · 1080i25 (MOV)"),
 
-        Make("DNxHR HQ · 1080i59.94 (MOV)", PresetCategory.DnxHd, "High Quality: 1920×1080i59.94 (30000/1001) 4:2:2 8-bit entrelazado NTSC, intra, MOV, PCM.", p =>
-        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
-          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+        Make("DNxHD 220 · 1080i59.94 (MOV)", PresetCategory.DnxHd, "DNxHD 220 (CID 1243): 1920×1080i59.94 (30000/1001) 4:2:2 8-bit entrelazado NTSC, intra, MOV, PCM.", p =>
+        { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHd; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 220; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }, formerName: "DNxHR HQ · 1080i59.94 (MOV)"),
 
         // ---------------- Apple ProRes (edición) ----------------
         Make("ProRes 422 Proxy · 1080p25", PresetCategory.ProRes, "Proxy (offline): 1920×1080p25 4:2:2 10-bit, MOV, PCM.", p =>
@@ -358,11 +360,11 @@ public static class PresetCatalog
           p.FrameRateNum = 60; p.FrameRateDen = 1; p.VideoBitrateMbps = 50; p.MaxBitrateMbps = 50; p.GopSize = 15; p.PixelFormat = PixelFormat.Yuv422p;
           p.AudioCodec = AudioCodec.Pcm; }),
 
-        // ---- MXF · familia 59.94 (DNxHR, intra, edición/entrega) ----
-        Make("MXF OP1A · DNxHR HQ 1080i59.94", PresetCategory.Mxf, "DNxHR HQ 4:2:2 8-bit · 1920×1080i59.94 (30000/1001) · MXF OP1A · PCM.", p =>
-        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
-          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
-          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
+        // ---- MXF · familia 59.94 (DNxHD/DNxHR, intra, edición/entrega) ----
+        Make("MXF OP1A · DNxHD 220 1080i59.94", PresetCategory.Mxf, "DNxHD 220 (CID 1243) 4:2:2 8-bit · 1920×1080i59.94 (30000/1001) entrelazado · MXF OP1A · PCM.", p =>
+        { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHd; p.Width = 1920; p.Height = 1080;
+          p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 220; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p;
+          p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }, formerName: "MXF OP1A · DNxHR HQ 1080i59.94"),
 
         Make("MXF OP1A · DNxHR HQ 1080p59.94", PresetCategory.Mxf, "DNxHR HQ 4:2:2 8-bit · 1920×1080p59.94 (60000/1001) · MXF OP1A · PCM.", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
@@ -466,13 +468,20 @@ public static class PresetCatalog
 
     // Cola de la descripción de los presets NVENC: qué hace el preset si el equipo no tiene NVIDIA (EncoderFallbackChain).
     private const string NvencH264Note = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync, AMF o CPU.";
-    private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a CPU (x265).";
+    private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync o a CPU (x265).";
 
-    private static EncodingPreset Make(string name, PresetCategory category, string description, Action<EncodingPreset> configure)
+    /// <param name="name">Nombre visible del preset.</param>
+    /// <param name="category">Familia del preset (panel izquierdo del gestor).</param>
+    /// <param name="description">Descripción para el operador.</param>
+    /// <param name="configure">Rellena los parámetros de codificación.</param>
+    /// <param name="formerName">Nombre con el que se publicó el preset si se renombró: el GUID sigue saliendo de él, así un
+    /// favorito marcado con el nombre anterior sigue en su sitio (los «DNxHR HQ · 1080i…» que pasaron a DNxHD, 2026-10).</param>
+    private static EncodingPreset Make(string name, PresetCategory category, string description, Action<EncodingPreset> configure,
+        string? formerName = null)
     {
         var preset = new EncodingPreset { Name = name, Category = category, Description = description, IsBuiltIn = true };
         configure(preset);
-        preset.Id = StableGuid("preset:" + name); // GUID determinista → favoritos estables entre reinicios
+        preset.Id = StableGuid("preset:" + (formerName ?? name)); // GUID determinista → favoritos estables entre reinicios
         return preset;
     }
 

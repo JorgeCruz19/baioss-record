@@ -6,6 +6,15 @@ using Baioss.Record.Application.Capture;
 namespace Baioss.Record.Application.Recording;
 
 /// <summary>Telemetría en vivo del encoder, una muestra por segundo aprox.</summary>
+/// <param name="InputFps">El <c>fps</c> que imprime FFmpeg: la MEDIA desde que arrancó el proceso.</param>
+/// <param name="OutputFps">Ritmo de AHORA (frames por segundo de pared en los últimos segundos, entre bloques de progreso):
+/// el «FPS OUT» del panel. La media de FFmpeg tardaba un minuto en olvidar un atraso ya vaciado.</param>
+/// <param name="DroppedFrames"><c>drop_frames</c> acumulado del proceso actual.</param>
+/// <param name="DuplicatedFrames"><c>dup_frames</c> acumulado del proceso actual.</param>
+/// <param name="Bitrate">Bitrate de la salida (al grabar, el real del archivo medido en disco).</param>
+/// <param name="BufferHealth">Salud del búfer, 0..1.</param>
+/// <param name="Timecode">Tiempo de la salida (del <c>out_time</c> de FFmpeg).</param>
+/// <param name="FrameCount">El <c>frame</c> ACUMULADO del proceso actual (base de la alarma de frames perdidos).</param>
 public sealed record RecorderStats(
     double InputFps,
     double OutputFps,

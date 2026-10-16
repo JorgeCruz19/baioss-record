@@ -16,13 +16,47 @@ WHAT YOU HAVE TO DO
 
 1. Download an FFmpeg build for 64-bit Windows.
 
-   The usual starting point is the official FFmpeg page (https://ffmpeg.org/download.html),
-   which links to the Windows builds maintained by third parties.
+   The one we test Baioss Record with is "ffmpeg-autobuild" (AnimMouse's project on
+   GitHub), which includes DeckLink support:
 
-   IMPORTANT if you are going to capture with Blackmagic DeckLink cards: you need a build
-   that includes "decklink" support. Not every build has it. You can check with step 4.
+       https://github.com/AnimMouse/ffmpeg-autobuild/releases
 
-2. Unzip what you downloaded. Inside (usually in a "bin" folder) you will find:
+   From the latest release, download the file whose name ends in "-win64-nonfree.7z"
+   (about 105 MB). Read "IF YOU RECORD WITH AN NVIDIA CARD" below first.
+
+   The official FFmpeg page (https://ffmpeg.org/download.html) links to other builds, but
+   the best-known ones do NOT include "decklink" support. If you capture with Blackmagic
+   DeckLink cards, check it with step 4.
+
+   IF YOU RECORD WITH AN NVIDIA CARD ("NVENC" presets), check which card you have:
+
+   · GeForce GTX 16xx, RTX 20xx, 30xx, 40xx or 50xx, Quadro RTX, Quadro T400/T600/T1000,
+     RTX A-series or newer: the latest release works. It needs NVIDIA driver 610 or
+     later; update your driver if it is older.
+
+   · GeForce GTX 750, 9xx or 10xx, Quadro M... or P... (for example Quadro P400, P620 or
+     P2000), Titan X, Xp or V: NVIDIA does not offer driver 610 for them (their last
+     driver is the 580 series). With the latest release the program still records, but
+     with the Intel graphics or the processor, and it warns you. Download EXACTLY the
+     release of 12 March 2026 instead, which works with driver 570 or later:
+
+       https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733
+       file: ffmpeg-afcde65-c6e5733-win64-nonfree.7z
+
+     We tested it with a Quadro P400 and driver 582.78. Do not use the releases between
+     15 March and 6 April 2026: they write damaged MP4 files when the Intel graphics does
+     the encoding. This release has no support for AMD graphics: use it only on computers
+     with an NVIDIA card from this list.
+
+   · GeForce GTX 600 or 700 (except the 750) and Quadro K...: their last driver (470)
+     cannot run NVENC with any of these releases. The program records with the Intel
+     graphics or the processor.
+
+   Without an NVIDIA card, the latest release works.
+
+2. Unzip what you downloaded: Windows 11 opens .7z files with a double click; on Windows 10
+   you need a program such as 7-Zip (https://www.7-zip.org). Inside (sometimes in a "bin"
+   folder) you will find:
 
        ffmpeg.exe
        ffprobe.exe
@@ -44,6 +78,15 @@ WHAT YOU HAVE TO DO
 
    If that last one lists your cards, the build is the right one.
 
+   And, if you record with NVIDIA (NVENC), also:
+
+       ffmpeg.exe -hide_banner -f lavfi -i nullsrc -frames:v 1 -c:v h264_nvenc -f null -
+
+   If no error appears, NVENC works. If it says "Driver does not support the required
+   nvenc API version. Required: 13.1 Found: 13.0", the build is too new for your driver:
+   update the driver or, if your card is in the second list of step 1, use the release
+   of 12 March 2026.
+
 5. Open Baioss Record. If the files were copied correctly the warning is gone and you can
    record normally.
 
@@ -63,6 +106,12 @@ COMMON PROBLEMS
 · "ffprobe.exe is missing."
   Both files are needed: ffmpeg.exe does the recording and ffprobe.exe verifies that the
   recordings were closed correctly.
+
+· "I have an NVIDIA card, but the program warns that it records with another encoder."
+  Run the NVENC check of step 4. If it mentions "nvenc API version", follow step 1 for
+  your card. If it says "incompatible client key", all the card's encoding sessions are
+  in use: GeForce and entry-level Quadro cards allow 8 in the whole computer, and a remote
+  desktop such as RustDesk or Parsec uses one too.
 
 
 If you have any doubts, please contact your Baioss supplier.

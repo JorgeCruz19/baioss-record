@@ -14,8 +14,12 @@ public static class FfmpegCodecMap
         VideoCodec.H265x265  => "libx265",
         VideoCodec.H264Qsv   => "h264_qsv",  // Intel QuickSync (GPU integrada)
         VideoCodec.H264Amf   => "h264_amf",  // AMD AMF (GPU integrada)
-        VideoCodec.ProRes    => "prores_ks",
-        VideoCodec.DnxHd     => "dnxhd",
+        VideoCodec.HevcQsv   => "hevc_qsv",  // Intel QuickSync HEVC (GPU integrada)
+        // prores_aw y no prores_ks: en un i7-8700 prores_ks no llega a tiempo real (1080i29.97 HQ a 0,8–1,2× con los 12
+        // hilos; Proxy/LT aún más lentos) y una captura en vivo perdía cuadros; prores_aw da 5–6× (3× en 4444/XQ), con los
+        // seis perfiles y DCT entrelazada. Medido con una DeckLink, ver docs/08-presets.md.
+        VideoCodec.ProRes    => "prores_aw",
+        VideoCodec.DnxHd     => "dnxhd", // DNxHD clásico: el bitrate elige el CID (ver FfmpegArgumentBuilder.DnxhdBitrateMbps)
         VideoCodec.DnxHr     => "dnxhd", // DNxHR vía -profile dnxhr_hq
         VideoCodec.Mpeg2Video => "mpeg2video",
         _ => throw new ArgumentOutOfRangeException(nameof(codec))

@@ -101,6 +101,13 @@ public sealed class SegmentationPolicy
     /// <summary>Alinear cortes con bordes de reloj (ej. cada hora en punto) cuando Trigger = WallClock.</summary>
     public bool AlignToWallClock { get; set; }
 
+    /// <summary>
+    /// Fin previsto de la grabación (una programada con duración), o null si no se sabe (manual). Con corte por duración, el
+    /// corte que caería justo en ese fin se omite y el último segmento absorbe lo que tarde en llegar el Detener: si no, una
+    /// programada de 30 min con segmentos de 10 dejaba 3 de 600 s y un cuarto de 0,6 s.
+    /// </summary>
+    public DateTimeOffset? PlannedEnd { get; set; }
+
     /// <summary>Patrón de nombre con tokens: {channel} {date} {time} {index} {tc}.</summary>
     public string FileNamePattern { get; set; } = "{channel}_{date}_{time}_{index}";
 }

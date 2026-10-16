@@ -28,6 +28,7 @@ public class DecklinkCaptureSourceRelayTests
         public event EventHandler? Lost;
         public event EventHandler<DetectedVideoMode?>? ModeDetected;
         public event EventHandler? DeviceBusy;
+        public event EventHandler? AutodetectRefused;
         public event EventHandler<bool>? SignalPresence;
         public event EventHandler? AudioChannelsRejected;
         public event EventHandler<long>? DataDropped;
@@ -41,6 +42,7 @@ public class DecklinkCaptureSourceRelayTests
         public void RaiseLost() => Lost?.Invoke(this, EventArgs.Empty);
         public void RaiseMode(DetectedVideoMode? m) => ModeDetected?.Invoke(this, m);
         public void RaiseBusy() => DeviceBusy?.Invoke(this, EventArgs.Empty);
+        public void RaiseRefused() => AutodetectRefused?.Invoke(this, EventArgs.Empty);
         public void RaisePresence(bool present) => SignalPresence?.Invoke(this, present);
         public void RaiseAudioRejected() => AudioChannelsRejected?.Invoke(this, EventArgs.Empty);
         public void RaiseDropped(long units) => DataDropped?.Invoke(this, units);
@@ -61,6 +63,19 @@ public class DecklinkCaptureSourceRelayTests
         receiver.RaiseLost();
         receiver.RaiseOpened(Description);
         Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+    }
+
+    [Fact]
+    public async Task TheFieldOrderTheCardReports_ReachesTheSignal_SoProgressivePresetsCanDeinterlace()
+    {
+        // El relé en crudo no conserva la marca de entrelazado en los cuadros: el barrido solo llega por la señal.
+        var (source, receiver) = RelaySource();
+        await source.OpenAsync();
+        receiver.RaiseOpened(Description); // «uyvy422(top first)» de una Duo 2 en 1080i59.94
+        Assert.Equal(ScanType.InterlacedTff, source.CurrentSignal.Scan);
+        receiver.RaiseLost();
+        receiver.RaiseOpened(Description with { Video = new DetectedVideoMode(new Resolution(1280, 720), VideoModes.RateFromDisplay(59.94), false) });
+        Assert.Equal(ScanType.Progressive, source.CurrentSignal.Scan);
     }
 
     [Fact]
@@ -174,6 +189,37 @@ public class DecklinkCaptureSourceRelayTests
         receiver.RaiseMode(Mode1080i);
         receiver.RaiseOpened(Description);
         Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+    }
+
+    [Fact]
+    public async Task AnImmediateAutodetectFailure_SaysInUse_NotNoSignal_AndAQuietOneSaysNoSignal()
+    {
+        // En autodetección una tarjeta en uso por otro programa da el mismo fallo genérico que una sin señal, pero al instante:
+        // antes el panel decía «La tarjeta no detecta señal» y el operador revisaba el cable con Media Express abierto.
+        var (source, receiver) = RelaySource();
+        await source.OpenAsync();
+        receiver.RaiseRefused();
+        Assert.Equal(SignalState.NoSignal, source.CurrentSignal.State);
+        Assert.Equal(Localizer.T("Dl_State_Refused"), source.CurrentSignal.FormatLabel);
+        Assert.Throws<InvalidOperationException>(() => source.BuildInputArguments());
+        receiver.RaiseLost(); // el receptor reintenta: el motivo se conserva
+        Assert.Equal(Localizer.T("Dl_State_Refused"), source.CurrentSignal.FormatLabel);
+
+        // El otro programa suelta la tarjeta, que ya escucha 3 s pero no ve señal: ahora sí, «no detecta señal».
+        receiver.RaiseMode(null);
+        Assert.Equal(Localizer.T("Dl_State_NoDetect"), source.CurrentSignal.FormatLabel);
+        receiver.RaiseMode(Mode1080i);
+        receiver.RaiseOpened(Description);
+        Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+    }
+
+    [Fact]
+    public void AnAutodetectFailure_IsARefusal_OnlyIfItCameAtOnce()
+    {
+        // FFmpeg escucha hasta 3 s antes de rendirse; sin poder escuchar (en uso, conector que no es entrada) se rinde al instante.
+        Assert.True(DecklinkModeParser.IsAutodetectRefusal(TimeSpan.FromMilliseconds(80)));   // medido en una Duo 2
+        Assert.True(DecklinkModeParser.IsAutodetectRefusal(TimeSpan.FromSeconds(1.2)));       // máquina cargada
+        Assert.False(DecklinkModeParser.IsAutodetectRefusal(TimeSpan.FromSeconds(3.1)));      // escuchó y no vio nada
     }
 
     [Fact]

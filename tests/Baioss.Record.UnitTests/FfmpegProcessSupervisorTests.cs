@@ -27,6 +27,29 @@ public class FfmpegProcessSupervisorTests
             "El supervisor debe emitir Crashed si FFmpeg no se puede lanzar (no faultar en silencio).");
         Assert.NotEqual(0, await crashed.Task); // código ≠ 0 → el motor reconstruirá
     }
+
+    [Fact]
+    public async Task ProcessStarted_ArrivesBeforeAnyLineOfThatProcess()
+    {
+        // El receptor DeckLink fecha con él cada fallo de autodetección (al instante = la tarjeta no pudo escuchar): tiene que
+        // llegar antes que la primera línea del proceso. Un intérprete de órdenes hace de «FFmpeg» que escribe en stderr.
+        string shell = Environment.GetEnvironmentVariable("ComSpec") ?? @"C:\Windows\System32\cmd.exe";
+        await using var sup = new FfmpegProcessSupervisor(shell, NullLogger.Instance) { RestartInternally = false };
+        var events = new List<string>();
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        sup.ProcessStarted += (_, restarts) => { lock (events) events.Add($"arranque {restarts}"); };
+        sup.LogLine += (_, line) => { lock (events) events.Add("línea " + line.Trim()); };
+        sup.Completed += (_, _) => completed.TrySetResult();
+
+        await sup.StartAsync(new[] { "/c", "echo hola 1>&2" });
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        lock (events)
+        {
+            Assert.Equal("arranque 0", events[0]);
+            Assert.Contains("línea hola", events);
+        }
+    }
 }
 
 /// <summary>

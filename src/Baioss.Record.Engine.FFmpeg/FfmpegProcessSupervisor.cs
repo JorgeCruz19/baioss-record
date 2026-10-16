@@ -117,6 +117,10 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     public event EventHandler<string>? LogLine;        // stderr
     public event EventHandler<int>? Exited;            // código de salida de cada proceso
     public event EventHandler<int>? Restarted;         // nº de reinicio
+    /// <summary>Arrancó un proceso FFmpeg (el primero o un relanzamiento), ANTES de que llegue ninguna de sus líneas: con él se
+    /// mide cuánto tardó en decir algo (p. ej. un fallo de autodetección DeckLink inmediato frente a uno tras escuchar 3 s).
+    /// Lleva los reinicios hechos hasta ahora (0 = el primero).</summary>
+    public event EventHandler<int>? ProcessStarted;
     public event EventHandler<int>? Completed;         // fin definitivo (0=normal/stop, -1=agotó reintentos)
     /// <summary>El proceso murió inesperadamente y <see cref="RestartInternally"/> es <c>false</c>: el dueño (el
     /// motor de grabación) debe reiniciar en una PIEZA NUEVA sin reabrir el mismo archivo. Lleva el código de salida.</summary>
@@ -257,6 +261,7 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
         // fin de sesión), Windows mata este FFmpeg en vez de dejarlo grabando huérfano y reteniendo el
         // dispositivo/puerto de la fuente. (Auditoría 24/7, C2.)
         ChildProcessTracker.Track(_process);
+        Raise(ProcessStarted, _restartCount, nameof(ProcessStarted)); // antes de leer nada: sus líneas llegan después
         // Progreso (stdout) y log (stderr) en hilos PROPIOS, no con BeginOutputReadLine: cada flujo redirigido ocupaba un
         // hilo del pool mientras esperaba bytes y, con varios FFmpeg vivos (canales + receptores de red), el pool se
         // agotaba y todo lo asíncrono de la app se paraba varios segundos en cada Grabar/Detener. Ver ProcessOutput.

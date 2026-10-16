@@ -25,10 +25,21 @@ It is designed to run **24 hours a day, 7 days a week** unattended: if a source 
 Baioss Record uses **FFmpeg** as its recording engine. Because of that component's licensing it does not come inside
 the installer: it has to be downloaded and left in its folder. It takes a moment and **you only do it once**.
 
-1. Download an FFmpeg build for **64-bit Windows** (the official page, <https://ffmpeg.org/download.html>, links to
-   the maintained Windows builds). If you are going to capture with **Blackmagic DeckLink** cards, make sure the
-   build includes "decklink" support: not all of them do.
-2. Unzip the file and look inside (usually in a `bin` folder) for **`ffmpeg.exe`** and **`ffprobe.exe`**.
+1. Download FFmpeg for **64-bit Windows**. We recommend **ffmpeg-autobuild** (AnimMouse's project on GitHub), the build
+   we test Baioss Record with: <https://github.com/AnimMouse/ffmpeg-autobuild/releases>. Download the file whose name
+   ends in **`-win64-nonfree.7z`**, which has the **Blackmagic DeckLink** support that the best-known builds lack.
+   Which one to download depends on your graphics card (the details are in `FFMPEG-README.txt`, in the folder of
+   step 3):
+   - **No NVIDIA card**, or a **GeForce GTX 16xx or RTX, Quadro RTX or T400/T600/T1000, RTX A-series** or newer: the
+     **latest** release. To record with the NVIDIA card (NVENC presets) it needs **driver 610 or later**.
+   - **GeForce GTX 750, 9xx or 10xx, Quadro M or P, Titan X, Xp or V:** NVIDIA does not offer driver 610 for them, so
+     download **exactly** the release of 12 March 2026,
+     [`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
+     (file `ffmpeg-afcde65-c6e5733-win64-nonfree.7z`, driver 570 or later), and not one from 15 March to 6 April 2026:
+     those can write damaged MP4 files when the Intel graphics does the encoding. The 12 March release has no support
+     for AMD graphics.
+2. Unzip the file (Windows 11 opens `.7z` files with a double click; on Windows 10 you need a program such as 7-Zip,
+   <https://www.7-zip.org>) and look inside (sometimes in a `bin` folder) for **`ffmpeg.exe`** and **`ffprobe.exe`**.
 3. Copy those **two** files into the `tools\ffmpeg\` folder of the installation (by default
    `C:\Baioss\Record\tools\ffmpeg\`). You will also find a `FFMPEG-README.txt` file there with these same steps.
 4. Open Baioss Record.
@@ -71,7 +82,7 @@ Each panel shows you, from top to bottom:
   - A red **"● REC"** badge that **flashes while the channel is recording**.
 
 - **Four metric boxes:**
-  - **FPS OUT:** how many frames per second are being recorded.
+  - **FPS OUT:** how many frames per second are coming out right now (the rate over the last few seconds, not the average since the start).
   - **BITRATE:** the "amount of data" in the video (more bitrate means more quality and a bigger file).
   - **DROPPED:** frames lost while recording. If this climbs, the machine is short of power or disk throughput. It does not count the frames the preset drops on purpose to change the frame rate (see *FRAME RATE* below).
   - **DISK / STATUS:** while recording, the **time left** of disk space; when idle, the channel status (Idle, Recording…).
@@ -131,6 +142,9 @@ This is where you decide **which video source is connected to each channel**.
   reopen it**, so the preview never freezes and recordings do not start with black. While the card is being opened, the
   channel shows **NO SIGNAL** with the reason ("Opening the card…", "Card in use by another program", "The card detects
   no signal", "Reopening the card…"), and if the SDI input loses its signal while the card is open it says so at once.
+  With the mode on "Automatic", a card that another program has open (Media Express, OBS, vMix…) shows as "Card in use
+  by another program (or no autodetection)": close that program; if nothing is using the card, that connector does not
+  autodetect (or is not an input) and the mode must be set in *Mode/format*.
   To go back to the classic direct capture (the channel reopens the card on every Record/Stop):
   `Capture:DecklinkRelay=false` in the embedded configuration (requires a rebuild).
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
@@ -236,10 +250,11 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 **Recording with the NVIDIA graphics card (NVENC presets):** the **H.264 NVENC** and **HEVC NVENC** presets record
 with the NVIDIA card instead of the processor, so the machine has more headroom with several channels. There is one for
 each common format (720p, 1080p and 4K at 25, 29.97, 50, 59.94…). Type **NVENC** in the search box to list them all.
-- They are **progressive only** (1080p, not 1080i): to record interlaced, use the regular H.264, MPEG-2, ProRes or DNxHR ones.
+- They are **progressive only** (1080p, not 1080i): to record interlaced, use the regular H.264, MPEG-2, ProRes or DNxHD ones (DNxHR ones are progressive only).
 - If the machine has no NVIDIA card or its driver is old, **nothing breaks**: the channel switches by itself to the
   Intel/AMD graphics or to the processor and keeps recording, showing "GPU encoder unavailable — recording with a
-  fallback encoder".
+  fallback encoder". With a GTX 750/9xx/10xx, Quadro M/P or Titan X/Xp/V, NVENC needs the FFmpeg release of 12 March
+  2026 (see section 1.1).
 
 **Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
 how the pairs chosen on the input (see section 3) are stored:
