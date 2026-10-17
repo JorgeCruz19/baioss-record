@@ -83,7 +83,9 @@ public sealed class NdiCaptureTests
     /// #19/#35/A3/A4 — DERIVA A/V con una fuente NDI REAL a tasa completa (OBS): graba ~15 s y mide la diferencia
     /// de DURACIÓN y de start_time entre las pistas de vídeo y audio del MP4. Con el Test Pattern (throttled) esto
     /// daba falso-negativo; con OBS a tasa real es la medida que faltaba. Escribe un informe a
-    /// %TEMP%/baioss-ndi-avsync.txt (siempre, antes de aseverar) para poder inspeccionar los números.
+    /// %TEMP%/baioss-ndi-avsync.txt (siempre, antes de aseverar) para poder inspeccionar los números. Con
+    /// <c>BAIOSS_NDI_SOURCE</c> se elige la fuente (parte de su nombre): p. ej. una que entrega menos cuadros de los que
+    /// declara, para ver que la grabación dura lo grabado; el informe da también la CPU de FFmpeg y del receptor.
     /// </summary>
     [SkippableFact]
     public async Task NdiRealSource_MeasuresAvSync()
@@ -92,7 +94,11 @@ public sealed class NdiCaptureTests
         Skip.IfNot(NdiRuntime.IsAvailable, "Runtime NDI no disponible (instala NDI Tools/Runtime).");
         var sources = NdiRuntime.DiscoverSources(4000);
         Skip.If(sources.Count == 0, "Sin fuentes NDI en la red (arranca la salida NDI de OBS).");
-        var name = sources.FirstOrDefault(s => s.Contains("OBS", StringComparison.OrdinalIgnoreCase)) ?? sources[0];
+        string? wanted = Environment.GetEnvironmentVariable("BAIOSS_NDI_SOURCE");
+        var name = string.IsNullOrEmpty(wanted)
+            ? sources.FirstOrDefault(s => s.Contains("OBS", StringComparison.OrdinalIgnoreCase)) ?? sources[0]
+            : sources.FirstOrDefault(s => s.Contains(wanted, StringComparison.OrdinalIgnoreCase));
+        Skip.If(name is null, $"Ninguna fuente NDI contiene «{wanted}» ({string.Join(" | ", sources)}).");
 
         var report = Path.Combine(Path.GetTempPath(), "baioss-ndi-avsync.txt");
         var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-ndi-{Guid.NewGuid():N}");
@@ -117,9 +123,16 @@ public sealed class NdiCaptureTests
             engine.FrameReady += (_, _) => Interlocked.Increment(ref previewFrames); // ¿fluye el PREVIEW? (0 = congelado)
             await engine.StartPreviewAsync(source, profile, "NDI");
             await Task.Delay(TimeSpan.FromSeconds(2)); // deja establecer el preview/recepción antes de grabar
+            var recording = Stopwatch.StartNew();
             await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_sync");
+            var ffmpegPath = new FfmpegLocator(TestAssets.FfmpegDir!).FfmpegPath;
+            var (ffmpegCpu0, selfCpu0) = CpuTimes(ffmpegPath);
+            var cpuWindow = Stopwatch.StartNew();
             await Task.Delay(TimeSpan.FromSeconds(recordSeconds));
+            var (ffmpegCpu1, selfCpu1) = CpuTimes(ffmpegPath);
+            double cpuSeconds = cpuWindow.Elapsed.TotalSeconds;
             await engine.StopRecordingAsync();
+            double recordedFor = recording.Elapsed.TotalSeconds;
 
             var file = engine.LastOutputFile;
             Assert.True(file is not null && File.Exists(file) && new FileInfo(file).Length > 0, $"No se generó archivo NDI: {file}");
@@ -142,13 +155,15 @@ public sealed class NdiCaptureTests
                 $"señal          : {sig.State} {resText} @ {rateText} fps · pix {source.VideoPixelFormat}",
                 $"encoder        : {profile.VideoCodec}",
                 $"archivo        : {Path.GetFileName(file)} ({new FileInfo(file!).Length / 1024 / 1024} MB)",
-                $"ventana grab.  : {recordSeconds}s",
+                $"ventana grab.  : {recordSeconds}s (de Grabar a Detener: {I(recordedFor, "0.00")}s)",
                 $"vídeo          : dur={I(vDur, "0.000")}s frames={vFrames} → {I(deliveredFps, "0.#")} fps entregados (esperado ~{rateText}) start={I(vStart, "0.000")}s",
                 $"audio          : dur={I(aDur, "0.000")}s start={I(aStart, "0.000")}s",
                 $"DERIVA dur     : {I(durDrift, "+0.000;-0.000")}s (vídeo - audio; ~0 = sincronizado)",
                 $"OFFSET inicial : {I(startOffset, "+0.000;-0.000")}s (#19)",
                 $"CONGELADO grab : {I(frozenSec, "0.0")}s de {I(vDur, "0.0")}s (freezedetect; ~0 = hay movimiento)",
                 $"PREVIEW        : {pFrames} frames → {I(previewFps, "0.#")} fps (0 = preview CONGELADO)",
+                $"CPU grabando   : FFmpeg {I((ffmpegCpu1 - ffmpegCpu0).TotalSeconds / cpuSeconds, "0.00")} núcleos · receptor y motor " +
+                $"{I((selfCpu1 - selfCpu0).TotalSeconds / cpuSeconds, "0.00")} núcleos",
             };
             File.WriteAllText(report, string.Join(Environment.NewLine, lines));
 
@@ -161,6 +176,25 @@ public sealed class NdiCaptureTests
             await source.DisposeAsync();
             try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, recursive: true); } catch { /* best effort */ }
         }
+    }
+
+    /// <summary>CPU consumida hasta ahora por los FFmpeg de <paramref name="ffmpegPath"/> en marcha y por este proceso (el
+    /// receptor NDI y el motor viven aquí).</summary>
+    private static (TimeSpan Ffmpeg, TimeSpan Self) CpuTimes(string ffmpegPath)
+    {
+        var ffmpeg = TimeSpan.Zero;
+        foreach (var p in Process.GetProcessesByName("ffmpeg"))
+        {
+            try
+            {
+                if (string.Equals(p.MainModule?.FileName, Path.GetFullPath(ffmpegPath), StringComparison.OrdinalIgnoreCase))
+                    ffmpeg += p.TotalProcessorTime;
+            }
+            catch { /* ya salió o no es nuestro */ }
+            finally { p.Dispose(); }
+        }
+        using var self = Process.GetCurrentProcess();
+        return (ffmpeg, self.TotalProcessorTime);
     }
 
     /// <summary>Duración, start_time (s) y nº de frames de vídeo de un MP4, vía ffprobe JSON.</summary>

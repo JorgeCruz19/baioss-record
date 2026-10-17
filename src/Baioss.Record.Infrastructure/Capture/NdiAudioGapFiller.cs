@@ -4,10 +4,11 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// Silencio para el audio de una fuente NDI que no lo trae (salidas de grafismo, muchas cámaras PTZ) o que deja de traerlo.
 /// El proceso del canal lee el audio NDI por una entrada <c>f32le</c> aparte y, sin datos en ella, FFmpeg no arranca —abre
 /// las entradas en serie y se queda esperando la del audio—: ni preview ni grabación (medido con una salida NDI de grafismo
-/// y con un emisor sintético mudo). Cuando pasan <see cref="Gap"/> sin audio mientras llega vídeo, cada cuadro de vídeo lleva
-/// su duración de silencio, empezando por los cuadros que ya pasaron sin audio: así el contador de muestras sigue al de
-/// cuadros, que es como FFmpeg pone las marcas de tiempo a estas entradas (vídeo n/fps, audio muestra/frecuencia), y vídeo y
-/// audio siguen alineados. El audio real, cuando llega, manda. Puro: el reloj lo pone el llamador, siempre desde el mismo hilo.
+/// y con un emisor sintético mudo). Cuando pasan <see cref="Gap"/> sin audio mientras llega vídeo, cada cuadro de vídeo SERVIDO
+/// —también los que se repiten para mantener la cadencia declarada (<see cref="NdiFrameCadence"/>)— lleva su duración de
+/// silencio, empezando por los cuadros que ya pasaron sin audio: así el contador de muestras sigue al de cuadros, que es como
+/// FFmpeg pone las marcas de tiempo a estas entradas (vídeo n/fps, audio muestra/frecuencia), y vídeo y audio siguen alineados.
+/// El audio real, cuando llega, manda. Puro: el reloj lo pone el llamador, siempre desde el mismo hilo.
 /// </summary>
 internal sealed class NdiAudioGapFiller
 {
