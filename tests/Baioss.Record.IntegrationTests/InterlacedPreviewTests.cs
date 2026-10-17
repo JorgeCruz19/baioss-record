@@ -54,7 +54,7 @@ public sealed class InterlacedPreviewTests
     };
 
     /// <summary>Brillo máximo y barras (tramos de más de 100 de luma) en una fila de un frame BGRA.</summary>
-    private static (int Max, int Bars) RowProfile(byte[] bgra, int width, int stride, int y)
+    internal static (int Max, int Bars) RowProfile(byte[] bgra, int width, int stride, int y)
     {
         int max = 0, bars = 0;
         bool inBar = false;
@@ -71,7 +71,7 @@ public sealed class InterlacedPreviewTests
     }
 
     /// <summary>Una sola barra a pleno brillo (la barra es blanca: 255; cada fantasma de la cadena de antes, la mitad).</summary>
-    private static bool Clean((int Max, int Bars) p) => p.Max >= 200 && p.Bars == 1;
+    internal static bool Clean((int Max, int Bars) p) => p.Max >= 200 && p.Bars == 1;
 
     [SkippableTheory]
     [InlineData(true, 2)]  // un cuadro por campo: 59.94 desde 1080i59.94

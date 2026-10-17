@@ -93,20 +93,32 @@ public sealed class NdiCaptureSource : ICaptureSource
         SignalChanged?.Invoke(this, CurrentSignal);
     }
 
-    /// <summary>Señal presente con lo que sirve el receptor: resolución/tasa reales y los canales de audio que trae la
-    /// fuente (con más de 2, la etiqueta y los pares elegidos, para la UI/API y los medidores por par).</summary>
+    /// <summary>Señal presente con lo que sirve el receptor (ver <see cref="SignalFor"/>).</summary>
     private SignalInfo LockedSignal()
     {
         var r = _receiver!;
-        var res = new Resolution(r.Width, r.Height);
-        var rate = new FrameRate(r.FrameRateN, r.FrameRateD);
-        int ch = _lastChannels = r.Channels;
+        _lastChannels = r.Channels;
+        return SignalFor(r.Width, r.Height, r.FrameRateN, r.FrameRateD, r.Interlaced, r.Channels, _audio);
+    }
+
+    /// <summary>
+    /// Señal de una fuente NDI con señal: resolución/tasa reales, el barrido —una fuente que manda los dos campos entretejidos
+    /// (un 1080i de vMix o de un conversor SDI→NDI) es entrelazada con el campo superior primero, como dice NDI; antes se
+    /// trataba como progresiva: preview con doble imagen en lo que se mueve y grabación sin desentrelazar— y los canales de
+    /// audio (con más de 2, la etiqueta y los pares elegidos, para la UI/API y los medidores por par). Siempre con audio: si
+    /// la fuente no lo trae, el receptor sirve silencio. Pura y testeable.
+    /// </summary>
+    internal static SignalInfo SignalFor(int width, int height, int rateN, int rateD, bool interlaced, int channels, AudioSelection audio)
+    {
+        var res = new Resolution(width, height);
+        var rate = new FrameRate(rateN, rateD);
         return new SignalInfo(SignalState.Locked, res, rate,
             AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null,
-            FormatLabel: $"{res.Width}×{res.Height} · NDI",
-            AudioChannels: ch,
-            AudioSelectionLabel: ch > 2 ? _audio.Describe(ch) : null,
-            AudioSelectedPairs: ch > 2 ? _audio.SelectedPairs(ch) : null);
+            FormatLabel: $"{VideoModes.Label(res, rate, interlaced)} · NDI",
+            AudioChannels: channels,
+            AudioSelectionLabel: channels > 2 ? audio.Describe(channels) : null,
+            AudioSelectedPairs: channels > 2 ? audio.SelectedPairs(channels) : null,
+            Scan: interlaced ? ScanType.InterlacedTff : ScanType.Progressive);
     }
 
     /// <summary>Traduce la presencia de vídeo NDI a CurrentSignal + SignalChanged: el SignalMonitor publica

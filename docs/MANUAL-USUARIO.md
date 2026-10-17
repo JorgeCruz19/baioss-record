@@ -150,7 +150,9 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
   siempre (el canal abre la tarjeta en cada Grabar/Detener): `Capture:DecklinkRelay=false` en la configuración embebida
   (hay que recompilar).
 - **Cámara / capturadora USB (DirectShow):** webcams, capturadoras HDMI-USB, etc.
-- **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red).
+- **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red). Una fuente entrelazada (un 1080i
+  de vMix o de un conversor) se desentrelaza como la de la tarjeta, y una que no trae audio (salidas de grafismo, muchas
+  cámaras PTZ) se previsualiza y graba con una pista de silencio: por eso marca la alarma de silencio.
 - **Flujo de red (SRT o RTMP):** una señal que llega por la red desde un codificador, OBS, vMix o un servidor (ver
   «Fuentes de red» más abajo).
 - **Clip de demostración:** un vídeo de ejemplo que trae el programa (útil para pruebas).

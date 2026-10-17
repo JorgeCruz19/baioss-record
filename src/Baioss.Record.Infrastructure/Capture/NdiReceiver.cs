@@ -24,6 +24,9 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// <para>Vídeo y audio se sirven en HILOS SEPARADOS con colas acotadas: FFmpeg abre sus entradas en serie y,
 /// mientras abre el audio, deja de leer el vídeo; con un solo hilo el <c>Write</c> de vídeo se bloquearía y
 /// el audio nunca se serviría (deadlock). Las colas descartan los frames más viejos si FFmpeg se atrasa.</para>
+///
+/// <para>Una fuente SIN audio (o que lo pierde) recibe silencio al ritmo de sus cuadros (<see cref="NdiAudioGapFiller"/>):
+/// sin datos en la entrada de audio FFmpeg no arrancaba y el canal no tenía ni preview ni grabación.</para>
 /// </summary>
 public sealed class NdiReceiver : IAsyncDisposable
 {
@@ -50,6 +53,13 @@ public sealed class NdiReceiver : IAsyncDisposable
     private volatile bool _present;           // ¿llega vídeo NDI ahora mismo? (para detectar pérdida en caliente)
     private DateTimeOffset _lastVideoUtc;     // marca del último frame de vídeo recibido
     private DateTimeOffset _lastPresenceLoss; // cuándo se perdió la presencia (para re-detectar formato si la caída fue larga)
+    // Silencio cuando la fuente no trae audio (o deja de traerlo): sin datos en la entrada de audio, FFmpeg no arranca.
+    private readonly NdiAudioGapFiller _silence = new();
+    // Campos sueltos (frame_format_type_field_0/1): el cuadro que se está tejiendo, con el campo superior ya copiado.
+    private byte[]? _weave;
+    private int _weaveW, _weaveH;
+    private NDIlib.FourCC_type_e _weaveFourCC;
+    private bool _weaveTop;
 
     /// <summary>Se dispara al PERDER (false) o RECUPERAR (true) la presencia de vídeo NDI, para que la fuente
     /// actualice su <c>CurrentSignal</c> y el canal entre/salga de carta de ajuste sin esperar al watchdog. (C3.)</summary>
@@ -83,6 +93,9 @@ public sealed class NdiReceiver : IAsyncDisposable
     public string VideoPixelFormat { get; private set; } = "uyvy422";
     public int FrameRateN { get; private set; } = 30000;
     public int FrameRateD { get; private set; } = 1001;
+    /// <summary>Los cuadros traen dos campos entretejidos (NDI <c>frame_format_type_interleaved</c>, el superior primero): un
+    /// 1080i. La tasa de <see cref="FrameRateN"/>/<see cref="FrameRateD"/> es entonces la de cuadro (30000/1001 en 1080i59.94).</summary>
+    public bool Interlaced { get; private set; }
     public int SampleRate { get; private set; } = 48000;
     public int Channels { get; private set; } = 2;
 
@@ -103,7 +116,11 @@ public sealed class NdiReceiver : IAsyncDisposable
             // BGRA y, por ser ya YUV, FFmpeg lo lleva a 4:2:0 con un swscale barato (clave para bajar la CPU).
             color_format = NDIlib.recv_color_format_e.recv_color_format_UYVY_BGRA,
             bandwidth = NDIlib.recv_bandwidth_e.recv_bandwidth_highest,
-            allow_video_fields = false,
+            // Los cuadros, como los manda la fuente: progresivos, con los dos campos entretejidos (lo normal en un 1080i, p. ej.
+            // vMix) o en campos sueltos, que se tejen aquí (Weave). Con false, el SDK fundía los campos y marcaba los cuadros
+            // como progresivos: la imagen seguía entretejida pero el entrelazado se perdía —preview con doble imagen en lo que se
+            // mueve y presets progresivos grabados sin desentrelazar—.
+            allow_video_fields = true,
         };
         _recv = NDIlib.recv_create_v3(ref settings);
         if (_recv == IntPtr.Zero) { _log.LogWarning("NDI: no se pudo crear el receptor para «{Source}».", _sourceName); return false; }
@@ -123,8 +140,8 @@ public sealed class NdiReceiver : IAsyncDisposable
 
         var done = await Task.WhenAny(_firstVideo.Task, Task.Delay(firstFrameTimeout, ct)).ConfigureAwait(false);
         if (done != _firstVideo.Task) { _log.LogWarning("NDI: «{Source}» no entregó vídeo en {T}.", _sourceName, firstFrameTimeout); return false; }
-        _log.LogInformation("NDI: «{Source}» conectada — {W}x{H} @ {N}/{D} {Pix}, audio {SR}Hz {Ch}ch.",
-            _sourceName, Width, Height, FrameRateN, FrameRateD, VideoPixelFormat, SampleRate, Channels);
+        _log.LogInformation("NDI: «{Source}» conectada — {W}x{H} @ {N}/{D} {Scan} {Pix}, audio {SR}Hz {Ch}ch.",
+            _sourceName, Width, Height, FrameRateN, FrameRateD, Interlaced ? "entrelazado" : "progresivo", VideoPixelFormat, SampleRate, Channels);
         return true;
     }
 
@@ -214,6 +231,17 @@ public sealed class NdiReceiver : IAsyncDisposable
     private void OnVideo(ref NDIlib.video_frame_v2_t v)
     {
         if (v.xres <= 0 || v.yres <= 0 || v.p_data == IntPtr.Zero) return;
+        // Campos sueltos: se espera a tener los dos y se entregan tejidos, como un cuadro entrelazado.
+        byte[]? woven = null;
+        int frameHeight = v.yres;
+        bool interlaced = IsInterleaved(v.frame_format_type);
+        if (IsField(v.frame_format_type))
+        {
+            woven = Weave(ref v);
+            if (woven is null) return; // falta el otro campo
+            frameHeight = 2 * v.yres;
+            interlaced = true;
+        }
         _lastVideoUtc = DateTimeOffset.UtcNow;
         bool recovered = false;
         if (!_present) // recuperación (o primer frame): vuelve a haber vídeo NDI
@@ -228,21 +256,21 @@ public sealed class NdiReceiver : IAsyncDisposable
         }
         if (Width == 0) // primer frame o re-detección tras pérdida prolongada: fija el formato y desbloquea StartAsync
         {
-            ApplyFormat(ref v);
+            ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
             _firstVideo.TrySetResult(true);
         }
-        else if (FormatDiffers(v.xres, v.yres, PixelFormatFor(v.FourCC), Width, Height, VideoPixelFormat))
+        else if (FormatDiffers(v.xres, frameHeight, PixelFormatFor(v.FourCC), interlaced, Width, Height, VideoPixelFormat, Interlaced))
         {
-            // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel al
+            // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel/barrido al
             // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y BuildInputArguments
             // sean correctos, AVISA (el FFmpeg en marcha sigue con el -video_size viejo → imagen corrupta hasta
             // reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que la fuente
             // actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
-            int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat;
-            ApplyFormat(ref v);
-            _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP} → {W}x{H} {P}); el pipeline en " +
+            int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat; bool oldInterlaced = Interlaced;
+            ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
+            _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP}{OI} → {W}x{H} {P}{I}); el pipeline en " +
                 "marcha seguirá con el formato anterior hasta reconstruirse (rebind o salida de carta de ajuste).",
-                _sourceName, oldW, oldH, oldPix, Width, Height, VideoPixelFormat);
+                _sourceName, oldW, oldH, oldPix, oldInterlaced ? " entrelazado" : "", Width, Height, VideoPixelFormat, Interlaced ? " entrelazado" : "");
             try { FormatChanged?.Invoke(); } catch { /* no romper el bucle de recepción */ }
         }
 
@@ -251,26 +279,90 @@ public sealed class NdiReceiver : IAsyncDisposable
         if (recovered) { try { PresenceChanged?.Invoke(true); } catch { /* no romper la recepción */ } }
 
         int rowBytes = v.xres * _bytesPerPixel;
-        int size = v.yres * rowBytes;
-        var buf = ArrayPool<byte>.Shared.Rent(size);
-        if (v.line_stride_in_bytes == rowBytes)
-            Marshal.Copy(v.p_data, buf, 0, size);                 // sin relleno: copia contigua
+        int size = frameHeight * rowBytes;
+        byte[] buf;
+        if (woven is not null)
+            buf = woven;                                          // ya tejido en un búfer del pool
         else
-            for (int y = 0; y < v.yres; y++)                      // con relleno: quita el padding por fila
-                Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, buf, y * rowBytes, rowBytes);
+        {
+            buf = ArrayPool<byte>.Shared.Rent(size);
+            if (v.line_stride_in_bytes == rowBytes)
+                Marshal.Copy(v.p_data, buf, 0, size);             // sin relleno: copia contigua
+            else
+                for (int y = 0; y < v.yres; y++)                  // con relleno: quita el padding por fila
+                    Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, buf, y * rowBytes, rowBytes);
+        }
 
         if (!_videoQueue.Writer.TryWrite(new Frame(buf, size)))
             ArrayPool<byte>.Shared.Return(buf);                   // cola completada (cierre): no se encola
+
+        // Sin audio de la fuente: el silencio que le toca a este cuadro (y, al detectarlo, a los que ya pasaron sin audio).
+        bool wasFilling = _silence.Filling;
+        int silent = _silence.OnVideo(DateTimeOffset.UtcNow, SampleRate, FrameRateN, FrameRateD);
+        if (silent > 0) EnqueueSilence(silent);
+        if (_silence.Filling && !wasFilling)
+            _log.LogInformation("NDI: «{Source}» no trae audio; se envía silencio ({SR} Hz, {Ch} canales) para que el canal previsualice y grabe igual.",
+                _sourceName, SampleRate, Channels);
     }
 
-    /// <summary>Fija el formato (resolución/tasa/pixel/bytes-por-píxel) a partir del frame. Lo comparten el primer
-    /// frame, la re-detección tras pérdida prolongada (#32) y el cambio de formato en caliente (N20). El FourCC real
-    /// decide el -pixel_format: con UYVY_BGRA casi siempre UYVY (16 bpp); BGRA solo si la fuente lleva alfa.</summary>
-    private void ApplyFormat(ref NDIlib.video_frame_v2_t v)
+    /// <summary>Encola <paramref name="samples"/> muestras de silencio f32le en el formato que sirve el receptor.</summary>
+    private void EnqueueSilence(int samples)
     {
-        Width = v.xres; Height = v.yres;
-        if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
-        switch (v.FourCC)
+        int bytes = samples * Math.Max(1, Channels) * sizeof(float);
+        var buf = ArrayPool<byte>.Shared.Rent(bytes);
+        Array.Clear(buf, 0, bytes); // los búferes del pool vuelven con datos viejos
+        if (!_audioQueue.Writer.TryWrite(new Frame(buf, bytes)))
+            ArrayPool<byte>.Shared.Return(buf);
+    }
+
+    /// <summary>¿El cuadro trae los dos campos entretejidos (el superior primero, según NDI)?</summary>
+    internal static bool IsInterleaved(NDIlib.frame_format_type_e type) => type == NDIlib.frame_format_type_e.frame_format_type_interleaved;
+
+    /// <summary>¿Es un campo suelto (el superior, field_0, o el inferior, field_1)?</summary>
+    internal static bool IsField(NDIlib.frame_format_type_e type)
+        => type is NDIlib.frame_format_type_e.frame_format_type_field_0 or NDIlib.frame_format_type_e.frame_format_type_field_1;
+
+    /// <summary>
+    /// Teje un campo suelto en el cuadro en curso: el superior (field_0, el primero en el tiempo) en las líneas pares, el
+    /// inferior (field_1) en las impares. Devuelve el cuadro —un búfer del pool, que pasa al llamador— cuando llega el
+    /// inferior de un superior con la misma geometría; si no, null (un inferior sin su superior se descarta).
+    /// </summary>
+    private byte[]? Weave(ref NDIlib.video_frame_v2_t v)
+    {
+        int rowBytes = v.xres * (PixelFormatFor(v.FourCC) == "uyvy422" ? 2 : 4);
+        bool sameGeometry = _weave is not null && _weaveW == v.xres && _weaveH == v.yres && _weaveFourCC == v.FourCC;
+        if (v.frame_format_type == NDIlib.frame_format_type_e.frame_format_type_field_0)
+        {
+            if (_weave is not null && !sameGeometry) { ArrayPool<byte>.Shared.Return(_weave); _weave = null; }
+            _weave ??= ArrayPool<byte>.Shared.Rent(2 * v.yres * rowBytes);
+            (_weaveW, _weaveH, _weaveFourCC) = (v.xres, v.yres, v.FourCC);
+            CopyField(ref v, _weave, rowBytes, firstLine: 0);
+            _weaveTop = true;
+            return null;
+        }
+        if (!_weaveTop || !sameGeometry) return null;
+        CopyField(ref v, _weave!, rowBytes, firstLine: 1);
+        var frame = _weave!;
+        _weave = null;
+        _weaveTop = false;
+        return frame;
+    }
+
+    private static void CopyField(ref NDIlib.video_frame_v2_t v, byte[] frame, int rowBytes, int firstLine)
+    {
+        for (int y = 0; y < v.yres; y++)
+            Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, frame, (2 * y + firstLine) * rowBytes, rowBytes);
+    }
+
+    /// <summary>Fija el formato (resolución/tasa/pixel/bytes-por-píxel/barrido) del cuadro que se sirve. Lo comparten el
+    /// primer frame, la re-detección tras pérdida prolongada (#32) y el cambio de formato en caliente (N20). El FourCC real
+    /// decide el -pixel_format: con UYVY_BGRA casi siempre UYVY (16 bpp); BGRA solo si la fuente lleva alfa.</summary>
+    private void ApplyFormat(int width, int height, NDIlib.FourCC_type_e fourCC, int rateN, int rateD, bool interlaced)
+    {
+        Width = width; Height = height;
+        Interlaced = interlaced;
+        if (rateN > 0 && rateD > 0) { FrameRateN = rateN; FrameRateD = rateD; }
+        switch (fourCC)
         {
             case NDIlib.FourCC_type_e.FourCC_type_UYVY:
                 VideoPixelFormat = "uyvy422"; _bytesPerPixel = 2; break;
@@ -279,7 +371,7 @@ public sealed class NdiReceiver : IAsyncDisposable
                 VideoPixelFormat = "bgra"; _bytesPerPixel = 4; break;
             default:
                 VideoPixelFormat = "bgra"; _bytesPerPixel = 4;
-                _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
+                _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", fourCC, _sourceName);
                 break;
         }
     }
@@ -292,15 +384,17 @@ public sealed class NdiReceiver : IAsyncDisposable
         _ => "bgra",
     };
 
-    /// <summary>¿El formato entrante difiere del cacheado? (resolución o pixel). Pura y testeable. (N20.)</summary>
-    internal static bool FormatDiffers(int newW, int newH, string newPix, int oldW, int oldH, string oldPix)
-        => newW != oldW || newH != oldH || !string.Equals(newPix, oldPix, StringComparison.Ordinal);
+    /// <summary>¿El formato entrante difiere del cacheado? (resolución, pixel o barrido). Pura y testeable. (N20.)</summary>
+    internal static bool FormatDiffers(int newW, int newH, string newPix, bool newInterlaced, int oldW, int oldH, string oldPix, bool oldInterlaced)
+        => newW != oldW || newH != oldH || !string.Equals(newPix, oldPix, StringComparison.Ordinal) || newInterlaced != oldInterlaced;
 
     private void OnAudio(ref NDIlib.audio_frame_v2_t a)
     {
         if (a.sample_rate > 0) SampleRate = a.sample_rate;
         if (a.no_channels > 0) Channels = a.no_channels;
         if (a.p_data == IntPtr.Zero || a.no_samples <= 0 || a.no_channels <= 0) return;
+        if (_silence.Filling) _log.LogInformation("NDI: «{Source}» vuelve a traer audio.", _sourceName);
+        _silence.OnAudio(DateTimeOffset.UtcNow);
 
         // NDI entrega audio float PLANAR; FFmpeg -f f32le espera INTERLEAVED: se convierte con el helper del SDK.
         int bytes = a.no_samples * a.no_channels * sizeof(float);
@@ -328,6 +422,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         foreach (var t in new[] { _recvLoop, _videoWriter, _audioWriter })
             if (t is not null) { try { await t.ConfigureAwait(false); } catch { /* cancelación */ } }
         if (_recv != IntPtr.Zero) { NDIlib.recv_destroy(_recv); _recv = IntPtr.Zero; }
+        if (_weave is not null) { ArrayPool<byte>.Shared.Return(_weave); _weave = null; }
         try { _videoListener.Stop(); } catch { /* noop */ }
         try { _audioListener.Stop(); } catch { /* noop */ }
         _cts?.Dispose();
