@@ -150,7 +150,9 @@ This is where you decide **which video source is connected to each channel**.
   To go back to the classic direct capture (the channel reopens the card on every Record/Stop):
   `Capture:DecklinkRelay=false` in the embedded configuration (requires a rebuild).
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
-- **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network).
+- **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network). An interlaced
+  source (a 1080i from vMix or from a converter) is deinterlaced like the card's, and one without audio (graphics outputs,
+  many PTZ cameras) is previewed and recorded with a silent track: that is why it shows the silence alarm.
 - **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see
   "Network sources" below).
 - **Demonstration clip:** a sample video that ships with the program (handy for testing).

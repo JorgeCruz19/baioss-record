@@ -245,3 +245,15 @@ camino que con DeckLink (pan por pares, sin `-ac` de salida, medidores de todos 
 `anullsrc=channel_layout=Nc`); antes un NDI de 4 u 8 canales se mezclaba entero en el estéreo con `-ac 2`. El par se
 elige en el gestor de entradas (`audio_pairs`; no hay `audio_channels`: NDI trae los que trae y un par inexistente cae al
 1). Sin una fuente NDI multicanal a mano no se ha verificado en vivo: la lógica es la común, probada con el clip de 8 canales.
+
+**NDI sin audio y NDI entrelazado.** La entrada `f32le` del audio NDI no tiene marcas de tiempo y FFmpeg abre las entradas
+en serie: con una fuente que no trae audio (salidas de grafismo, muchas cámaras PTZ) se quedaba esperando en ella, sin
+preview ni grabación. El receptor sirve silencio cuando pasa medio segundo sin audio con vídeo llegando
+(`NdiAudioGapFiller`): cada cuadro lleva su duración de silencio, empezando por los que ya pasaron sin audio, así el
+contador de muestras sigue al de cuadros —como las marcas que FFmpeg pone a estas entradas— y el audio real, si llega,
+manda. El receptor pide `allow_video_fields = true`: con `false` el SDK fundía los campos y marcaba progresivo un 1080i
+(seguía entretejido: preview con doble imagen y presets progresivos sin desentrelazar). Ahora un cuadro entretejido
+(`frame_format_type_interleaved`, el campo superior primero) publica `SignalInfo.Scan = InterlacedTff` y se desentrelaza
+como el de la DeckLink, y los campos sueltos (`field_0`/`field_1`) se tejen en cuadros entretejidos. Probado con
+`NdiSyntheticSourceTests` (emisor NDI dentro de la prueba: progresivo con y sin audio, entretejido, campos sueltos) y con
+las fuentes de la red del PC de pruebas (OBS 1080p, vMix 1080i, una salida de grafismo sin audio).
