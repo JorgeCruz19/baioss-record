@@ -353,7 +353,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p", joined);
         Assert.Contains("-field_order tt", joined);
         Assert.DoesNotContain("dnxhr", joined);
-        Assert.DoesNotContain("bwdif", joined);
+        Assert.DoesNotContain(RecordChain(joined), f => f.StartsWith("bwdif", StringComparison.Ordinal)); // los campos, tal cual
     }
 
     [Theory]
@@ -496,6 +496,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         // FFmpeg informa frame/fps/drop_frames del progreso con la PRIMERA salida de vídeo (las versiones ≤ 6.0 suman además
         // los descartes de todas). Con el preview primero —en passthrough, un frame por frame de entrada— «frame» cuenta frames
         // de ENTRADA: la alarma de frames perdidos descuenta la conversión de cadencia sobre esa base (SaturationDetector).
+        // (Con una señal entrelazada el preview saca uno por campo: PreviewFramesPerSourceFrame lo dice y el parser lo divide.)
         // Si alguien reordena las salidas, la cuenta cambia de significado: este test lo avisa.
         var profile = SoftwareMp4();
         profile.OutputFrameRate = FrameRate.P25;
@@ -579,12 +580,128 @@ public class FfmpegArgumentBuilderTests : IDisposable
     [InlineData(ScanType.InterlacedTff, ScanType.InterlacedTff)] // preset entrelazado: se graban los campos tal cual
     public void BuildLive_DoesNotDeinterlace_WhenThereIsNothingToFix(ScanType? signalScan, ScanType presetScan)
     {
+        // La rama de GRABACIÓN (el preview de una señal entrelazada se desentrelaza siempre: ver los tests del preview).
         var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
         profile.ScanType = presetScan;
-        Assert.DoesNotContain("bwdif", BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile));
+        Assert.DoesNotContain(RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile)),
+            f => f.StartsWith("bwdif", StringComparison.Ordinal));
         // …ni el scale sin tamaño que acompaña a bwdif: a resolución nativa la rama sigue sin escalar.
         profile.TargetResolution = null;
         Assert.DoesNotContain("scale", RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile)));
+    }
+
+    // --- Preview de una señal entrelazada: sin la doble imagen de reducir los dos campos juntos ---
+
+    private static FfmpegArgumentBuilder LiveBuilderFor(SignalInfo signal, int prerollFrames = 0, bool analyze = false)
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { PreviewFramesToSkip = prerollFrames };
+        source.Emit(signal);
+        return new FfmpegArgumentBuilder().From(source).Using(Progressive(VideoCodec.H264Nvenc, FrameRate.P2997)).ForChannel("TST")
+            .ToDirectory("C:/out").WithPreviewSink("tcp://127.0.0.1:9001").WithSignalAnalysis(analyze);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedTff, "top", "tff")]
+    [InlineData(ScanType.InterlacedBff, "bottom", "bff")]
+    public void BuildLive_InterlacedSignal_ByDefault_PreviewsTheFirstFieldOfEachFrame(ScanType scan, string field, string parity)
+    {
+        // Reducir a 640×360 un cuadro con los dos campos entretejidos los mezclaba: doble imagen en todo lo que se mueve. Por
+        // defecto el preview se queda con el primer campo de cada cuadro (540 líneas, de sobra para 360): sin fantasma, a la
+        // cadencia de cuadro de la fuente y con el coste de siempre.
+        string chain = $"field=type={field},scale=640:360,format=bgra[pv]";
+        var builder = LiveBuilderFor(Signal1080(FrameRate.P2997, scan));
+
+        Assert.Contains($"-filter_complex [0:v]{chain} ", string.Join(' ', builder.BuildLive(recording: false, 640, 360)));
+        Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
+
+        var recording = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
+        Assert.Contains($"[vprev]{chain}", recording);
+        Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
+        // La rama de grabación sigue a lo suyo: desentrelaza según el preset (aquí 1080p29.97, un cuadro por cuadro).
+        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity={parity}:deint=all,scale=1920:1080,format=nv12[vmain]", recording);
+    }
+
+    [Theory]
+    [InlineData(720, 486, ScanType.InterlacedBff, "bff")] // NTSC (DeckLink: el campo inferior primero)
+    [InlineData(720, 576, ScanType.InterlacedTff, "tff")] // PAL
+    public void BuildLive_InterlacedSdSignal_ByDefault_RebuildsTheWholeFrame_InsteadOfStretchingAField(int width, int height, ScanType scan, string parity)
+    {
+        // Un campo de SD (243 o 288 líneas) habría que estirarlo a las 360 del preview: bwdif reconstruye el cuadro entero, uno
+        // por cuadro de la fuente (con SD es barato).
+        var signal = new SignalInfo(SignalState.Locked, new Resolution(width, height), height == 576 ? FrameRate.P25 : FrameRate.P2997,
+            AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null, Scan: scan);
+        var builder = LiveBuilderFor(signal);
+        Assert.Contains($"-filter_complex [0:v]scale=640:ih,bwdif=mode=send_frame:parity={parity}:deint=all:threads=1,scale=640:360,format=bgra[pv] ",
+            string.Join(' ', builder.BuildLive(recording: false, 640, 360)));
+        Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedTff, "tff")]
+    [InlineData(ScanType.InterlacedBff, "bff")]
+    public void BuildLive_InterlacedSignal_WithFieldRatePreview_IsDeinterlacedOneFramePerField(ScanType scan, string parity)
+    {
+        // El movimiento de la tele (59.94 desde un 1080i59.94), a cambio de más CPU: primero solo en horizontal (no mezcla
+        // campos), bwdif a 640×1080 en un hilo con la paridad de la señal y un cuadro por campo, y luego a la altura del preview.
+        string chain = $"scale=640:ih,bwdif=mode=send_field:parity={parity}:deint=all:threads=1,scale=640:360,format=bgra[pv]";
+        var builder = LiveBuilderFor(Signal1080(FrameRate.P2997, scan)).WithFieldRatePreview(true);
+
+        Assert.Contains($"-filter_complex [0:v]{chain} ", string.Join(' ', builder.BuildLive(recording: false, 640, 360)));
+        Assert.Equal(2, builder.PreviewFramesPerSourceFrame);
+
+        var recording = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
+        Assert.Contains($"[vprev]{chain}", recording);
+        Assert.Equal(2, builder.PreviewFramesPerSourceFrame);
+        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity={parity}:deint=all,scale=1920:1080,format=nv12[vmain]", recording);
+    }
+
+    [Theory]
+    [InlineData(ScanType.Progressive)]
+    [InlineData(null)] // barrido desconocido (archivo, NDI…)
+    public void BuildLive_ProgressiveOrUnknownSignal_PreviewIsUnchanged(ScanType? scan)
+    {
+        foreach (bool fieldRate in new[] { false, true })
+        {
+            var builder = LiveBuilderFor(Signal1080(FrameRate.P5994, scan)).WithFieldRatePreview(fieldRate);
+            Assert.Contains("-filter_complex [0:v]scale=640:360,format=bgra[pv] ", string.Join(' ', builder.BuildLive(recording: false, 640, 360)));
+            Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
+            var recording = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
+            Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", recording);
+            Assert.DoesNotContain("bwdif", recording);
+            Assert.DoesNotContain("field=", recording);
+            Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, "field=type=top")]
+    [InlineData(true, "scale=640:ih,bwdif=mode=send_field:parity=tff:deint=all:threads=1")]
+    public void BuildLive_InterlacedSignal_SkipsThePrerollFirst_AndTheDetectorsSeeTheDeinterlacedPreview(bool fieldRate, string deinterlace)
+    {
+        // El salto del pre-roll cuenta frames de la FUENTE: va antes de desentrelazar (bwdif saca dos por cada uno). Los
+        // detectores de negro/congelado, al final como siempre, miran lo que se ve (sus umbrales van en segundos, no en frames).
+        var builder = LiveBuilderFor(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), prerollFrames: 75, analyze: true)
+            .WithFieldRatePreview(fieldRate);
+        var joined = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
+
+        Assert.Contains($"[vprev]select=gte(n\\,75),{deinterlace},scale=640:360," +
+                        "blackdetect=d=2:pix_th=0.10,freezedetect=n=-60dB:d=2,format=bgra[pv]", joined);
+        Assert.DoesNotContain("[vrec]select", joined); // la grabación se queda con el pre-roll
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo tcp://127.0.0.1:9001", joined);
+    }
+
+    [Fact]
+    public void BuildSlate_AfterAnInterlacedSignal_ThePreviewOfTheBarsIsOneFramePerFrame()
+    {
+        // Las barras de la carta de ajuste son progresivas aunque la señal a la que sustituyen fuera entrelazada.
+        var builder = LiveBuilderFor(Signal1080(FrameRate.P2997, ScanType.InterlacedTff)).WithFieldRatePreview(true);
+        builder.BuildLive(recording: true, 640, 360);
+        Assert.Equal(2, builder.PreviewFramesPerSourceFrame);
+
+        var slate = string.Join(' ', builder.BuildSlate(recording: true, 640, 360));
+        Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", slate);
+        Assert.DoesNotContain("bwdif", slate);
+        Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
     }
 
     /// <summary>Los filtros de la rama de grabación, en orden: «;[vrec]a,b,c[vmain]» → a, b, c.</summary>

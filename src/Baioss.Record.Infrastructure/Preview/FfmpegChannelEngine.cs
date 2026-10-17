@@ -197,6 +197,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// cableado solo la pone si el FFmpeg instalado la admite. Configurable en «Recording:WriteQueueSeconds».</summary>
     public TimeSpan WriteQueue { get; init; } = TimeSpan.Zero;
 
+    /// <summary>Preview de una señal entrelazada: <c>false</c> (por defecto) el primer campo de cada cuadro (29.97 desde
+    /// 1080i59.94); <c>true</c> un cuadro por campo (59.94). Las dos sin fantasma (ver <see cref="FfmpegArgumentBuilder.WithFieldRatePreview"/>).
+    /// Configurable en «Preview:InterlacedFieldRate».</summary>
+    public bool FieldRatePreview { get; init; }
+
     public RecordingState State => _state;
     public RecorderStats Stats { get; private set; } = RecorderStats.Empty;
     public string? LastOutputFile { get; private set; }
@@ -618,7 +623,8 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // Con relevo, no toma el mando hasta que la fuente confirme que ya lee en directo y sus frames lleguen a cadencia
         // real: hasta entonces el proceso decodifica el pre-roll y el atraso acumulado más deprisa que el directo, y
         // pintarlos sería un avance rápido. La cadencia se juzga contra la tasa REAL de la fuente (el preview va en
-        // passthrough: pinta cada frame de la entrada, no los de la tasa de salida del perfil).
+        // passthrough: pinta cada frame de la entrada, no los de la tasa de salida del perfil), o la de sus campos si el
+        // preview desentrelaza uno por campo: la fija BuildAndStartAsync con los argumentos ya construidos.
         var source = _source!;
         double sourceFps = source.CurrentSignal.FrameRate is { Value: > 0 } rate ? rate.Value : _parser.NominalRate;
         var sink = new PreviewSink(++_sinkGeneration)
@@ -627,18 +633,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             // relé en crudo de DeckLink arranca en el directo y toma el relevo con su primer frame: un Detener de ~1 s en
             // vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da (medido en producción).
             SettleBeforeTakeover = overlap && source.DeliversPreroll,
-            NominalIntervalMs = 1000.0 / sourceFps,
         };
         lock (_liveSinks) _liveSinks.Add(sink);
         sink.Run((s, token) => AcceptLoopAsync(s, token));
         var previousSinkField = _sink;
         _sink = sink;
-        // Colchón de preview de la fuente (0 = paso directo) a la cadencia real de la señal. Se vuelve a fijar en cada
-        // proceso: la señal puede haberse redetectado con otra tasa, o el operador haber cambiado el colchón de la fuente.
-        Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), sourceFps);
         try
         {
-            return await BuildAndStartAsync(sink, profile, recording, slate, source, dir, ct).ConfigureAwait(false);
+            return await BuildAndStartAsync(sink, profile, recording, slate, source, dir, sourceFps, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -656,13 +658,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     /// <summary>Segunda mitad de <see cref="LaunchProcessAsync"/>: argumentos, supervisor y arranque sobre el sumidero ya creado.</summary>
     private async Task<PreviewSink> BuildAndStartAsync(PreviewSink sink, RecordingProfile profile, bool recording, bool slate,
-        ICaptureSource source, string dir, CancellationToken ct)
+        ICaptureSource source, string dir, double sourceFps, CancellationToken ct)
     {
         var builder = new FfmpegArgumentBuilder()
             .From(_source!).Using(profile).ForChannel(_channelKey)
             .ToDirectory(dir).WithPreviewSink($"tcp://127.0.0.1:{sink.Port}")
             .WithFragmentedMp4(FragmentedMp4)
-            .WithWriteQueue(WriteQueue);
+            .WithWriteQueue(WriteQueue)
+            .WithFieldRatePreview(FieldRatePreview);
         // Grabación con fin previsto (programada con duración): lo que le queda desde ESTE proceso —también una pieza nueva o la
         // carta de ajuste—, para no cortar un segmento un instante antes del Detener.
         if (recording && profile.Segmentation?.PlannedEnd is { } plannedEnd)
@@ -688,6 +691,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // «¿Va al día?» de ESTE proceso: la reserva que acaba de tomar su BuildInputArguments (la de la fuente cambia con el
         // siguiente proceso que se construya; con Grabar y Detener seguidos, un relevo se juzgaba con la del siguiente).
         sink.IsLive = source.NewestConsumerLiveCheck;
+        // Cadencia del PREVIEW de este proceso: la de la fuente o, si desentrelaza un cuadro por campo, el doble. Con ella se
+        // juzga el relevo y entrega el colchón (0 = paso directo), que se vuelve a fijar en cada proceso: la señal puede
+        // haberse redetectado con otra tasa, o el operador haber cambiado el colchón de la fuente. Y el progreso de FFmpeg, que
+        // cuenta los frames del preview, se vuelve a contar en frames de la fuente. Antes de arrancar: aún no llega nada.
+        double previewFps = sourceFps * builder.PreviewFramesPerSourceFrame;
+        sink.NominalIntervalMs = 1000.0 / previewFps;
+        Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), previewFps);
+        _parser.FramesPerSourceFrame = builder.PreviewFramesPerSourceFrame;
 
         if (recording && builder.IsSegmentedOutput && !string.IsNullOrEmpty(builder.SegmentPrefixGlob))
             lock (_segGlobs) if (!_segGlobs.Contains(builder.SegmentPrefixGlob, StringComparer.OrdinalIgnoreCase)) _segGlobs.Add(builder.SegmentPrefixGlob);
@@ -841,8 +852,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         /// <summary>Con relevo: esperar a que el proceso lea en directo y sus frames lleguen a cadencia real antes de tomar el
         /// mando (ver <see cref="ReadyToTakeOver"/>). Sin relevo, el primer frame manda.</summary>
         public bool SettleBeforeTakeover { get; init; }
-        /// <summary>Intervalo nominal entre frames de la fuente (ms): la cadencia «real» que se espera.</summary>
-        public double NominalIntervalMs { get; init; } = 40;
+        /// <summary>Intervalo nominal entre frames del preview (ms): la cadencia «real» que se espera (la de la fuente, o la de
+        /// sus campos si el preview desentrelaza uno por campo). Se fija antes de arrancar el proceso.</summary>
+        public double NominalIntervalMs { get; set; } = 40;
         /// <summary>¿Lee ya el proceso de este sumidero la entrada en directo (sin pre-roll ni atraso pendientes)? La fuente lo
         /// sabe (<see cref="ICaptureSource.NewestConsumerIsLive"/>); null = no se puede saber (se juzga solo por cadencia).</summary>
         public Func<bool>? IsLive { get; set; }

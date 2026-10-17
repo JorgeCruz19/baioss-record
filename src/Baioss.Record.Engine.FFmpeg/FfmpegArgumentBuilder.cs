@@ -35,6 +35,7 @@ public sealed class FfmpegArgumentBuilder
     private bool _fragmentedMp4 = true; // true = fMP4 robusto ante corte; false = MP4 estándar (moov, seekable, sin remux)
     private TimeSpan _writeQueue = TimeSpan.Zero; // cola de escritura de la salida de grabación (0 = la de FFmpeg, 8 paquetes)
     private TimeSpan? _plannedRemaining; // lo que le queda a la grabación hasta su fin previsto, desde que arranca este proceso
+    private bool _fieldRatePreview; // preview de una señal entrelazada: un cuadro por campo (true) o el primer campo de cada cuadro
 
     // Filtros de análisis de señal (siempre activos, alimentan alarmas): negro/congelado en vídeo,
     // silencio en audio. Umbrales broadcast típicos: 2 s sostenidos.
@@ -106,6 +107,22 @@ public sealed class FfmpegArgumentBuilder
     /// hace (ver <see cref="SegmentSplitTimes"/>).
     /// </summary>
     public FfmpegArgumentBuilder WithPlannedRemaining(TimeSpan? remaining) { _plannedRemaining = remaining; return this; }
+
+    /// <summary>
+    /// Preview de una señal ENTRELAZADA (ver <see cref="PreviewDeinterlaceFilter"/>): <c>false</c> (por defecto) el primer campo
+    /// de cada cuadro (29.97 desde un 1080i59.94: sin fantasma y con el coste de siempre; en SD, el cuadro reconstruido);
+    /// <c>true</c> un cuadro por CAMPO (59.94, el movimiento de la tele, al doble de frames que procesar, copiar y subir a la
+    /// pantalla). Señal progresiva: sin efecto.
+    /// </summary>
+    public FfmpegArgumentBuilder WithFieldRatePreview(bool on) { _fieldRatePreview = on; return this; }
+
+    /// <summary>
+    /// Frames de preview por cada frame de la fuente en la última construcción: 2 si el preview saca un cuadro por campo (señal
+    /// entrelazada), 1 si no. FFmpeg cuenta el progreso (<c>frame</c>, <c>fps</c>) en la primera salida de vídeo, que es el
+    /// preview: quien lo lea lo divide por esto para seguir contando frames de la fuente; y el preview llega a la cadencia de la
+    /// fuente multiplicada por esto.
+    /// </summary>
+    public int PreviewFramesPerSourceFrame { get; private set; } = 1;
 
     public IReadOnlyList<string> Build()
     {
@@ -258,10 +275,14 @@ public sealed class FfmpegArgumentBuilder
         // alterarlos: solo registran marcas por stderr que se convierten en alarmas). Si la fuente entrega un pre-roll
         // (relé de una entrada de red: la grabación empieza antes del botón), el preview se lo salta —antes de escalar y de
         // los detectores, que no deben ver material repetido—: pintarlo era un rebobinado a ×3–×4 en cada Grabar/Detener.
+        // Una señal entrelazada se desentrelaza después del salto (que cuenta frames de la fuente) y antes de reducirla.
         string analyze = _analyze ? $"{BlackDetect},{FreezeDetect}," : "";
         string skip = source.PreviewFramesToSkip > 0
             ? string.Create(CultureInfo.InvariantCulture, $"select=gte(n\\,{source.PreviewFramesToSkip}),") : "";
-        string previewChain = string.Create(CultureInfo.InvariantCulture, $"{skip}scale={previewWidth}:{previewHeight},{analyze}format=bgra");
+        string? previewDeinterlace = PreviewDeinterlaceFilter(source.CurrentSignal, previewWidth, previewHeight, _fieldRatePreview);
+        PreviewFramesPerSourceFrame = previewDeinterlace is not null && _fieldRatePreview ? 2 : 1;
+        string previewChain = string.Create(CultureInfo.InvariantCulture,
+            $"{skip}{(previewDeinterlace is null ? "" : previewDeinterlace + ",")}scale={previewWidth}:{previewHeight},{analyze}format=bgra");
         var filter = new StringBuilder();
         string recLabel = "0:v:0";
         // Tamaño y cadencia de lo que se codifica: los del preset o, si los deja en nativo, los de la señal.
@@ -409,6 +430,37 @@ public sealed class FfmpegArgumentBuilder
         bool perField = profile.OutputFrameRate is { Value: > 0 } output && signal.FrameRate is { Value: > 0 } input
                         && Math.Abs(output.Value - 2 * input.Value) < 0.01 * output.Value;
         return $"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all";
+    }
+
+    /// <summary>
+    /// Desentrelazado de la rama de PREVIEW cuando la señal es entrelazada (1080i de una DeckLink o de una entrada de red).
+    /// Reducir a 640×360 un cuadro con los dos campos entretejidos los mezclaba: en movimiento, doble imagen (fantasma), y el
+    /// movimiento avanzaba a 29.97 en vez de a los 59.94 de la tele.
+    /// <list type="bullet">
+    ///   <item>Con <paramref name="perField"/>, un cuadro por CAMPO (el preview va al doble de la tasa de cuadro de la señal):
+    ///   primero se escala solo en HORIZONTAL (con la misma altura el escalado vertical es la identidad y cada línea sigue
+    ///   siendo de su campo), luego bwdif reconstruye cada campo a 640×1080 —un tercio de los píxeles: a 1920×1080 costaba
+    ///   1,6–2 núcleos— y después se reduce a la altura del preview. bwdif en un solo hilo: repartir cuadros tan pequeños
+    ///   entre todos los del equipo costaba ~0,1 núcleos más que hacerlo en uno (medido con un clip DeckLink 1080i29.97).
+    ///   Como en la grabación, el orden de campos sale de la señal y se procesan todos los cuadros (el relé en crudo no
+    ///   conserva la marca de entrelazado).</item>
+    ///   <item>Sin él (por defecto), se queda con el primer campo de cada cuadro (540 líneas, de sobra para un preview de 360):
+    ///   sin fantasma, al ritmo de siempre y más barato que reducir el cuadro entero (con la aplicación real y dos DeckLink,
+    ///   0,40 núcleos por proceso de canal frente a 0,62). Un campo de SD (243 o 288 líneas) habría que estirarlo: ahí bwdif
+    ///   reconstruye el cuadro entero, uno por cuadro (con SD es barato). Un cuadro por campo cuesta bastante más de lo que
+    ///   parece en un banco de pruebas: 1,1 núcleos por proceso de canal, y ≈0,25 más en la aplicación por canal (el doble de
+    ///   frames que reducir, enviar, copiar y subir a la pantalla).</item>
+    /// </list>
+    /// Señal progresiva o barrido desconocido: null (como siempre).
+    /// </summary>
+    internal static string? PreviewDeinterlaceFilter(SignalInfo signal, int previewWidth, int previewHeight, bool perField)
+    {
+        string? parity = signal.Scan switch { ScanType.InterlacedTff => "tff", ScanType.InterlacedBff => "bff", _ => null };
+        if (parity is null) return null;
+        if (!perField && signal.Resolution is { Height: > 0 } size && size.Height / 2 >= previewHeight)
+            return $"field=type={(parity == "tff" ? "top" : "bottom")}";
+        return string.Create(CultureInfo.InvariantCulture,
+            $"scale={previewWidth}:ih,bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all:threads=1");
     }
 
     /// <summary>
@@ -597,6 +649,7 @@ public sealed class FfmpegArgumentBuilder
             throw new InvalidOperationException("Falta el destino de preview (WithPreviewSink).");
 
         IsSegmentedOutput = false;
+        PreviewFramesPerSourceFrame = 1; // las barras son progresivas: un frame de preview por frame
 
         // Resolución/tasa del slate = las de la grabación, para que sus segmentos concatenen con los de
         // la fuente real sin saltos de formato.

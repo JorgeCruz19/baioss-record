@@ -313,6 +313,12 @@ public partial class App : System.Windows.Application
         // FFmpeg instalado la admite como opción de salida (FFmpeg ≥ 6); si no, lo de siempre. 0 = desactivada.
         double writeQueueSeconds = builder.Configuration.GetValue("Recording:WriteQueueSeconds", 10.0);
         var writeQueue = real && outputQueue && writeQueueSeconds > 0 ? TimeSpan.FromSeconds(writeQueueSeconds) : TimeSpan.Zero;
+        // Preview de una señal ENTRELAZADA (1080i de DeckLink o de una entrada de red): el primer campo de cada cuadro (29,97, por
+        // defecto) o un cuadro por campo (59,94, el movimiento de la tele, a cambio de más CPU); las dos sin la doble imagen de
+        // reducir los dos campos juntos. (Preview:InterlacedFieldRate.)
+        bool interlacedFieldRate = builder.Configuration.GetValue("Preview:InterlacedFieldRate", false);
+        Serilog.Log.Information("Preview de señales entrelazadas: {Mode} (Preview:InterlacedFieldRate).",
+            interlacedFieldRate ? "un cuadro por campo (59,94 desde 1080i59.94)" : "un campo por cuadro (29,97 desde 1080i59.94)");
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente. El nº de canales
         // EFECTIVO se decide al RESOLVER este contexto: si hay licencia válida, su techo de canales —que viaja
         // FIRMADO dentro de la clave— acota lo elegido en la instalación (lo pagado manda sobre lo elegido).
@@ -329,7 +335,7 @@ public partial class App : System.Windows.Application
                 Serilog.Log.Information("Canales acotados por la LICENCIA: {Paid} (la instalación pedía {Chosen}).", paid, channels);
                 channels = paid;
             }
-            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4, writeQueue);
+            return new ChannelCompositionContext(real, root, ffmpegDir, clipPath, codec, channels, fragmentedMp4, writeQueue, interlacedFieldRate);
         });
         s.AddSingleton<ChannelHost>();
         s.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelHost>());

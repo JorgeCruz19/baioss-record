@@ -3,7 +3,8 @@ namespace Baioss.Record.Application.Channels;
 /// <summary>Una muestra de la telemetría del proceso del canal (≈ 1 s, el ritmo de <c>-stats_period</c>).</summary>
 /// <param name="DroppedFrames"><c>drop_frames</c> acumulado que imprime FFmpeg en el proceso actual.</param>
 /// <param name="Frames"><c>frame</c> acumulado que imprime FFmpeg en el proceso actual. FFmpeg lo cuenta en la PRIMERA salida
-/// de vídeo, que en el proceso del canal es el preview en passthrough: un frame por cada frame de ENTRADA.</param>
+/// de vídeo, que en el proceso del canal es el preview en passthrough: un frame por cada frame de ENTRADA (con una señal
+/// entrelazada el preview saca uno por campo, y el parser del progreso lo vuelve a contar en frames de la fuente).</param>
 /// <param name="MediaTimeUs">Tiempo de medios ya procesado (<c>out_time</c>, µs); ≤ 0 mientras FFmpeg no lo sabe.</param>
 /// <param name="Elapsed">Reloj monotónico del llamador al recibir la muestra.</param>
 public readonly record struct SaturationSample(long DroppedFrames, long Frames, long MediaTimeUs, TimeSpan Elapsed);

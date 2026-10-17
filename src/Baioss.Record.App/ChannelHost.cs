@@ -24,10 +24,10 @@ using Baioss.Record.Infrastructure.Preview;
 namespace Baioss.Record.App;
 
 /// <summary>Entorno de composición (modo real, rutas, códec demo, nº de canales, contenedor y cola de escritura de la
-/// grabación), calculado al arrancar.</summary>
+/// grabación, cadencia del preview de las señales entrelazadas), calculado al arrancar.</summary>
 public sealed record ChannelCompositionContext(
     bool Real, string Root, string? FfmpegDir, string? ClipPath, VideoCodec Codec, int ChannelCount, bool FragmentedMp4 = true,
-    TimeSpan WriteQueue = default);
+    TimeSpan WriteQueue = default, bool InterlacedFieldRate = false);
 
 /// <summary>
 /// Compone y MANTIENE el runtime de cada canal (fuente + grabador + monitor + preview + motor), y
@@ -413,6 +413,7 @@ public sealed class ChannelHost : IChannelManager, IAsyncDisposable, IDisposable
             OutputRoot = string.IsNullOrWhiteSpace(outputDirectory) ? Path.Combine(_ctx.Root, "recordings") : outputDirectory,
             FragmentedMp4 = _ctx.FragmentedMp4, // fMP4 robusto vs MP4 estándar (moov, sin remux) según config
             WriteQueue = _ctx.WriteQueue,       // un disco lento no congela el preview ni atasca la entrada (si FFmpeg la admite)
+            FieldRatePreview = _ctx.InterlacedFieldRate, // señal entrelazada: preview a un cuadro por campo o por cuadro
         };
         await capture.StartPreviewAsync(source, profile, key, ct).ConfigureAwait(false); // preview siempre activo
 

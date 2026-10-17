@@ -107,8 +107,14 @@ public sealed class DecklinkHardwareTests
             Action<string> log, params (string Key, string Value)[] parameters)
             => OpenAsync(device, outputRoot, baseProfile, key, log, ShippedFragmentedMp4, parameters);
 
-        public static async Task<Rig> OpenAsync(string device, string outputRoot, RecordingProfile baseProfile, string key,
+        public static Task<Rig> OpenAsync(string device, string outputRoot, RecordingProfile baseProfile, string key,
             Action<string> log, bool fragmentedMp4, params (string Key, string Value)[] parameters)
+            => OpenAsync(device, outputRoot, baseProfile, key, log, fragmentedMp4, fieldRatePreview: false, parameters);
+
+        /// <param name="fieldRatePreview">Preview de la señal entrelazada a un cuadro por campo (<c>Preview:InterlacedFieldRate</c>);
+        /// si no, el de la build publicada: el primer campo de cada cuadro.</param>
+        public static async Task<Rig> OpenAsync(string device, string outputRoot, RecordingProfile baseProfile, string key,
+            Action<string> log, bool fragmentedMp4, bool fieldRatePreview, params (string Key, string Value)[] parameters)
         {
             var clock = Stopwatch.StartNew();
             var loggers = new DecklinkRelayContinuityTests.CaptureLogger(s => log($"{clock.Elapsed.TotalSeconds,7:0.00} s [{key}]{s}"));
@@ -120,7 +126,7 @@ public sealed class DecklinkHardwareTests
             var queue = await locator.SupportsOutputThreadQueueAsync() ? TimeSpan.FromSeconds(10) : TimeSpan.Zero;
             var engine = new FfmpegChannelEngine(locator, loggers.CreateLogger("Engine"))
             {
-                OutputRoot = outputRoot, WriteQueue = queue, FragmentedMp4 = fragmentedMp4,
+                OutputRoot = outputRoot, WriteQueue = queue, FragmentedMp4 = fragmentedMp4, FieldRatePreview = fieldRatePreview,
             };
             var rig = new Rig(log) { Source = source, Engine = engine, Clock = clock };
             source.SignalChanged += (_, s) => { lock (rig.Signals) rig.Signals.Add((clock.Elapsed.TotalSeconds, s.State, s.FormatLabel)); };
@@ -439,8 +445,12 @@ public sealed class DecklinkHardwareTests
 
     // ==================================================================================================================
 
-    [SkippableFact]
-    public async Task Preview_LocksOnTheRealSignal_AndPaintsAtTheSourceCadence()
+    /// <summary>Preview de la señal real a su cadencia. Con una señal entrelazada, sin fantasma: el primer campo de cada cuadro
+    /// (a la cadencia de cuadro, la build publicada) o un cuadro por campo (al doble); FPS OUT sigue en cuadros de la fuente.</summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preview_LocksOnTheRealSignal_AndPaintsAtTheSourceCadence(bool fieldRatePreview)
     {
         Skip.If(Device is null || TestAssets.FfmpegDir is null, "Sin DeckLink configurada (BAIOSS_DECKLINK).");
         var log = new List<string>();
@@ -449,7 +459,7 @@ public sealed class DecklinkHardwareTests
         try
         {
             var rig = await Rig.OpenAsync(Device!, dir, Preset("H.264 Broadcast · 1080i59.94 MP4").ToProfile(), "A", l => { lock (log) log.Add(l); },
-                (AudioSelection.ChannelsKey, "auto"));
+                ShippedFragmentedMp4, fieldRatePreview, (AudioSelection.ChannelsKey, "auto"));
             await using (rig)
             {
                 await WaitUntilAsync(() => rig.Source.CurrentSignal.State == SignalState.Locked, TimeSpan.FromSeconds(20), "SEÑAL OK");
@@ -463,12 +473,24 @@ public sealed class DecklinkHardwareTests
                 int frames = rig.FramesBetween(t0, t1);
                 double fps = frames / (t1 - t0);
                 double gap = rig.LongestPreviewGap(t0, t1);
-                _out.WriteLine($"Preview: {frames} frames en {t1 - t0:0.0} s = {fps:0.00} fps; hueco máximo {gap * 1000:0} ms; medidores: {(rig.LastPeaks is { } p ? string.Join(" ", p.Select(x => x.ToString("0.0", CultureInfo.InvariantCulture))) : "—")}");
+                double fpsOut = rig.Engine.Stats.OutputFps;
+                _out.WriteLine($"Preview: {frames} frames en {t1 - t0:0.0} s = {fps:0.00} fps; FPS OUT {fpsOut:0.00}; hueco máximo {gap * 1000:0} ms; medidores: {(rig.LastPeaks is { } p ? string.Join(" ", p.Select(x => x.ToString("0.0", CultureInfo.InvariantCulture))) : "—")}");
 
                 Assert.Equal(new Resolution(1920, 1080), signal.Resolution);
                 Assert.NotNull(signal.FrameRate);
                 double sourceFps = signal.FrameRate!.Value.Value;
-                Assert.InRange(fps, sourceFps * 0.97, sourceFps * 1.03);
+                bool interlaced = signal.Scan is ScanType.InterlacedTff or ScanType.InterlacedBff;
+                int perSourceFrame = interlaced && fieldRatePreview ? 2 : 1;
+                Assert.InRange(fps, sourceFps * perSourceFrame * 0.97, sourceFps * perSourceFrame * 1.03);
+                Assert.InRange(fpsOut, sourceFps * 0.95, sourceFps * 1.05); // FPS OUT: cuadros de la fuente, no del preview
+                if (interlaced)
+                {
+                    string parity = signal.Scan is ScanType.InterlacedBff ? "bff" : "tff";
+                    string chain = fieldRatePreview
+                        ? $"scale=640:ih,bwdif=mode=send_field:parity={parity}:deint=all:threads=1,scale=640:360,"
+                        : $"field=type={(parity == "tff" ? "top" : "bottom")},scale=640:360,";
+                    lock (log) Assert.Contains(log, l => l.Contains("Pipeline canal A (preview)", StringComparison.Ordinal) && l.Contains(chain, StringComparison.Ordinal));
+                }
                 Assert.True(gap < 0.25, $"El preview se detuvo {gap * 1000:0} ms.");
                 // «auto» abre la tarjeta con 16 canales (la Duo 2 los admite) y los medidores reciben uno por canal.
                 Assert.Equal(16, signal.AudioChannels);
