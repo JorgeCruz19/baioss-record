@@ -172,10 +172,11 @@ public sealed class NdiCaptureSource : ICaptureSource
         // huecos, y el vsync CFR RELLENA los huecos DUPLICANDO frames → congelados intermitentes en preview y
         // grabación (freezedetect: ~6 s de 20 s; peor bajo carga). La duración cuadra —por eso una medición SOLO
         // por duración lo daba por «sincronizado»—, pero la imagen se PARA. REVERTIDO. Sin timestamps, FFmpeg
-        // deriva el PTS por contador (vídeo nframe/fps, audio nmuestra/sr), que mantiene la sincronía MIENTRAS no
-        // se descarten frames de vídeo. La deriva real (drop de vídeo bajo CPU saturada, cola DropOldest) se ataca
-        // bajando la CPU (UYVY nativo + ArrayPool); un arreglo robusto exigiría DUPLICAR el último frame EN EL
-        // RECEPTOR (mantener el conteo sin romper el ritmo de llegada) o propagar el timecode NDI — trabajo mayor.
+        // deriva el PTS por contador (vídeo nframe/fps, audio nmuestra/sr), que mantiene la sincronía MIENTRAS el
+        // vídeo llegue a la cadencia declarada: el receptor la mantiene repitiendo el último cuadro cuando la fuente
+        // entrega menos (NdiFrameCadence; antes vMix a ~10 de 29.97 grababa 4,9 s en 21 s). Lo que sigue sin
+        // compensarse son los cuadros que descarta la cola DropOldest si el proceso del canal no da abasto (CPU
+        // saturada), que se ataca bajando la CPU (UYVY nativo + ArrayPool).
         return new[]
         {
             "-f", "rawvideo", "-pixel_format", _receiver.VideoPixelFormat,

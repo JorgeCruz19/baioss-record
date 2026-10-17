@@ -30,11 +30,28 @@ namespace Baioss.Record.Infrastructure.Capture;
 ///
 /// <para>Una fuente SIN audio (o que lo pierde) recibe silencio al ritmo de sus cuadros (<see cref="NdiAudioGapFiller"/>):
 /// sin datos en la entrada de audio FFmpeg no arrancaba y el canal no tenía ni preview ni grabación.</para>
+///
+/// <para>El vídeo se sirve a la cadencia DECLARADA aunque la fuente entregue menos (<see cref="NdiFrameCadence"/>): FFmpeg pone
+/// las marcas por contador, y sin esto una fuente que manda 10 de los 29.97 cuadros que declara se grababa comprimida en el
+/// tiempo y con el audio desfasado. El último cuadro se repite con un reloj propio cuando el siguiente no llega a tiempo, sin
+/// copiarlo (su búfer se comparte con la cola), y cada cuadro servido —real o repetido— lleva su silencio si no hay audio.</para>
 /// </summary>
 public sealed class NdiReceiver : IAsyncDisposable
 {
-    /// <summary>Buffer alquilado del <see cref="ArrayPool{T}"/> + su longitud útil (Rent puede dar un array mayor).</summary>
-    private readonly record struct Frame(byte[] Buffer, int Length);
+    /// <summary>
+    /// Buffer alquilado del <see cref="ArrayPool{T}"/> + su longitud útil (Rent puede dar un array mayor). Un cuadro de vídeo
+    /// puede estar a la vez en la cola (una o varias veces, si se repite) y guardado como el último para repetirlo: vuelve al pool
+    /// cuando lo suelta el último que lo tiene (la cola al escribirlo o descartarlo, el receptor al llegar otro).
+    /// </summary>
+    private sealed class Frame
+    {
+        private int _refs = 1;
+        public Frame(byte[] buffer, int length) { Buffer = buffer; Length = length; }
+        public byte[] Buffer { get; }
+        public int Length { get; }
+        public Frame Share() { Interlocked.Increment(ref _refs); return this; }
+        public void Release() { if (Interlocked.Decrement(ref _refs) == 0) ArrayPool<byte>.Shared.Return(Buffer); }
+    }
 
     private readonly string _sourceName;
     private readonly ILogger _log;
@@ -42,9 +59,11 @@ public sealed class NdiReceiver : IAsyncDisposable
     private readonly TcpListener _audioListener = new(IPAddress.Loopback, 0);
     private readonly TaskCompletionSource<bool> _firstVideo = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    // Cada búfer vuelve al pool al escribirlo, al descartarlo la cola por saturación o si ya no se puede encolar (cierre).
-    private readonly NdiFeed<Frame> _video = new(4, static f => f.Buffer.AsMemory(0, f.Length), static f => ArrayPool<byte>.Shared.Return(f.Buffer));
-    private readonly NdiFeed<Frame> _audio = new(16, static f => f.Buffer.AsMemory(0, f.Length), static f => ArrayPool<byte>.Shared.Return(f.Buffer));
+    // Cada cuadro se suelta (Release) al escribirlo, al descartarlo la cola por saturación o si ya no se puede encolar (cierre),
+    // y vuelve al pool cuando lo suelta el último que lo tiene: un cuadro repetido está en la cola varias veces y además guardado
+    // como el último.
+    private readonly NdiFeed<Frame> _video = new(4, static f => f.Buffer.AsMemory(0, f.Length), static f => f.Release());
+    private readonly NdiFeed<Frame> _audio = new(16, static f => f.Buffer.AsMemory(0, f.Length), static f => f.Release());
 
     private CancellationTokenSource? _cts;
     private Task? _recvLoop;
@@ -55,6 +74,15 @@ public sealed class NdiReceiver : IAsyncDisposable
     private DateTimeOffset _lastPresenceLoss; // cuándo se perdió la presencia (para re-detectar formato si la caída fue larga)
     // Silencio cuando la fuente no trae audio (o deja de traerlo): sin datos en la entrada de audio, FFmpeg no arranca.
     private readonly NdiAudioGapFiller _silence = new();
+    // Cadencia declarada: cuántas veces se sirve el último cuadro (_last, con una referencia propia). Reloj monótono: un ajuste
+    // de la hora del sistema no debe soltar ni retener repeticiones.
+    private readonly NdiFrameCadence _cadence = new();
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private Frame? _last;
+    // Aviso de que la fuente entrega menos de lo que declara, por ventanas de unos segundos (cuadros reales y repeticiones).
+    private TimeSpan _windowStart;
+    private long _windowFrames, _windowRepeated;
+    private bool _shortWarned;
     // Campos sueltos (frame_format_type_field_0/1): el cuadro que se está tejiendo, con el campo superior ya copiado.
     private byte[]? _weave;
     private int _weaveW, _weaveH;
@@ -184,7 +212,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             var v = new NDIlib.video_frame_v2_t();
             var a = new NDIlib.audio_frame_v2_t();
             var m = new NDIlib.metadata_frame_t();
-            switch (NDIlib.recv_capture_v2(_recv, ref v, ref a, ref m, 100))
+            switch (NDIlib.recv_capture_v2(_recv, ref v, ref a, ref m, WaitMs()))
             {
                 case NDIlib.frame_type_e.frame_type_video:
                     try { OnVideo(ref v); } finally { NDIlib.recv_free_video_v2(_recv, ref v); }
@@ -197,16 +225,92 @@ public sealed class NdiReceiver : IAsyncDisposable
                     break;
             }
 
+            // El siguiente cuadro no llegó a tiempo: se repite el último, para seguir a la cadencia declarada.
+            RepeatDue();
+
             // Detección de PÉRDIDA de señal NDI: si no llega vídeo en PresenceTimeout, notifica una sola vez
-            // (la RECUPERACIÓN la notifica OnVideo al volver el primer frame). recv_capture_v2 usa timeout de
+            // (la RECUPERACIÓN la notifica OnVideo al volver el primer frame). recv_capture_v2 espera como mucho
             // 100 ms, así que este bucle sigue girando aunque la fuente deje de emitir. (Auditoría 24/7, C3.)
             if (_present && DateTimeOffset.UtcNow - _lastVideoUtc > PresenceTimeout)
             {
                 _present = false;
                 _lastPresenceLoss = DateTimeOffset.UtcNow; // sella la caída para decidir si re-detectar formato al volver (#32)
+                ResetCadence(); // sin fuente no se repite nada: el canal pasa a carta de ajuste
                 try { PresenceChanged?.Invoke(false); } catch { /* no romper el bucle de recepción */ }
             }
         }
+    }
+
+    /// <summary>Espera máxima de <c>recv_capture_v2</c>: hasta que venza la siguiente repetición (y no más de 100 ms).</summary>
+    private uint WaitMs()
+    {
+        if (_cadence.UntilNextRepeat(_clock.Elapsed) is not { } until) return 100;
+        return (uint)Math.Clamp(Math.Ceiling(until.TotalMilliseconds), 1, 100);
+    }
+
+    /// <summary>Sirve las repeticiones del último cuadro que vencieron (la fuente no envió el siguiente a tiempo).</summary>
+    private void RepeatDue()
+    {
+        if (_last is null) return;
+        var now = _clock.Elapsed;
+        int due = _cadence.Due(now);
+        for (int i = 0; i < due; i++) ServeVideo(_last.Share());
+        _windowRepeated += due;
+        WatchCadence(now);
+    }
+
+    /// <summary>Olvida el último cuadro y la referencia de la cadencia (pérdida de la fuente o cambio de formato: el cuadro
+    /// guardado ya no vale para repetirlo).</summary>
+    private void ResetCadence()
+    {
+        _cadence.Reset();
+        _last?.Release();
+        _last = null;
+        _windowStart = _clock.Elapsed;
+        _windowFrames = _windowRepeated = 0;
+    }
+
+    /// <summary>
+    /// Encola un cuadro para FFmpeg (uno real o el último, repetido) y, si la fuente no trae audio, el silencio que le toca: el
+    /// silencio sigue a los cuadros SERVIDOS, que son los que FFmpeg cuenta para las marcas del vídeo.
+    /// </summary>
+    private void ServeVideo(Frame frame)
+    {
+        _video.Enqueue(frame); // si ya no se puede encolar (cierre), Enqueue lo suelta
+        bool wasFilling = _silence.Filling;
+        int silent = _silence.OnVideo(DateTimeOffset.UtcNow, SampleRate, FrameRateN, FrameRateD);
+        if (silent > 0) EnqueueSilence(silent);
+        if (_silence.Filling && !wasFilling)
+            _log.LogInformation("NDI: «{Source}» no trae audio; se envía silencio ({SR} Hz, {Ch} canales) para que el canal previsualice y grabe igual.",
+                _sourceName, SampleRate, Channels);
+    }
+
+    /// <summary>Avisa (una vez por episodio) cuando la fuente entrega claramente menos cuadros de los que declara y se están
+    /// repitiendo para mantener la cadencia, y cuando vuelve a su ritmo. Ventanas de 10 s.</summary>
+    private void WatchCadence(TimeSpan now)
+    {
+        var window = now - _windowStart;
+        if (window < TimeSpan.FromSeconds(10)) return;
+        long served = _windowFrames + _windowRepeated;
+        if (served > 0)
+        {
+            double repeatedShare = (double)_windowRepeated / served;
+            double declared = FrameRateD > 0 ? (double)FrameRateN / FrameRateD : 0;
+            if (!_shortWarned && repeatedShare > 0.05)
+            {
+                _shortWarned = true;
+                _log.LogInformation("NDI: «{Source}» entrega {Real:0.#} cuadros/s de los {Declared:0.##} que declara; se repite el último " +
+                    "para servirlos a la cadencia declarada (y que la grabación dure lo que dura y vaya en sincronía con el audio).",
+                    _sourceName, _windowFrames / window.TotalSeconds, declared);
+            }
+            else if (_shortWarned && repeatedShare < 0.01)
+            {
+                _shortWarned = false;
+                _log.LogInformation("NDI: «{Source}» vuelve a entregar su cadencia ({Real:0.#} cuadros/s).", _sourceName, _windowFrames / window.TotalSeconds);
+            }
+        }
+        _windowStart = now;
+        _windowFrames = _windowRepeated = 0;
     }
 
     private void OnVideo(ref NDIlib.video_frame_v2_t v)
@@ -238,6 +342,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         if (Width == 0) // primer frame o re-detección tras pérdida prolongada: fija el formato y desbloquea StartAsync
         {
             ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
+            ResetCadence();
             _firstVideo.TrySetResult(true);
         }
         else if (FormatDiffers(v.xres, frameHeight, PixelFormatFor(v.FourCC), interlaced, Width, Height, VideoPixelFormat, Interlaced))
@@ -249,6 +354,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             // actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
             int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat; bool oldInterlaced = Interlaced;
             ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
+            ResetCadence(); // el último cuadro es del formato anterior: no se repite
             _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP}{OI} → {W}x{H} {P}{I}); el pipeline en " +
                 "marcha seguirá con el formato anterior hasta reconstruirse (rebind o salida de carta de ajuste).",
                 _sourceName, oldW, oldH, oldPix, oldInterlaced ? " entrelazado" : "", Width, Height, VideoPixelFormat, Interlaced ? " entrelazado" : "");
@@ -274,16 +380,24 @@ public sealed class NdiReceiver : IAsyncDisposable
                     Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, buf, y * rowBytes, rowBytes);
         }
 
-        _video.Enqueue(new Frame(buf, size));
-
-        // Sin audio de la fuente: el silencio que le toca a este cuadro (y, al detectarlo, a los que ya pasaron sin audio).
-        bool wasFilling = _silence.Filling;
-        int silent = _silence.OnVideo(DateTimeOffset.UtcNow, SampleRate, FrameRateN, FrameRateD);
-        if (silent > 0) EnqueueSilence(silent);
-        if (_silence.Filling && !wasFilling)
-            _log.LogInformation("NDI: «{Source}» no trae audio; se envía silencio ({SR} Hz, {Ch} canales) para que el canal previsualice y grabe igual.",
-                _sourceName, SampleRate, Channels);
+        // A la cadencia declarada: antes de este cuadro, las repeticiones del anterior que la fuente se saltó y aún no salieron; y
+        // este, salvo que lo servido vaya ya demasiado por delante de la fuente. Sea como sea, es el que se repite a partir de
+        // ahora. Cada cuadro servido lleva su silencio si la fuente no trae audio (y, al detectarlo, los que ya pasaron sin él).
+        var frame = new Frame(buf, size);
+        var decision = _cadence.OnFrame(_clock.Elapsed, SourceTime(v.timestamp), FrameRateN, FrameRateD);
+        if (_last is not null)
+            for (int i = 0; i < decision.RepeatsBefore; i++) ServeVideo(_last.Share());
+        if (decision.Serve) ServeVideo(frame.Share());
+        _last?.Release();
+        _last = frame;
+        _windowFrames++;
+        _windowRepeated += decision.RepeatsBefore;
     }
+
+    /// <summary>Marca de un cuadro en el reloj de la fuente (la pone el SDK al enviarlo, en unidades de 100 ns); null si la fuente
+    /// no la da.</summary>
+    internal static TimeSpan? SourceTime(long timestamp)
+        => timestamp > 0 && timestamp != NDIlib.recv_timestamp_undefined ? TimeSpan.FromTicks(timestamp) : null;
 
     /// <summary>Encola <paramref name="samples"/> muestras de silencio f32le en el formato que sirve el receptor.</summary>
     private void EnqueueSilence(int samples)
@@ -400,6 +514,8 @@ public sealed class NdiReceiver : IAsyncDisposable
         await _audio.DisposeAsync().ConfigureAwait(false);
         if (_recv != IntPtr.Zero) { NdiRuntime.DestroyReceiver(_recv); _recv = IntPtr.Zero; }
         if (_weave is not null) { ArrayPool<byte>.Shared.Return(_weave); _weave = null; }
+        _last?.Release();
+        _last = null;
         try { _videoListener.Stop(); } catch { /* noop */ }
         try { _audioListener.Stop(); } catch { /* noop */ }
         _cts?.Dispose();

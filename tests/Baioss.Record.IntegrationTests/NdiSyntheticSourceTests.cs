@@ -133,6 +133,272 @@ public sealed class NdiSyntheticSourceTests
         }
     }
 
+    /// <summary>
+    /// Emisor NDI que marca él mismo el ritmo (sin clock_video, como un emisor que no da abasto o un grafismo que solo envía
+    /// cuando cambia la imagen): declara <c>rateN/rateD</c> pero envía solo uno de cada <c>sendEvery</c> cuadros, progresivos; el
+    /// audio, si lo hay, va completo y a tiempo real, un bloque por periodo. Cada segundo de la fuente lleva una marca de
+    /// sincronía: un cuadro blanco y, a la vez, un pitido de 1 kHz de 100 ms; el resto es gris con la barra, y silencio.
+    /// </summary>
+    private sealed class PacedNdiSender : IDisposable
+    {
+        private const int W = 1920, H = 1080, Bar = 24;
+        public const double BeepSeconds = 0.1;
+        private readonly IntPtr _send;
+        private readonly Thread _thread;
+        private volatile bool _stop;
+
+        public PacedNdiSender(string name, int rateN, int rateD, int sendEvery, bool withAudio)
+        {
+            var create = new NDIlib.send_create_t { p_ndi_name = UTF.StringToUtf8(name), p_groups = IntPtr.Zero, clock_video = false, clock_audio = false };
+            _send = NDIlib.send_create(ref create);
+            Marshal.FreeHGlobal(create.p_ndi_name);
+            if (_send == IntPtr.Zero) throw new InvalidOperationException("NDI: no se pudo crear el emisor.");
+            SlotsPerMark = (int)Math.Round((double)rateN / rateD);
+            if (SlotsPerMark % sendEvery != 0) throw new ArgumentException("La marca de sincronía debe caer en un cuadro enviado.");
+            _thread = new Thread(() => Run(rateN, rateD, sendEvery, withAudio)) { IsBackground = true, Name = "emisor NDI a su ritmo" };
+            _thread.Start();
+        }
+
+        /// <summary>Periodos entre dos marcas de sincronía (un segundo de la fuente, redondeado).</summary>
+        public int SlotsPerMark { get; }
+        /// <summary>Lo más tarde que salió un periodo respecto a su hora (el emisor duerme con el temporizador de Windows).</summary>
+        public double MaxLateMs { get; private set; }
+
+        private void Run(int rateN, int rateD, int sendEvery, bool withAudio)
+        {
+            const int stride = W * 2;
+            var frame = new byte[stride * H];
+            var gray = new byte[stride];
+            for (int x = 0; x < W; x += 2) { gray[x * 2] = 128; gray[x * 2 + 1] = 48; gray[x * 2 + 2] = 128; gray[x * 2 + 3] = 48; } // U Y V Y
+            var white = new byte[stride * H];
+            for (int i = 0; i < white.Length; i += 2) { white[i] = 128; white[i + 1] = 235; }
+            IntPtr video = Marshal.AllocHGlobal(frame.Length);
+            IntPtr audio = Marshal.AllocHGlobal(2 * 4 * 4096);
+            var samples = new float[2 * 4096];
+            double fps = (double)rateN / rateD;
+            var clock = Stopwatch.StartNew();
+            long n = 0, sent = 0;
+            try
+            {
+                while (!_stop)
+                {
+                    double due = n / fps, wait = due - clock.Elapsed.TotalSeconds;
+                    if (wait > 0) Thread.Sleep(TimeSpan.FromSeconds(wait));
+                    MaxLateMs = Math.Max(MaxLateMs, (clock.Elapsed.TotalSeconds - due) * 1000);
+                    if (n % sendEvery == 0)
+                    {
+                        if (n % SlotsPerMark == 0) Buffer.BlockCopy(white, 0, frame, 0, frame.Length);
+                        else
+                        {
+                            int x0 = ((int)(W / 2.0 - Bar / 2.0 + W * 0.45 * Math.Sin(Math.PI * due))) & ~1;
+                            for (int y = 0; y < H; y++)
+                            {
+                                Buffer.BlockCopy(gray, 0, frame, y * stride, stride);
+                                for (int x = x0; x < x0 + Bar; x++) frame[y * stride + x * 2 + 1] = 235;
+                            }
+                        }
+                        Marshal.Copy(frame, 0, video, frame.Length);
+                        var vf = new NDIlib.video_frame_v2_t
+                        {
+                            xres = W, yres = H, FourCC = NDIlib.FourCC_type_e.FourCC_type_UYVY, frame_rate_N = rateN, frame_rate_D = rateD,
+                            picture_aspect_ratio = 16f / 9f, frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                            timecode = NDIlib.send_timecode_synthesize, p_data = video, line_stride_in_bytes = stride, p_metadata = IntPtr.Zero,
+                        };
+                        NDIlib.send_send_video_v2(_send, ref vf);
+                    }
+                    if (withAudio)
+                    {
+                        // El audio de este periodo, completo: silencio salvo los 100 ms del pitido tras cada marca.
+                        long target = (long)Math.Round((n + 1) * 48000.0 / fps);
+                        int count = (int)(target - sent);
+                        for (int i = 0; i < count; i++)
+                        {
+                            double t = (sent + i) / 48000.0;
+                            double sinceMark = t - Math.Floor(t * fps / SlotsPerMark) * SlotsPerMark / fps;
+                            float s = sinceMark < BeepSeconds ? (float)(0.1 * Math.Sin(2 * Math.PI * 1000 * t)) : 0f; // −20 dBFS
+                            samples[i] = s; samples[count + i] = s; // planar
+                        }
+                        Marshal.Copy(samples, 0, audio, 2 * count);
+                        var af = new NDIlib.audio_frame_v2_t
+                        {
+                            sample_rate = 48000, no_channels = 2, no_samples = count, timecode = NDIlib.send_timecode_synthesize,
+                            p_data = audio, channel_stride_in_bytes = count * 4, p_metadata = IntPtr.Zero,
+                        };
+                        NDIlib.send_send_audio_v2(_send, ref af);
+                        sent = target;
+                    }
+                    n++;
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(video);
+                Marshal.FreeHGlobal(audio);
+            }
+        }
+
+        public void Dispose()
+        {
+            _stop = true;
+            _thread.Join(TimeSpan.FromSeconds(5));
+            NDIlib.send_destroy(_send);
+        }
+    }
+
+    /// <summary>
+    /// Una fuente que entrega MENOS cuadros de los que declara (la mitad; o un grafismo que declara 60 y manda 4) se grababa
+    /// comprimida en el tiempo: FFmpeg lee el vídeo a la tasa declarada y le pone las marcas por contador, así que 8 s de fuente
+    /// a media cadencia eran 4 s de vídeo, con el audio cada vez más desfasado. El receptor repite el último cuadro con su
+    /// propio reloj: en el archivo, las marcas de sincronía (cuadro blanco + pitido, una por segundo de la fuente) están a un
+    /// segundo unas de otras, el audio va con el vídeo de la primera a la última, y el preview va a la cadencia declarada.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(30000, 1001, 1, true)]   // a su ritmo: control de la medida
+    [InlineData(30000, 1001, 2, true)]   // la mitad de lo que declara, con audio completo
+    [InlineData(30000, 1001, 2, false)]  // la mitad, sin audio: el silencio sigue a los cuadros servidos (repetidos incluidos)
+    [InlineData(60, 1, 15, false)]       // un grafismo: declara 60, manda 4 y no trae audio
+    public async Task ASourceSendingFewerFramesThanDeclared_IsRecordedInRealTime_InSyncWithItsAudio(int rateN, int rateD, int sendEvery, bool withAudio)
+    {
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        Skip.IfNot(NdiRuntime.IsAvailable, "Runtime NDI no disponible (Processing.NDI.Lib.x64.dll junto a las pruebas).");
+        string unique = $"Baioss ritmo {Guid.NewGuid().ToString("N")[..8]}";
+        using var sender = new PacedNdiSender(unique, rateN, rateD, sendEvery, withAudio);
+        string? name = null;
+        for (int i = 0; i < 10 && name is null; i++) name = NdiRuntime.DiscoverSources(1000).FirstOrDefault(s => s.Contains(unique, StringComparison.Ordinal));
+        Assert.True(name is not null, $"El emisor de prueba «{unique}» no aparece entre las fuentes NDI.");
+        double declared = (double)rateN / rateD, markPeriod = sender.SlotsPerMark / declared;
+
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-ndi-ritmo-{Guid.NewGuid():N}");
+        var log = new List<string>();
+        var loggers = new DecklinkRelayContinuityTests.CaptureLogger(l => { lock (log) log.Add(l); });
+        var source = new NdiCaptureSource(new InputSource { Name = name!, Type = InputType.Ndi, Uri = name }, loggers.CreateLogger("Ndi"));
+        try
+        {
+            await source.OpenAsync();
+            Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+            Assert.Equal(declared, source.CurrentSignal.FrameRate!.Value.Value, 3);
+
+            var profile = new RecordingProfile
+            {
+                Name = "ndi-ritmo", VideoCodec = VideoCodec.H264x264, HwAccel = HwAccel.None, VideoBitrate = Bitrate.FromMbps(4), GopSize = 30,
+                TargetResolution = new Resolution(1280, 720), OutputFrameRate = FrameRate.P2997,
+                AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Mp4,
+            };
+            var clock = Stopwatch.StartNew();
+            var previewAt = new List<double>();
+            await using var engine = new FfmpegChannelEngine(locator, loggers.CreateLogger("Engine")) { OutputRoot = outputRoot };
+            engine.FrameReady += (_, _) => { lock (previewAt) previewAt.Add(clock.Elapsed.TotalSeconds); };
+            await engine.StartPreviewAsync(source, profile, "NDI");
+            await RecordingRecoveryWakeTests.WaitUntilAsync(() => { lock (previewAt) return previewAt.Count > 15; }, TimeSpan.FromSeconds(20), "preview de la fuente NDI");
+            await Task.Delay(1000);
+            double p0 = clock.Elapsed.TotalSeconds;
+            await Task.Delay(3000);
+            double p1 = clock.Elapsed.TotalSeconds;
+            double previewFps;
+            lock (previewAt) previewFps = previewAt.Count(t => t >= p0 && t < p1) / (p1 - p0);
+
+            var recording = Stopwatch.StartNew();
+            await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_ritmo");
+            await Task.Delay(8000);
+            await engine.StopRecordingAsync();
+            double recordedFor = recording.Elapsed.TotalSeconds;
+            var file = engine.LastOutputFile;
+            Assert.True(file is not null && File.Exists(file) && new FileInfo(file).Length > 0, $"Sin archivo: {file}");
+            var (vDur, vPackets, aDur, hasAudioTrack, vStart, aStart) = await ProbeStartsAsync(locator.FfprobePath, file!);
+            var (flashes, beeps) = await SyncMarksAsync(locator.FfmpegPath, file!);
+            double maxVolume = hasAudioTrack ? await MaxVolumeAsync(locator.FfmpegPath, file!) : double.NaN;
+            string cadenceLog;
+            lock (log) cadenceLog = log.LastOrDefault(l => l.Contains("que declara", StringComparison.Ordinal)) ?? "(sin aviso)";
+
+            double flashSpan = flashes.Count > 1 ? flashes[^1] - flashes[0] : 0;
+            // Cada destello con su pitido (el más cercano, si lo hay a menos de medio segundo).
+            var offsets = flashes.Select(f => beeps.Select(b => b - f).Where(o => Math.Abs(o) < 0.5).DefaultIfEmpty(double.NaN).First())
+                                 .Where(o => !double.IsNaN(o)).ToList();
+            string I(double d) => d.ToString("0.000", CultureInfo.InvariantCulture);
+            _out.WriteLine($"{declared:0.##} declarados, 1 de cada {sendEvery} enviado, {(withAudio ? "con" : "sin")} audio (emisor hasta {sender.MaxLateMs:0} ms tarde): " +
+                           $"preview {previewFps:0.00} fps · grabado {recordedFor:0.00} s → vídeo {I(vDur)} s desde {I(vStart)} ({vPackets} cuadros), " +
+                           $"audio {I(aDur)} s desde {I(aStart)}, pico {maxVolume:0.0} dBFS");
+            _out.WriteLine($"  marcas de vídeo: {string.Join(" ", flashes.Select(I))}");
+            _out.WriteLine($"  pitidos:         {string.Join(" ", beeps.Select(I))}");
+            if (withAudio) _out.WriteLine($"  pitido − destello: {string.Join(" ", offsets.Select(o => o.ToString("+0.000;-0.000", CultureInfo.InvariantCulture)))}");
+            _out.WriteLine($"  {cadenceLog}");
+
+            // Dura lo que dura: entre la primera y la última marca hay tantos segundos como en la fuente (antes, la mitad), y el
+            // vídeo cubre lo grabado, a la cadencia declarada.
+            Assert.True(flashes.Count >= 5, $"Solo {flashes.Count} marcas de vídeo en el archivo.");
+            Assert.Equal((flashes.Count - 1) * markPeriod, flashSpan, 0.07);
+            Assert.InRange(vPackets / vDur, 28.5, 31.5);
+            Assert.True(vDur > recordedFor - 1.5, $"{I(vDur)} s de vídeo en {recordedFor:0.00} s de grabación.");
+            // El audio (o el silencio, que sigue a los cuadros servidos) cubre el vídeo salvo el final: al Detener, el proceso del
+            // canal deja sin leer lo último del audio, que lleva detrás del vídeo (0,07–0,9 s medidos el 2026-10-17, también sin
+            // este arreglo y con una fuente a su ritmo). La sincronía de verdad se mide con las marcas.
+            Assert.True(aDur > vDur - 1.0, $"Vídeo {I(vDur)} s frente a audio {I(aDur)} s.");
+            Assert.InRange(previewFps, 0.85 * Math.Min(declared, 30), 1.15 * declared);
+            if (withAudio)
+            {
+                // Y el audio con el vídeo, de la primera marca a la última: el mismo desfase (sin deriva) y pequeño. (La última marca
+                // puede caer ya en el final sin audio.)
+                Assert.True(offsets.Count >= flashes.Count - 1, $"Solo {offsets.Count} pitidos para {flashes.Count} marcas.");
+                Assert.All(offsets, o => Assert.InRange(o, -0.1, 0.1));
+                Assert.InRange(offsets.Max() - offsets.Min(), 0, 0.06);
+            }
+            else Assert.True(double.IsNegativeInfinity(maxVolume) || maxVolume < -80, $"Sin audio en la fuente, la pista debe ser silencio ({maxVolume:0.0} dBFS).");
+            if (sendEvery > 1) Assert.Contains("que declara", cadenceLog);
+        }
+        finally
+        {
+            await source.DisposeAsync();
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, true); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Instantes (s) de las marcas de sincronía de un archivo: el primer cuadro de cada destello (brillo medio alto tras uno oscuro)
+    /// y el arranque de cada pitido (pico de un bloque de 5 ms por encima de −30 dBFS tras uno en silencio). Una sola pasada de
+    /// FFmpeg, para que vídeo y audio compartan el origen de tiempos.
+    /// </summary>
+    private static async Task<(List<double> Flashes, List<double> Beeps)> SyncMarksAsync(string ffmpeg, string file)
+    {
+        var err = await RunAsync(ffmpeg, true, "-hide_banner", "-nostats", "-i", file, "-filter_complex",
+            "[0:v:0]scale=64:36,format=gray,showinfo[v];[0:a:0]asetnsamples=n=240:p=0,astats=metadata=1:reset=1," +
+            "ametadata=mode=print:key=lavfi.astats.Overall.Peak_level[a]",
+            "-map", "[v]", "-f", "null", "-", "-map", "[a]", "-f", "null", "-");
+        var flashes = new List<double>();
+        var beeps = new List<double>();
+        bool bright = false, loud = false;
+        double audioAt = double.NaN;
+        static double After(string line, string key, char end)
+        {
+            int i = line.IndexOf(key, StringComparison.Ordinal) + key.Length;
+            int j = line.IndexOf(end, i);
+            var text = (j < 0 ? line[i..] : line[i..j]).Trim();
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : double.NaN;
+        }
+        foreach (var line in err.Split('\n'))
+        {
+            if (line.Contains("Parsed_showinfo", StringComparison.Ordinal) && line.Contains(" mean:[", StringComparison.Ordinal))
+            {
+                double at = After(line, "pts_time:", ' '), mean = After(line, " mean:[", ']');
+                bool isBright = mean > 140;
+                if (isBright && !bright) flashes.Add(at);
+                bright = isBright;
+            }
+            else if (line.Contains("Parsed_ametadata", StringComparison.Ordinal) && line.Contains("pts_time:", StringComparison.Ordinal))
+                audioAt = After(line, "pts_time:", ' ');
+            else if (line.Contains("lavfi.astats.Overall.Peak_level=", StringComparison.Ordinal))
+            {
+                var text = line[(line.IndexOf('=') + 1)..].Trim();
+                double peak = text.StartsWith("-inf", StringComparison.Ordinal) ? double.NegativeInfinity
+                    : double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var p) ? p : double.NegativeInfinity;
+                if (peak > -30 && !loud) beeps.Add(audioAt);
+                if (peak > -30) loud = true;
+                else if (peak < -40) loud = false;
+            }
+        }
+        return (flashes, beeps);
+    }
+
     [SkippableTheory]
     [InlineData(Layout.Progressive, true)]  // progresiva con audio: lo de siempre
     [InlineData(Layout.Progressive, false)] // progresiva SIN audio: antes, ni preview ni grabación
@@ -246,16 +512,23 @@ public sealed class NdiSyntheticSourceTests
 
     private static async Task<(double VDur, long VPackets, double ADur, bool HasAudio)> ProbeAsync(string ffprobe, string file)
     {
-        var json = await RunAsync(ffprobe, false, "-v", "error", "-count_packets", "-show_entries", "stream=codec_type,duration,nb_read_packets", "-of", "json", file);
-        double vDur = 0, aDur = 0; long vPackets = 0; bool audio = false;
+        var p = await ProbeStartsAsync(ffprobe, file);
+        return (p.VDur, p.VPackets, p.ADur, p.HasAudio);
+    }
+
+    /// <summary>Duración, paquetes de vídeo y comienzo (start_time) de cada pista.</summary>
+    private static async Task<(double VDur, long VPackets, double ADur, bool HasAudio, double VStart, double AStart)> ProbeStartsAsync(string ffprobe, string file)
+    {
+        var json = await RunAsync(ffprobe, false, "-v", "error", "-count_packets", "-show_entries", "stream=codec_type,duration,start_time,nb_read_packets", "-of", "json", file);
+        double vDur = 0, aDur = 0, vStart = 0, aStart = 0; long vPackets = 0; bool audio = false;
         using var doc = JsonDocument.Parse(json);
         foreach (var s in doc.RootElement.GetProperty("streams").EnumerateArray())
         {
             double Num(string p) => s.TryGetProperty(p, out var v) && double.TryParse(v.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0;
-            if (s.GetProperty("codec_type").GetString() == "video") { vDur = Num("duration"); vPackets = (long)Num("nb_read_packets"); }
-            else { aDur = Num("duration"); audio = true; }
+            if (s.GetProperty("codec_type").GetString() == "video") { vDur = Num("duration"); vPackets = (long)Num("nb_read_packets"); vStart = Num("start_time"); }
+            else { aDur = Num("duration"); audio = true; aStart = Num("start_time"); }
         }
-        return (vDur, vPackets, aDur, audio);
+        return (vDur, vPackets, aDur, audio, vStart, aStart);
     }
 
     private static async Task<double> MaxVolumeAsync(string ffmpeg, string file)
