@@ -319,6 +319,9 @@ public partial class App : System.Windows.Application
         bool interlacedFieldRate = builder.Configuration.GetValue("Preview:InterlacedFieldRate", false);
         Serilog.Log.Information("Preview de señales entrelazadas: {Mode} (Preview:InterlacedFieldRate).",
             interlacedFieldRate ? "un cuadro por campo (59,94 desde 1080i59.94)" : "un campo por cuadro (29,97 desde 1080i59.94)");
+        // NDI: cerrar el runtime al salir (NDIlib_destroy) para que el proceso no se quede colgado al cerrar; ver ReleaseNdi.
+        // false = como antes (Ndi:DestroyOnExit).
+        NdiRuntime.DestroyOnExit = builder.Configuration.GetValue("Ndi:DestroyOnExit", true);
         // El ChannelHost compone los canales y permite reasignarles la entrada en caliente. El nº de canales
         // EFECTIVO se decide al RESOLVER este contexto: si hay licencia válida, su techo de canales —que viaja
         // FIRMADO dentro de la clave— acota lo elegido en la instalación (lo pagado manda sobre lo elegido).
@@ -556,6 +559,8 @@ public partial class App : System.Windows.Application
         Serilog.Log.Information("Cascada de encoder: {Count} GPU(s) descartada(s) antes del elegido.", encoderNotes.Count);
         foreach (var note in encoderNotes) Serilog.Log.Information(" - {Note}", note);
         Serilog.Log.Information("Encoder de video por defecto: {Codec} ({Mode}).", codec, real ? "real" : "simulado");
+        if (!NdiRuntime.DestroyOnExit)
+            Serilog.Log.Warning("NDI: el runtime NO se cerrará al salir (Ndi:DestroyOnExit = false): si se recibió alguna fuente por RUDP, el proceso puede quedarse colgado al cerrar.");
         if (real && !outputQueue)
             Serilog.Log.Warning("Cola de escritura de la grabación DESACTIVADA: este FFmpeg no admite -thread_queue_size en las salidas (FFmpeg anterior a la 6). Un disco que tarde en responder congelará el preview y podrá dejar huecos; conviene un FFmpeg 6 o posterior.");
         else if (real)
@@ -625,6 +630,10 @@ public partial class App : System.Windows.Application
         // 3) Dispone los canales (ya inactivos): libera el FFmpeg de preview, los sockets y las fuentes.
         try { await host.Services.GetRequiredService<ChannelHost>().DisposeAsync().ConfigureAwait(false); }
         catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al finalizar los canales."); }
+
+        // 4) Con los receptores NDI ya cerrados, cierra el runtime NDI (si no, el proceso no terminaría: ver ReleaseNdi). Aquí,
+        //    y no al salir, para que quede en el registro, que se cierra con el host.
+        ReleaseNdi();
         try { host.Dispose(); } catch { /* noop */ }
         _shutdownComplete = true;
     }
@@ -711,6 +720,7 @@ public partial class App : System.Windows.Application
                 });
         }
         catch (Exception ex) { Serilog.Log.Warning(ex, "No se pudo relanzar la aplicación tras activar la licencia; puede abrirse a mano."); }
+        ExitWithoutNdiHang(0);
         Environment.Exit(0);
     }
 
@@ -719,8 +729,59 @@ public partial class App : System.Windows.Application
         try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño o ya liberado */ }
         try { _instanceMutex?.Dispose(); } catch { /* noop */ }
         _instanceMutex = null;
+        ExitWithoutNdiHang(0);
         Environment.Exit(0);
     }
+
+    /// <summary>
+    /// Cierra el runtime NDI (NDIlib_destroy: de milisegundos a ~2 s) con los receptores ya cerrados. Imprescindible antes de salir: con RUDP —el
+    /// transporte NDI por defecto— el runtime arranca hilos propios que solo para NDIlib_destroy; si el proceso sale sin él,
+    /// ExitProcess termina esos hilos y la descarga de la DLL de NDI se queda esperándolos para siempre: un proceso que no acaba
+    /// y que Windows ya no deja terminar (ni el Administrador de tareas) hasta reiniciar, con sus sockets, su memoria y el Job de
+    /// los FFmpeg sin cerrar. Medido con NDI 6.2.1 y 6.3.2 (2026-10-17). Desactivable con Ndi:DestroyOnExit.
+    /// </summary>
+    private static void ReleaseNdi()
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            switch (NdiRuntime.Shutdown(TimeSpan.FromSeconds(3)))
+            {
+                case NdiShutdownResult.Destroyed:
+                    Serilog.Log.Information("Cierre: runtime NDI cerrado (NDIlib_destroy) en {Ms} ms.", clock.ElapsedMilliseconds);
+                    break;
+                case NdiShutdownResult.InUse:
+                    Serilog.Log.Warning("Cierre: {Count} receptor(es) NDI siguen abiertos; el runtime NDI se cerrará al salir si da tiempo.", NdiRuntime.OpenCount);
+                    break;
+            }
+        }
+        catch (Exception ex) { Serilog.Log.Error(ex, "Cierre: fallo al cerrar el runtime NDI."); }
+    }
+
+    /// <summary>
+    /// Última comprobación antes de salir: el runtime NDI tiene que estar cerrado (<see cref="ReleaseNdi"/>). Si aún queda un
+    /// receptor NDI abierto —solo pasa si el apagado ordenado excedió su tope—, cerrar el runtime bajo él no es seguro y salir sin
+    /// cerrarlo deja el proceso colgado para siempre: se TERMINA sin descargar las DLL (TerminateProcess), con lo que el Job mata
+    /// los FFmpeg hijos, que es lo que se pretende al forzar la salida.
+    /// </summary>
+    private static void ExitWithoutNdiHang(int exitCode)
+    {
+        try
+        {
+            if (NdiRuntime.Shutdown(TimeSpan.FromSeconds(3)) != NdiShutdownResult.InUse) return;
+            Serilog.Log.Warning("Salida: {Count} receptor(es) NDI siguen abiertos; se termina el proceso sin descargar NDI para que no se quede colgado.", NdiRuntime.OpenCount);
+            Serilog.Log.CloseAndFlush();
+        }
+        catch { return; } // sin poder comprobarlo, la salida de siempre
+        TerminateProcess(GetCurrentProcess(), unchecked((uint)exitCode));
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern nint GetCurrentProcess();
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool TerminateProcess(nint process, uint exitCode);
 
     /// <summary>
     /// Red de seguridad 24/7: una excepción no observada en el hilo de UI o en una tarea de fondo NO debe
@@ -843,6 +904,7 @@ public partial class App : System.Windows.Application
             try { ShutdownHostAsync().Wait(ShutdownTimeout); } catch { /* ya registrado dentro / timeout */ }
         try { _instanceMutex?.ReleaseMutex(); } catch { /* no somos el dueño */ }
         try { _instanceMutex?.Dispose(); } catch { /* noop */ }
+        ExitWithoutNdiHang(e.ApplicationExitCode);
         base.OnExit(e);
     }
 }

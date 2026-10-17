@@ -122,7 +122,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             // mueve y presets progresivos grabados sin desentrelazar—.
             allow_video_fields = true,
         };
-        _recv = NDIlib.recv_create_v3(ref settings);
+        _recv = NdiRuntime.CreateReceiver(ref settings); // contado: el runtime solo se cierra al salir sin receptores abiertos
         if (_recv == IntPtr.Zero) { _log.LogWarning("NDI: no se pudo crear el receptor para «{Source}».", _sourceName); return false; }
 
         _videoListener.Start();
@@ -421,7 +421,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         _audioQueue.Writer.TryComplete();
         foreach (var t in new[] { _recvLoop, _videoWriter, _audioWriter })
             if (t is not null) { try { await t.ConfigureAwait(false); } catch { /* cancelación */ } }
-        if (_recv != IntPtr.Zero) { NDIlib.recv_destroy(_recv); _recv = IntPtr.Zero; }
+        if (_recv != IntPtr.Zero) { NdiRuntime.DestroyReceiver(_recv); _recv = IntPtr.Zero; }
         if (_weave is not null) { ArrayPool<byte>.Shared.Return(_weave); _weave = null; }
         try { _videoListener.Stop(); } catch { /* noop */ }
         try { _audioListener.Stop(); } catch { /* noop */ }
