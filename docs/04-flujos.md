@@ -45,7 +45,8 @@ sequenceDiagram
 ```
 
 `Stop` invierte el flujo: `Supervisor` envía `q` por stdin (cierre ordenado que finaliza
-los contenedores), se sella `EndedAt`/`EndTimecode`, se persiste la sesión y se publica
+los contenedores; con una fuente NDI, antes le cierra las entradas y FFmpeg termina solo, ver
+«NDI al Detener» en FFMPEG.md), se sella `EndedAt`/`EndTimecode`, se persiste la sesión y se publica
 `RecordingStopped`.
 
 ## Flujo de preview

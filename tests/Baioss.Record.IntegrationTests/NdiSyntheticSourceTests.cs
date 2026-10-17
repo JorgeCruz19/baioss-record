@@ -19,8 +19,8 @@ namespace Baioss.Record.IntegrationTests;
 /// Una fuente NDI emitida desde la propia prueba (SDK NDI) por el camino de Baioss —receptor, sockets, proceso del canal—
 /// hasta el preview y la grabación: una barra blanca que cruza deprisa, 1080 a 29.97, progresiva, con los dos campos
 /// entretejidos (un 1080i, como el de vMix) o en campos sueltos, con o sin audio. Sin audio el canal no tenía ni preview ni grabación (FFmpeg
-/// esperaba la entrada de audio), y la entrelazada se veía con doble imagen y se grababa sin desentrelazar. Se omite sin el
-/// runtime NDI (Processing.NDI.Lib.x64.dll junto a las pruebas).
+/// esperaba la entrada de audio), la entrelazada se veía con doble imagen y se grababa sin desentrelazar, y al Detener se perdía el
+/// final del audio. Se omite sin el runtime NDI (Processing.NDI.Lib.x64.dll junto a las pruebas).
 /// </summary>
 public sealed class NdiSyntheticSourceTests
 {
@@ -192,7 +192,9 @@ public sealed class NdiSyntheticSourceTests
 
             await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_syn");
             await Task.Delay(5000);
+            var stop = Stopwatch.StartNew();
             await engine.StopRecordingAsync();
+            stop.Stop();
             var file = engine.LastOutputFile;
             Assert.True(file is not null && File.Exists(file) && new FileInfo(file).Length > 0, $"Sin archivo: {file}");
             var (vDur, vPackets, aDur, hasAudioTrack) = await ProbeAsync(locator.FfprobePath, file!);
@@ -205,13 +207,16 @@ public sealed class NdiSyntheticSourceTests
             }
             _out.WriteLine($"{layout} {(withAudio ? "con" : "sin")} audio: señal «{signal.FormatLabel}» · preview {previewFps:0.00} fps, " +
                            $"limpios {clean} de {window.Count} · FPS OUT {engine.Stats.OutputFps:0.00} · archivo {vDur:0.00} s, {vPackets} cuadros, audio {aDur:0.00} s, " +
-                           $"pico {maxVolume:0.0} dBFS");
+                           $"pico {maxVolume:0.0} dBFS · Detener {stop.Elapsed.TotalSeconds:0.00} s");
 
             Assert.InRange(previewFps, 25, 35);
             Assert.Equal(window.Count, clean); // una sola barra, entera: sin doble imagen
             Assert.InRange(vPackets / vDur, 28.5, 31.5);
             Assert.True(hasAudioTrack, "La grabación debe llevar su pista de audio (silenciosa si la fuente no trae).");
             Assert.True(Math.Abs(vDur - aDur) < 0.5, $"Vídeo {vDur:0.000} s frente a audio {aDur:0.000} s."); // el umbral de NdiCaptureTests
+            // Al Detener, el receptor cierra las dos entradas a la vez y FFmpeg termina solo con todo lo que llegó: el audio llega hasta
+            // el final. Con la «q» acababa 0,1–0,9 s antes que el vídeo (lo que aún no había leído se perdía) y esta prueba fallaba a ratos.
+            Assert.True(aDur > vDur - 0.1, $"El audio acaba {vDur - aDur:0.000} s antes que el vídeo (vídeo {vDur:0.000} s, audio {aDur:0.000} s).");
             if (withAudio) Assert.True(maxVolume > -30, $"El tono grabado está a {maxVolume:0.0} dBFS.");
             else Assert.True(double.IsNegativeInfinity(maxVolume) || maxVolume < -80, $"Sin audio en la fuente, la pista debe ser silencio ({maxVolume:0.0} dBFS).");
             if (interlaced)

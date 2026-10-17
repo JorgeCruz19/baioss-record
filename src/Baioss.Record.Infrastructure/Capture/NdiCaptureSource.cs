@@ -54,6 +54,10 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// <summary>Formato de píxel negociado con la fuente (uyvy422 normalmente; bgra si lleva alfa); null si no abierta.</summary>
     public string? VideoPixelFormat => _receiver?.VideoPixelFormat;
 
+    /// <summary>Vídeo y audio van en dos entradas: al retirar un proceso que graba, el receptor le entrega lo que ya llegó y le
+    /// cierra las dos a la vez, y FFmpeg termina solo sin perder el final del audio (ver <see cref="NdiReceiver.EndStream"/>).</summary>
+    public bool EndInput() => _receiver?.EndStream() ?? false;
+
     public async Task OpenAsync(CancellationToken ct = default)
     {
         var name = Definition.Uri ?? Definition.Name
