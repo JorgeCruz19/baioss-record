@@ -503,6 +503,14 @@ pantalla 60.0 Hz, 0.4 % de cuadros con duración irregular, retardo 24 ms…».
 - Un 25 o 50 fps en un monitor de 60 Hz siempre se ve con un leve vaivén (unos cuadros duran dos refrescos y otros tres):
   es la diferencia entre cadencias, no un fallo.
 
+**¿Por qué el preview de una señal entrelazada (1080i) va a 29,97 imágenes por segundo?**
+Una señal entrelazada lleva dos campos por cuadro, tomados con 1/60 s de diferencia. El preview enseña el primer campo de
+cada cuadro: lo que se mueve sale una sola vez y nítido (reducir los dos campos juntos lo enseñaba dos veces, con un
+«fantasma») y cuesta lo mismo que antes. La grabación no cambia. Para ver el movimiento a 59,94 (una imagen por campo,
+como en la tele), `Preview:InterlacedFieldRate=true` en la configuración embebida (hay que recompilar): cuesta alrededor
+de un núcleo más de CPU por canal entre FFmpeg y la aplicación (medido en un i7-8700), así que solo conviene en equipos con
+CPU de sobra.
+
 ---
 
 *Baioss Record — grabación broadcast multicanal. Este manual describe el uso operativo del programa.*

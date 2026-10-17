@@ -46,6 +46,15 @@ public sealed class FfmpegProgressParser
     /// </summary>
     public int NominalRate { get; set; } = 25;
 
+    /// <summary>
+    /// Frames que FFmpeg cuenta por cada frame de la FUENTE (<see cref="FfmpegArgumentBuilder.PreviewFramesPerSourceFrame"/>).
+    /// <c>frame</c> y <c>fps</c> son los de la primera salida de vídeo, que en el proceso del canal es el preview: con una señal
+    /// entrelazada saca un cuadro por campo (2) y, sin dividir, el FPS OUT, el contador de frames y la alarma de frames
+    /// perdidos (que descuenta la conversión de cadencia por frame de ENTRADA) contarían el doble. <c>drop_frames</c> y
+    /// <c>dup_frames</c> no se tocan: el preview, en passthrough, no descarta ni duplica nada.
+    /// </summary>
+    public int FramesPerSourceFrame { get; set; } = 1;
+
     /// <summary>Procesa una línea; devuelve stats cuando se cierra un bloque de progreso.</summary>
     public RecorderStats? Feed(string line)
     {
@@ -65,8 +74,9 @@ public sealed class FfmpegProgressParser
 
     private RecorderStats Snapshot()
     {
-        double fps = GetDouble("fps");
-        long frame = GetLong("frame");
+        int perSource = Math.Max(1, FramesPerSourceFrame);
+        double fps = GetDouble("fps") / perSource;
+        long frame = GetLong("frame") / perSource;
         long drop = GetLong("drop_frames");
         long dup = GetLong("dup_frames");
         long bitrate = (long)(GetLeadingDouble("bitrate") * 1000); // "2046.7kbits/s" → bps

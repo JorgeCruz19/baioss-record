@@ -505,6 +505,13 @@ source, *pantalla* the screen).
 - 25 or 50 fps on a 60 Hz monitor always shows a slight judder (some frames last two refreshes, others three): that is
   the difference between the two rates, not a fault.
 
+**Why does the preview of an interlaced signal (1080i) run at 29.97 pictures per second?**
+An interlaced signal carries two fields per frame, taken 1/60 s apart. The preview shows the first field of each frame:
+anything that moves comes out once and sharp (shrinking both fields together used to show it twice, a "ghost"), at the
+same cost as before. The recording does not change. To see the motion at 59.94 (one picture per field, like on TV), set
+`Preview:InterlacedFieldRate=true` in the embedded configuration (requires a rebuild): it costs about one extra CPU core
+per channel between FFmpeg and the application (measured on an i7-8700), so it only suits computers with CPU to spare.
+
 ---
 
 *Baioss Record — multi-channel broadcast recording. This manual describes the operational use of the program.*

@@ -221,4 +221,42 @@ public class FfmpegProgressParserTests
         Assert.True(alarm, "un proceso que se queda atrás debe seguir encendiendo la alarma");
         Assert.InRange(last.OutputFps, 20, 22);                    // y FPS OUT lo dice a la vez
     }
+
+    [Fact]
+    public void WithAPreviewOfOneFramePerField_TheTelemetryStillCountsSourceFrames()
+    {
+        // FFmpeg cuenta frame/fps en el preview (la primera salida de vídeo), que con una señal 1080i59.94 saca un cuadro por
+        // campo: 59,94 por cada 29,97 cuadros de la fuente. FPS OUT y el contador siguen en frames de la fuente, y la alarma de
+        // frames perdidos también: con un FFmpeg ≤ 6.0, drop_frames suma los de la grabación (un preset a 25 descarta ~5 por
+        // segundo para convertir); contados al doble, esos frames «explicarían» 10 por segundo y una pérdida real no se vería.
+        var now = TimeSpan.Zero;
+        var parser = new FfmpegProgressParser(() => now) { FramesPerSourceFrame = 2 };
+        var detector = new SaturationDetector();
+        detector.Reset(realTimeSource: true);
+        var cadence = FrameRateConversion.For(FrameRate.P2997, FrameRate.P25);
+        double sourceFrames = 0, drops = 0;
+        RecorderStats last = RecorderStats.Empty;
+        bool Second(double lost)
+        {
+            now += TimeSpan.FromSeconds(1);
+            sourceFrames += 29.97;
+            drops += 29.97 - 25 + lost;
+            long previewFrames = (long)Math.Round(2 * sourceFrames);
+            parser.Feed($"frame={previewFrames}");
+            parser.Feed(string.Create(CultureInfo.InvariantCulture, $"fps={previewFrames / now.TotalSeconds:0.00}"));
+            parser.Feed($"drop_frames={(long)drops}");
+            parser.Feed($"out_time_us={(long)(sourceFrames / 29.97 * 1_000_000)}");
+            last = parser.Feed("progress=continue")!;
+            return detector.Update(new SaturationSample(last.DroppedFrames, last.FrameCount, last.MediaTimeUs, now), cadence);
+        }
+
+        for (int s = 0; s < 10; s++) Assert.False(Second(0), "los descartes de la conversión de cadencia no son saturación");
+        Assert.InRange(last.OutputFps, 29.5, 30.5);
+        Assert.InRange(last.InputFps, 29.5, 30.5);
+        Assert.InRange(last.FrameCount, (long)sourceFrames - 1, (long)sourceFrames + 1);
+
+        bool alarm = false;
+        for (int s = 0; s < 10 && !alarm; s++) alarm = Second(lost: 3);
+        Assert.True(alarm, "3 frames perdidos por segundo además de la conversión deben encender la alarma");
+    }
 }
