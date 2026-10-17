@@ -128,6 +128,16 @@ public interface ICaptureSource : IAsyncDisposable
     bool SupportsOverlappingProcesses => false;
 
     /// <summary>
+    /// Fin de flujo para el proceso de FFmpeg que lee AHORA la fuente: se le entrega lo que ya llegó y después se le cierra la
+    /// entrada, para que termine por sí mismo (EOF) con todo dentro en vez de cortarlo con la «q». Devuelve true si había un
+    /// proceso conectado y su entrada se va a cerrar: el cierre ordenado espera entonces a que FFmpeg salga solo. Lo necesita
+    /// una fuente que sirve vídeo y audio en DOS entradas (NDI): FFmpeg lee el audio por detrás del vídeo —su planificador lo
+    /// frena a la par de lo que sale del codificador de vídeo— y con la «q» lo que aún no había leído se perdía (el archivo
+    /// acababa con el audio 0,1–0,9 s más corto que el vídeo). Con vídeo y audio en una sola entrada no pasa: false (la «q»).
+    /// </summary>
+    bool EndInput() => false;
+
+    /// <summary>
     /// True si la entrada de un proceso nuevo empieza con PRE-ROLL (el relé de una entrada de red entrega material anterior
     /// al momento de conectar, que el proceso digiere más deprisa que el directo): el motor debe esperar a que ese proceso
     /// vaya al día (<see cref="NewestConsumerIsLive"/>) y a cadencia real antes de cederle el preview, o se vería un avance

@@ -727,6 +727,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             StallTimeout = TimeSpan.FromSeconds(30),
             FinalizeOnStop = recording,
+            // Una fuente con vídeo y audio en entradas separadas (NDI) cierra la entrada del proceso que graba de ella y FFmpeg acaba
+            // solo con todo lo que ya llegó: con la «q» se perdía el final del audio (ver ICaptureSource.EndInput). Las demás
+            // fuentes, y la carta de ajuste (no lee la fuente), siguen con la «q».
+            EndInput = recording && !slate ? source.EndInput : null,
             // La GRABACIÓN de la fuente en vivo NO se auto-relanza en el supervisor (reabriría el archivo con -y y
             // lo truncaría): su caída la gestiona el motor en una PIEZA NUEVA (OnRecordingProcessDied). El PREVIEW
             // (sin archivo) y la carta de ajuste (bars generadas; truncarlas es cosmético) sí se auto-relanzan. (N1.)

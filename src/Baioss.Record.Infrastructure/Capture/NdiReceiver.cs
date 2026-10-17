@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NewTek;
 using NewTek.NDI;
@@ -21,9 +20,13 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// <c>-pixel_format</c>. Los buffers de frame se alquilan de <see cref="ArrayPool{T}"/> y se devuelven tras
 /// escribirlos, para no generar basura (un frame es de varios MB; a 30-60 fps el GC se dispararía).</para>
 ///
-/// <para>Vídeo y audio se sirven en HILOS SEPARADOS con colas acotadas: FFmpeg abre sus entradas en serie y,
-/// mientras abre el audio, deja de leer el vídeo; con un solo hilo el <c>Write</c> de vídeo se bloquearía y
+/// <para>Vídeo y audio se sirven en HILOS SEPARADOS con colas acotadas (<see cref="NdiFeed{T}"/>): FFmpeg abre sus entradas
+/// en serie y, mientras abre el audio, deja de leer el vídeo; con un solo hilo el <c>Write</c> de vídeo se bloquearía y
 /// el audio nunca se serviría (deadlock). Las colas descartan los frames más viejos si FFmpeg se atrasa.</para>
+///
+/// <para>Al retirar un proceso que graba, <see cref="EndStream"/> le cierra las dos entradas en el mismo instante para que
+/// termine por sí mismo con todo lo que ya llegó: FFmpeg lee el audio por detrás del vídeo y, con la «q», lo que quedaba sin
+/// leer se perdía (el archivo acababa con el audio hasta 0,9 s más corto que el vídeo).</para>
 ///
 /// <para>Una fuente SIN audio (o que lo pierde) recibe silencio al ritmo de sus cuadros (<see cref="NdiAudioGapFiller"/>):
 /// sin datos en la entrada de audio FFmpeg no arrancaba y el canal no tenía ni preview ni grabación.</para>
@@ -39,16 +42,13 @@ public sealed class NdiReceiver : IAsyncDisposable
     private readonly TcpListener _audioListener = new(IPAddress.Loopback, 0);
     private readonly TaskCompletionSource<bool> _firstVideo = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly Channel<Frame> _videoQueue =
-        Channel.CreateBounded<Frame>(new BoundedChannelOptions(4) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
-    private readonly Channel<Frame> _audioQueue =
-        Channel.CreateBounded<Frame>(new BoundedChannelOptions(16) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
+    // Cada búfer vuelve al pool al escribirlo, al descartarlo la cola por saturación o si ya no se puede encolar (cierre).
+    private readonly NdiFeed<Frame> _video = new(4, static f => f.Buffer.AsMemory(0, f.Length), static f => ArrayPool<byte>.Shared.Return(f.Buffer));
+    private readonly NdiFeed<Frame> _audio = new(16, static f => f.Buffer.AsMemory(0, f.Length), static f => ArrayPool<byte>.Shared.Return(f.Buffer));
 
     private CancellationTokenSource? _cts;
-    private Task? _recvLoop, _videoWriter, _audioWriter;
+    private Task? _recvLoop;
     private IntPtr _recv;
-    private volatile NetworkStream? _videoStream;
-    private volatile NetworkStream? _audioStream;
     private int _bytesPerPixel = 4; // se fija con el primer frame según el FourCC real (UYVY=2, BGRA=4)
     private volatile bool _present;           // ¿llega vídeo NDI ahora mismo? (para detectar pérdida en caliente)
     private DateTimeOffset _lastVideoUtc;     // marca del último frame de vídeo recibido
@@ -132,11 +132,9 @@ public sealed class NdiReceiver : IAsyncDisposable
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = _cts.Token;
-        _ = AcceptAsync(_videoListener, s => _videoStream = s, token);
-        _ = AcceptAsync(_audioListener, s => _audioStream = s, token);
+        _ = AcceptAsync(_videoListener, _video, token);
+        _ = AcceptAsync(_audioListener, _audio, token);
         _recvLoop = Task.Run(() => ReceiveLoop(token), token);
-        _videoWriter = Task.Run(() => WriteLoop(_videoQueue.Reader, () => _videoStream, token), token);
-        _audioWriter = Task.Run(() => WriteLoop(_audioQueue.Reader, () => _audioStream, token), token);
 
         var done = await Task.WhenAny(_firstVideo.Task, Task.Delay(firstFrameTimeout, ct)).ConfigureAwait(false);
         if (done != _firstVideo.Task) { _log.LogWarning("NDI: «{Source}» no entregó vídeo en {T}.", _sourceName, firstFrameTimeout); return false; }
@@ -146,54 +144,37 @@ public sealed class NdiReceiver : IAsyncDisposable
     }
 
     // FFmpeg (cliente) se conecta a cada puerto al arrancar; ante reconexión (reinicio al alternar grabación)
-    // se vuelve a aceptar el nuevo cliente.
-    private async Task AcceptAsync(TcpListener listener, Action<NetworkStream?> assign, CancellationToken ct)
+    // se vuelve a aceptar el nuevo cliente: el flujo le sirve desde ya y cierra el anterior (ver NdiFeed.Attach).
+    private async Task AcceptAsync(TcpListener listener, NdiFeed<Frame> feed, CancellationToken ct)
     {
-        // Mantiene el TcpClient ACTIVO para disponerlo en la próxima reconexión (y al cancelar). Antes, cada
-        // reconexión de FFmpeg (toggle de grabación / slate / respawn) dejaba el socket+stream anterior sin
-        // cerrar: en 24/7 acumulaba handles y podía agotar puertos/handles del SO. (Auditoría 24/7, A8/#29/#37.)
-        TcpClient? current = null;
-        try
+        while (!ct.IsCancellationRequested)
         {
-            while (!ct.IsCancellationRequested)
+            try
             {
-                try
-                {
-                    var next = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
-                    next.NoDelay = true;
-                    assign(next.GetStream());              // los writes nuevos van YA al socket nuevo
-                    var old = current; current = next;
-                    try { old?.Dispose(); } catch { /* ya cerrado */ } // cierra el cliente anterior (no fugar el socket)
-                    _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
-                }
-                catch (OperationCanceledException) { return; }
-                catch (Exception ex) { _log.LogDebug(ex, "NDI: re-aceptando conexión de FFmpeg."); }
+                var next = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                next.NoDelay = true;
+                feed.Attach(next);
+                _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
             }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { _log.LogDebug(ex, "NDI: re-aceptando conexión de FFmpeg."); }
         }
-        finally { try { current?.Dispose(); } catch { /* noop */ } } // al cancelar, cierra el cliente vivo
     }
 
-    // Saca buffers de la cola y los escribe al socket de FFmpeg. Un loop por flujo (vídeo / audio): así el
-    // bloqueo de uno (FFmpeg dejó de leer) no afecta al otro. Cada buffer se DEVUELVE al pool tras usarlo
-    // (escrito o no): es el único punto de retorno, así que no hay doble-free. Los frames que la cola descarta
-    // por saturación (DropOldest) no pasan por aquí y los recoge el GC —pérdida mínima y sin corrupción.
-    private static async Task WriteLoop(ChannelReader<Frame> reader, Func<NetworkStream?> getStream, CancellationToken ct)
+    /// <summary>
+    /// Fin de flujo para el proceso de FFmpeg conectado: recibe lo que ya llegó y después se le cierran las dos entradas en el
+    /// mismo instante, así que termina por sí mismo (EOF) con todo dentro; lo que llegue después es para el proceso siguiente. No
+    /// espera: el motor espera a que FFmpeg salga. True si había un proceso conectado a las dos entradas.
+    /// <para>Por qué: FFmpeg lee la entrada de audio por detrás de la de vídeo —su planificador la frena para no adelantarse a lo
+    /// que sale del codificador de vídeo, que retiene cerca de un segundo— y con la «q» deja de leer en el acto: el audio que
+    /// esperaba en el socket se perdía y el archivo acababa con el audio 0,1–0,9 s más corto que el vídeo. Con la entrada de
+    /// vídeo cerrada, FFmpeg vacía el codificador y lee el audio pendiente hasta el mismo instante.</para>
+    /// </summary>
+    public bool EndStream()
     {
-        try
-        {
-            await foreach (var frame in reader.ReadAllAsync(ct).ConfigureAwait(false))
-            {
-                try
-                {
-                    var s = getStream();
-                    if (s is not null) // si FFmpeg aún no conectó (o se desconectó) se descarta el frame
-                        await s.WriteAsync(frame.Buffer.AsMemory(0, frame.Length), ct).ConfigureAwait(false);
-                }
-                catch { /* FFmpeg cerró el socket: el siguiente getStream() reflejará la reconexión */ }
-                finally { ArrayPool<byte>.Shared.Return(frame.Buffer); }
-            }
-        }
-        catch (OperationCanceledException) { /* cierre */ }
+        bool video = _video.End();
+        bool audio = _audio.End();
+        return video && audio;
     }
 
     private void ReceiveLoop(CancellationToken ct)
@@ -293,8 +274,7 @@ public sealed class NdiReceiver : IAsyncDisposable
                     Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, buf, y * rowBytes, rowBytes);
         }
 
-        if (!_videoQueue.Writer.TryWrite(new Frame(buf, size)))
-            ArrayPool<byte>.Shared.Return(buf);                   // cola completada (cierre): no se encola
+        _video.Enqueue(new Frame(buf, size));
 
         // Sin audio de la fuente: el silencio que le toca a este cuadro (y, al detectarlo, a los que ya pasaron sin audio).
         bool wasFilling = _silence.Filling;
@@ -311,8 +291,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         int bytes = samples * Math.Max(1, Channels) * sizeof(float);
         var buf = ArrayPool<byte>.Shared.Rent(bytes);
         Array.Clear(buf, 0, bytes); // los búferes del pool vuelven con datos viejos
-        if (!_audioQueue.Writer.TryWrite(new Frame(buf, bytes)))
-            ArrayPool<byte>.Shared.Return(buf);
+        _audio.Enqueue(new Frame(buf, bytes));
     }
 
     /// <summary>¿El cuadro trae los dos campos entretejidos (el superior primero, según NDI)?</summary>
@@ -408,8 +387,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             NDIlib.util_audio_to_interleaved_32f_v2(ref a, ref dst);
             var buf = ArrayPool<byte>.Shared.Rent(bytes);
             Marshal.Copy(tmp, buf, 0, bytes);
-            if (!_audioQueue.Writer.TryWrite(new Frame(buf, bytes)))
-                ArrayPool<byte>.Shared.Return(buf);
+            _audio.Enqueue(new Frame(buf, bytes));
         }
         finally { Marshal.FreeHGlobal(tmp); }
     }
@@ -417,10 +395,9 @@ public sealed class NdiReceiver : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_cts is not null) await _cts.CancelAsync().ConfigureAwait(false);
-        _videoQueue.Writer.TryComplete();
-        _audioQueue.Writer.TryComplete();
-        foreach (var t in new[] { _recvLoop, _videoWriter, _audioWriter })
-            if (t is not null) { try { await t.ConfigureAwait(false); } catch { /* cancelación */ } }
+        if (_recvLoop is not null) { try { await _recvLoop.ConfigureAwait(false); } catch { /* cancelación */ } }
+        await _video.DisposeAsync().ConfigureAwait(false);
+        await _audio.DisposeAsync().ConfigureAwait(false);
         if (_recv != IntPtr.Zero) { NdiRuntime.DestroyReceiver(_recv); _recv = IntPtr.Zero; }
         if (_weave is not null) { ArrayPool<byte>.Shared.Return(_weave); _weave = null; }
         try { _videoListener.Stop(); } catch { /* noop */ }

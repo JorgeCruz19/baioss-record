@@ -257,3 +257,14 @@ manda. El receptor pide `allow_video_fields = true`: con `false` el SDK fundía 
 como el de la DeckLink, y los campos sueltos (`field_0`/`field_1`) se tejen en cuadros entretejidos. Probado con
 `NdiSyntheticSourceTests` (emisor NDI dentro de la prueba: progresivo con y sin audio, entretejido, campos sueltos) y con
 las fuentes de la red del PC de pruebas (OBS 1080p, vMix 1080i, una salida de grafismo sin audio).
+
+**NDI al Detener.** FFmpeg (7 y posteriores) no deja que una entrada se adelante a la salida más retrasada, y la más
+retrasada es la del codificador de vídeo, que retiene cerca de un segundo (x264 `veryfast`: anticipación, cuadros B e hilos).
+Con NDI el audio va en su propia entrada, así que FFmpeg lo lee por detrás del vídeo, y la «q» lo para en el acto: el audio
+que aún esperaba en el socket se perdía y el archivo acababa con el audio 0,1–0,9 s más corto que el vídeo (medido con 8.0:
+vídeo leído hasta 5,21 s y audio hasta 4,52–4,95 s). Al retirar un proceso que graba de una fuente NDI, el receptor le
+entrega lo que ya tenía en cola y le cierra los dos sockets en el mismo instante (`NdiReceiver.EndStream`, `NdiFeed`):
+FFmpeg vacía el codificador, lee el audio pendiente hasta ese instante y sale solo (EOF, código 0) en 0,1–0,25 s; si no
+sale en 5 s, la «q» de siempre (`FfmpegProcessSupervisor.EndInput`). DeckLink, red y archivo traen vídeo y audio en una
+sola entrada y siguen con la «q». Probado con `NdiSyntheticSourceTests` y con `SplitInputStopTests` (el mismo camino sin
+el runtime NDI).

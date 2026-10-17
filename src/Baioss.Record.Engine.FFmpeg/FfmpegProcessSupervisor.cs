@@ -73,6 +73,19 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// </summary>
     public bool FinalizeOnStop { get; init; } = true;
 
+    /// <summary>
+    /// Con <see cref="FinalizeOnStop"/>: cómo cerrarle la ENTRADA al proceso para que termine por sí mismo (fin de flujo) con
+    /// todo lo que ya le llegó, antes de recurrir a la «q». Devuelve true si la entrada se va a cerrar; el cierre ordenado espera
+    /// entonces hasta <see cref="EndOfInputTimeout"/> a que FFmpeg salga solo y, si no, envía la «q». Para una fuente que sirve
+    /// vídeo y audio en entradas separadas (NDI): con la «q», FFmpeg deja de leer en el acto y el audio que aún esperaba en su
+    /// entrada se perdía. null = la «q» de siempre.
+    /// </summary>
+    public Func<bool>? EndInput { get; init; }
+
+    /// <summary>Espera máxima a que FFmpeg salga solo tras <see cref="EndInput"/> (vaciar el codificador y escribir el índice es
+    /// cosa de décimas); después, la «q».</summary>
+    public TimeSpan EndOfInputTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
     /// <summary>¿Hay un proceso FFmpeg en marcha ahora mismo? False antes de arrancar, cuando ya salió o tras disponer.</summary>
     public bool IsRunning { get { try { return _process is { HasExited: false }; } catch { return false; } } }
     /// <summary>
@@ -449,6 +462,9 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             return;
         }
 
+        // Si se le puede cerrar la entrada (NDI), FFmpeg vacía el codificador, lee lo que le quedaba y sale solo: nada se pierde.
+        if (await EndInputAndWaitAsync(_process).ConfigureAwait(false)) return;
+
         try
         {
             await _process.StandardInput.WriteAsync('q').ConfigureAwait(false);
@@ -465,6 +481,29 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             }
         }
         catch { try { _process.Kill(entireProcessTree: true); } catch { /* noop */ } }
+    }
+
+    /// <summary>Cierra la entrada del proceso (<see cref="EndInput"/>) y espera a que salga solo. False si no hay cómo, la fuente
+    /// no pudo cerrarla o FFmpeg no salió a tiempo: entonces, la «q».</summary>
+    private async Task<bool> EndInputAndWaitAsync(Process process)
+    {
+        if (EndInput is null) return false;
+        try { if (!EndInput()) return false; }
+        catch (Exception ex) { _log.LogDebug(ex, "No se pudo cerrar la entrada de FFmpeg; se cierra con 'q'."); return false; }
+        var sw = Stopwatch.StartNew();
+        using var timeout = new CancellationTokenSource(EndOfInputTimeout);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            _log.LogDebug("FFmpeg terminó solo en {Ms} ms tras cerrarle la entrada (código {Code}).", sw.ElapsedMilliseconds, process.ExitCode);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            _log.LogWarning("FFmpeg no terminó en {Timeout} tras cerrarle la entrada; se cierra con 'q'.", EndOfInputTimeout);
+            return false;
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "Esperando a que FFmpeg saliera tras cerrarle la entrada; se cierra con 'q'."); return false; }
     }
 
     /// <summary>

@@ -50,6 +50,74 @@ public class FfmpegProcessSupervisorTests
             Assert.Contains("línea hola", events);
         }
     }
+
+    // Fin de flujo (NDI): la fuente le cierra la entrada al proceso que graba y FFmpeg termina solo con todo lo que le llegó; la
+    // «q» lo cortaba sin leer el audio que le quedaba. Un intérprete de órdenes con un ping hace de «FFmpeg» que no atiende la «q»
+    // y tarda en acabar: si el cierre ordenado la enviara, lo mataría a los GracefulTimeout.
+    private static readonly string Shell = Environment.GetEnvironmentVariable("ComSpec") ?? @"C:\Windows\System32\cmd.exe";
+
+    [Fact]
+    public async Task OrderlyStop_AfterEndingTheInput_WaitsForTheProcessToFinishByItself()
+    {
+        int ended = 0;
+        var sup = new FfmpegProcessSupervisor(Shell, NullLogger.Instance)
+        {
+            RestartInternally = false,
+            EndInput = () => { Interlocked.Increment(ref ended); return true; },
+            EndOfInputTimeout = TimeSpan.FromSeconds(20),
+            GracefulTimeout = TimeSpan.FromMilliseconds(100),
+        };
+        await sup.StartAsync(new[] { "/c", "ping -n 3 127.0.0.1 >nul" }); // acaba solo a los ~2 s
+        await Task.Delay(300);
+
+        var stop = System.Diagnostics.Stopwatch.StartNew();
+        await sup.DisposeAsync();
+
+        Assert.Equal(1, ended);
+        Assert.True(stop.Elapsed > TimeSpan.FromSeconds(1.2), $"Lo cortó a los {stop.Elapsed.TotalSeconds:0.00} s en vez de esperar a que acabara solo.");
+        Assert.False(sup.IsRunning);
+    }
+
+    [Fact]
+    public async Task OrderlyStop_FallsBackToQuit_WhenTheProcessDoesNotFinishAfterEndingTheInput()
+    {
+        var sup = new FfmpegProcessSupervisor(Shell, NullLogger.Instance)
+        {
+            RestartInternally = false,
+            EndInput = () => true,
+            EndOfInputTimeout = TimeSpan.FromMilliseconds(300),
+            GracefulTimeout = TimeSpan.FromMilliseconds(300),
+        };
+        await sup.StartAsync(new[] { "/c", "ping -n 30 127.0.0.1 >nul" }); // ~29 s: no acaba solo
+        await Task.Delay(300);
+
+        var stop = System.Diagnostics.Stopwatch.StartNew();
+        await sup.DisposeAsync();
+
+        Assert.True(stop.Elapsed < TimeSpan.FromSeconds(5), $"El cierre tardó {stop.Elapsed.TotalSeconds:0.0} s: debía pasar a la «q» y forzar.");
+        Assert.False(sup.IsRunning);
+    }
+
+    [Fact]
+    public async Task OrderlyStop_DoesNotWait_WhenTheSourceCannotEndTheInput()
+    {
+        int ended = 0;
+        var sup = new FfmpegProcessSupervisor(Shell, NullLogger.Instance)
+        {
+            RestartInternally = false,
+            EndInput = () => { Interlocked.Increment(ref ended); return false; }, // p. ej. ningún proceso conectado a la fuente
+            EndOfInputTimeout = TimeSpan.FromSeconds(20),
+            GracefulTimeout = TimeSpan.FromMilliseconds(300),
+        };
+        await sup.StartAsync(new[] { "/c", "ping -n 30 127.0.0.1 >nul" });
+        await Task.Delay(300);
+
+        var stop = System.Diagnostics.Stopwatch.StartNew();
+        await sup.DisposeAsync();
+
+        Assert.Equal(1, ended);
+        Assert.True(stop.Elapsed < TimeSpan.FromSeconds(5), $"El cierre esperó {stop.Elapsed.TotalSeconds:0.0} s sin que la fuente cerrara nada.");
+    }
 }
 
 /// <summary>
