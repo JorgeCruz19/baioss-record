@@ -25,6 +25,8 @@ internal sealed class FakeCaptureSource : ICaptureSource
     public Task CloseAsync(CancellationToken ct = default) => Task.CompletedTask;
     public IReadOnlyList<string> BuildInputArguments() => new[] { "-i", Definition.Uri! };
     public int PreviewFramesToSkip { get; set; }
+    /// <summary>La fuente sirve solo sus cuadros reales, con marcas (como NDI).</summary>
+    public bool DeliversSparseVideo { get; set; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     /// <summary>Fuerza una transición de señal y notifica a los suscriptores.</summary>

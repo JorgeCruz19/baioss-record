@@ -11,9 +11,10 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// <summary>
 /// Fuente de captura NDI nativa (SDK NewTek). A diferencia de DeckLink/DirectShow —que FFmpeg ABRE
 /// directamente—, NDI se recibe en la app con un <see cref="NdiReceiver"/> que SIRVE vídeo + audio por dos
-/// sockets TCP loopback; FFmpeg los lee como dos entradas crudas (rawvideo uyvy422/bgra + f32le). Por eso el
-/// audio queda en la entrada 1 (<see cref="AudioInputIndex"/>). La resolución/tasa/pixel reales se conocen al
-/// abrir (el receptor espera el primer frame). Requiere el runtime NDI instalado; si no, el canal queda sin señal.
+/// sockets TCP loopback; FFmpeg los lee como dos entradas: el vídeo en NUT, con una marca por cuadro (uyvy422, o bgra con un
+/// ancho impar), y el audio en crudo (f32le). Por eso el audio queda en la entrada 1 (<see cref="AudioInputIndex"/>). La
+/// resolución/tasa/pixel reales se conocen al abrir (el receptor espera el primer frame). Requiere el runtime NDI instalado; si
+/// no, el canal queda sin señal.
 /// </summary>
 public sealed class NdiCaptureSource : ICaptureSource
 {
@@ -58,6 +59,11 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// <summary>Vídeo y audio van en dos entradas: al retirar un proceso que graba, el receptor le entrega lo que ya llegó y le
     /// cierra las dos a la vez, y FFmpeg termina solo sin perder el final del audio (ver <see cref="NdiReceiver.EndStream"/>).</summary>
     public bool EndInput() => _receiver?.EndStream() ?? false;
+
+    /// <summary>El receptor sirve solo los cuadros que llegan, cada uno con la marca de su periodo de la cadencia declarada: una
+    /// fuente que manda menos de lo que declara deja huecos que la grabación rellena y el preview no (ver
+    /// <see cref="ICaptureSource.DeliversSparseVideo"/> y <see cref="NdiReceiver"/>).</summary>
+    public bool DeliversSparseVideo => true;
 
     public async Task OpenAsync(CancellationToken ct = default)
     {
@@ -159,32 +165,26 @@ public sealed class NdiCaptureSource : ICaptureSource
         if (_receiver is null)
             throw new InvalidOperationException("La fuente NDI no está abierta (llama a OpenAsync primero).");
 
-        // Entrada 0: vídeo rawvideo (uyvy422, también de una fuente con alfa; bgra solo con un ancho impar). Entrada 1: audio f32le
-        // interleaved. Ambas las sirve el NdiReceiver por TCP loopback; FFmpeg se conecta como cliente.
-        // Resolución/tasa/pixel/audio = los de la fuente real (el receptor los fijó con el primer frame).
+        // Entrada 0: vídeo en NUT (uyvy422, también de una fuente con alfa; bgra solo con un ancho impar): solo los cuadros que
+        // llegan, cada uno con la marca del periodo de la cadencia declarada que ocupa (NdiFrameCadence, por el reloj de la fuente);
+        // las cabeceras, que el receptor escribe a cada proceso que conecta, llevan el tamaño, el formato y esa cadencia. Entrada 1:
+        // audio f32le interleaved, marcado por contador (muestra/frecuencia) desde la primera muestra, como el vídeo desde su primer
+        // cuadro. Ambas las sirve el NdiReceiver por TCP loopback; FFmpeg se conecta como cliente.
         //
-        // El formato de ambas entradas es EXPLÍCITO: se anula el análisis de FFmpeg (analyzeduration=0, probesize
-        // mínimo) para que no intente «detectar» leyendo segundos de datos —con un rawvideo de cientos de MB/s eso
-        // colgaba la apertura—. nobuffer reduce además la latencia de arranque.
+        // Se anula el análisis de FFmpeg (analyzeduration=0, probesize mínimo) para que no intente «detectar» leyendo segundos de
+        // datos: con vídeo en crudo de cientos de MB/s eso colgaba la apertura. Lee el primer cuadro y lo conserva (sin nobuffer, que
+        // lo tiraría: con una fuente a saltos, el siguiente puede tardar), así que el vídeo empieza en él.
         //
-        // SINCRONÍA A/V: NO se usa -use_wallclock_as_timestamps en estas entradas. En el AUDIO rompe (con f32le
-        // crudo por socket FFmpeg agrupa los bloques y deja de leerlos tras ~1 s → pista truncada; con wallclock
-        // el audio caía a ~0,02 s). Y en el VÍDEO también se PROBÓ (2026-07-05, para atacar la deriva bajo
-        // contención) y CONGELA: el rawvideo llega por socket EN RÁFAGAS, el wallclock les da PTS casi iguales +
-        // huecos, y el vsync CFR RELLENA los huecos DUPLICANDO frames → congelados intermitentes en preview y
-        // grabación (freezedetect: ~6 s de 20 s; peor bajo carga). La duración cuadra —por eso una medición SOLO
-        // por duración lo daba por «sincronizado»—, pero la imagen se PARA. REVERTIDO. Sin timestamps, FFmpeg
-        // deriva el PTS por contador (vídeo nframe/fps, audio nmuestra/sr), que mantiene la sincronía MIENTRAS el
-        // vídeo llegue a la cadencia declarada: el receptor la mantiene repitiendo el último cuadro cuando la fuente
-        // entrega menos (NdiFrameCadence; antes vMix a ~10 de 29.97 grababa 4,9 s en 21 s). Lo que sigue sin
-        // compensarse son los cuadros que descarta la cola DropOldest si el proceso del canal no da abasto (CPU
-        // saturada), que se ataca bajando la CPU (UYVY nativo + ArrayPool).
+        // SINCRONÍA A/V: NO se usa -use_wallclock_as_timestamps en estas entradas. En el AUDIO rompe (con f32le crudo por socket
+        // FFmpeg agrupa los bloques y deja de leerlos tras ~1 s → pista truncada; con wallclock el audio caía a ~0,02 s). Y en el
+        // VÍDEO también se PROBÓ (2026-07-05) y CONGELA: el vídeo llega por socket EN RÁFAGAS y el wallclock le daba marcas casi
+        // iguales y huecos (freezedetect: ~6 s de 20 s). Las marcas del NUT son las de la fuente, no las de la llegada; antes, en
+        // rawvideo, FFmpeg las ponía por contador y el receptor tenía que servirle un cuadro por periodo, repitiendo el último
+        // cuando la fuente entregaba menos (60 cuadros de 1080 por segundo de un grafismo que manda 4). Un cuadro que descarte la
+        // cola DropOldest (el proceso del canal no da abasto) deja un hueco en el tiempo en vez de adelantar todo lo que viene detrás.
         return new[]
         {
-            "-f", "rawvideo", "-pixel_format", _receiver.VideoPixelFormat,
-            "-video_size", $"{_receiver.Width}x{_receiver.Height}",
-            "-framerate", $"{_receiver.FrameRateN}/{_receiver.FrameRateD}",
-            "-analyzeduration", "0", "-probesize", "32", "-fflags", "nobuffer",
+            "-f", "nut", "-analyzeduration", "0", "-probesize", "32",
             "-i", $"tcp://127.0.0.1:{_receiver.VideoPort}",
             "-f", "f32le",
             "-ar", _receiver.SampleRate.ToString(CultureInfo.InvariantCulture),

@@ -254,9 +254,9 @@ elige en el gestor de entradas (`audio_pairs`; no hay `audio_channels`: NDI trae
 **NDI sin audio y NDI entrelazado.** La entrada `f32le` del audio NDI no tiene marcas de tiempo y FFmpeg abre las entradas
 en serie: con una fuente que no trae audio (salidas de grafismo, muchas cámaras PTZ) se quedaba esperando en ella, sin
 preview ni grabación. El receptor sirve silencio cuando pasa medio segundo sin audio con vídeo llegando
-(`NdiAudioGapFiller`): cada cuadro lleva su duración de silencio, empezando por los que ya pasaron sin audio, así el
-contador de muestras sigue al de cuadros —como las marcas que FFmpeg pone a estas entradas— y el audio real, si llega,
-manda. El receptor pide `allow_video_fields = true`: con `false` el SDK fundía los campos y marcaba progresivo un 1080i
+(`NdiAudioGapFiller`): cada periodo de la cadencia declarada del vídeo lleva su duración de silencio —tenga cuadro propio o lo
+rellene la grabación—, empezando por los que ya pasaron sin audio, así el contador de muestras (las marcas que FFmpeg pone a esa
+entrada) sigue a las marcas del vídeo, y el audio real, si llega, manda. El receptor pide `allow_video_fields = true`: con `false` el SDK fundía los campos y marcaba progresivo un 1080i
 (seguía entretejido: preview con doble imagen y presets progresivos sin desentrelazar). Ahora un cuadro entretejido
 (`frame_format_type_interleaved`, el campo superior primero) publica `SignalInfo.Scan = InterlacedTff` y se desentrelaza
 como el de la DeckLink, y los campos sueltos (`field_0`/`field_1`) se tejen en cuadros entretejidos. Probado con
@@ -274,6 +274,31 @@ RGB cada cuadro servido —60 por segundo con la cadencia declarada, aunque la f
 grafo esas conversiones salían carísimas. Medido con un emisor que imita a Offside, proceso del canal con preview y NVENC:
 6,0 núcleos antes, 3,9 solo con la regla del barrido y 1,9 con las dos cosas. Probado con `NdiReceiverFormatTests`,
 `BgraToUyvyTests` y la fila «como Offside» de `NdiSyntheticSourceTests`.
+
+**NDI a la cadencia declarada, sin servirla entera.** Una fuente que entrega menos cuadros de los que declara (vMix llegó a
+mandar ~10 de 29.97; un grafismo manda ~4 de 60, cuando cambia la imagen) se graba a la cadencia declarada y en tiempo real.
+Hasta 2026-10-17 el vídeo iba en `rawvideo`, que FFmpeg marca por contador, y el receptor tenía que servirle un cuadro por
+periodo repitiendo el último: 60 cuadros de 1080 por segundo atravesaban el socket, el preview y la conversión de la grabación
+aunque la fuente mandara 4. Ahora el receptor escribe NUT (`NutRawVideoWriter`, `NdiNutFraming`) y envía solo los cuadros
+reales, cada uno con la marca del periodo que le da `NdiFrameCadence` por el reloj de la fuente; las repeticiones son periodos
+que corren (con su silencio, si no hay audio). El NUT va en versión 4, modo tubería (un solo punto de sincronía: el lector de
+FFmpeg guarda en memoria cada uno que lee, y con uno por cuadro un proceso de días acumularía cientos de MB), con una base de
+tiempo de medio periodo y la cadencia en la información del flujo (`r_frame_rate`): con ella FFmpeg da a cada cuadro la duración
+de un periodo y la tiene por fiable, y el archivo acaba en el último periodo con cuadro. La rama de grabación rellena los huecos
+con un `fps` (`FfmpegArgumentBuilder.SparseVideoFill`) a la cadencia del preset o, en nativo, a la declarada: al final de la
+rama, para escalar y convertir solo los cuadros reales, o al principio si hay timecode quemado (drawtext cuenta cuadros) o
+desentrelazado por campo (bwdif pone el segundo campo a medio camino del cuadro siguiente). `-fps_mode cfr` no sirve: adelanta un
+periodo cada cuadro que llega tras un hueco (medido con 8.0 y la incluida). El preview pinta los cuadros reales, a su ritmo, y la
+vista los enseña al llegar en vez de repartirlos en una rejilla a la cadencia media (`PreviewFrame.AtSourcePace`: con la rejilla,
+vMix llegaba a 250 ms de retardo); FPS OUT, la alarma de frames perdidos y la línea de salud se cuentan por tiempo de medios a la
+cadencia declarada (`FfmpegProgressParser.MediaFrameRate`), porque FFmpeg cuenta los cuadros del preview. FFmpeg no lee el audio
+por delante del vídeo, así que si en 300 ms no ha salido ningún cuadro sale el último con el periodo en curso
+(`NdiReceiver.KeepAlive`); también al conectar un proceso en un hueco (FFmpeg no abre la entrada sin un cuadro: el archivo
+empezaba un hueco tarde) y al Detener, el último periodo vencido. Medido con NVENC y 8.0, 20 s, proceso del canal: un emisor que
+imita a Offside (1080 BGRA a 60000/1000, uno de cada 12 periodos) 2,11 y 1,93 → 0,28 y 0,27 núcleos, el receptor 0,34–0,37 →
+0,17–0,18, con 59,7 fps en el archivo y la deriva en +0,017 s; OBS a su ritmo, igual (0,78–0,91 frente a 0,89–0,91); vMix, que
+ese día mandaba ~28 de 29.97, sin cambio apreciable. Con las marcas de `NdiSyntheticSourceTests` (destello + pitido), el pitido
+iba 0,035 s por delante del destello a su ritmo y 0,069 s a media cadencia; ahora, 0,033–0,038 s en los dos.
 
 **NDI al Detener.** FFmpeg (7 y posteriores) no deja que una entrada se adelante a la salida más retrasada, y la más
 retrasada es la del codificador de vídeo, que retiene cerca de un segundo (x264 `veryfast`: anticipación, cuadros B e hilos).

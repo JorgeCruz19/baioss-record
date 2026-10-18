@@ -37,11 +37,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // de proceso ni lo vacía ni lo vuelve a llenar. Su pool de búferes sustituye al anillo de 3 que había por lector.
     private PreviewPacer? _pacer;
     private PreviewPacer Pacer => _pacer ??= new PreviewPacer(FrameWidth * 4 * FrameHeight, DeliverFrame, _channelKey);
+    // El preview del proceso en marcha trae solo los cuadros reales de la fuente (NDI con marcas): ver PreviewFrame.AtSourcePace.
+    private volatile bool _previewAtSourcePace;
     private void DeliverFrame(byte[] bgra)
     {
         // Un suscriptor que lance no debe tumbar la entrega: en paso directo la excepción subía al lector del sumidero, que
         // cerraba el socket y mataba al FFmpeg de grabación (pieza nueva); con colchón, al hilo del colchón (la aplicación).
-        try { FrameReady?.Invoke(this, new PreviewFrame(bgra, FrameWidth, FrameHeight, FrameWidth * 4)); }
+        try { FrameReady?.Invoke(this, new PreviewFrame(bgra, FrameWidth, FrameHeight, FrameWidth * 4) { AtSourcePace = _previewAtSourcePace }); }
         catch (Exception ex) { _log.LogDebug(ex, "Canal {Key}: un suscriptor del preview falló con un frame.", _channelKey); }
     }
 
@@ -699,6 +701,13 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         sink.NominalIntervalMs = 1000.0 / previewFps;
         Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), previewFps);
         _parser.FramesPerSourceFrame = builder.PreviewFramesPerSourceFrame;
+        // Una fuente que solo trae sus cuadros reales (NDI con marcas): el preview pinta los que llegan, a su ritmo (la vista los
+        // enseña al llegar, sin rejilla), y la grabación va a la cadencia declarada. El progreso de FFmpeg cuenta los del preview, así
+        // que los frames del canal —FPS OUT, la alarma de frames perdidos— se cuentan por tiempo de medios a esa cadencia. La carta
+        // de ajuste (barras generadas) va a cadencia constante.
+        bool sparse = source.DeliversSparseVideo && !slate;
+        _parser.MediaFrameRate = sparse && source.CurrentSignal.FrameRate is { Value: > 0 } declared ? declared.Value : null;
+        _previewAtSourcePace = sparse;
 
         if (recording && builder.IsSegmentedOutput && !string.IsNullOrEmpty(builder.SegmentPrefixGlob))
             lock (_segGlobs) if (!_segGlobs.Contains(builder.SegmentPrefixGlob, StringComparer.OrdinalIgnoreCase)) _segGlobs.Add(builder.SegmentPrefixGlob);

@@ -132,7 +132,8 @@ public partial class ChannelView : UserControl
         lock (_sync)
         {
             if (!ReferenceEquals(sender, _preview) || buffer.Length != _frameBytes) return; // rebind durante la copia
-            _scheduler.Enqueue(buffer, now, _recycled);
+            // Una fuente que solo trae sus cuadros reales (NDI a saltos) se enseña al llegar: su llegada es su ritmo.
+            _scheduler.Enqueue(buffer, now, _recycled, frame.AtSourcePace);
             _stats.OnArrival(now, _scheduler.LastLead);
             Recycle();
         }

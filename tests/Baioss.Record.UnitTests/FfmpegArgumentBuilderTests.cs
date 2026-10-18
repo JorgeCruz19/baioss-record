@@ -569,6 +569,75 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-r 60000/1001", joined);
     }
 
+    private static string BuildLiveSparse(SignalInfo signal, RecordingProfile profile, bool recording = true)
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { DeliversSparseVideo = true };
+        source.Emit(signal);
+        return string.Join(' ', new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001").WithSignalAnalysis(false).BuildLive(recording, 640, 360));
+    }
+
+    [Fact]
+    public void BuildLive_ASourceWithGaps_IsRecordedAtItsDeclaredRate_FilledAtTheEndOfTheBranch()
+    {
+        // NDI sirve solo los cuadros que llegan (un grafismo que declara 60 y manda 4): la grabación los repite hasta el siguiente con
+        // un fps al FINAL de la rama —convertir y escalar solo los reales— y a la tasa declarada si el preset la deja en nativo; el
+        // preview los pinta tal como llegan.
+        var profile = Progressive(VideoCodec.H264Nvenc, FrameRate.P60);
+        profile.OutputFrameRate = null;
+        profile.TargetResolution = null;
+        var joined = BuildLiveSparse(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive), profile);
+        Assert.Contains("[vrec]format=nv12,fps=60000/1000[vmain]", joined);
+        Assert.Contains("[vprev]scale=640:360,format=bgra[pv]", joined);
+        Assert.Contains("-map [pv] -fps_mode passthrough -f rawvideo", joined);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(joined, "fps="));
+    }
+
+    [Fact]
+    public void BuildLive_ASourceWithGaps_AndAPresetRate_IsFilledStraightToThePresetRate()
+    {
+        var joined = BuildLiveSparse(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive), Progressive(VideoCodec.H264x264, FrameRate.P2997));
+        Assert.Contains("[vrec]scale=1920:1080,format=yuv420p,fps=30000/1001[vmain]", joined);
+        Assert.Contains("-r 30000/1001", joined);
+    }
+
+    [Fact]
+    public void BuildLive_ASourceWithGaps_DeinterlacedPerField_OrWithABurntTimecode_IsFilledFirst_AtItsRate()
+    {
+        // bwdif pone el segundo campo a medio camino del cuadro siguiente (tras un hueco, lejos) y drawtext cuenta cuadros: esas ramas
+        // reciben un cuadro por periodo de la fuente, como antes.
+        var perField = BuildLiveSparse(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P5994));
+        Assert.Contains("[vrec]fps=30000/1001,bwdif=mode=send_field:parity=tff:deint=all,scale=1920:1080", perField);
+        Assert.DoesNotContain(",fps=", perField);
+
+        var perFrame = BuildLiveSparse(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P2997));
+        Assert.Contains("[vrec]bwdif=mode=send_frame:parity=tff:deint=all,scale=1920:1080,format=yuv420p,fps=30000/1001[vmain]", perFrame);
+
+        var timecode = Progressive(VideoCodec.H264x264, FrameRate.P2997);
+        timecode.BurnTimecode = true;
+        var burnt = BuildLiveSparse(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive), timecode);
+        Assert.Contains("[vrec]fps=60000/1000,scale=1920:1080,drawtext=", burnt);
+        Assert.Contains("-r 30000/1001", burnt);
+    }
+
+    [Fact]
+    public void BuildLive_ASourceWithoutGaps_OrOnlyPreviewing_GetsNoFill()
+    {
+        Assert.DoesNotContain("fps=", BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.Progressive), Progressive(VideoCodec.H264x264, FrameRate.P2997)));
+        Assert.DoesNotContain("fps=", BuildLiveSparse(Signal1080(FrameRate.P2997, ScanType.Progressive), Progressive(VideoCodec.H264x264, FrameRate.P2997), recording: false));
+    }
+
+    [Fact]
+    public void Build_ASourceWithGaps_IsFilledAtTheInput()
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { DeliversSparseVideo = true };
+        source.Emit(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive));
+        var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
+        profile.TargetResolution = null;
+        var joined = string.Join(' ', new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out").Build());
+        Assert.Contains("-filter_complex [0:v]fps=60000/1000[vfill] -map [vfill]", joined);
+    }
+
     [Fact]
     public void BuildLive_BottomFieldFirstSignal_DeinterlacesWithThatParity()
         => Assert.Contains("bwdif=mode=send_frame:parity=bff:deint=all",

@@ -30,7 +30,7 @@ public class PreviewPresentationSchedulerTests
 
     /// <summary>Una pantalla a <paramref name="tickHz"/>: en cada refresco entran las llegadas ya ocurridas y se pide el frame que toca.</summary>
     private static Run Simulate(IReadOnlyList<double> arrivals, double tickHz = 60, double phase = 0.0037, bool consume = true,
-        Func<int, bool>? tickHappens = null)
+        Func<int, bool>? tickHappens = null, bool atSourcePace = false)
     {
         var s = new PreviewPresentationScheduler<Frame>();
         var discarded = new List<Frame>();
@@ -43,7 +43,7 @@ public class PreviewPresentationSchedulerTests
             if (now > arrivals[^1] + 0.5) break;
             while (next < arrivals.Count && arrivals[next] <= now)
             {
-                s.Enqueue(new Frame(next, arrivals[next]), arrivals[next], discarded);
+                s.Enqueue(new Frame(next, arrivals[next]), arrivals[next], discarded, atSourcePace);
                 leads.Add((arrivals[next], s.LastLead));
                 next++;
             }
@@ -245,5 +245,25 @@ public class PreviewPresentationSchedulerTests
         Assert.InRange(run.Shown.Count, arrivals.Length * 0.45, arrivals.Length * 0.55); // uno por refresco
         Assert.True(run.Scheduler.Count <= 3);
         Assert.True(run.Shown.Zip(run.Shown.Skip(1), (a, b) => b.Frame.Index > a.Frame.Index).All(x => x), "siempre hacia delante");
+    }
+
+    [Fact]
+    public void ASourceThatOnlyBringsItsRealFrames_IsShownOnArrival_NotSpreadOnAGrid()
+    {
+        // vMix por NDI: en la rejilla de 29.97 pero saltándose de uno a seis periodos, y el preview pinta solo los cuadros que llegan.
+        // En la rejilla de la cadencia media, los que llegan seguidos tras un hueco largo esperan su turno (hasta MaxLead); a su ritmo,
+        // cada uno sale en el refresco siguiente a su llegada, y ninguno se queda sin enseñar.
+        var rnd = new Random(5);
+        var arrivals = new List<double>();
+        for (double t = 0.010; t < 30; t += Ntsc * (2 + rnd.Next(6))) arrivals.Add(t + rnd.NextDouble() * 0.010);
+        var grid = Simulate(arrivals);
+        var paced = Simulate(arrivals, atSourcePace: true);
+        _out.WriteLine(FormattableString.Invariant(
+            $"retardo en la rejilla hasta {grid.Leads.Max(l => l.Lead) * 1000:0} ms; a su ritmo hasta {paced.Leads.Max(l => l.Lead) * 1000:0} ms"));
+        Assert.True(grid.Leads.Max(l => l.Lead) > 0.1);
+        const double margin = PreviewPresentationScheduler<Frame>.OnTimeMargin;
+        Assert.All(paced.Leads, l => Assert.InRange(l.Lead, margin - 1e-9, margin + 1.0 / 60 + 1e-9));
+        Assert.Equal(arrivals.Count, paced.Shown.Count);
+        Assert.All(paced.Shown, s => Assert.InRange(0.0037 + s.Tick / 60.0 - s.Frame.Arrival, 0, margin + 2.0 / 60));
     }
 }
