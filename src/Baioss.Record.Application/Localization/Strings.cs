@@ -694,6 +694,9 @@ public static class Strings
         ["Prof_Err_ContainerNeedsVideo"] = "El contenedor {0} necesita una pista de vídeo: desmarca «Solo audio» o elige otro contenedor.",
         ["Prof_Err_AudioContainerUnreadable"] = "El audio {0} no se puede grabar en {1}: FFmpeg escribe el archivo sin dar error, pero el audio sale ilegible. En {1}, elige el audio {2}.",
         ["Prof_Err_AudioContainerRefuses"] = "El audio {0} no se puede grabar en {1}: FFmpeg no admite esa combinación y la grabación no arrancaría. En {1}, elige el audio {2}.",
+        ["Prof_Err_SampleRateCodec"] = "El audio {0} no se puede grabar a {1} Hz: FFmpeg no admite esa frecuencia con {0} y la grabación no arrancaría. Con {0} en {2}, elige {3} Hz.",
+        ["Prof_Err_SampleRateContainer"] = "El audio {0} no se puede grabar a {1} Hz en {2}: FFmpeg no admite esa combinación y la grabación no arrancaría. Con {0} en {2}, elige {3} Hz.",
+        ["Prof_Err_AudioBitrateAtRate"] = "El audio {0} a {1} Hz no se puede grabar a {2} kb/s: FFmpeg no admite esa combinación y la grabación no arrancaría. A {1} Hz, elige {3} kb/s.",
 
         // --- Diálogos de la aplicación ---
         ["Dlg_Close_Title"] = "Cerrar Baioss Record",
@@ -1386,6 +1389,9 @@ public static class Strings
         ["Prof_Err_ContainerNeedsVideo"] = "The {0} container needs a video track: untick \"Audio only\" or choose another container.",
         ["Prof_Err_AudioContainerUnreadable"] = "{0} audio can't be recorded in {1}: FFmpeg writes the file without any error, but the audio can't be read. In {1}, choose {2} audio.",
         ["Prof_Err_AudioContainerRefuses"] = "{0} audio can't be recorded in {1}: FFmpeg doesn't support that combination, so the recording wouldn't start. In {1}, choose {2} audio.",
+        ["Prof_Err_SampleRateCodec"] = "{0} audio can't be recorded at {1} Hz: FFmpeg doesn't support that sample rate with {0}, so the recording wouldn't start. With {0} in {2}, choose {3} Hz.",
+        ["Prof_Err_SampleRateContainer"] = "{0} audio can't be recorded at {1} Hz in {2}: FFmpeg doesn't support that combination, so the recording wouldn't start. With {0} in {2}, choose {3} Hz.",
+        ["Prof_Err_AudioBitrateAtRate"] = "{0} audio at {1} Hz can't be recorded at {2} kb/s: FFmpeg doesn't support that combination, so the recording wouldn't start. At {1} Hz, choose {3} kb/s.",
 
         // --- Application dialogs ---
         ["Dlg_Close_Title"] = "Close Baioss Record",

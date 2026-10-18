@@ -1,3 +1,4 @@
+using System.Globalization;
 using Baioss.Record.Application.Localization;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
@@ -8,8 +9,8 @@ namespace Baioss.Record.Application.Recording;
 /// Validaciones PURAS de un <see cref="RecordingProfile"/> antes de grabar: detecta combinaciones que
 /// harían fallar a FFmpeg al arrancar o producir un archivo inválido (bitrate/GOP a cero, resolución
 /// impar o nula, calidad fuera de rango, audio sin bitrate, un contenedor que no puede llevar el códec de
-/// vídeo o el de audio). Devuelve mensajes legibles en el idioma de la aplicación; lista vacía = perfil válido.
-/// Sin estado ni IO: testeable de forma aislada.
+/// vídeo o el de audio, una frecuencia de muestreo que el audio o el contenedor no admiten). Devuelve mensajes
+/// legibles en el idioma de la aplicación; lista vacía = perfil válido. Sin estado ni IO: testeable de forma aislada.
 /// </summary>
 public static class RecordingProfileValidator
 {
@@ -48,6 +49,8 @@ public static class RecordingProfileValidator
             errors.Add(Localizer.T("Prof_Err_AudioBitrate"));
         if (p.AudioSampleRate <= 0)
             errors.Add(Localizer.T("Prof_Err_SampleRate"));
+        else if (SampleRateProblem(p) is { } rate)
+            errors.Add(rate);
 
         return errors;
     }
@@ -143,8 +146,12 @@ public static class RecordingProfileValidator
     }
 
     /// <summary>«Mp4, Mov, Mkv o Ts»; «Pcm» si es uno solo.</summary>
-    private static string OrList<T>(IReadOnlyList<T> items) where T : struct, Enum => items.Count == 1
-        ? items[0].ToString()
+    private static string OrList<T>(IReadOnlyList<T> items) where T : struct, Enum => OrList(items.Select(i => i.ToString()).ToList());
+
+    /// <summary>«16000, 22050 o 24000». Las listas de números van de menor a mayor: así ninguna acaba en uno que se lea con «o»
+    /// (8000, 11025), que en español pediría «u».</summary>
+    private static string OrList(IReadOnlyList<string> items) => items.Count == 1
+        ? items[0]
         : string.Join(", ", items.Take(items.Count - 1)) + " " + Localizer.T("Common_Or") + " " + items[^1];
 
     // --- Contenedor × códec de audio ---
@@ -198,4 +205,87 @@ public static class RecordingProfileValidator
             yield return Localizer.F(misfit == Misfit.Refused ? "Prof_Err_AudioContainerRefuses" : "Prof_Err_AudioContainerUnreadable",
                 p.AudioCodec, p.Container, OrList(SuggestedAudio(p.Container)));
     }
+
+    // --- Frecuencia de muestreo del audio ---
+
+    /// <summary>
+    /// Frecuencias (Hz) que abre el codificador de cada audio, de menor a mayor: las que declara FFmpeg. Con otra no abre
+    /// («Specified sample rate 44100 is not supported by the libopus encoder») y la grabación no arranca. Medido el 2026-10-18
+    /// con el motor real (<c>FfmpegChannelEngine</c>, el argv del producto, que pasa siempre <c>-ar</c>) y FFmpeg 8.0 y el
+    /// incluido (git-2026-06-14), iguales: 4 s de un tono con cada audio en cada contenedor que lo lleva, con vídeo y en solo
+    /// audio, de 7350 a 384000 Hz, releídos con ffprobe y decodificados enteros. Las de la lista graban y se leen en todos ellos
+    /// (Opus queda siempre a 48 kHz en el archivo) salvo lo de <see cref="ContainerRates"/>. AAC, FDK-AAC, Opus y MP3 ajustan
+    /// solos el bitrate a lo que cabe a esa frecuencia (256 kb/s a 8 kHz graban); MP2 no (<see cref="Mp2Kbps"/>).
+    /// null = PCM: graba a cualquiera.
+    /// </summary>
+    private static int[]? EncoderRates(AudioCodec encoded) => encoded switch
+    {
+        AudioCodec.Aac => new[] { 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 },
+        AudioCodec.FdkAac => new[] { 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 },
+        AudioCodec.Opus => new[] { 8000, 12000, 16000, 24000, 48000 },
+        AudioCodec.Mp3 => new[] { 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000 },
+        AudioCodec.Mp2 => new[] { 16000, 22050, 24000, 32000, 44100, 48000 },
+        _ => null,
+    };
+
+    /// <summary>Las frecuencias a las que el contenedor lleva ese audio, si no son todas las que abre el codificador: el muxer MXF
+    /// solo implementa 48 kHz («only 48khz is implemented»), y el MP4 no lleva MP3 por debajo de 16 kHz («muxing mp3 at 8000hz is
+    /// not standard»; el MOV sí). null = todas.</summary>
+    private static int[]? ContainerRates(ContainerFormat container, AudioCodec encoded) => (container, encoded) switch
+    {
+        (ContainerFormat.Mxf, _) => new[] { 48000 },
+        (ContainerFormat.Mp4, AudioCodec.Mp3) => new[] { 16000, 22050, 24000, 32000, 44100, 48000 },
+        _ => null,
+    };
+
+    /// <summary>kb/s que abre el codificador MP2 a esa frecuencia: los de MPEG-1 capa II a 32, 44,1 y 48 kHz y los de MPEG-2 (LSF)
+    /// a 16, 22,05 y 24 kHz. FFmpeg busca los kb/s enteros (bit_rate / 1000) en la tabla y con otro no abre («bitrate 256 is not
+    /// allowed in mp2»), también en mono.</summary>
+    private static int[] Mp2Kbps(int rate) => rate is 16000 or 22050 or 24000
+        ? new[] { 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 }
+        : new[] { 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 };
+
+    /// <summary>El audio que codifica de verdad el motor: el PCM, en MP4, MOV y TS, como AAC
+    /// (<c>FfmpegCodecMap.EffectiveAudioEncoder</c>; una prueba lo ata).</summary>
+    private static AudioCodec Encoded(AudioCodec codec, ContainerFormat container) =>
+        codec is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? AudioCodec.Aac : codec;
+
+    /// <summary>
+    /// El mensaje si el audio no se puede grabar a la frecuencia del perfil, o null: el codificador no la abre (Opus a 44,1 kHz o
+    /// MP3 a 96 kHz, en cualquier contenedor), el contenedor no la lleva (MXF fuera de 48 kHz, MP3 en MP4 por debajo de 16 kHz, el
+    /// PCM de MP4, MOV y TS, que es AAC, fuera de las de AAC) o MP2 no admite ese bitrate a esa frecuencia. El editor no enseña la
+    /// frecuencia (siempre 48 kHz), pero llega otra con un preset importado o editado a mano, o con el perfil guardado de un canal.
+    /// </summary>
+    private static string? SampleRateProblem(RecordingProfile p)
+    {
+        // Si el contenedor no lleva ese audio, ya lo dice AudioContainerProblems; con el audio que propone cambian las frecuencias.
+        if (AudioMisfitOf(p.AudioCodec, p.Container) != Misfit.None) return null;
+
+        var encoded = Encoded(p.AudioCodec, p.Container);
+        int rate = p.AudioSampleRate;
+        var byCodec = EncoderRates(encoded);
+        var byContainer = ContainerRates(p.Container, encoded);
+        bool Takes(int r) => (byCodec?.Contains(r) ?? true) && (byContainer?.Contains(r) ?? true);
+        if (!Takes(rate))
+        {
+            // Que el codificador no la abra es cosa del audio elegido; que el contenedor no la lleve (o que ahí el PCM sea AAC), de la
+            // combinación.
+            bool codecRefuses = byCodec is not null && !byCodec.Contains(rate) && encoded == p.AudioCodec;
+            return Localizer.F(codecRefuses ? "Prof_Err_SampleRateCodec" : "Prof_Err_SampleRateContainer",
+                p.AudioCodec, Number(rate), p.Container, OrList((byCodec ?? byContainer!).Where(Takes).Select(Number).ToList()));
+        }
+
+        if (encoded is AudioCodec.Mp2 && p.AudioBitrate.BitsPerSecond > 0)
+        {
+            long kbps = p.AudioBitrate.BitsPerSecond / 1000;
+            var table = Mp2Kbps(rate);
+            if (!table.Any(k => k == kbps))
+                return Localizer.F("Prof_Err_AudioBitrateAtRate", p.AudioCodec, Number(rate),
+                    kbps.ToString(CultureInfo.InvariantCulture), OrList(table.Select(Number).ToList()));
+        }
+        return null;
+    }
+
+    /// <summary>«44100», sin separador de miles: como lo enseña el gestor de presets.</summary>
+    private static string Number(int n) => n.ToString(CultureInfo.InvariantCulture);
 }

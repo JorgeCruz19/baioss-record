@@ -284,12 +284,13 @@ recibe una identidad nueva como personalizado.
 ### Presets que no podrían grabar (contenedor × códec)
 
 [`RecordingProfileValidator`](../src/Baioss.Record.Application/Recording/RecordingProfileValidator.cs) rechaza un perfil que
-FFmpeg no puede grabar: bitrate o GOP a cero, resolución impar… y un **contenedor que no lleva el códec de vídeo o el de
-audio**. Lo aplican el editor (al pulsar **Aceptar**: lista los motivos y no cierra), el gestor (no **aplica** a un canal un
-preset propio o importado que lo incumpla), el panel del canal (un **⚠ rojo** en el badge PRESET, con el motivo en el
-tooltip, si el perfil guardado del canal no puede grabar) y el pre-vuelo de Grabar (manual, programada o por la API: aviso y
-auditoría «No se pudo iniciar», sin sesión ni archivo). Los mensajes van en el idioma de la aplicación y proponen
-contenedores (para el vídeo) o el audio que lleva el contenedor.
+FFmpeg no puede grabar: bitrate o GOP a cero, resolución impar… un **contenedor que no lleva el códec de vídeo o el de
+audio** y una **frecuencia de muestreo** que el audio o el contenedor no admiten. Lo aplican el editor (al pulsar
+**Aceptar**: lista los motivos y no cierra), el gestor (no **aplica** a un canal un preset propio o importado que lo
+incumpla), el panel del canal (un **⚠ rojo** en el badge PRESET, con el motivo en el tooltip, si el perfil guardado del canal
+no puede grabar) y el pre-vuelo de Grabar (manual, programada o por la API: aviso y auditoría «No se pudo iniciar», sin
+sesión ni archivo). Los mensajes van en el idioma de la aplicación y proponen contenedores (para el vídeo), el audio que
+lleva el contenedor o las frecuencias que graban.
 
 Medido el 2026-10-18 con FFmpeg 8.0 y con el incluido (git-2026-06-14), iguales: 2 s de cada códec en cada contenedor,
 releídos con `ffprobe` y una decodificación entera. *Rechaza* = el muxer no abre la salida y la grabación no arranca;
@@ -336,6 +337,34 @@ Los dos FFmpeg dan lo mismo salvo FDK-AAC en AVI y WAV (¹).
   se queda «Grabando» con un archivo de 0 B y sin alarma; en solo audio relanza piezas de 0 B. El mensaje propone el audio que
   el contenedor lleva con su identificador estándar: PCM en MXF y WAV; MP2 o MP3 en PS; PCM, MP3 o MP2 en AVI; AAC en MOV;
   MP3 en MP3.
+
+**Frecuencia de muestreo.** El editor no la enseña (los presets graban a 48 kHz), pero un preset importado o editado a mano
+(`AudioSampleRate` en el JSON), o el perfil guardado de un canal, puede traer otra, y el motor la pasa tal cual (`-ar`).
+Medido el 2026-10-18 con el motor real y FFmpeg 8.0 y el incluido, iguales: 4 s de cada audio en cada contenedor que lo
+lleva, con vídeo y en solo audio, de 7350 a 384000 Hz (y 47952 y 768000 con PCM), releídos y decodificados enteros.
+
+| Audio (codificador) | Frecuencias que graba (Hz) |
+|---|---|
+| **PCM** (`pcm_s24le`) | cualquiera (medido de 10 a 768000), salvo en MXF (solo 48000) y en MP4, MOV y TS (es AAC: las de AAC) |
+| **AAC** (`aac`) | 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 |
+| **FDK-AAC** (`libfdk_aac`) | las de AAC menos 7350 |
+| **Opus** (`libopus`) | 8000, 12000, 16000, 24000, 48000 (el archivo declara 48000: Opus siempre decodifica a 48 kHz) |
+| **MP3** (`libmp3lame`) | 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000; en MP4, de 16000 para arriba |
+| **MP2** (`mp2`) | 16000, 22050, 24000, 32000, 44100, 48000, con un bitrate de la tabla de esa frecuencia |
+
+- Con otra frecuencia el codificador no abre («Specified sample rate 44100 is not supported by the libopus encoder»). El muxer
+  MXF solo implementa 48 kHz («only 48khz is implemented») y el MP4 no lleva MP3 por debajo de 16 kHz («muxing mp3 at 8000hz
+  is not standard»; el MOV sí).
+- AAC, FDK-AAC, Opus y MP3 ajustan solos el bitrate a lo que cabe a esa frecuencia (256 kb/s a 8 kHz graban). MP2 no: solo
+  abre con los kb/s de su versión MPEG, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320 o 384 a 32, 44,1 y 48 kHz
+  y 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144 o 160 a 16, 22,05 y 24 kHz («bitrate 256 is not allowed in mp2»):
+  un MP2 a 24 kHz con los 256 kb/s de sus presets no graba, ni uno a 48 kHz con 200.
+- Sin la regla pasa lo mismo que con un audio que el contenedor no lleva: con vídeo, «Grabando» con 0 B; en solo audio,
+  piezas de 0 B. El mensaje propone, de menor a mayor, las frecuencias que graban con ese audio en ese contenedor o, con
+  MP2, los kb/s de esa frecuencia.
+- Lo cubren `RecordingProfileValidatorTests` (cada audio en cada contenedor a 17 frecuencias, y la tabla de MP2) y, con el
+  FFmpeg real, `ContainerCodecTests` (una fila por causa, sin y con la regla; una por propuesta; y que las listas del
+  validador son las que declara ese FFmpeg).
 
 ## Verificación
 
