@@ -393,12 +393,15 @@ public static class PresetCatalog
           p.AudioCodec = AudioCodec.Pcm; }),
 
         // ---------------- AVI ----------------
-        Make("AVI · H.264 1080p25", PresetCategory.Avi, "AVI con H.264 1920×1080p25, 20 Mbps, audio PCM.", p =>
+        // Sin B-frames: AVI no guarda cuándo se presenta cada cuadro, y con los de x264 el vídeo quedaba 2 cuadros por detrás del
+        // audio. Lo hace el motor con cualquier perfil AVI (FfmpegCodecMap.KeepsReordering), también con los canales que guardan
+        // una copia de estos presets.
+        Make("AVI · H.264 1080p25", PresetCategory.Avi, "AVI con H.264 1920×1080p25 sin B-frames, 20 Mbps, audio PCM.", p =>
         { p.Container = ContainerFormat.Avi; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.VideoBitrateMbps = 20; p.MaxBitrateMbps = 25; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("AVI · H.264 1080i25", PresetCategory.Avi, "AVI con H.264 1920×1080i25 entrelazado, 20 Mbps, audio PCM.", p =>
+        Make("AVI · H.264 1080i25", PresetCategory.Avi, "AVI con H.264 1920×1080i25 entrelazado sin B-frames, 20 Mbps, audio PCM.", p =>
         { p.Container = ContainerFormat.Avi; p.VideoCodec = VideoCodec.H264x264; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.VideoBitrateMbps = 20; p.MaxBitrateMbps = 25; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; p.AudioCodec = AudioCodec.Pcm; }),
