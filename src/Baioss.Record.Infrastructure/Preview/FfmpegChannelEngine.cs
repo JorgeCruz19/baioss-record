@@ -143,6 +143,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     // reusaría el mismo codificador roto).
     private volatile bool _encoderOpenError;
     private volatile bool _fallbackPending;
+    // Lo que dice el stderr del proceso de grabación ACTUAL sobre si puede producir el archivo (uno por proceso; null en el preview):
+    // distingue el codificador de vídeo que no abre (se degrada) del perfil que no se puede grabar —el muxer rechazó la cabecera, u
+    // otro codificador no abre—, cuya salida no es una caída que se recupere en una pieza nueva sino el fin de la grabación.
+    private volatile RecordingFailureDetector? _failure;
 
     // Retroceso de canales de audio (DeckLink con «audio_channels=auto»): la tarjeta rechazó los canales pedidos
     // («Cannot enable audio input») → la fuente baja un escalón (16→8→2) y se reconstruye el proceso con el argv nuevo.
@@ -220,6 +224,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// <summary>El proceso de grabación murió a mitad y se va a recuperar en una pieza nueva: código de salida
     /// de FFmpeg y lo que se sabe del motivo. Para la AUDITORÍA: es lo que explica un archivo cortado.</summary>
     public event EventHandler<(int ExitCode, string Reason)>? RecordingInterrupted;
+
+    /// <summary>
+    /// La grabación no se puede producir con su perfil y el motor la terminó: el contenedor rechazó la salida al escribir la cabecera
+    /// (no admite el códec o un parámetro del preset), o un codificador no abre y no hay alternativa. Repetirla daría una pieza vacía
+    /// tras otra. Cuando llega, el motor ya está en reposo, con el preview de vuelta y la alarma <see cref="AlarmType.RecordingFailed"/>;
+    /// lleva el motivo en palabras, para la AUDITORÍA. Se avisa con el semáforo del motor tomado: quien quiera detener o grabar en
+    /// respuesta, que lo haga en otra tarea.
+    /// </summary>
+    public event EventHandler<string>? RecordingFailed;
 
     /// <summary>Un archivo recién cerrado no pasó la verificación (sin pistas/duración legibles): ruta y tamaño.
     /// Para la AUDITORÍA, además de la alarma en pantalla.</summary>
@@ -365,6 +378,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             Interlocked.Exchange(ref _lastOverrunNoticeTicks, 0);
             RaiseAlarm(AlarmType.EncoderFallback, false);     // limpia un fallback de una sesión previa
             RaiseAlarm(AlarmType.RecordingUnverified, false); // y el aviso de archivo dañado de la anterior
+            RaiseAlarm(AlarmType.RecordingFailed, false);     // y el de la que no se pudo grabar
             _recordStart = DateTimeOffset.UtcNow;
             // Medición del bitrate REAL por crecimiento del archivo, sembrada con el objetivo del perfil (así la
             // UI nunca muestra el bitrate inflado del preview crudo del pipeline unificado).
@@ -429,41 +443,49 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_disposed) return;
-            _recordGeneration++; // la cadena de recuperación de esta grabación (si la hay) ya no debe actuar
-            SetState(RecordingState.Stopping);
-            _slate = false; _slatePending = false;
-            try
-            {
-                await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
-                if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
-            }
-            catch (Exception ex)
-            {
-                // La grabación YA quedó finalizada (ReplaceProcessAsync dispone el proceso de grabación PRIMERO →
-                // flush/moov del archivo); lo que falló es rearmar el preview. Completa el stop igualmente y
-                // restaura el preview best-effort, en vez de dejar el canal atascado en «Stopping». (Auditoría N3.)
-                _log.LogError(ex, "Canal {Key}: la grabación se detuvo pero no se pudo rearmar el preview; se restaura.", _channelKey);
-                if (_segmented) { try { ScanSegments(includeNewest: true); } catch { /* best-effort */ } }
-                await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
-            }
-            // Snapshot de los archivos de ESTA sesión para el renombrado posterior (inmune a que una grabación
-            // nueva vacíe _sessionFiles mientras el operador nombra en el diálogo). (Auditoría N9.)
-            lock (_completedSessionFiles)
-            {
-                _completedSessionFiles.Clear();
-                _completedSessionFiles.AddRange(_sessionFiles);
-            }
-            RaiseAlarm(AlarmType.Slate, false);
-            RaiseAlarm(AlarmType.SignalLoss, false);
-            RaiseAlarm(AlarmType.EncoderFallback, false);
-            _encoderOpenError = false; _fallbackPending = false; _slateAlarmRaised = false;
-            _recordProfile = null;
-            _segmented = false;
-            Stats = RecorderStats.Empty;
-            SetState(RecordingState.Idle);
+            // En reposo no hay nada que detener: p. ej. la grabación ya terminó sola porque no se podía grabar (ver
+            // EndFailedRecordingAsync), y su dueño cierra la sesión con esta parada; seguir relanzaría el preview recién levantado.
+            if (_disposed || _state is RecordingState.Idle) return;
+            await StopRecordingUnderGateAsync(ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>El Detener en sí, con el semáforo tomado: finaliza el archivo, vuelve a solo-preview y deja el motor en reposo.</summary>
+    private async Task StopRecordingUnderGateAsync(CancellationToken ct)
+    {
+        _recordGeneration++; // la cadena de recuperación de esta grabación (si la hay) ya no debe actuar
+        SetState(RecordingState.Stopping);
+        _slate = false; _slatePending = false;
+        try
+        {
+            await ReplaceProcessAsync(recording: false, slate: false, ct).ConfigureAwait(false); // dispone el de grabación → flush/moov (y emite el archivo único)
+            if (_segmented) ScanSegments(includeNewest: true); // emite los segmentos restantes, incluido el último ya finalizado
+        }
+        catch (Exception ex)
+        {
+            // La grabación YA quedó finalizada (ReplaceProcessAsync dispone el proceso de grabación PRIMERO →
+            // flush/moov del archivo); lo que falló es rearmar el preview. Completa el stop igualmente y
+            // restaura el preview best-effort, en vez de dejar el canal atascado en «Stopping». (Auditoría N3.)
+            _log.LogError(ex, "Canal {Key}: la grabación se detuvo pero no se pudo rearmar el preview; se restaura.", _channelKey);
+            if (_segmented) { try { ScanSegments(includeNewest: true); } catch { /* best-effort */ } }
+            await RestorePreviewAfterFailureAsync().ConfigureAwait(false);
+        }
+        // Snapshot de los archivos de ESTA sesión para el renombrado posterior (inmune a que una grabación
+        // nueva vacíe _sessionFiles mientras el operador nombra en el diálogo). (Auditoría N9.)
+        lock (_completedSessionFiles)
+        {
+            _completedSessionFiles.Clear();
+            _completedSessionFiles.AddRange(_sessionFiles);
+        }
+        RaiseAlarm(AlarmType.Slate, false);
+        RaiseAlarm(AlarmType.SignalLoss, false);
+        RaiseAlarm(AlarmType.EncoderFallback, false);
+        _encoderOpenError = false; _fallbackPending = false; _slateAlarmRaised = false;
+        _recordProfile = null;
+        _segmented = false;
+        Stats = RecorderStats.Empty;
+        SetState(RecordingState.Idle);
     }
 
     /// <summary>
@@ -577,6 +599,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // El proceso entrante puede llevar un códec distinto (degradado): su capacidad de abrir el
         // codificador se re-evalúa con SU propio stderr, no con el del proceso saliente.
         _encoderOpenError = false;
+        _failure = null; // ídem lo que su stderr diga del perfil (BuildAndStartAsync pone el suyo)
         // La alarma de disco colgado pertenecía al supervisor saliente; el entrante la volverá a levantar si procede.
         RaiseAlarm(AlarmType.DiskStalled, false);
 
@@ -723,6 +746,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
         _log.LogInformation("Pipeline canal {Key} ({Mode}): {Args}",
             _channelKey, recording ? (slate ? "carta de ajuste" : "grabación+preview") : "preview", string.Join(' ', args));
+
+        // Antes de arrancar (sus líneas llegan enseguida): lo que diga su stderr sobre si puede producir el archivo con este perfil.
+        _failure = recording ? new RecordingFailureDetector(profile) : null;
 
         // StallTimeout 30 s (no 15): el watchdog solo debe matar un FFmpeg realmente COLGADO, no uno que se
         // atascó unos segundos por un pico de E/S de disco compartido entre los N canales (o CPU/GPU saturada).
@@ -1104,19 +1130,26 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             return;
         }
 
-        // Fallo de APERTURA del codificador por hardware (NVENC agotado, driver/GPU ausente): degrada al
+        // Fallo de APERTURA del codificador de vídeo por hardware (NVENC agotado, driver/GPU ausente): degrada al
         // siguiente de la cadena (QSV→AMF→CPU) y reinicia, en lugar de dejar que el supervisor relance el
-        // mismo argv en vano. Solo durante la grabación (el preview no lleva codificador de salida).
+        // mismo argv en vano. Y lo que NO es eso aunque lo parezca: el muxer que rechaza la cabecera, u otro codificador
+        // que no abre (ver RecordingFailureDetector); su proceso va a terminar sin que degradar arregle nada, y su salida
+        // termina la grabación (OnRecordingProcessDied). Solo durante la grabación (el preview no lleva codificador de salida).
         var rec = _recordProfile;
-        if (!_encoderOpenError && rec is not null &&
-            _state is RecordingState.Recording or RecordingState.Starting &&
-            FfmpegEncoderError.IsOpenFailure(line))
+        if (rec is not null && _state is RecordingState.Recording or RecordingState.Starting && _failure is { } failure)
         {
-            _encoderOpenError = true;
-            _log.LogWarning("Canal {Key}: el codificador de vídeo '{Encoder}' no pudo abrir → {Line}",
-                _channelKey, FfmpegCodecMap.VideoEncoder(rec.VideoCodec), line);
-            _ = Task.Run(TryFallbackEncoderAsync);
-            return;
+            switch (failure.Feed(line))
+            {
+                case RecordingStderrVerdict.VideoEncoderCannotOpen when !_encoderOpenError:
+                    _encoderOpenError = true;
+                    _log.LogWarning("Canal {Key}: el codificador de vídeo '{Encoder}' no pudo abrir → {Line}",
+                        _channelKey, FfmpegCodecMap.VideoEncoder(rec.VideoCodec), line);
+                    _ = Task.Run(() => TryFallbackEncoderAsync(failure));
+                    return;
+                case RecordingStderrVerdict.ProfileRejected:
+                    _log.LogWarning("Canal {Key}: FFmpeg no puede producir la grabación con este preset → {Line}", _channelKey, line);
+                    return;
+            }
         }
 
         // Alarmas de análisis: negro/congelado/silencio. Cada marca de FFmpeg → transición de alarma.
@@ -1323,7 +1356,19 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnRecordingProcessDied(object? sender, int exitCode)
     {
-        if (_disposed || _slate || _slatePending || _recovering) return;
+        if (_disposed) return;
+        // El perfil no se puede grabar: el muxer rechazó la cabecera, u otro codificador no abre (RecordingFailureDetector). Una pieza
+        // nueva fallaría igual, cada pocos segundos y para siempre, así que la grabación termina, y con una alarma. Antes de las guardas
+        // de la carta de ajuste y de la recuperación: con este perfil tampoco se graban las barras ni una pieza nueva. Un codificador de
+        // vídeo que no abre no llega aquí con causa: lo resuelve la degradación (o, sin alternativa, la termina ella).
+        if (_failure?.Cause is { } cause && !_fallbackPending && !_audioFallbackPending &&
+            _state is RecordingState.Recording or RecordingState.Starting)
+        {
+            int failedGeneration = _recordGeneration;
+            _ = Task.Run(() => FailRecordingAsync(cause, failedGeneration));
+            return;
+        }
+        if (_slate || _slatePending || _recovering) return;
         // Un fallo de APERTURA de codificador lo resuelve el fallback de codificador (degradar el códec), que ya
         // reinicia el proceso; no lo tratamos aquí como caída de la fuente. Ídem el retroceso de canales de audio.
         if (_encoderOpenError || _fallbackPending || _audioFallbackPending) return;
@@ -1513,30 +1558,82 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _ = Task.Run(EnterSlateAsync);
     }
 
+    // --- Grabación que no se puede producir con su perfil ---
+
+    /// <summary>La salida del proceso de grabación dijo que el perfil no se puede grabar (<see cref="RecordingFailureDetector.Cause"/>):
+    /// termina la grabación, si sigue siendo la misma (<paramref name="generation"/>) y nadie la detuvo mientras tanto.</summary>
+    private async Task FailRecordingAsync(string cause, int generation)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed || generation != _recordGeneration || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
+            await EndFailedRecordingAsync(cause).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Termina una grabación que no se puede producir con su perfil: el contenedor rechazó la cabecera, u otro codificador no abre, o el
+    /// de vídeo no abre y no hay alternativa. Repetirla daría una pieza vacía tras otra (o el canal «Grabando» sin proceso, como antes),
+    /// así que se detiene como con Detener —el proceso que falló llevaba también el preview, y la parada lo levanta de nuevo—, con la
+    /// alarma <see cref="AlarmType.RecordingFailed"/> hasta la próxima grabación y el motivo para la auditoría (<see cref="RecordingFailed"/>).
+    /// Con el semáforo tomado. Nunca lanza.
+    /// </summary>
+    private async Task EndFailedRecordingAsync(string cause)
+    {
+        _log.LogError("Canal {Key}: la grabación no se puede producir con este preset y se detiene (repetirla fallaría igual): {Cause}", _channelKey, cause);
+        string? failedFile = _recordFile;
+        try
+        {
+            // El intento no escribió nada: su archivo vacío (o su primer segmento, vacío) no es una pieza —ni se emite, ni se verifica
+            // (sería una falsa «grabación sin verificar»), ni entra en el renombrado de la sesión—.
+            if (failedFile is not null && await DiscardEmptyAttemptAsync(failedFile).ConfigureAwait(false)) _recordFile = null;
+            if (_segmented)
+                foreach (var f in SessionSegmentFiles())
+                    if (!_emitted.Contains(f)) TryDeleteEmptyFile(f);
+            RaiseAlarm(AlarmType.RecordingFailed, true);
+            StopRecoveryProbe();
+            await StopSegmentScanAsync().ConfigureAwait(false);
+            await StopRecordingUnderGateAsync(CancellationToken.None).ConfigureAwait(false);
+            // Si su proceso aún lo tenía abierto y no se pudo borrar antes: ahora, ya retirado (solo si sigue vacío).
+            if (failedFile is not null) TryDeleteEmptyFile(failedFile);
+        }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: fallo al detener la grabación que no se podía producir.", _channelKey); }
+        try { RecordingFailed?.Invoke(this, cause); }
+        catch (Exception ex) { _log.LogError(ex, "Canal {Key}: un suscriptor del fallo de la grabación falló.", _channelKey); }
+    }
+
     // --- Fallback de codificador ante fallo de apertura por hardware ---
 
     /// <summary>
-    /// El codificador de vídeo de grabación no pudo abrir (lo detectó <see cref="FfmpegEncoderError"/> en el
-    /// stderr). Degrada al siguiente de la <see cref="EncoderFallbackChain"/> (QSV→AMF→CPU) sobre una COPIA
-    /// del perfil —no muta el del canal— y reinicia el proceso. Es iterativa: si el alternativo tampoco
-    /// abre, su stderr vuelve a disparar este método y baja otro escalón hasta CPU (libx264), que siempre
-    /// abre. Si ya no hay alternativa, lo registra y deja seguir el flujo normal.
+    /// El codificador de vídeo de grabación no pudo abrir (lo detectó <see cref="RecordingFailureDetector"/> en el
+    /// stderr del proceso de <paramref name="failed"/>). Degrada al siguiente de la <see cref="EncoderFallbackChain"/>
+    /// (QSV→AMF→CPU) sobre una COPIA del perfil —no muta el del canal— y reinicia el proceso. Es iterativa: si el
+    /// alternativo tampoco abre, su stderr vuelve a disparar este método y baja otro escalón hasta CPU (libx264),
+    /// que siempre abre. Si ya no hay alternativa, la grabación no se puede producir y se termina con una alarma.
     /// </summary>
-    private async Task TryFallbackEncoderAsync()
+    private async Task TryFallbackEncoderAsync(RecordingFailureDetector failed)
     {
         bool resumeRecovery = false;
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed || _fallbackPending) return;
+            // Solo si el proceso que falló sigue siendo el del canal: un Detener (o un Grabar nuevo) mientras se esperaba el
+            // semáforo ya lo retiró, y lo que hay ahora no es asunto de esta degradación.
+            if (_disposed || _fallbackPending || !ReferenceEquals(failed, _failure)) return;
             var current = _recordProfile;
             if (current is null || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
             var next = EncoderFallbackChain.Next(current.VideoCodec);
             if (next is null)
             {
-                _log.LogError("Canal {Key}: el codificador '{Encoder}' no abre y no hay alternativa (ya es CPU).",
-                    _channelKey, FfmpegCodecMap.VideoEncoder(current.VideoCodec));
+                // Ya es CPU/intra y no abre con lo que pide el perfil (tamaño, formato de píxel, tasa…): no hay a qué degradar, y
+                // una pieza nueva fallaría igual. Antes se quedaba aquí, y como la caída de su proceso se ignora («la resuelve la
+                // degradación»), el canal seguía «Grabando» sin proceso, con un archivo vacío y sin alarma.
+                string detail = failed.VideoEncoderFailure is { } said ? $": «{said}»" : "";
+                await EndFailedRecordingAsync($"El codificador de vídeo '{FfmpegCodecMap.VideoEncoder(current.VideoCodec)}' no abre con " +
+                    $"lo que pide el preset y no hay alternativa{detail}. Revisa su configuración en el preset.").ConfigureAwait(false);
                 return;
             }
 

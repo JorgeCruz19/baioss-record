@@ -15,7 +15,7 @@ export type SignalState = (typeof SignalState)[keyof typeof SignalState]
 
 export const AlarmType = {
   SignalLoss: 0, VideoBlack: 1, VideoFreeze: 2, AudioSilence: 3, DiskLow: 4, DiskCritical: 5, Slate: 6,
-  EncoderFallback: 7, FramesDropped: 8, RecordingUnverified: 9, DiskEmergency: 10, DiskStalled: 11,
+  EncoderFallback: 7, FramesDropped: 8, RecordingUnverified: 9, DiskEmergency: 10, DiskStalled: 11, RecordingFailed: 12,
 } as const
 export type AlarmType = (typeof AlarmType)[keyof typeof AlarmType]
 

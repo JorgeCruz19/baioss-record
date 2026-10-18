@@ -573,6 +573,7 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
             AlarmType.FramesDropped => "Alarm_FramesDropped",
             AlarmType.RecordingUnverified => "Alarm_RecordingUnverified",
             AlarmType.DiskStalled => "Alarm_DiskStalled",
+            AlarmType.RecordingFailed => "Alarm_RecordingFailed",
             _ => "",
         };
         return key.Length == 0 ? alarm.Message : Loc.T(key);

@@ -79,6 +79,9 @@ public sealed record OrphanSessionsClosed(int Count) : DomainEventBase;
 public sealed record RecordingPaused(Guid ChannelId, Guid SessionId) : DomainEventBase;
 public sealed record RecordingResumed(Guid ChannelId, Guid SessionId) : DomainEventBase;
 public sealed record SegmentCompleted(Guid SessionId, int Index, string FilePath, long SizeBytes) : DomainEventBase;
+/// <summary>La grabación no se podía producir con su preset y terminó sola: el contenedor rechazó la salida al escribir la cabecera (no
+/// admite el códec o un parámetro: AAC en MXF, ProRes en MP4…), o un codificador no abre y no hay alternativa. <paramref name="Reason"/>
+/// lo dice en palabras, con lo que contestó FFmpeg. Va seguido del RecordingStopped de la sesión, por error.</summary>
 public sealed record EncoderFailed(Guid ChannelId, Guid SessionId, string Reason) : DomainEventBase;
 public sealed record RecordingRecovered(Guid ChannelId, Guid SessionId, int Attempt) : DomainEventBase;
 

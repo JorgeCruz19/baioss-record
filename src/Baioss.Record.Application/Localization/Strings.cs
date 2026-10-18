@@ -128,6 +128,7 @@ public static class Strings
         ["Alarm_FramesDropped"] = "Frames perdidos — el equipo no da abasto (CPU/GPU/disco)",
         ["Alarm_RecordingUnverified"] = "Grabación sin verificar — el archivo podría estar dañado",
         ["Alarm_DiskStalled"] = "El disco de destino no responde — la grabación espera sin cortar",
+        ["Alarm_RecordingFailed"] = "Grabación detenida: este preset no se puede grabar — motivo en el registro de actividad",
 
         // --- Nombre de la grabación ---
         ["RecName_Title"] = "Nombre de la grabación",
@@ -816,6 +817,7 @@ public static class Strings
         ["Alarm_FramesDropped"] = "Dropped frames — the machine cannot keep up (CPU/GPU/disk)",
         ["Alarm_RecordingUnverified"] = "Unverified recording — the file may be damaged",
         ["Alarm_DiskStalled"] = "Destination disk not responding — recording is waiting, not cut",
+        ["Alarm_RecordingFailed"] = "Recording stopped: this preset cannot be recorded — reason in the activity log",
 
         // --- Recording name ---
         ["RecName_Title"] = "Recording name",

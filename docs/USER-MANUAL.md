@@ -475,6 +475,7 @@ The program warns you with a banner over the preview when it detects:
 - **Disk:** there is little space left.
 - **Dropped frames:** the machine cannot keep up (CPU, GPU or disk) and the recording may lose frames: the input or the card dropped frames that were not picked up in time, or, with a card or a file, the process is steadily falling behind real time. Frames the preset drops on purpose to change the frame rate do **not** trigger it. If it appears, lower the load (fewer channels at once, a lighter preset or GPU encoding) or check the disk; the log says what triggered it.
 - **Disk not responding:** the destination disk has stopped accepting writes. The recording **waits without cutting** and resumes on its own when the disk comes back; if it lasts more than a few seconds, check that disk (cable, USB, antivirus).
+- **Recording stopped: this preset cannot be recorded:** the recording stopped on its own right after starting because the preset's format does not accept what it asks for (for example AAC audio in an MXF, which only carries PCM) or an encoder does not start with that configuration. Nothing is recorded, no empty file is left, and the preview keeps running. The exact reason is in the **activity log** ("Encoder failure"): change the preset's container or codec and record again; the warning goes away when the next recording starts.
 
 ---
 

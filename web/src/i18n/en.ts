@@ -361,6 +361,7 @@ export const en: { [K in keyof typeof es]: string } = {
   'alarm.recordingUnverified': 'Unverified recording',
   'alarm.diskEmergency': 'Disk almost full',
   'alarm.diskStalled': 'Disk not responding',
+  'alarm.recordingFailed': 'Recording failed',
   'health.unknown': 'Not measured',
   'health.ok': 'Has space',
   'health.warning': 'Warning',

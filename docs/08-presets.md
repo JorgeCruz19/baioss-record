@@ -94,6 +94,14 @@ misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); 
   Core i7-8700 (medido con una DeckLink: 267 cuadros perdidos en 15 s), la GPU integrada sí. Lo permite el píxel Auto:
   cada codificador recibe su formato nativo, porque un `yuv420p` fijo haría fallar a `h264_qsv`. Lo cubre
   `BuildLive_CatalogNvencPresets_EveryFallbackStepGetsItsNativePixelFormat`.
+- **No todo es un codificador que no abre** (`RecordingFailureDetector`): si el contenedor rechaza lo que pide el preset
+  (FFmpeg no puede escribir la cabecera: AAC en MXF, PCM de 24 bits en MPEG-PS, ProRes en MP4…) o no abre un codificador
+  que no es el de vídeo (el audio con un bitrate que no admite), degradar no arregla nada y una pieza nueva fallaría
+  igual: la grabación se **detiene sola** con la alarma roja *RecordingFailed* (hasta la próxima grabación), el motivo en
+  la auditoría (`EncoderFailed`) y la parada por error, sin dejar el archivo vacío; el preview sigue. Igual cuando el
+  codificador de vídeo no abre y ya no hay a qué degradar. Antes el «Could not open encoder before EOF» del rawvideo del
+  preview se tomaba por el codificador de vídeo, se degradaba en vano y, al llegar a CPU, el canal se quedaba «Grabando»
+  sin proceso ni alarma. Lo cubren `MuxerRefusalTests` (FFmpeg real) y `RecordingFailureDetectorTests`.
 - En la ventana de presets, escribir **NVENC** en el buscador los lista todos.
 
 ```text
