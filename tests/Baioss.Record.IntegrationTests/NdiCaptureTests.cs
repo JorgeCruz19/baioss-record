@@ -95,6 +95,18 @@ public sealed class NdiCaptureTests
         var sources = NdiRuntime.DiscoverSources(4000);
         Skip.If(sources.Count == 0, "Sin fuentes NDI en la red (arranca la salida NDI de OBS).");
         string? wanted = Environment.GetEnvironmentVariable("BAIOSS_NDI_SOURCE");
+        // La búsqueda vuelve en cuanto aparece alguna fuente, y la pedida (una de este equipo, o una de la red por TCP) puede tardar
+        // unos segundos más: se la espera con una búsqueda propia.
+        if (!string.IsNullOrEmpty(wanted) && !sources.Any(s => s.Contains(wanted, StringComparison.OrdinalIgnoreCase)))
+        {
+            using var finder = new NewTek.NDI.Finder(showLocalSources: true, groups: null!, extraIps: null!);
+            // La lista la actualiza el hilo de la búsqueda: si cambia mientras se lee, se vuelve a leer en la siguiente vuelta.
+            string[] Found() { try { return finder.Sources.Select(s => s.Name).ToArray(); } catch (InvalidOperationException) { return []; } }
+            for (var waiting = Stopwatch.StartNew(); waiting.Elapsed < TimeSpan.FromSeconds(15)
+                 && !Found().Any(s => s.Contains(wanted, StringComparison.OrdinalIgnoreCase));)
+                await Task.Delay(250);
+            sources = Found().Union(sources).ToList();
+        }
         var name = string.IsNullOrEmpty(wanted)
             ? sources.FirstOrDefault(s => s.Contains("OBS", StringComparison.OrdinalIgnoreCase)) ?? sources[0]
             : sources.FirstOrDefault(s => s.Contains(wanted, StringComparison.OrdinalIgnoreCase));
@@ -152,7 +164,7 @@ public sealed class NdiCaptureTests
             {
                 $"fuente         : {name}",
                 $"otras fuentes  : {string.Join(" | ", sources.Where(s => s != name))}",
-                $"señal          : {sig.State} {resText} @ {rateText} fps · pix {source.VideoPixelFormat}",
+                $"señal          : {sig.State} {resText} @ {rateText} fps · pix {source.VideoPixelFormat} · «{sig.FormatLabel}» ({sig.Scan})",
                 $"encoder        : {profile.VideoCodec}",
                 $"archivo        : {Path.GetFileName(file)} ({new FileInfo(file!).Length / 1024 / 1024} MB)",
                 $"ventana grab.  : {recordSeconds}s (de Grabar a Detener: {I(recordedFor, "0.00")}s)",
@@ -197,11 +209,12 @@ public sealed class NdiCaptureTests
         return (ffmpeg, self.TotalProcessorTime);
     }
 
-    /// <summary>Duración, start_time (s) y nº de frames de vídeo de un MP4, vía ffprobe JSON.</summary>
+    /// <summary>Duración, start_time (s) y nº de frames de vídeo de un MP4, vía ffprobe JSON. Los frames se cuentan leyendo los
+    /// paquetes: un MP4 fragmentado no declara nb_frames.</summary>
     private static async Task<(double VDur, double VStart, double ADur, double AStart, long VFrames)> ProbeStreamsAsync(string ffprobe, string file)
     {
         var psi = new ProcessStartInfo { FileName = ffprobe, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-v", "error", "-show_entries", "stream=codec_type,duration,start_time,nb_frames", "-of", "json", file })
+        foreach (var a in new[] { "-v", "error", "-count_packets", "-show_entries", "stream=codec_type,duration,start_time,nb_read_packets", "-of", "json", file })
             psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
         var json = await p.StandardOutput.ReadToEndAsync();
@@ -213,7 +226,7 @@ public sealed class NdiCaptureTests
         {
             string? type = s.TryGetProperty("codec_type", out var t) ? t.GetString() : null;
             double dur = Num(s, "duration"), start = Num(s, "start_time");
-            if (type == "video") { vDur = dur; vStart = start; vFrames = (long)Num(s, "nb_frames"); }
+            if (type == "video") { vDur = dur; vStart = start; vFrames = (long)Num(s, "nb_read_packets"); }
             else if (type == "audio") { aDur = dur; aStart = start; }
         }
         return (vDur, vStart, aDur, aStart, vFrames);

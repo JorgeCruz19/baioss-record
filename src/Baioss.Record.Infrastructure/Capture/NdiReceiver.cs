@@ -16,8 +16,10 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// <para>VÍDEO EN FORMATO NATIVO: se pide a NDI <c>UYVY_BGRA</c>, que entrega <b>UYVY</b> (YUV 4:2:2, 16 bpp)
 /// salvo que la fuente tenga alfa (entonces BGRA, 32 bpp). UYVY es la MITAD de bytes que BGRA —menos copia,
 /// menos tráfico de socket— y, al ser ya YUV, FFmpeg lo convierte a NV12/4:2:0 con un <c>swscale</c> mucho más
-/// barato que desde RGB. El <see cref="VideoPixelFormat"/> resultante (uyvy422 / bgra) lo lee la fuente para el
-/// <c>-pixel_format</c>. Los buffers de frame se alquilan de <see cref="ArrayPool{T}"/> y se devuelven tras
+/// barato que desde RGB. Por eso el BGRA de una fuente con alfa (un grafismo) se pasa a UYVY aquí, una vez por cuadro recibido
+/// (<see cref="BgraToUyvy"/>; el alfa no lo graba ninguna salida): FFmpeg convertía cada cuadro servido, repeticiones de la
+/// cadencia declarada incluidas. El <see cref="VideoPixelFormat"/> resultante (uyvy422; bgra solo con un ancho impar) lo lee la
+/// fuente para el <c>-pixel_format</c>. Los buffers de frame se alquilan de <see cref="ArrayPool{T}"/> y se devuelven tras
 /// escribirlos, para no generar basura (un frame es de varios MB; a 30-60 fps el GC se dispararía).</para>
 ///
 /// <para>Vídeo y audio se sirven en HILOS SEPARADOS con colas acotadas (<see cref="NdiFeed{T}"/>): FFmpeg abre sus entradas
@@ -68,7 +70,7 @@ public sealed class NdiReceiver : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _recvLoop;
     private IntPtr _recv;
-    private int _bytesPerPixel = 4; // se fija con el primer frame según el FourCC real (UYVY=2, BGRA=4)
+    private int _bytesPerPixel = 4; // se fija con el primer frame según lo que se sirve (uyvy422=2, bgra=4)
     private volatile bool _present;           // ¿llega vídeo NDI ahora mismo? (para detectar pérdida en caliente)
     private DateTimeOffset _lastVideoUtc;     // marca del último frame de vídeo recibido
     private DateTimeOffset _lastPresenceLoss; // cuándo se perdió la presencia (para re-detectar formato si la caída fue larga)
@@ -88,6 +90,8 @@ public sealed class NdiReceiver : IAsyncDisposable
     private int _weaveW, _weaveH;
     private NDIlib.FourCC_type_e _weaveFourCC;
     private bool _weaveTop;
+    // Una línea BGRA copiada de la fuente para convertirla a UYVY (ver BgraToUyvy).
+    private byte[]? _bgraLine;
 
     /// <summary>Se dispara al PERDER (false) o RECUPERAR (true) la presencia de vídeo NDI, para que la fuente
     /// actualice su <c>CurrentSignal</c> y el canal entre/salga de carta de ajuste sin esperar al watchdog. (C3.)</summary>
@@ -122,7 +126,8 @@ public sealed class NdiReceiver : IAsyncDisposable
     public int FrameRateN { get; private set; } = 30000;
     public int FrameRateD { get; private set; } = 1001;
     /// <summary>Los cuadros traen dos campos entretejidos (NDI <c>frame_format_type_interleaved</c>, el superior primero): un
-    /// 1080i. La tasa de <see cref="FrameRateN"/>/<see cref="FrameRateD"/> es entonces la de cuadro (30000/1001 en 1080i59.94).</summary>
+    /// 1080i. La tasa de <see cref="FrameRateN"/>/<see cref="FrameRateD"/> es entonces la de cuadro (30000/1001 en 1080i59.94). Un
+    /// «interleaved» a más de 30 cuadros por segundo es un progresivo mal marcado (ver <see cref="IsInterleaved"/>).</summary>
     public bool Interlaced { get; private set; }
     public int SampleRate { get; private set; } = 48000;
     public int Channels { get; private set; } = 2;
@@ -319,7 +324,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         // Campos sueltos: se espera a tener los dos y se entregan tejidos, como un cuadro entrelazado.
         byte[]? woven = null;
         int frameHeight = v.yres;
-        bool interlaced = IsInterleaved(v.frame_format_type);
+        bool interlaced = IsInterleaved(v.frame_format_type, v.frame_rate_N, v.frame_rate_D);
         if (IsField(v.frame_format_type))
         {
             woven = Weave(ref v);
@@ -341,11 +346,11 @@ public sealed class NdiReceiver : IAsyncDisposable
         }
         if (Width == 0) // primer frame o re-detección tras pérdida prolongada: fija el formato y desbloquea StartAsync
         {
-            ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
+            ApplyFormat(ref v, frameHeight, interlaced);
             ResetCadence();
             _firstVideo.TrySetResult(true);
         }
-        else if (FormatDiffers(v.xres, frameHeight, PixelFormatFor(v.FourCC), interlaced, Width, Height, VideoPixelFormat, Interlaced))
+        else if (FormatDiffers(v.xres, frameHeight, PixelFormatFor(v.FourCC, v.xres), interlaced, Width, Height, VideoPixelFormat, Interlaced))
         {
             // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel/barrido al
             // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y BuildInputArguments
@@ -353,7 +358,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             // reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que la fuente
             // actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
             int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat; bool oldInterlaced = Interlaced;
-            ApplyFormat(v.xres, frameHeight, v.FourCC, v.frame_rate_N, v.frame_rate_D, interlaced);
+            ApplyFormat(ref v, frameHeight, interlaced);
             ResetCadence(); // el último cuadro es del formato anterior: no se repite
             _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP}{OI} → {W}x{H} {P}{I}); el pipeline en " +
                 "marcha seguirá con el formato anterior hasta reconstruirse (rebind o salida de carta de ajuste).",
@@ -373,7 +378,10 @@ public sealed class NdiReceiver : IAsyncDisposable
         else
         {
             buf = ArrayPool<byte>.Shared.Rent(size);
-            if (v.line_stride_in_bytes == rowBytes)
+            if (ConvertsToUyvy(v.FourCC, v.xres))                 // BGRA (alfa): a UYVY, línea a línea
+                for (int y = 0; y < v.yres; y++)
+                    CopyLine(ref v, y, buf, y * rowBytes, frameHeight);
+            else if (v.line_stride_in_bytes == rowBytes)
                 Marshal.Copy(v.p_data, buf, 0, size);             // sin relleno: copia contigua
             else
                 for (int y = 0; y < v.yres; y++)                  // con relleno: quita el padding por fila
@@ -408,8 +416,20 @@ public sealed class NdiReceiver : IAsyncDisposable
         _audio.Enqueue(new Frame(buf, bytes));
     }
 
-    /// <summary>¿El cuadro trae los dos campos entretejidos (el superior primero, según NDI)?</summary>
-    internal static bool IsInterleaved(NDIlib.frame_format_type_e type) => type == NDIlib.frame_format_type_e.frame_format_type_interleaved;
+    /// <summary>Lo más que va un entrelazado de verdad, en cuadros por segundo: 1080i60 (60 campos), con margen para una tasa
+    /// redondeada.</summary>
+    internal const double MaxInterlacedFrameRate = 30.5;
+
+    /// <summary>
+    /// ¿El cuadro trae los dos campos entretejidos (el superior primero, según NDI)? NDI lo dice con <c>frame_format_type_interleaved</c>,
+    /// que es el CERO de la enumeración: un emisor que no rellena el campo (la estructura a cero) marca así sus cuadros progresivos.
+    /// Un entrelazado no pasa de 30 cuadros (60 campos) por segundo —1080i50/59.94/60, 480i, 576i—, así que un «interleaved» a más de
+    /// <see cref="MaxInterlacedFrameRate"/> es un progresivo mal marcado: «Offside Engine NDI Output» manda un 1080 a 60000/1000 así
+    /// (2026-10-17); se enseñaba como «120i» y el canal desentrelazaba cada cuadro. Sin tasa, se cree la marca.
+    /// </summary>
+    internal static bool IsInterleaved(NDIlib.frame_format_type_e type, int rateN, int rateD)
+        => type == NDIlib.frame_format_type_e.frame_format_type_interleaved
+           && !(rateN > 0 && rateD > 0 && (double)rateN / rateD > MaxInterlacedFrameRate);
 
     /// <summary>¿Es un campo suelto (el superior, field_0, o el inferior, field_1)?</summary>
     internal static bool IsField(NDIlib.frame_format_type_e type)
@@ -422,7 +442,7 @@ public sealed class NdiReceiver : IAsyncDisposable
     /// </summary>
     private byte[]? Weave(ref NDIlib.video_frame_v2_t v)
     {
-        int rowBytes = v.xres * (PixelFormatFor(v.FourCC) == "uyvy422" ? 2 : 4);
+        int rowBytes = v.xres * (PixelFormatFor(v.FourCC, v.xres) == "uyvy422" ? 2 : 4);
         bool sameGeometry = _weave is not null && _weaveW == v.xres && _weaveH == v.yres && _weaveFourCC == v.FourCC;
         if (v.frame_format_type == NDIlib.frame_format_type_e.frame_format_type_field_0)
         {
@@ -441,41 +461,56 @@ public sealed class NdiReceiver : IAsyncDisposable
         return frame;
     }
 
-    private static void CopyField(ref NDIlib.video_frame_v2_t v, byte[] frame, int rowBytes, int firstLine)
+    private void CopyField(ref NDIlib.video_frame_v2_t v, byte[] frame, int rowBytes, int firstLine)
     {
+        bool convert = ConvertsToUyvy(v.FourCC, v.xres);
         for (int y = 0; y < v.yres; y++)
-            Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, frame, (2 * y + firstLine) * rowBytes, rowBytes);
+        {
+            int offset = (2 * y + firstLine) * rowBytes;
+            if (convert) CopyLine(ref v, y, frame, offset, frameHeight: 2 * v.yres);
+            else Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, frame, offset, rowBytes);
+        }
+    }
+
+    /// <summary>La línea <paramref name="y"/> de un cuadro (o campo) BGRA de la fuente, en UYVY, en <paramref name="frame"/> desde
+    /// <paramref name="offset"/>. <paramref name="frameHeight"/> es la altura del cuadro entero (decide la matriz).</summary>
+    private void CopyLine(ref NDIlib.video_frame_v2_t v, int y, byte[] frame, int offset, int frameHeight)
+    {
+        int bgraBytes = v.xres * 4;
+        var line = _bgraLine is { } staged && staged.Length >= bgraBytes ? staged : _bgraLine = new byte[bgraBytes];
+        Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, line, 0, bgraBytes);
+        BgraToUyvy.ConvertLine(line, frame.AsSpan(offset, v.xres * 2), v.xres, frameHeight);
     }
 
     /// <summary>Fija el formato (resolución/tasa/pixel/bytes-por-píxel/barrido) del cuadro que se sirve. Lo comparten el
     /// primer frame, la re-detección tras pérdida prolongada (#32) y el cambio de formato en caliente (N20). El FourCC real
-    /// decide el -pixel_format: con UYVY_BGRA casi siempre UYVY (16 bpp); BGRA solo si la fuente lleva alfa.</summary>
-    private void ApplyFormat(int width, int height, NDIlib.FourCC_type_e fourCC, int rateN, int rateD, bool interlaced)
+    /// decide el -pixel_format: con UYVY_BGRA, UYVY (16 bpp), y también el BGRA de una fuente con alfa, que se convierte al
+    /// recibirlo (ver <see cref="PixelFormatFor"/>).</summary>
+    private void ApplyFormat(ref NDIlib.video_frame_v2_t v, int height, bool interlaced)
     {
-        Width = width; Height = height;
+        Width = v.xres; Height = height;
         Interlaced = interlaced;
-        if (rateN > 0 && rateD > 0) { FrameRateN = rateN; FrameRateD = rateD; }
-        switch (fourCC)
-        {
-            case NDIlib.FourCC_type_e.FourCC_type_UYVY:
-                VideoPixelFormat = "uyvy422"; _bytesPerPixel = 2; break;
-            case NDIlib.FourCC_type_e.FourCC_type_BGRA:
-            case NDIlib.FourCC_type_e.FourCC_type_BGRX:
-                VideoPixelFormat = "bgra"; _bytesPerPixel = 4; break;
-            default:
-                VideoPixelFormat = "bgra"; _bytesPerPixel = 4;
-                _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", fourCC, _sourceName);
-                break;
-        }
+        if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
+        VideoPixelFormat = PixelFormatFor(v.FourCC, v.xres);
+        _bytesPerPixel = VideoPixelFormat == "uyvy422" ? 2 : 4;
+        if (v.FourCC is not (NDIlib.FourCC_type_e.FourCC_type_UYVY or NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX))
+            _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
+        else if (ConvertsToUyvy(v.FourCC, v.xres))
+            _log.LogInformation("NDI: «{Source}» manda {FourCC} (con alfa): se pasa a UYVY al recibir cada cuadro, sin el alfa, que no graba ninguna salida.",
+                _sourceName, v.FourCC);
+        if (v.frame_format_type == NDIlib.frame_format_type_e.frame_format_type_interleaved && !interlaced)
+            _log.LogInformation("NDI: «{Source}» marca sus cuadros como entrelazados a {Rate:0.##} cuadros/s, más de lo que va un entrelazado " +
+                "(30): se tratan como progresivos.", _sourceName, (double)FrameRateN / FrameRateD);
     }
 
-    /// <summary>-pixel_format de FFmpeg para un FourCC NDI (uyvy422 / bgra). Pura.</summary>
-    private static string PixelFormatFor(NDIlib.FourCC_type_e fourCC) => fourCC switch
-    {
-        NDIlib.FourCC_type_e.FourCC_type_UYVY => "uyvy422",
-        NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX => "bgra",
-        _ => "bgra",
-    };
+    /// <summary>-pixel_format de FFmpeg con el que se sirve un FourCC NDI: uyvy422, también para el BGRA de una fuente con alfa, que
+    /// se convierte al recibirlo (<see cref="ConvertsToUyvy"/>); bgra solo si no se puede (un ancho impar) o el FourCC es otro. Pura.</summary>
+    internal static string PixelFormatFor(NDIlib.FourCC_type_e fourCC, int width)
+        => fourCC == NDIlib.FourCC_type_e.FourCC_type_UYVY || ConvertsToUyvy(fourCC, width) ? "uyvy422" : "bgra";
+
+    /// <summary>¿Se pasa a UYVY al recibirlo? El BGRA (o BGRX) de una fuente con alfa, si el ancho es par. Pura.</summary>
+    internal static bool ConvertsToUyvy(NDIlib.FourCC_type_e fourCC, int width)
+        => fourCC is NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX && BgraToUyvy.Supports(width);
 
     /// <summary>¿El formato entrante difiere del cacheado? (resolución, pixel o barrido). Pura y testeable. (N20.)</summary>
     internal static bool FormatDiffers(int newW, int newH, string newPix, bool newInterlaced, int oldW, int oldH, string oldPix, bool oldInterlaced)
