@@ -51,7 +51,8 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// (sondearlo abriría un ffmpeg contra los sockets del propio receptor → competencia + falsos positivos). (#39/#59.)</summary>
     public bool SelfReportsRecovery => true;
 
-    /// <summary>Formato de píxel negociado con la fuente (uyvy422 normalmente; bgra si lleva alfa); null si no abierta.</summary>
+    /// <summary>Formato de píxel con el que el receptor sirve el vídeo: uyvy422, también si la fuente lleva alfa (el receptor pasa su
+    /// BGRA a UYVY); bgra solo con un ancho impar. Null si no abierta.</summary>
     public string? VideoPixelFormat => _receiver?.VideoPixelFormat;
 
     /// <summary>Vídeo y audio van en dos entradas: al retirar un proceso que graba, el receptor le entrega lo que ya llegó y le
@@ -108,7 +109,8 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// <summary>
     /// Señal de una fuente NDI con señal: resolución/tasa reales, el barrido —una fuente que manda los dos campos entretejidos
     /// (un 1080i de vMix o de un conversor SDI→NDI) es entrelazada con el campo superior primero, como dice NDI; antes se
-    /// trataba como progresiva: preview con doble imagen en lo que se mueve y grabación sin desentrelazar— y los canales de
+    /// trataba como progresiva: preview con doble imagen en lo que se mueve y grabación sin desentrelazar. Lo decide el receptor,
+    /// que no cree la marca de entrelazado a más de 30 cuadros/s (<see cref="NdiReceiver.IsInterleaved"/>)— y los canales de
     /// audio (con más de 2, la etiqueta y los pares elegidos, para la UI/API y los medidores por par). Siempre con audio: si
     /// la fuente no lo trae, el receptor sirve silencio. Pura y testeable.
     /// </summary>
@@ -157,7 +159,7 @@ public sealed class NdiCaptureSource : ICaptureSource
         if (_receiver is null)
             throw new InvalidOperationException("La fuente NDI no está abierta (llama a OpenAsync primero).");
 
-        // Entrada 0: vídeo rawvideo (uyvy422 normalmente; bgra si la fuente lleva alfa). Entrada 1: audio f32le
+        // Entrada 0: vídeo rawvideo (uyvy422, también de una fuente con alfa; bgra solo con un ancho impar). Entrada 1: audio f32le
         // interleaved. Ambas las sirve el NdiReceiver por TCP loopback; FFmpeg se conecta como cliente.
         // Resolución/tasa/pixel/audio = los de la fuente real (el receptor los fijó con el primer frame).
         //

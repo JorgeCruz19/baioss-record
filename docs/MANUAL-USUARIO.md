@@ -152,7 +152,9 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
 - **Cámara / capturadora USB (DirectShow):** webcams, capturadoras HDMI-USB, etc.
 - **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red). Una fuente entrelazada (un 1080i
   de vMix o de un conversor) se desentrelaza como la de la tarjeta, y una que no trae audio (salidas de grafismo, muchas
-  cámaras PTZ) se previsualiza y graba con una pista de silencio: por eso marca la alarma de silencio.
+  cámaras PTZ) se previsualiza y graba con una pista de silencio: por eso marca la alarma de silencio. Algunas salidas de
+  grafismo marcan como entrelazados cuadros que van a 50 o 60 por segundo, un entrelazado que no existe: se tratan como
+  progresivos (se ven como «1920×1080 · 60p · NDI»). El canal de alfa de una fuente NDI no se graba.
 - **Flujo de red (SRT o RTMP):** una señal que llega por la red desde un codificador, OBS, vMix o un servidor (ver
   «Fuentes de red» más abajo).
 - **Clip de demostración:** un vídeo de ejemplo que trae el programa (útil para pruebas).

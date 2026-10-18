@@ -152,7 +152,9 @@ This is where you decide **which video source is connected to each channel**.
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
 - **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network). An interlaced
   source (a 1080i from vMix or from a converter) is deinterlaced like the card's, and one without audio (graphics outputs,
-  many PTZ cameras) is previewed and recorded with a silent track: that is why it shows the silence alarm.
+  many PTZ cameras) is previewed and recorded with a silent track: that is why it shows the silence alarm. Some graphics
+  outputs flag as interlaced frames that run at 50 or 60 per second, an interlaced format that does not exist: they are
+  treated as progressive (shown as "1920×1080 · 60p · NDI"). The alpha channel of an NDI source is not recorded.
 - **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see
   "Network sources" below).
 - **Demonstration clip:** a sample video that ships with the program (handy for testing).

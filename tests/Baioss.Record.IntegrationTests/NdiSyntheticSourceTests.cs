@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Baioss.Record.Application.Capture;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
@@ -137,7 +138,9 @@ public sealed class NdiSyntheticSourceTests
     /// Emisor NDI que marca él mismo el ritmo (sin clock_video, como un emisor que no da abasto o un grafismo que solo envía
     /// cuando cambia la imagen): declara <c>rateN/rateD</c> pero envía solo uno de cada <c>sendEvery</c> cuadros, progresivos; el
     /// audio, si lo hay, va completo y a tiempo real, un bloque por periodo. Cada segundo de la fuente lleva una marca de
-    /// sincronía: un cuadro blanco y, a la vez, un pitido de 1 kHz de 100 ms; el resto es gris con la barra, y silencio.
+    /// sincronía: un cuadro blanco y, a la vez, un pitido de 1 kHz de 100 ms; el resto es gris con la barra, y silencio. Con
+    /// <c>graphics</c>, como la salida de grafismo de Offside Engine: BGRA con alfa (fondo semitransparente) y los cuadros sin marcar
+    /// como progresivos, es decir, con el 0 de la estructura, que en NDI es «interleaved».
     /// </summary>
     private sealed class PacedNdiSender : IDisposable
     {
@@ -147,7 +150,7 @@ public sealed class NdiSyntheticSourceTests
         private readonly Thread _thread;
         private volatile bool _stop;
 
-        public PacedNdiSender(string name, int rateN, int rateD, int sendEvery, bool withAudio)
+        public PacedNdiSender(string name, int rateN, int rateD, int sendEvery, bool withAudio, bool graphics = false)
         {
             var create = new NDIlib.send_create_t { p_ndi_name = UTF.StringToUtf8(name), p_groups = IntPtr.Zero, clock_video = false, clock_audio = false };
             _send = NDIlib.send_create(ref create);
@@ -155,7 +158,7 @@ public sealed class NdiSyntheticSourceTests
             if (_send == IntPtr.Zero) throw new InvalidOperationException("NDI: no se pudo crear el emisor.");
             SlotsPerMark = (int)Math.Round((double)rateN / rateD);
             if (SlotsPerMark % sendEvery != 0) throw new ArgumentException("La marca de sincronía debe caer en un cuadro enviado.");
-            _thread = new Thread(() => Run(rateN, rateD, sendEvery, withAudio)) { IsBackground = true, Name = "emisor NDI a su ritmo" };
+            _thread = new Thread(() => Run(rateN, rateD, sendEvery, withAudio, graphics)) { IsBackground = true, Name = "emisor NDI a su ritmo" };
             _thread.Start();
         }
 
@@ -164,14 +167,22 @@ public sealed class NdiSyntheticSourceTests
         /// <summary>Lo más tarde que salió un periodo respecto a su hora (el emisor duerme con el temporizador de Windows).</summary>
         public double MaxLateMs { get; private set; }
 
-        private void Run(int rateN, int rateD, int sendEvery, bool withAudio)
+        private void Run(int rateN, int rateD, int sendEvery, bool withAudio, bool graphics)
         {
-            const int stride = W * 2;
+            int bytesPerPixel = graphics ? 4 : 2, stride = W * bytesPerPixel;
             var frame = new byte[stride * H];
             var gray = new byte[stride];
-            for (int x = 0; x < W; x += 2) { gray[x * 2] = 128; gray[x * 2 + 1] = 48; gray[x * 2 + 2] = 128; gray[x * 2 + 3] = 48; } // U Y V Y
             var white = new byte[stride * H];
-            for (int i = 0; i < white.Length; i += 2) { white[i] = 128; white[i + 1] = 235; }
+            if (graphics)
+            {
+                for (int x = 0; x < W; x++) { gray[x * 4] = gray[x * 4 + 1] = gray[x * 4 + 2] = 37; gray[x * 4 + 3] = 160; } // B G R A
+                Array.Fill(white, (byte)255);
+            }
+            else
+            {
+                for (int x = 0; x < W; x += 2) { gray[x * 2] = 128; gray[x * 2 + 1] = 48; gray[x * 2 + 2] = 128; gray[x * 2 + 3] = 48; } // U Y V Y
+                for (int i = 0; i < white.Length; i += 2) { white[i] = 128; white[i + 1] = 235; }
+            }
             IntPtr video = Marshal.AllocHGlobal(frame.Length);
             IntPtr audio = Marshal.AllocHGlobal(2 * 4 * 4096);
             var samples = new float[2 * 4096];
@@ -194,14 +205,17 @@ public sealed class NdiSyntheticSourceTests
                             for (int y = 0; y < H; y++)
                             {
                                 Buffer.BlockCopy(gray, 0, frame, y * stride, stride);
-                                for (int x = x0; x < x0 + Bar; x++) frame[y * stride + x * 2 + 1] = 235;
+                                if (graphics) frame.AsSpan(y * stride + x0 * 4, Bar * 4).Fill(255); // blanca y opaca
+                                else for (int x = x0; x < x0 + Bar; x++) frame[y * stride + x * 2 + 1] = 235;
                             }
                         }
                         Marshal.Copy(frame, 0, video, frame.Length);
                         var vf = new NDIlib.video_frame_v2_t
                         {
-                            xres = W, yres = H, FourCC = NDIlib.FourCC_type_e.FourCC_type_UYVY, frame_rate_N = rateN, frame_rate_D = rateD,
-                            picture_aspect_ratio = 16f / 9f, frame_format_type = NDIlib.frame_format_type_e.frame_format_type_progressive,
+                            xres = W, yres = H, FourCC = graphics ? NDIlib.FourCC_type_e.FourCC_type_BGRA : NDIlib.FourCC_type_e.FourCC_type_UYVY,
+                            frame_rate_N = rateN, frame_rate_D = rateD, picture_aspect_ratio = 16f / 9f,
+                            // El grafismo deja el campo sin rellenar: el 0, que NDI lee como «interleaved».
+                            frame_format_type = graphics ? default : NDIlib.frame_format_type_e.frame_format_type_progressive,
                             timecode = NDIlib.send_timecode_synthesize, p_data = video, line_stride_in_bytes = stride, p_metadata = IntPtr.Zero,
                         };
                         NDIlib.send_send_video_v2(_send, ref vf);
@@ -250,19 +264,22 @@ public sealed class NdiSyntheticSourceTests
     /// comprimida en el tiempo: FFmpeg lee el vídeo a la tasa declarada y le pone las marcas por contador, así que 8 s de fuente
     /// a media cadencia eran 4 s de vídeo, con el audio cada vez más desfasado. El receptor repite el último cuadro con su
     /// propio reloj: en el archivo, las marcas de sincronía (cuadro blanco + pitido, una por segundo de la fuente) están a un
-    /// segundo unas de otras, el audio va con el vídeo de la primera a la última, y el preview va a la cadencia declarada.
+    /// segundo unas de otras, el audio va con el vídeo de la primera a la última, y el preview va a la cadencia declarada. Un
+    /// grafismo como el de Offside Engine (BGRA con alfa, «interleaved» a 60000/1000) es un 60p: ni «120i» ni desentrelazado, y
+    /// el receptor lo sirve en UYVY.
     /// </summary>
     [SkippableTheory]
-    [InlineData(30000, 1001, 1, true)]   // a su ritmo: control de la medida
-    [InlineData(30000, 1001, 2, true)]   // la mitad de lo que declara, con audio completo
-    [InlineData(30000, 1001, 2, false)]  // la mitad, sin audio: el silencio sigue a los cuadros servidos (repetidos incluidos)
-    [InlineData(60, 1, 15, false)]       // un grafismo: declara 60, manda 4 y no trae audio
-    public async Task ASourceSendingFewerFramesThanDeclared_IsRecordedInRealTime_InSyncWithItsAudio(int rateN, int rateD, int sendEvery, bool withAudio)
+    [InlineData(30000, 1001, 1, true, false)]    // a su ritmo: control de la medida
+    [InlineData(30000, 1001, 2, true, false)]    // la mitad de lo que declara, con audio completo
+    [InlineData(30000, 1001, 2, false, false)]   // la mitad, sin audio: el silencio sigue a los cuadros servidos (repetidos incluidos)
+    [InlineData(60, 1, 15, false, false)]        // un grafismo: declara 60, manda 4 y no trae audio
+    [InlineData(60000, 1000, 15, false, true)]   // …y como Offside Engine: BGRA con alfa, cuadros marcados «interleaved»
+    public async Task ASourceSendingFewerFramesThanDeclared_IsRecordedInRealTime_InSyncWithItsAudio(int rateN, int rateD, int sendEvery, bool withAudio, bool graphics)
     {
         Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
         Skip.IfNot(NdiRuntime.IsAvailable, "Runtime NDI no disponible (Processing.NDI.Lib.x64.dll junto a las pruebas).");
         string unique = $"Baioss ritmo {Guid.NewGuid().ToString("N")[..8]}";
-        using var sender = new PacedNdiSender(unique, rateN, rateD, sendEvery, withAudio);
+        using var sender = new PacedNdiSender(unique, rateN, rateD, sendEvery, withAudio, graphics);
         string? name = null;
         for (int i = 0; i < 10 && name is null; i++) name = NdiRuntime.DiscoverSources(1000).FirstOrDefault(s => s.Contains(unique, StringComparison.Ordinal));
         Assert.True(name is not null, $"El emisor de prueba «{unique}» no aparece entre las fuentes NDI.");
@@ -278,6 +295,10 @@ public sealed class NdiSyntheticSourceTests
             await source.OpenAsync();
             Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
             Assert.Equal(declared, source.CurrentSignal.FrameRate!.Value.Value, 3);
+            // Progresivo en los dos casos (el grafismo marca «interleaved» a 60, que no es un entrelazado) y servido en UYVY.
+            Assert.Equal(ScanType.Progressive, source.CurrentSignal.Scan);
+            Assert.Equal($"1920×1080 · {VideoModes.FormatRate(declared)}p · NDI", source.CurrentSignal.FormatLabel);
+            Assert.Equal("uyvy422", source.VideoPixelFormat);
 
             var profile = new RecordingProfile
             {
@@ -308,15 +329,20 @@ public sealed class NdiSyntheticSourceTests
             var (vDur, vPackets, aDur, hasAudioTrack, vStart, aStart) = await ProbeStartsAsync(locator.FfprobePath, file!);
             var (flashes, beeps) = await SyncMarksAsync(locator.FfmpegPath, file!);
             double maxVolume = hasAudioTrack ? await MaxVolumeAsync(locator.FfmpegPath, file!) : double.NaN;
-            string cadenceLog;
-            lock (log) cadenceLog = log.LastOrDefault(l => l.Contains("que declara", StringComparison.Ordinal)) ?? "(sin aviso)";
+            string cadenceLog, recordPipeline;
+            lock (log)
+            {
+                cadenceLog = log.LastOrDefault(l => l.Contains("que declara", StringComparison.Ordinal)) ?? "(sin aviso)";
+                recordPipeline = log.LastOrDefault(l => l.Contains("Pipeline canal NDI (grabación+preview)", StringComparison.Ordinal)) ?? "";
+            }
 
             double flashSpan = flashes.Count > 1 ? flashes[^1] - flashes[0] : 0;
             // Cada destello con su pitido (el más cercano, si lo hay a menos de medio segundo).
             var offsets = flashes.Select(f => beeps.Select(b => b - f).Where(o => Math.Abs(o) < 0.5).DefaultIfEmpty(double.NaN).First())
                                  .Where(o => !double.IsNaN(o)).ToList();
             string I(double d) => d.ToString("0.000", CultureInfo.InvariantCulture);
-            _out.WriteLine($"{declared:0.##} declarados, 1 de cada {sendEvery} enviado, {(withAudio ? "con" : "sin")} audio (emisor hasta {sender.MaxLateMs:0} ms tarde): " +
+            _out.WriteLine($"{declared:0.##} declarados{(graphics ? " (BGRA con alfa, «interleaved»)" : "")}, 1 de cada {sendEvery} enviado, " +
+                           $"{(withAudio ? "con" : "sin")} audio (emisor hasta {sender.MaxLateMs:0} ms tarde): «{source.CurrentSignal.FormatLabel}» · " +
                            $"preview {previewFps:0.00} fps · grabado {recordedFor:0.00} s → vídeo {I(vDur)} s desde {I(vStart)} ({vPackets} cuadros), " +
                            $"audio {I(aDur)} s desde {I(aStart)}, pico {maxVolume:0.0} dBFS");
             _out.WriteLine($"  marcas de vídeo: {string.Join(" ", flashes.Select(I))}");
@@ -345,6 +371,10 @@ public sealed class NdiSyntheticSourceTests
             }
             else Assert.True(double.IsNegativeInfinity(maxVolume) || maxVolume < -80, $"Sin audio en la fuente, la pista debe ser silencio ({maxVolume:0.0} dBFS).");
             if (sendEvery > 1) Assert.Contains("que declara", cadenceLog);
+            // Nada que desentrelazar: ni bwdif en la grabación ni un solo campo en el preview.
+            Assert.Contains("-pixel_format uyvy422", recordPipeline);
+            Assert.DoesNotContain("bwdif", recordPipeline);
+            Assert.DoesNotContain("field=type", recordPipeline);
         }
         finally
         {

@@ -263,6 +263,18 @@ como el de la DeckLink, y los campos sueltos (`field_0`/`field_1`) se tejen en c
 `NdiSyntheticSourceTests` (emisor NDI dentro de la prueba: progresivo con y sin audio, entretejido, campos sueltos) y con
 las fuentes de la red del PC de pruebas (OBS 1080p, vMix 1080i, una salida de grafismo sin audio).
 
+**NDI «entrelazado» a 60 y fuentes con alfa.** `frame_format_type_interleaved` es el 0 de la enumeración de NDI: un emisor que
+deja la estructura a cero marca así sus cuadros progresivos. La salida de grafismo de Offside Engine manda un 1080 BGRA
+«interleaved» a 60000/1000, que la interfaz enseñaba como «1920×1080 · 120i · NDI» y el canal desentrelazaba cuadro a cuadro.
+Un entrelazado no pasa de 30 cuadros (60 campos) por segundo, así que el receptor solo cree la marca hasta 30 cuadros/s
+(`NdiReceiver.IsInterleaved`): por encima es un progresivo («1920×1080 · 60p · NDI»); los campos sueltos y un 1080i29.97
+siguen siendo entrelazados. Además, el BGRA de una fuente con alfa se pasa a UYVY en el receptor (`BgraToUyvy`: BT.709, BT.601 en
+SD, rango limitado, croma por pares; el alfa fuera, ninguna salida lo graba) una vez por cuadro recibido: FFmpeg convertía desde
+RGB cada cuadro servido —60 por segundo con la cadencia declarada, aunque la fuente mande ~4— y con los hilos de rebanada del
+grafo esas conversiones salían carísimas. Medido con un emisor que imita a Offside, proceso del canal con preview y NVENC:
+6,0 núcleos antes, 3,9 solo con la regla del barrido y 1,9 con las dos cosas. Probado con `NdiReceiverFormatTests`,
+`BgraToUyvyTests` y la fila «como Offside» de `NdiSyntheticSourceTests`.
+
 **NDI al Detener.** FFmpeg (7 y posteriores) no deja que una entrada se adelante a la salida más retrasada, y la más
 retrasada es la del codificador de vídeo, que retiene cerca de un segundo (x264 `veryfast`: anticipación, cuadros B e hilos).
 Con NDI el audio va en su propia entrada, así que FFmpeg lo lee por detrás del vídeo, y la «q» lo para en el acto: el audio
