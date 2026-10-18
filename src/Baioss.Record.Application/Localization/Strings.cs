@@ -691,6 +691,9 @@ public static class Strings
         ["Prof_Err_AudioOnlyContainer"] = "El contenedor {0} solo lleva audio: marca «Solo audio» o elige un contenedor de vídeo.",
         ["Prof_Err_ContainerUnreadable"] = "{0} no se puede grabar en {1}: FFmpeg escribe el archivo sin dar error, pero sale ilegible. Para {2}, elige {3}.",
         ["Prof_Err_ContainerRefuses"] = "{0} no se puede grabar en {1}: FFmpeg no admite esa combinación y la grabación no arrancaría. Para {2}, elige {3}.",
+        ["Prof_Err_ContainerNeedsVideo"] = "El contenedor {0} necesita una pista de vídeo: desmarca «Solo audio» o elige otro contenedor.",
+        ["Prof_Err_AudioContainerUnreadable"] = "El audio {0} no se puede grabar en {1}: FFmpeg escribe el archivo sin dar error, pero el audio sale ilegible. En {1}, elige el audio {2}.",
+        ["Prof_Err_AudioContainerRefuses"] = "El audio {0} no se puede grabar en {1}: FFmpeg no admite esa combinación y la grabación no arrancaría. En {1}, elige el audio {2}.",
 
         // --- Diálogos de la aplicación ---
         ["Dlg_Close_Title"] = "Cerrar Baioss Record",
@@ -1380,6 +1383,9 @@ public static class Strings
         ["Prof_Err_AudioOnlyContainer"] = "The {0} container holds audio only: tick \"Audio only\" or choose a video container.",
         ["Prof_Err_ContainerUnreadable"] = "{0} can't be recorded in {1}: FFmpeg writes the file without any error, but it can't be read. For {2}, choose {3}.",
         ["Prof_Err_ContainerRefuses"] = "{0} can't be recorded in {1}: FFmpeg doesn't support that combination, so the recording wouldn't start. For {2}, choose {3}.",
+        ["Prof_Err_ContainerNeedsVideo"] = "The {0} container needs a video track: untick \"Audio only\" or choose another container.",
+        ["Prof_Err_AudioContainerUnreadable"] = "{0} audio can't be recorded in {1}: FFmpeg writes the file without any error, but the audio can't be read. In {1}, choose {2} audio.",
+        ["Prof_Err_AudioContainerRefuses"] = "{0} audio can't be recorded in {1}: FFmpeg doesn't support that combination, so the recording wouldn't start. In {1}, choose {2} audio.",
 
         // --- Application dialogs ---
         ["Dlg_Close_Title"] = "Close Baioss Record",

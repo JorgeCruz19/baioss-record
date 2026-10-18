@@ -284,11 +284,12 @@ recibe una identidad nueva como personalizado.
 ### Presets que no podrían grabar (contenedor × códec)
 
 [`RecordingProfileValidator`](../src/Baioss.Record.Application/Recording/RecordingProfileValidator.cs) rechaza un perfil que
-FFmpeg no puede grabar: bitrate o GOP a cero, resolución impar… y un **contenedor que no lleva el códec de vídeo**. Lo
-aplican el editor (al pulsar **Aceptar**: lista los motivos y no cierra), el gestor (no **aplica** a un canal un preset
-propio o importado que lo incumpla), el panel del canal (un **⚠ rojo** en el badge PRESET, con el motivo en el tooltip, si
-el perfil guardado del canal no puede grabar) y el pre-vuelo de Grabar (manual, programada o por la API: aviso y auditoría
-«No se pudo iniciar», sin sesión ni archivo). Los mensajes van en el idioma de la aplicación y proponen contenedores.
+FFmpeg no puede grabar: bitrate o GOP a cero, resolución impar… y un **contenedor que no lleva el códec de vídeo o el de
+audio**. Lo aplican el editor (al pulsar **Aceptar**: lista los motivos y no cierra), el gestor (no **aplica** a un canal un
+preset propio o importado que lo incumpla), el panel del canal (un **⚠ rojo** en el badge PRESET, con el motivo en el
+tooltip, si el perfil guardado del canal no puede grabar) y el pre-vuelo de Grabar (manual, programada o por la API: aviso y
+auditoría «No se pudo iniciar», sin sesión ni archivo). Los mensajes van en el idioma de la aplicación y proponen
+contenedores (para el vídeo) o el audio que lleva el contenedor.
 
 Medido el 2026-10-18 con FFmpeg 8.0 y con el incluido (git-2026-06-14), iguales: 2 s de cada códec en cada contenedor,
 releídos con `ffprobe` y una decodificación entera. *Rechaza* = el muxer no abre la salida y la grabación no arranca;
@@ -311,6 +312,30 @@ releídos con `ffprobe` y una decodificación entera. *Rechaza* = el muxer no ab
   que el validador no lo juzga. Con `-tag:v AVdn` el DNxHD clásico en AVI sí se lee (medido): es cosa del argv.
 - Lo cubren `RecordingProfileValidatorTests` (la matriz entera) y, con el FFmpeg real, `ContainerCodecTests` (sin la regla
   FFmpeg no deja vídeo legible; con ella el canal rechaza el perfil; lo que el mensaje propone graba).
+
+**Audio.** Medido el 2026-10-18 con el motor real (`FfmpegChannelEngine` y el argv del producto) y FFmpeg 8.0 y el incluido:
+4 s de un tono con cada códec en cada contenedor, con vídeo y en solo audio, releídos con `ffprobe` y decodificados enteros.
+Los dos FFmpeg dan lo mismo salvo FDK-AAC en AVI y WAV (¹).
+
+| Audio | AVI | MXF | MP4 | MOV | MKV | TS | PS | WAV | MP3 |
+|---|---|---|---|---|---|---|---|---|---|
+| **PCM** (24 bits) | ✓ | ✓ (con vídeo) | ✓ (como AAC) | ✓ (como AAC) | ✓ | ✓ (como AAC) | rechaza | ✓ | rechaza |
+| **AAC** | ✓ | rechaza | ✓ | ✓ | ✓ | ✓ | rechaza | ilegible | rechaza |
+| **FDK-AAC** | rechaza (¹) | rechaza | ✓ | ✓ | ✓ | ✓ | rechaza | rechaza (¹) | rechaza |
+| **Opus** | rechaza | rechaza | ✓ | rechaza | ✓ | ✓ | rechaza | rechaza | rechaza |
+| **MP3** | ✓ | rechaza | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **MP2** | ✓ | rechaza | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | rechaza |
+
+- El muxer MXF solo lleva PCM (pasa el audio por `pcm_rechunk`) y necesita una pista de vídeo, la primera: en **Solo audio**
+  no graba con ningún códec. El de PS solo admite MP1/MP2/MP3, AC-3, DTS y PCM de 16 bits; el MP3, solo MP3.
+- PCM en MP4, MOV y TS se graba como AAC (`FfmpegCodecMap.EffectiveAudioEncoder`); en PS el motor no lo promueve.
+- AAC en WAV: el WAV no delimita los paquetes y el del codificador nativo sale sin error, pero no se decodifica.
+- (¹) El FDK-AAC del incluido sale en ADTS y los muxers RIFF (AVI, WAV) no lo aceptan («ADTS is only supported with codec tag
+  0x1610»); FFmpeg 8.0 sí lo graba. Se rechaza en los dos: un preset no puede grabar en un equipo y en otro no.
+- Sin la regla, con vídeo el muxer no escribe la cabecera, el motor lo toma por un codificador de vídeo que no abre y el canal
+  se queda «Grabando» con un archivo de 0 B y sin alarma; en solo audio relanza piezas de 0 B. El mensaje propone el audio que
+  el contenedor lleva con su identificador estándar: PCM en MXF y WAV; MP2 o MP3 en PS; PCM, MP3 o MP2 en AVI; AAC en MOV;
+  MP3 en MP3.
 
 ## Verificación
 
