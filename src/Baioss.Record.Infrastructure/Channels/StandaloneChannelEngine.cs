@@ -9,6 +9,7 @@ using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Licensing;
+using Baioss.Record.Application.Localization;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Recording;
@@ -391,9 +392,10 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             throw new InvalidOperationException(_storageGate.BlockReasonFor(_engine.OutputRoot)
                 ?? "Almacenamiento en EMERGENCIA: no se pueden iniciar nuevas grabaciones hasta liberar espacio.");
 
-        // 1) Perfil coherente (bitrate/GOP/resolución/calidad/audio).
+        // 1) Perfil coherente (bitrate/GOP/resolución/calidad/audio, y un contenedor que lleve el códec de vídeo). El mensaje lo
+        //    ve el operador (aviso al pulsar Grabar, auditoría, respuesta de la API): en el idioma de la aplicación.
         if (!RecordingProfileValidator.IsValid(profile, out var errors))
-            throw new InvalidOperationException("Perfil de grabación inválido: " + string.Join(" ", errors));
+            throw new InvalidOperationException(Localizer.F("Prof_Err_Invalid", string.Join(" ", errors)));
 
         // 2) Carpeta de destino escribible (existe y admite crear/borrar un archivo).
         var dir = _engine.OutputRoot; // sin subcarpeta por canal: preflight sobre la carpeta destino configurada

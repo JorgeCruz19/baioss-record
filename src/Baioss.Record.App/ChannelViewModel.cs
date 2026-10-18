@@ -10,6 +10,7 @@ using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Presets;
+using Baioss.Record.Application.Recording;
 using Baioss.Record.Infrastructure.Preview;
 using Baioss.Record.App.Localization;
 
@@ -147,6 +148,13 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _presetToolTip = "";
 
     /// <summary>
+    /// El perfil guardado del canal no puede grabar (HEVC en AVI, ProRes en MP4…: un preset de antes de que el editor validara,
+    /// o un perfil viejo de la base de datos). El badge lo marca y su tooltip dice por qué, antes de pulsar Grabar o de que
+    /// falle una grabación programada; Grabar lo rechaza con el mismo motivo.
+    /// </summary>
+    [ObservableProperty] private bool _presetCannotRecord;
+
+    /// <summary>
     /// El preset graba a otra cadencia que la de la fuente («59,94 → 29,97 fps»): FFmpeg descartará o repetirá frames para
     /// convertir. Es un aviso, no una alarma —puede ser lo que se quiere—, visible en reposo y grabando para que no pille por
     /// sorpresa una grabación «a saltos». El tooltip lo explica entero.
@@ -243,12 +251,16 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
     /// <summary>Resumen legible del perfil vigente (lo que se grabará): códec · tasa · tamaño · contenedor.</summary>
     private void RefreshProfileText()
     {
-        if (_config is null) { ProfileText = "—"; PresetText = "—"; PresetToolTip = ""; return; }
+        if (_config is null) { ProfileText = "—"; PresetText = "—"; PresetToolTip = ""; PresetCannotRecord = false; return; }
         var p = _config.Profile;
         // Mismo texto que publica la API (y muestra el cliente web): una sola forma de contar el perfil.
         ProfileText = RecordingProfileSummary.Describe(p);
         PresetText = RecordingProfileSummary.DisplayName(p);
-        PresetToolTip = Loc.F("Ch_PresetTip", ProfileText);
+        var problems = RecordingProfileValidator.Validate(p);
+        PresetCannotRecord = problems.Count > 0;
+        PresetToolTip = PresetCannotRecord
+            ? Loc.F("Ch_PresetTip_Invalid", ProfileText, string.Join("\n", problems))
+            : Loc.F("Ch_PresetTip", ProfileText);
     }
 
     // ---------------------------------------------------------------------

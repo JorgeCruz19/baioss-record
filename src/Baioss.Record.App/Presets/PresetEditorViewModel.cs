@@ -1,5 +1,6 @@
 using Baioss.Record.Domain;
 using Baioss.Record.Application.Presets;
+using Baioss.Record.Application.Recording;
 
 namespace Baioss.Record.App.Presets;
 
@@ -34,4 +35,8 @@ public sealed class PresetEditorViewModel
     public int GopValue { get => Preset.GopSize; set => Preset.GopSize = value; }
     public int AudioSampleRateValue { get => Preset.AudioSampleRate; set => Preset.AudioSampleRate = value; }
     public int AudioBitrateValue { get => Preset.AudioBitrateKbps; set => Preset.AudioBitrateKbps = value; }
+
+    /// <summary>Por qué el borrador no podría grabar (las mismas reglas que el pre-vuelo al pulsar Grabar); vacío = se puede
+    /// guardar. Así un preset roto —HEVC en AVI, ProRes en MP4, bitrate a cero…— no llega a la lista ni a un canal.</summary>
+    public IReadOnlyList<string> Problems() => RecordingProfileValidator.Validate(Preset.ToProfile());
 }

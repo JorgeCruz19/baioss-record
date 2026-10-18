@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Baioss.Record.Application.Presets;
+using Baioss.Record.Application.Recording;
 using Baioss.Record.Domain;
 using Xunit;
 
@@ -18,6 +19,18 @@ public sealed class PresetCatalogTests
 
     private static bool IsInterlaced(EncodingPreset p) =>
         p.ScanType is ScanType.InterlacedTff or ScanType.InterlacedBff;
+
+    [Fact]
+    public void EveryBuiltIn_PassesTheProfileValidator()
+    {
+        // El editor no guarda, el gestor no aplica y el canal no graba un perfil que el validador rechaza: un preset de fábrica
+        // rechazado (un contenedor que no lleva su códec, un bitrate a cero…) sería un preset que nadie puede usar.
+        var bad = Catalog.Select(p => (p.Name, Errors: RecordingProfileValidator.Validate(p.ToProfile())))
+                         .Where(x => x.Errors.Count > 0)
+                         .Select(x => $"{x.Name}: {string.Join(" ", x.Errors)}")
+                         .ToList();
+        Assert.True(bad.Count == 0, "Presets de fábrica que no pasan la validación:\n" + string.Join("\n", bad));
+    }
 
     [Fact]
     public void BuiltIns_HaveUniqueIdsAndNames()
