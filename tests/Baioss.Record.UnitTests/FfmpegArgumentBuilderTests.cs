@@ -1092,7 +1092,36 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-map [vmain] -map [arec1] -map [arec2]", joined);
         Assert.Contains("-metadata:s:a:0 title=Canales 1-2", joined);
         Assert.Contains("-metadata:s:a:1 title=Canales 5-6", joined);
+        Assert.Contains("-metadata:s:a:1 handler_name=Canales 5-6", joined); // MP4: el nombre que ffprobe ve (ver la teoría de abajo)
         Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Theory]
+    // Medido con FFmpeg 8.0: en MP4/MOV el title acaba en un átomo udta/name que ffprobe no lee y que el remux a faststart
+    // del Detener pierde; ffprobe solo veía «SoundHandler». El handler_name sí queda, también tras el remux y en segmentos.
+    // MKV y AVI guardan el title (MKV repetiría el handler_name como etiqueta HANDLER_NAME); MXF y TS no guardan ninguno.
+    [InlineData(ContainerFormat.Mp4, true)]
+    [InlineData(ContainerFormat.Mov, true)]
+    [InlineData(ContainerFormat.Mkv, false)]
+    [InlineData(ContainerFormat.Avi, false)]
+    [InlineData(ContainerFormat.Mxf, false)]
+    [InlineData(ContainerFormat.Ts, false)]
+    public void BuildLive_PairsAsTracks_InMp4AndMov_NamesEachTrackAlsoAsItsHandlerName(ContainerFormat container, bool handlerName)
+    {
+        var profile = SoftwareMp4();
+        profile.Container = container;
+        profile.AudioTracks = AudioTrackMode.PairsAsTracks;
+
+        var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
+
+        if (handlerName)
+            Assert.Contains("-metadata:s:a:0 title=Canales 1-2 -metadata:s:a:0 handler_name=Canales 1-2 " +
+                            "-metadata:s:a:1 title=Canales 5-6 -metadata:s:a:1 handler_name=Canales 5-6", joined);
+        else
+        {
+            Assert.Contains("-metadata:s:a:0 title=Canales 1-2 -metadata:s:a:1 title=Canales 5-6", joined);
+            Assert.DoesNotContain("handler_name", joined);
+        }
     }
 
     [Fact]
@@ -1198,7 +1227,9 @@ public class FfmpegArgumentBuilderTests : IDisposable
         try
         {
             Localizer.Language = AppLanguage.English;
-            Assert.Contains("-metadata:s:a:1 title=Channels 5-6", BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3"));
+            var english = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
+            Assert.Contains("-metadata:s:a:1 title=Channels 5-6", english);
+            Assert.Contains("-metadata:s:a:1 handler_name=Channels 5-6", english);
 
             // Fuente con recuento impar (NDI de 3 canales): el canal suelto va duplicado en L/R y se titula en singular.
             Localizer.Language = AppLanguage.Spanish;
@@ -1206,6 +1237,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
             Assert.Contains("[r2]pan=stereo|c0=c2|c1=c2[arec2]", odd);
             Assert.Contains("-metadata:s:a:0 title=Canales 1-2", odd);
             Assert.Contains("-metadata:s:a:1 title=Canal 3", odd);
+            Assert.Contains("-metadata:s:a:1 handler_name=Canal 3", odd);
         }
         finally { Localizer.Language = previous; }
     }
@@ -1225,6 +1257,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-map [vmain] -map [arec1] -map [arec2] -map [arec3] -map [arec4] -map [arec5] -map [arec6] -map [arec7] -map [arec8]", joined);
         Assert.Contains("-metadata:s:a:0 title=Canales 1-2", joined);
         Assert.Contains("-metadata:s:a:7 title=Canales 15-16", joined);
+        Assert.Contains("-metadata:s:a:7 handler_name=Canales 15-16", joined);
         Assert.DoesNotContain("-ac ", joined);
     }
 
@@ -1356,7 +1389,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("[0:a]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined);
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[aslate1];[r2]pan=stereo|c0=c4|c1=c5[aslate2]", joined);
         Assert.Contains("-map [vrec] -map [aslate1] -map [aslate2]", joined);          // mismas pistas que en vivo
-        Assert.Contains("-metadata:s:a:1 title=Canales 5-6", joined);
+        Assert.Contains("-metadata:s:a:1 title=Canales 5-6 -metadata:s:a:1 handler_name=Canales 5-6", joined);
         Assert.DoesNotContain("-ac ", joined);
     }
 

@@ -199,7 +199,12 @@ propone el primero con sonido (salvo que ya esté elegido «Todos los pares», q
 audio con `asplit` a los medidores (todos los canales capturados) y a una rama por pista:
 
 - `Single`: un `pan` con la distribución del perfil (estéreo del par elegido; 5.1/7.1 con los primeros seis/ocho canales elegidos).
-- `PairsAsTracks`: un `pan=stereo` por par elegido y `-metadata:s:a:N title=Canales 5-6` (en MP4 aparece como `name`).
+- `PairsAsTracks`: un `pan=stereo` por par elegido y `-metadata:s:a:N title=Canales 5-6`; en MP4/MOV, además,
+  `-metadata:s:a:N handler_name=Canales 5-6`. Medido con FFmpeg 8.0: en MP4/MOV el `title` se escribe como un átomo
+  `udta/name` de la pista que el demuxer de FFmpeg no lee (ffprobe no lo ve) y que, por eso, el remux a faststart del
+  Detener pierde; ffprobe solo veía `handler_name=SoundHandler`. El `handler_name` (el nombre del `hdlr` de la pista) sí
+  lo lee ffprobe y se conserva en el remux, en fMP4 y en cada segmento. MKV y AVI guardan el `title` (el `handler_name`
+  ahí no se emite: MKV lo repetiría como etiqueta `HANDLER_NAME`); MXF y TS no guardan nombre de pista.
 - `Multichannel`: un `pan` con todos los canales elegidos en UNA pista PCM de distribución sin nombre («8c», «16c»):
   MXF, MKV, AVI y WAV la escriben con cualquier recuento (probado con 16).
 

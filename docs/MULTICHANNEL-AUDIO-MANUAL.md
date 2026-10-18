@@ -82,7 +82,7 @@ Open the preset the channel uses (**✎ Edit**, or **＋ New** starting from an 
 | Mode | What it produces | When to use it | Formats |
 |---|---|---|---|
 | **Single** | A single track with the selection. With one pair → stereo. With several pairs and a **stereo** preset (what every factory preset carries) → **one stereo track per pair**, just like *PairsAsTracks*: a stereo track cannot carry more than one pair, and what was chosen in the input is not thrown away. With *All pairs* and a **5.1 / 7.1** preset → the first 6 or 8 channels form that track. | The usual: one stereo. Or a 5.1 embedded in channels 1-6. | All |
-| **PairsAsTracks** | **One stereo track per recorded pair**, each with its name ("Channels 1-2", "Channels 3-4"…). Nothing is mixed. | Programme + international + languages, each in its own track, ready for the editor. Needs *All pairs*. | All. With AAC (MP4/MOV/TS) each track adds bitrate; with PCM (MXF/MKV) nothing is lost. |
+| **PairsAsTracks** | **One stereo track per recorded pair**, each with its name ("Channels 1-2", "Channels 3-4"…; MXF and TS do not store names). Nothing is mixed. | Programme + international + languages, each in its own track, ready for the editor. Needs *All pairs*. | All. With AAC (MP4/MOV/TS) each track adds bitrate; with PCM (MXF/MKV) nothing is lost. |
 | **Multichannel** | **Every channel in a single** uncompressed multichannel **track**. | Preserving the whole SDI for post-production. Needs *All pairs*. | **PCM only: MXF, MKV, AVI or WAV**, up to 16 channels. With a lossy codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores **one stereo track per pair**, just like *PairsAsTracks* (see the note below). |
 
 > **Why *Multichannel* does not make a 7.1 track in MP4.** Lossy codecs treat **channel 4** of a 5.1/7.1 track as the
@@ -101,8 +101,10 @@ Practical recommendations:
   LFE). If what it carries are independent pairs, do **not** use a 5.1/7.1 preset with AAC: use *PairsAsTracks*.
 - If you choose **All pairs** with a 16-channel input and *PairsAsTracks*, the file will have 8 stereo tracks,
   including those of the empty pairs (silent). With PCM it does not matter; with AAC it takes a little more space.
-- The **track names** ("Channels 3-4", or "Canales 3-4" with the application in Spanish) show up in Premiere, Resolve,
-  VLC or MediaInfo, so the editor knows what each one is.
+- The **track names** ("Channels 3-4", or "Canales 3-4" with the application in Spanish) are stored in the file so the
+  editor knows what each one is: in MKV and AVI as the track title; in MP4 and MOV as the track name (*handler name*,
+  the one ffprobe shows). **MXF and TS do not store track names**: there the tracks follow the order of the chosen
+  pairs (with *All pairs*, track 1 is pair 1-2, track 2 is pair 3-4…).
 - The **test pattern** (when the signal is lost) generates silence with exactly the same tracks, so the file does not
   change structure halfway through.
 
@@ -140,8 +142,9 @@ on the recorded ones, the tracks that will go into the file and the legend "● 
 panel: "Pair 3-4 of 8 · PCM".
 
 **Programme and international sound in separate tracks.** Inputs → *All pairs* → Apply. Preset → *Audio tracks* =
-**PairsAsTracks** (ideally MXF/MKV with PCM). The file carries "Channels 1-2", "Channels 3-4", … With a stereo preset
-left on *Single* (the factory value) the result is the same: one track per pair.
+**PairsAsTracks** (ideally MXF/MKV with PCM). The file carries "Channels 1-2", "Channels 3-4", … (MXF does not store
+the names: the tracks come in that order). With a stereo preset left on *Single* (the factory value) the result is the
+same: one track per pair.
 
 **Preserving all the SDI audio for post-production.** Inputs → *All pairs*. MXF or MKV preset with *Audio tracks* =
 **Multichannel**: one PCM track with the 8 or 16 channels.

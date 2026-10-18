@@ -384,7 +384,7 @@ public sealed class FfmpegArgumentBuilder
             {
                 foreach (var a in recAudio) { args.Add("-map"); args.Add(a); }
                 args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
-                if (routes is not null) args.AddRange(TrackTitles(routes));
+                if (routes is not null) args.AddRange(TrackTitles(routes, profile.Container));
             }
             else
             {
@@ -392,7 +392,7 @@ public sealed class FfmpegArgumentBuilder
                 if (hasAudio) foreach (var a in recAudio) { args.Add("-map"); args.Add(a); }
                 args.AddRange(VideoEncoderArgs(profile, recFrame, recRate));
                 if (hasAudio) args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
-                if (hasAudio && routes is not null) args.AddRange(TrackTitles(routes));
+                if (hasAudio && routes is not null) args.AddRange(TrackTitles(routes, profile.Container));
                 if (profile.OutputFrameRate is { } fr)
                 {
                     args.Add("-r");
@@ -733,7 +733,7 @@ public sealed class FfmpegArgumentBuilder
             foreach (var a in routes is null ? new[] { "0:a:0" } : RouteLabels(routes, "aslate")) { args.Add("-map"); args.Add(a); }
             args.AddRange(VideoEncoderArgs(profile, res, rate));
             args.AddRange(AudioEncoderArgs(profile, channelCount: routes is null));
-            if (routes is not null) args.AddRange(TrackTitles(routes));
+            if (routes is not null) args.AddRange(TrackTitles(routes, profile.Container));
             if (profile.OutputFrameRate is { } fr)
             {
                 args.Add("-r");
@@ -1215,14 +1215,26 @@ public sealed class FfmpegArgumentBuilder
     private static IReadOnlyList<string> RouteLabels(IReadOnlyList<AudioRoute> routes, string label)
         => Enumerable.Range(1, routes.Count).Select(i => string.Create(CultureInfo.InvariantCulture, $"[{label}{i}]")).ToList();
 
-    /// <summary>Títulos de pista (metadatos por stream de audio) para que el editor vea «Canales 3-4» y no «Audio 2».</summary>
-    private static IEnumerable<string> TrackTitles(IReadOnlyList<AudioRoute> routes)
+    /// <summary>
+    /// Títulos de pista (metadatos por stream de audio) para que el editor vea «Canales 3-4» y no «Audio 2». En MP4/MOV van
+    /// además como <c>handler_name</c> (el nombre del <c>hdlr</c> de la pista; si no, «SoundHandler»): ahí el <c>title</c>
+    /// acaba en un átomo <c>udta/name</c> que el demuxer de FFmpeg no lee —ffprobe no lo ve— y que el remux a faststart del
+    /// Detener, por eso mismo, ya no escribe; el <c>handler_name</c> sí lo leen ffprobe y el remux, que lo conserva (medido
+    /// con FFmpeg 8.0, también en segmentos). En los demás basta <c>title</c>: MKV y AVI lo guardan (MKV añadiría el
+    /// <c>handler_name</c> como una etiqueta HANDLER_NAME repetida) y MXF y TS no guardan ninguno de los dos.
+    /// </summary>
+    private static IEnumerable<string> TrackTitles(IReadOnlyList<AudioRoute> routes, ContainerFormat container)
     {
+        bool handlerName = container is ContainerFormat.Mp4 or ContainerFormat.Mov;
         for (int i = 0; i < routes.Count; i++)
         {
             if (routes[i].Title is not { } title) continue;
-            yield return string.Create(CultureInfo.InvariantCulture, $"-metadata:s:a:{i}");
+            string stream = string.Create(CultureInfo.InvariantCulture, $"-metadata:s:a:{i}");
+            yield return stream;
             yield return $"title={title}";
+            if (!handlerName) continue;
+            yield return stream;
+            yield return $"handler_name={title}";
         }
     }
 
