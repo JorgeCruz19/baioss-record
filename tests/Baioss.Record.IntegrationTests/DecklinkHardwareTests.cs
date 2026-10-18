@@ -41,6 +41,8 @@ public sealed class DecklinkHardwareTests
     /// <summary>Contenedor MP4/MOV como el de la build publicada: <c>Recording:FragmentedMp4</c> del appsettings embebido
     /// (hoy false, MP4 estándar). BAIOSS_HW_FMP4=1 prueba el fMP4 fragmentado.</summary>
     private static readonly bool ShippedFragmentedMp4 = Env("BAIOSS_HW_FMP4") == "1";
+    /// <summary>Segundos en los que se busca peine con idet: los primeros del archivo, y los de la señal justo antes de Grabar.</summary>
+    private const int CombWindowSeconds = 12;
 
     private readonly ITestOutputHelper _out;
     public DecklinkHardwareTests(ITestOutputHelper output) => _out = output;
@@ -178,6 +180,65 @@ public sealed class DecklinkHardwareTests
         }
     }
 
+    /// <summary>
+    /// La FUENTE: un FFmpeg más que lee del relé de la tarjeta, como el proceso del canal, la señal en crudo durante
+    /// <c>seconds</c>. Las entradas llevan TV en directo (noticias, cartas fijas, deportes): lo que el archivo debe tener —peine
+    /// que quitar, qué canales suenan— se mide en lo que la tele emitía al grabar, no se supone. Se arranca con el canal en
+    /// reposo, antes de Grabar: el relé da a cada socket que conecta la reserva pendiente más antigua, y en mitad de un Grabar
+    /// se llevaría la del proceso nuevo del motor. No es gratis (la señal en crudo son ~125 MB/s más por el relé, y lo que se
+    /// haga con ella): a la vez que una grabación, solo con un preset que vaya holgado.
+    /// </summary>
+    private sealed class SourceTap : IDisposable
+    {
+        private readonly Process _process;
+        private readonly Task<byte[]> _output;
+        private readonly Task<string> _log;
+
+        private SourceTap(Process process)
+        {
+            _process = process;
+            _output = ReadAllAsync(process.StandardOutput.BaseStream);
+            _log = process.StandardError.ReadToEndAsync();
+        }
+
+        /// <param name="output">Lo que se hace con la señal: mapeo, filtros y salida (<c>pipe:1</c> para leerla en la prueba).</param>
+        public static async Task<SourceTap> StartAsync(Rig rig, double seconds, params string[] output)
+        {
+            int consumers = rig.Receiver.ConsumerCount;
+            var psi = new ProcessStartInfo(Locator().FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var a in new[] { "-hide_banner", "-nostats", "-nostdin" }
+                         .Concat(DecklinkCaptureSource.ConsumerArgumentsFor(rig.Receiver.ConsumerPort))
+                         .Concat(new[] { "-t", seconds.ToString(CultureInfo.InvariantCulture) }).Concat(output))
+                psi.ArgumentList.Add(a);
+            var tap = new SourceTap(Process.Start(psi)!);
+            try
+            {
+                // Sin reservas pendientes (canal en reposo), su socket es un consumidor nuevo: cuando el relé lo da de alta,
+                // Grabar ya no puede cruzarse con él.
+                await WaitUntilAsync(() => rig.Receiver.ConsumerCount > consumers || tap._process.HasExited, TimeSpan.FromSeconds(10),
+                    "la toma de la fuente se conecta al relé");
+                if (tap._process.HasExited) throw new InvalidOperationException("La toma de la fuente no arrancó: " + await tap._log);
+                return tap;
+            }
+            catch { tap.Dispose(); throw; }
+        }
+
+        /// <summary>Espera a que termine su ventana y devuelve lo que escribió (salida y registro).</summary>
+        public async Task<(byte[] Output, string Log)> CompleteAsync()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { await _process.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) { throw new TimeoutException("La toma de la fuente no terminó su ventana: " + string.Join(' ', _process.StartInfo.ArgumentList)); }
+            return (await _output, await _log);
+        }
+
+        public void Dispose()
+        {
+            try { if (!_process.HasExited) _process.Kill(); } catch { /* ya salió */ }
+            _process.Dispose();
+        }
+    }
+
     // ------------------------------------------------------------------------------------------------------------------
     // ffprobe: lo que de verdad quedó en el archivo
     // ------------------------------------------------------------------------------------------------------------------
@@ -252,21 +313,48 @@ public sealed class DecklinkHardwareTests
             .Where(v => !double.IsNaN(v)).OrderBy(v => v).ToArray();
     }
 
-    /// <summary>Cuadros que <c>idet</c> ve entrelazados (TFF+BFF), progresivos e indeterminados en los primeros segundos del
-    /// archivo. La detección por cuadro, no la «multi»: esa arrastra estado y en escenas oscuras y ruidosas da falsos positivos al
-    /// inicio. idet solo clasifica lo que se mueve: un cuadro igual al anterior y al siguiente queda indeterminado.</summary>
-    private static async Task<(int Interlaced, int Progressive, int Undetermined)> DetectInterlaceAsync(string file)
+    /// <summary>
+    /// Lo que <c>idet</c> ve cuadro a cuadro (la detección por cuadro, no la «multi»: esa arrastra estado y en escenas oscuras y
+    /// ruidosas da falsos positivos al inicio). idet solo clasifica lo que se mueve: un cuadro igual al anterior y al siguiente
+    /// queda indeterminado.
+    /// </summary>
+    private sealed record IdetCounts(int Tff, int Bff, int Progressive, int Undetermined)
     {
-        var (_, err, _) = await RunAsync(Locator().FfmpegPath, "-hide_banner", "-nostats", "-i", file, "-t", "8", "-map", "0:v:0", "-vf", "idet", "-f", "null", "-");
-        var line = err.Split('\n').LastOrDefault(l => l.Contains("Single frame detection", StringComparison.Ordinal)) ?? "";
-        int Count(string key)
+        public int Frames => Tff + Bff + Progressive + Undetermined;
+        public int Classified => Tff + Bff + Progressive;
+
+        /// <summary>Cuadros con el peine de una señal con ese orden de campos, descontados los del orden contrario: el de los
+        /// campos tejidos va todo al orden de la señal; el falso peine del contenido, a los dos por igual.</summary>
+        public int Combed(bool topFieldFirst) => topFieldFirst ? Tff - Bff : Bff - Tff;
+
+        /// <summary><see cref="Combed"/> por cada cuadro que idet clasifica: lo que se mueve. Contar los indeterminados diluía el
+        /// peine de una grabación sin desentrelazar en un ProRes Proxy (la compresión deja indeterminado más de la mitad).</summary>
+        public double CombedShare(bool topFieldFirst) => Classified == 0 ? 0 : (double)Combed(topFieldFirst) / Classified;
+
+        public static IdetCounts Parse(string ffmpegLog)
         {
-            int i = line.IndexOf(key + ":", StringComparison.Ordinal);
-            if (i < 0) return 0;
-            var rest = line[(i + key.Length + 1)..].TrimStart();
-            return int.Parse(new string(rest.TakeWhile(char.IsDigit).ToArray()), CultureInfo.InvariantCulture);
+            var line = ffmpegLog.Split('\n').LastOrDefault(l => l.Contains("Single frame detection", StringComparison.Ordinal)) ?? "";
+            int Count(string key)
+            {
+                int i = line.IndexOf(key + ":", StringComparison.Ordinal);
+                if (i < 0) return 0;
+                var rest = line[(i + key.Length + 1)..].TrimStart();
+                return int.Parse(new string(rest.TakeWhile(char.IsDigit).ToArray()), CultureInfo.InvariantCulture);
+            }
+            return new IdetCounts(Count("TFF"), Count("BFF"), Count("Progressive"), Count("Undetermined"));
         }
-        return (Count("TFF") + Count("BFF"), Count("Progressive"), Count("Undetermined"));
+
+        public override string ToString() => $"{Tff} TFF / {Bff} BFF / {Progressive} progresivos / {Undetermined} indeterminados";
+    }
+
+    /// <summary>Lo que idet ve en los primeros <paramref name="seconds"/> del archivo; con <paramref name="height"/>, reducido antes
+    /// a esa altura.</summary>
+    private static async Task<IdetCounts> DetectInterlaceAsync(string file, double seconds, int? height = null)
+    {
+        string filter = height is { } h ? string.Create(CultureInfo.InvariantCulture, $"scale=-2:{h},idet") : "idet";
+        var (_, err, _) = await RunAsync(Locator().FfmpegPath, "-hide_banner", "-nostats", "-i", file,
+            "-t", seconds.ToString(CultureInfo.InvariantCulture), "-map", "0:v:0", "-vf", filter, "-f", "null", "-");
+        return IdetCounts.Parse(err);
     }
 
     /// <summary>Marcas de entrelazado y de campo superior primero del primer cuadro DECODIFICADO (las del códec, no las del
@@ -288,6 +376,119 @@ public sealed class DecklinkHardwareTests
         var v = line[(line.IndexOf("max_volume:", StringComparison.Ordinal) + 11)..].Replace("dB", "").Trim();
         return v.StartsWith("-inf", StringComparison.Ordinal) ? double.NegativeInfinity
             : double.Parse(v, NumberStyles.Float, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Una pista de audio del archivo decodificada a float a 48 kHz, un array por canal.</summary>
+    private static async Task<float[][]> DecodeAudioAsync(string file, int audioIndex, int channels)
+    {
+        var psi = new ProcessStartInfo(Locator().FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in new[] { "-hide_banner", "-nostats", "-nostdin", "-i", file, "-map", $"0:a:{audioIndex}", "-ar", "48000",
+                     "-c:a", "pcm_f32le", "-f", "f32le", "pipe:1" })
+            psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        var raw = ReadAllAsync(p.StandardOutput.BaseStream);
+        var err = p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        Assert.True(p.ExitCode == 0, $"No se pudo decodificar la pista de audio {audioIndex + 1}: {await err}");
+        return Deinterleave(await raw, channels);
+    }
+
+    private static async Task<byte[]> ReadAllAsync(Stream stream)
+    {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
+    }
+
+    private static float[][] Deinterleave(byte[] raw, int channels)
+    {
+        var samples = MemoryMarshal.Cast<byte, float>(raw.AsSpan(0, raw.Length / (4 * channels) * 4 * channels));
+        int n = samples.Length / channels;
+        var result = new float[channels][];
+        for (int c = 0; c < channels; c++)
+        {
+            var ch = result[c] = new float[n];
+            for (int i = 0; i < n; i++) ch[i] = samples[i * channels + c];
+        }
+        return result;
+    }
+
+    private static float[] Mix(IReadOnlyList<float[]> channels)
+    {
+        var mix = new float[channels.Min(c => c.Length)];
+        foreach (var ch in channels) for (int i = 0; i < mix.Length; i++) mix[i] += ch[i];
+        return mix;
+    }
+
+    /// <summary>Correlación normalizada de <paramref name="a"/> con <paramref name="b"/> adelantada <paramref name="lag"/> muestras
+    /// (a[i] frente a b[i + lag]) en <paramref name="count"/> muestras desde <paramref name="from"/>; 0 si alguna está en silencio.</summary>
+    private static double Correlation(float[] a, float[] b, int lag, int from, int count)
+    {
+        double ab = 0, aa = 0, bb = 0;
+        for (int i = from; i < from + count; i++)
+        {
+            double x = a[i], y = b[i + lag];
+            ab += x * y; aa += x * x; bb += y * y;
+        }
+        return aa > 0 && bb > 0 ? ab / Math.Sqrt(aa * bb) : 0;
+    }
+
+    private static double RmsDb(float[] x, int from, int count)
+    {
+        double sum = 0;
+        for (int i = from; i < from + count; i++) sum += (double)x[i] * x[i];
+        return sum > 0 ? 10 * Math.Log10(sum / count) : double.NegativeInfinity;
+    }
+
+    /// <summary>
+    /// Cuántas muestras de la toma de la fuente van por delante de la primera del archivo. Con la MEZCLA de todos los canales,
+    /// que no depende de cómo se repartieron (el archivo lleva los 16): primero por la potencia en bloques de 10 ms y luego,
+    /// muestra a muestra, por la forma de onda alrededor, en el medio segundo del archivo con más sonido. null si la mezcla
+    /// está en silencio (no hay nada que alinear) o no se parece a la fuente en ningún desfase.
+    /// </summary>
+    private static int? AlignToSource(float[][] source, IReadOnlyList<float[]> recorded)
+    {
+        const int block = 480;
+        float[] src = Mix(source), rec = Mix(recorded);
+        double[] Power(float[] x)
+        {
+            var p = new double[x.Length / block];
+            for (int b = 0; b < p.Length; b++) for (int i = b * block; i < (b + 1) * block; i++) p[b] += (double)x[i] * x[i];
+            return p;
+        }
+        double[] sp = Power(src), rp = Power(rec);
+        if (rp.Sum() == 0 || sp.Sum() == 0) return null;
+        // El archivo cae dentro de la toma (que empieza antes de Grabar y acaba después): al menos el 90 % superpuesto.
+        int bestLag = 0; double best = double.NegativeInfinity;
+        for (int lag = -rp.Length / 10; lag <= sp.Length - rp.Length * 9 / 10; lag++)
+        {
+            int from = Math.Max(0, -lag), to = Math.Min(rp.Length, sp.Length - lag);
+            double mr = 0, ms = 0;
+            for (int i = from; i < to; i++) { mr += rp[i]; ms += sp[i + lag]; }
+            mr /= to - from; ms /= to - from;
+            double rs = 0, rr = 0, ss = 0;
+            for (int i = from; i < to; i++) { double x = rp[i] - mr, y = sp[i + lag] - ms; rs += x * y; rr += x * x; ss += y * y; }
+            double r = rr > 0 && ss > 0 ? rs / Math.Sqrt(rr * ss) : 0;
+            if (r > best) { best = r; bestLag = lag; }
+        }
+        if (best < 0.5) return null;
+        // Fino: medio segundo, ±1 bloque alrededor.
+        const int window = 24_000;
+        int loudest = 0; double loudestEnergy = -1;
+        for (int b = 0; b + window / block <= rp.Length; b += 5)
+        {
+            double e = 0;
+            for (int i = b; i < b + window / block; i++) e += rp[i];
+            if (e > loudestEnergy) { loudestEnergy = e; loudest = b * block; }
+        }
+        int bestFine = bestLag * block; double bestCorr = double.NegativeInfinity;
+        for (int lag = bestLag * block - block; lag <= bestLag * block + block; lag++)
+        {
+            if (loudest + lag < 0 || loudest + window + lag > src.Length || loudest + window > rec.Length) continue;
+            double c = Correlation(rec, src, lag, loudest, window);
+            if (c > bestCorr) { bestCorr = c; bestFine = lag; }
+        }
+        return bestCorr >= 0.5 ? bestFine : null;
     }
 
     private static string Describe(MediaInfo m) => string.Join(" | ", m.Streams.Select(s =>
@@ -329,6 +530,48 @@ public sealed class DecklinkHardwareTests
         if (!double.IsNaN(a.Duration))
             Assert.True(Math.Abs(a.Duration - duration) < 0.25, $"Audio {a.Duration:0.000} s frente a vídeo {duration:0.000} s.");
         return m;
+    }
+
+    /// <summary>
+    /// Cada canal grabado lleva SU canal de la fuente (<paramref name="recorded"/>[g] ↔ <paramref name="source"/>[g]), medido en
+    /// la toma de la misma ventana: en silencio si aquel lo está; si suena, con su nivel (±1 dB) y su forma de onda (correlación
+    /// de 0,9 o más, y ninguno de los otros 15 canales se le parece claramente más). Un canal de otro par con el mismo sonido
+    /// (los 16 repetidos en grupos de 4) no se distingue de él, y da igual: el archivo suena igual.
+    /// </summary>
+    private void AssertChannelsFollowTheSource(float[][] source, IReadOnlyList<float[]> recorded, IReadOnlyList<string> labels)
+    {
+        const double silentDb = -80;
+        bool sourceSilent = source.All(s => RmsDb(s, 0, s.Length) < silentDb);
+        int? found = AlignToSource(source, recorded);
+        if (found is not { } lag)
+        {
+            double loudest = recorded.Max(r => RmsDb(r, 0, r.Length));
+            Assert.True(sourceSilent && loudest < silentDb + 10,
+                sourceSilent ? $"El SDI está en silencio y el archivo suena ({loudest:0.0} dBFS)."
+                : loudest < silentDb + 10 ? "La fuente suena y el archivo está en silencio en todos los canales."
+                : $"El audio del archivo no se parece al de la fuente en ningún desfase (canal más fuerte {loudest:0.0} dBFS).");
+            _out.WriteLine("El SDI está en silencio en los 16 canales: el reparto no se puede comprobar con esta señal.");
+            return;
+        }
+        int from = Math.Max(0, -lag);
+        int count = Math.Min(recorded.Min(r => r.Length), source[0].Length - lag) - from;
+        _out.WriteLine($"Archivo alineado con la toma de la fuente: {lag / 48.0:0.0} ms después de su inicio; {count / 48000.0:0.00} s comparados.");
+        Assert.True(count >= 48000 * 8, $"Solo {count / 48000.0:0.0} s del archivo caen dentro de la toma de la fuente.");
+        var failures = new List<string>();
+        for (int g = 0; g < recorded.Count; g++)
+        {
+            double recordedDb = RmsDb(recorded[g], from, count), sourceDb = RmsDb(source[g], from + lag, count);
+            double[] rho = source.Select(s => Correlation(recorded[g], s, lag, from, count)).ToArray();
+            int best = Array.IndexOf(rho, rho.Max());
+            string line = $"{labels[g]}: {recordedDb:0.0} dBFS · fuente canal {g + 1}: {sourceDb:0.0} dBFS, correlación {rho[g]:0.000}" +
+                          (best != g && rho[best] > rho[g] ? $" · se parece más al canal {best + 1} ({rho[best]:0.000})" : "");
+            _out.WriteLine(line);
+            bool ok = sourceDb < silentDb
+                ? recordedDb < silentDb + 10
+                : Math.Abs(recordedDb - sourceDb) <= 1.0 && rho[g] >= 0.9 && rho[g] >= rho[best] - 0.02;
+            if (!ok) failures.Add(line);
+        }
+        Assert.True(failures.Count == 0, "Canales que no llevan su canal de la fuente (se mezclaron o se cruzaron):\n" + string.Join("\n", failures));
     }
 
     private void Dump(string title, IEnumerable<string> lines)
@@ -574,6 +817,20 @@ public sealed class DecklinkHardwareTests
                 await WaitUntilAsync(() => rig.Source.CurrentSignal.State == SignalState.Locked, TimeSpan.FromSeconds(20), "SEÑAL OK");
                 await WaitUntilAsync(() => rig.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en marcha");
                 double sourceFps = rig.Source.CurrentSignal.FrameRate?.Value ?? 29.97;
+                bool sourceInterlaced = rig.Source.CurrentSignal.Scan is ScanType.InterlacedTff or ScanType.InterlacedBff;
+                int sourceHeight = rig.Source.CurrentSignal.Resolution?.Height ?? 1080;
+                int recordedHeight = profile.TargetResolution?.Height ?? sourceHeight;
+                // Preset progresivo con señal entrelazada: cuánto peine tiene la propia señal ahora, en los segundos de justo antes de
+                // Grabar (ver más abajo). No a la vez que la grabación: la toma suma carga, y los presets más pesados ya van al límite
+                // de este equipo con imagen compleja (ProRes 422 HQ 1080p59.94 perdió 181–194 unidades con un partido, con la toma a
+                // la vez y sin ella; con las barras, ninguna). Salvo en un archivo más bajo que la señal (720p), donde idet no lo puede
+                // medir.
+                IdetCounts? sourceComb = null;
+                if (profile.ScanType is ScanType.Progressive && sourceInterlaced && recordedHeight >= sourceHeight)
+                {
+                    using var tap = await SourceTap.StartAsync(rig, CombWindowSeconds, "-map", "0:v:0", "-vf", "idet", "-f", "null", "-");
+                    sourceComb = IdetCounts.Parse((await tap.CompleteAsync()).Log);
+                }
 
                 double tStart = rig.Clock.Elapsed.TotalSeconds;
                 await rig.Engine.StartRecordingAsync(Guid.NewGuid(), profile);
@@ -607,12 +864,11 @@ public sealed class DecklinkHardwareTests
                 // Degradado, el archivo es del codificador de la cadena que abrió, no del pedido.
                 var media = await AssertContinuousRecordingAsync(files[0], expectedSeconds, expectedFps, (fallback ? 2.5 : 1.5) + handover / 2,
                     codec, fallback ? null : encoder);
-                bool sourceInterlaced = rig.Source.CurrentSignal.Scan is ScanType.InterlacedTff or ScanType.InterlacedBff;
-                var (combed, progressive, undetermined) = await DetectInterlaceAsync(files[0]);
+                var scan = await DetectInterlaceAsync(files[0], CombWindowSeconds);
                 var coded = await FirstFrameScanAsync(files[0]);
                 _out.WriteLine($"Barrido: señal {rig.Source.CurrentSignal.Scan}, preset {profile.ScanType}, contenedor «{media.Video!.FieldOrder}», " +
                                $"perfil «{media.Video.Profile}», cuadro codificado {(coded.Interlaced ? (coded.TopFieldFirst ? "entrelazado TFF" : "entrelazado BFF") : "progresivo")}, " +
-                               $"idet {combed} entrelazados / {progressive} progresivos / {undetermined} indeterminados");
+                               $"idet {scan}");
                 if (profile.ScanType is ScanType.InterlacedTff)
                 {
                     // Entrelazado de verdad: el CÓDEC marca los cuadros entrelazados TFF (no solo el contenedor). El MOV de FFmpeg
@@ -627,14 +883,43 @@ public sealed class DecklinkHardwareTests
                 }
                 else if (profile.ScanType is ScanType.Progressive && sourceInterlaced)
                 {
-                    // Preset progresivo con señal 1080i: desentrelazado, sin peine (de lo que idet clasifica, menos del 10 %
-                    // entrelazado). Solo se mide si la imagen se mueve: con la carta casi fija de la emisora fuera de emisión, idet
-                    // deja indeterminados más de 7 de cada 10 cuadros, y de los pocos que clasifica llegó a dar un 28 % «entrelazados»
-                    // con bwdif en marcha (ruido: por la misma cadena, un 1080i sintético en movimiento sale 121 de 121 progresivo).
-                    int classified = combed + progressive;
-                    if (classified >= 30 && classified >= undetermined)
-                        Assert.True(combed < classified / 10.0, $"Peine en un preset progresivo: idet ve {combed} cuadros entrelazados y {progressive} progresivos.");
-                    else _out.WriteLine($"idet solo clasifica {classified} de {classified + undetermined} cuadros (imagen casi fija): el peine no se puede medir con esta señal.");
+                    // Preset progresivo con señal 1080i: desentrelazado, sin el peine de la señal. Lo mide idet, cuadro a cuadro, en
+                    // el archivo y en la propia señal justo antes de Grabar (la toma del relé), porque lo que idet ve depende de lo
+                    // que emita la tele:
+                    //  - El peine de los campos tejidos va todo al orden de campos de la señal (143 TFF, 0 BFF); el «peine» que idet
+                    //    ve en un cuadro bien desentrelazado con mucho detalle horizontal (líneas del campo y red de la portería en
+                    //    un partido: hasta 117 de 319 cuadros clasificados, y la prueba fallaba en 7 presets) se reparte entre los
+                    //    dos órdenes (57 TFF, 60 BFF). Se cuenta el orden de la señal menos el contrario, por cada cuadro que idet
+                    //    clasifica (los que se mueven).
+                    //  - Medido en un partido y en un informativo, peine en lo clasificado: la señal, 99–100 %; el archivo sin
+                    //    desentrelazar, 77–100 % (lo más bajo, un ProRes Proxy: su compresión deja indeterminada buena parte);
+                    //    desentrelazado, un 14 % como mucho (Proxy, cuya compresión deja ruido de un solo orden) y casi siempre
+                    //    menos del 2 %.
+                    //  - Si la señal apenas tiene peine (imagen casi fija, cine en PsF, la carta de la emisora fuera de emisión), no
+                    //    hay nada que juzgar: tampoco un archivo sin desentrelazar lo tendría. Que la señal se mida justo antes y no
+                    //    a la vez no hace fallar una grabación buena (su falso peine se reparte entre los dos órdenes sea cual sea la
+                    //    imagen); como mucho, si la imagen cambia, deja sin ver una mala en esa pasada.
+                    //  - Un 2160p se mide reducido a la altura de la señal: el escalado ×2 estira el peine a 4 líneas, que idet casi
+                    //    no ve (de 0 a 37 de 481 cuadros sin desentrelazar); reducido a 1080 lo ve en todo lo que clasifica. Un 720p
+                    //    no se puede medir así: el escalado mezcla los campos (doble imagen, no peine) e idet da 0 se desentrelace o
+                    //    no; ahí solo vale la comprobación de la cadena de filtros de abajo.
+                    bool tff = rig.Source.CurrentSignal.Scan is not ScanType.InterlacedBff;
+                    if (sourceComb is not { } source)
+                        _out.WriteLine($"Archivo de {recordedHeight} líneas con una señal de {sourceHeight}: el escalado mezcla los campos e idet no ve el peine; no se mide.");
+                    else
+                    {
+                        var recorded = media.Video.Height > sourceHeight ? await DetectInterlaceAsync(files[0], CombWindowSeconds, sourceHeight) : scan;
+                        _out.WriteLine($"Peine en {CombWindowSeconds} s (idet): señal justo antes de grabar {source} = {source.CombedShare(tff):P0} de lo clasificado · " +
+                                       $"archivo{(media.Video.Height > sourceHeight ? $" a {sourceHeight} líneas" : "")} {recorded} = {recorded.CombedShare(tff):P0}");
+                        Assert.True(source.Frames >= CombWindowSeconds * sourceFps * 0.9,
+                            $"La toma de la fuente solo vio {source.Frames} cuadros en {CombWindowSeconds} s: no siguió el ritmo de la señal.");
+                        if (source.Classified < source.Frames / 4 || source.CombedShare(tff) < 0.5)
+                            _out.WriteLine("La señal apenas tiene peine (imagen casi fija, o progresiva): el desentrelazado no se puede juzgar con esta imagen.");
+                        else
+                            Assert.True(recorded.Combed(tff) < 10 || recorded.CombedShare(tff) < source.CombedShare(tff) / 2,
+                                $"Peine en un preset progresivo: el archivo conserva peine en el {recorded.CombedShare(tff):P0} de lo que idet clasifica ({recorded}), " +
+                                $"con la señal en el {source.CombedShare(tff):P0} justo antes de grabar ({source}).");
+                    }
                     // Con cualquier imagen: la rama de grabación desentrelaza con bwdif, con la paridad de la señal y, si el preset
                     // dobla su cadencia (1080i59.94 → 1080p59.94), un cuadro por campo.
                     bool perField = Math.Abs(expectedFps - 2 * sourceFps) < 0.01 * expectedFps;
@@ -1156,6 +1441,10 @@ public sealed class DecklinkHardwareTests
                 await WaitUntilAsync(() => rig.Source.CurrentSignal.State == SignalState.Locked, TimeSpan.FromSeconds(20), "SEÑAL OK");
                 await WaitUntilAsync(() => rig.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en marcha");
                 Assert.Equal(16, rig.Source.CurrentSignal.AudioChannels);
+                // Los 16 canales tal cual llegan de la tarjeta mientras se graba: qué canales suenan depende de la emisora y de la
+                // hora (el par 1-2 en silencio y el canal 4 con sonido; los 16 repetidos en grupos de 4…). La toma empieza antes
+                // de Grabar y acaba después de que se cierre el archivo.
+                using var sourceAudio = await SourceTap.StartAsync(rig, 14, "-map", "0:a:0", "-c:a", "pcm_f32le", "-f", "f32le", "pipe:1");
                 var t = Stopwatch.StartNew();
                 await rig.Engine.StartRecordingAsync(Guid.NewGuid(), profile);
                 double started = t.Elapsed.TotalSeconds;
@@ -1163,23 +1452,26 @@ public sealed class DecklinkHardwareTests
                 double stop = t.Elapsed.TotalSeconds;
                 await rig.Engine.StopRecordingAsync();
                 await Task.Delay(1500);
+                var (sourceRaw, _) = await sourceAudio.CompleteAsync();
                 var files = Directory.GetFiles(dir);
                 Assert.Single(files);
                 var m = await AssertContinuousRecordingAsync(files[0], stop - started + 0.3, rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.5, null);
                 var audioStreams = m.Audio.ToArray();
                 Assert.Equal(tracks, audioStreams.Length);
                 Assert.All(audioStreams, s => Assert.Equal(channelsPerTrack, s.Channels));
-                // El par 1 de la señal tiene sonido; el resto del SDI está en silencio: la primera pista suena, y con una
-                // pista por par, las demás no (los canales no se mezclaron entre pares).
-                double first = await MaxVolumeAsync(files[0], 0);
-                _out.WriteLine($"Pista 1: {first:0.0} dBFS");
-                Assert.True(first > -40, "La primera pista está en silencio.");
-                if (tracks > 1)
+                // Cada canal del archivo, frente a su canal de la fuente: el g-ésimo de los 16 (todos los pares, en orden).
+                var recorded = new List<float[]>();
+                var labels = new List<string>();
+                for (int k = 0; k < tracks; k++)
                 {
-                    double second = await MaxVolumeAsync(files[0], 1);
-                    _out.WriteLine($"Pista 2: {second:0.0} dBFS");
-                    Assert.True(second < -60, $"La pista del par 2 suena ({second:0.0} dBFS): se mezclaron canales.");
+                    var track = await DecodeAudioAsync(files[0], k, channelsPerTrack);
+                    for (int c = 0; c < channelsPerTrack; c++)
+                    {
+                        recorded.Add(track[c]);
+                        labels.Add(tracks > 1 ? $"pista {k + 1}, canal {c + 1}" : $"canal {c + 1}");
+                    }
                 }
+                AssertChannelsFollowTheSource(Deinterleave(sourceRaw, 16), recorded, labels);
             }
         }
         finally { Dump("registro", log); Cleanup(dir); }
