@@ -442,6 +442,63 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-profile:v dnxhd -b:v 220000000 -flags +ildct", joined); // 1080i29.97 de la señal → CID 1243
     }
 
+    /// <summary>Lo que se graba con un perfil: el proceso del canal, la carta de ajuste y el archivo único.</summary>
+    private static string[][] DnxhdRecordingCommands(RecordingProfile profile) => new[]
+    {
+        NewLiveBuilder(profile).BuildLive(recording: true, 640, 360).ToArray(),
+        NewLiveBuilder(profile).BuildSlate(recording: true, 640, 360).ToArray(),
+        new FfmpegArgumentBuilder().From(new FakeCaptureSource("C:/clips/in.mp4")).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .Build().ToArray(),
+    };
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHd, 1280, 720, ScanType.Progressive, 4, "60000000")]      // CID 1252 (4 no es clave: el más cercano)
+    [InlineData(VideoCodec.DnxHd, 1920, 1080, ScanType.InterlacedTff, 0, "185000000")]  // CID 1243 (DNxHD 185)
+    [InlineData(VideoCodec.DnxHr, 1920, 1080, ScanType.InterlacedTff, 0, "185000000")]  // un DNxHR entrelazado se graba como su DNxHD
+    public void ClassicDnxhd_InAvi_CarriesAvidsFourCc(VideoCodec codec, int width, int height, ScanType scan, double mbps, string bitrate)
+    {
+        // Sin «AVdn», FFmpeg escribe el DNxHD clásico en AVI con FourCC 0 y ffprobe lo relee como rawvideo: un archivo ilegible
+        // y sin error (medido con FFmpeg 8.0 y con el incluido). En las tres construcciones que graban.
+        var profile = Dnxhd(width, height, FrameRate.P25, scan, mbps);
+        profile.VideoCodec = codec;
+        profile.Container = ContainerFormat.Avi;
+        foreach (var args in DnxhdRecordingCommands(profile))
+        {
+            var joined = string.Join(' ', args);
+            Assert.Contains($"-c:v dnxhd -profile:v dnxhd -b:v {bitrate} ", joined);
+            Assert.Contains("-tag:v AVdn", joined);
+            Assert.Single(args, a => a == "-tag:v");
+        }
+    }
+
+    [Fact]
+    public void Dnxhr_InAvi_AndClassicDnxhdInOtherContainers_GoWithoutATag()
+    {
+        // DNxHR ya sale con «AVdh» en AVI: el de perfil y el DnxHd de un tamaño sin CID clásico (4K). En MOV, MXF y MKV el DNxHD
+        // clásico ya se relee como dnxhd (medido): ahí no se toca.
+        var dnxhr = Dnxhr1080(EncoderProfile.DnxHrHq, FrameRate.P25, ScanType.Progressive);
+        dnxhr.Container = ContainerFormat.Avi;
+        var uhd = Dnxhd(3840, 2160, FrameRate.P25, ScanType.Progressive, 185);
+        uhd.Container = ContainerFormat.Avi;
+        foreach (var profile in new[] { dnxhr, uhd })
+            foreach (var args in DnxhdRecordingCommands(profile))
+            {
+                Assert.Contains("-c:v dnxhd -profile:v dnxhr_hq ", string.Join(' ', args));
+                Assert.DoesNotContain("-tag:v", args);
+            }
+
+        foreach (var container in new[] { ContainerFormat.Mov, ContainerFormat.Mxf, ContainerFormat.Mkv })
+        {
+            var classic = Dnxhd(1280, 720, FrameRate.P25, ScanType.Progressive, 4);
+            classic.Container = container;
+            foreach (var args in DnxhdRecordingCommands(classic))
+            {
+                Assert.Contains("-c:v dnxhd -profile:v dnxhd -b:v 60000000 ", string.Join(' ', args));
+                Assert.DoesNotContain("-tag:v", args);
+            }
+        }
+    }
+
     // --- Pipeline en vivo: preview + grabación en un solo proceso ---
 
     private static FfmpegArgumentBuilder NewLiveBuilder(RecordingProfile profile, bool hasAudio = true, bool analyze = false)
