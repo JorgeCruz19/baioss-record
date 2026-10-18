@@ -10,6 +10,7 @@ using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Localization;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Preview;
 using Xunit;
@@ -120,6 +121,9 @@ public sealed class SlateRealTimeTests
             _out.WriteLine(FormattableString.Invariant($"en marcha {ran:0.0} s (salió a los {lived:0.0} s) → archivo {info.Duration:0.00} s ({info.Format}); vídeo {info.Video.Start:0.000}+{info.Video.Duration:0.00} s, audio {info.Audio.Start:0.000}+{info.Audio.Duration:0.00} s"));
             Assert.InRange(info.Duration, ran - 2.0, lived + 0.6);
             Assert.Equal(pairs is null ? 1 : 2, info.Streams.Count(x => x.Type == "audio")); // las pistas de la grabación real
+            if (pairs is not null) // …con sus nombres (en MP4, el handler_name: es lo que lee ffprobe)
+                Assert.Equal(new[] { Localizer.F("Audio_TrackTitle", "1-2"), Localizer.F("Audio_TrackTitle", "5-6") },
+                    info.Streams.Where(x => x.Type == "audio").Select(x => x.HandlerName));
             AssertAligned(info);
         }
         finally
@@ -249,7 +253,7 @@ public sealed class SlateRealTimeTests
     private static double Seconds(Timecode tc) => tc.Hours * 3600 + tc.Minutes * 60 + tc.Seconds + tc.Frames / 25.0;
 
     private sealed record StreamInfo(string Type, string? Codec, string? Profile, int Width, int Height, string? PixelFormat,
-        string? FrameRate, int SampleRate, int Channels, double Start, double Duration);
+        string? FrameRate, int SampleRate, int Channels, double Start, double Duration, string? HandlerName);
 
     private sealed record MediaInfo(double Duration, IReadOnlyList<StreamInfo> Streams)
     {
@@ -265,7 +269,7 @@ public sealed class SlateRealTimeTests
     private static async Task<MediaInfo> ProbeAsync(string ffprobe, string file)
     {
         var (exit, output, err) = await RunAsync(ffprobe, "-v", "error", "-show_entries",
-            "format=duration:stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels,start_time,duration",
+            "format=duration:stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels,start_time,duration:stream_tags=handler_name",
             "-of", "json", file);
         Assert.True(exit == 0, $"ffprobe falló con {Path.GetFileName(file)}: {err}");
         using var json = JsonDocument.Parse(output);
@@ -274,7 +278,8 @@ public sealed class SlateRealTimeTests
             foreach (var s in list.EnumerateArray())
                 streams.Add(new StreamInfo(Text(s, "codec_type") ?? "", Text(s, "codec_name"), Text(s, "profile"),
                     (int)Number(s, "width", 0), (int)Number(s, "height", 0), Text(s, "pix_fmt"), Text(s, "r_frame_rate"),
-                    (int)Number(s, "sample_rate", 0), (int)Number(s, "channels", 0), Number(s, "start_time", double.NaN), Number(s, "duration", double.NaN)));
+                    (int)Number(s, "sample_rate", 0), (int)Number(s, "channels", 0), Number(s, "start_time", double.NaN), Number(s, "duration", double.NaN),
+                    s.TryGetProperty("tags", out var tags) ? Text(tags, "handler_name") : null));
         double duration = json.RootElement.TryGetProperty("format", out var format) ? Number(format, "duration", double.NaN) : double.NaN;
         return new MediaInfo(duration, streams);
 

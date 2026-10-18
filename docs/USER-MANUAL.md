@@ -263,8 +263,8 @@ each common format (720p, 1080p and 4K at 25, 29.97, 50, 59.94…). Type **NVENC
 **Audio tracks (only matters with 8- or 16-channel inputs):** in the preset editor, the **Audio tracks** field decides
 how the pairs chosen on the input (see section 3) are stored:
 - **Single:** one track with the selection (the pair in stereo, or 5.1/7.1 with the first channels). This is the usual behaviour.
-- **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Channels 3-4"), so the programme, the
-  international sound or each language stay in separate tracks without mixing.
+- **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Channels 3-4"; MXF and TS do not store
+  track names), so the programme, the international sound or each language stay in separate tracks without mixing.
 - **Multichannel:** all chosen channels in a single **PCM** track (MXF, MKV, AVI, WAV; up to 16 fit). With a lossy
   codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores one stereo track per pair instead, because a lossy
   5.1/7.1 track treats channel 4 as the bass channel (LFE) and strips it.

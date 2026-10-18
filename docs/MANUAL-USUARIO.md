@@ -262,8 +262,8 @@ formato habitual (720p, 1080p y 4K a 25, 29.97, 50, 59.94…). Escribe **NVENC**
 **Pistas de audio (solo cuenta con entradas de 8 o 16 canales):** en el editor de un preset, el campo **Pistas de audio**
 decide cómo se guardan los pares elegidos en la entrada (ver punto 3):
 - **Single:** una sola pista con lo elegido (estéreo del par, o 5.1/7.1 con los primeros canales). Es lo de siempre.
-- **PairsAsTracks:** una pista estéreo por cada par elegido, cada una con su nombre («Canales 3-4»). Así el programa,
-  el sonido internacional o cada idioma quedan en pistas separadas, sin mezclarse.
+- **PairsAsTracks:** una pista estéreo por cada par elegido, cada una con su nombre («Canales 3-4»; MXF y TS no guardan
+  nombres de pista). Así el programa, el sonido internacional o cada idioma quedan en pistas separadas, sin mezclarse.
 - **Multichannel:** todos los canales elegidos en una sola pista **PCM** (MXF, MKV, AVI, WAV; caben hasta 16). Con un
   códec con pérdida (AAC en MP4/MOV/TS, Opus, MP2, MP3) el programa guarda una pista estéreo por par, porque una
   pista 5.1/7.1 con pérdida trata el canal 4 como graves (LFE) y lo recorta.
