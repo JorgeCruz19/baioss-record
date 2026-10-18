@@ -7,6 +7,7 @@ using Baioss.Record.Domain.ValueObjects;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Localization;
+using Baioss.Record.Application.Recording;
 using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Channels;
 using Baioss.Record.Infrastructure.Preview;
@@ -16,17 +17,18 @@ using Xunit.Abstractions;
 namespace Baioss.Record.IntegrationTests;
 
 /// <summary>
-/// Contenedor × códec de vídeo y de audio con el FFmpeg REAL y el cableado de la aplicación, por las dos puertas:
+/// Contenedor × códec de vídeo y de audio, y frecuencia de muestreo del audio, con el FFmpeg REAL y el cableado de la
+/// aplicación, por las dos puertas:
 /// <list type="number">
 ///   <item>SIN la regla: el motor de captura (<see cref="FfmpegChannelEngine"/>, que no valida) graba el perfil tal cual. Es lo
 ///   que hacía un canal antes: HEVC en AVI salía sin error y se releía como rawvideo; HEVC en MXF y ProRes/DNx en MP4 no
 ///   grababan nada; ProRes/DNx en TS/PS salían como datos privados; AAC en MXF u Opus en MOV no dejaban audio, y AAC en WAV
-///   salía sin error e indecodificable. Si un FFmpeg futuro aprende alguno, esta fila falla y la regla de
-///   <c>RecordingProfileValidator</c> sobra para esa combinación.</item>
+///   salía sin error e indecodificable; MXF a 44,1 kHz u Opus a 44,1 kHz no dejaban nada. Si un FFmpeg futuro aprende alguno,
+///   esta fila falla y la regla de <c>RecordingProfileValidator</c> sobra para esa combinación.</item>
 ///   <item>CON la regla: el canal (<see cref="StandaloneChannelEngine"/>) rechaza el perfil en el pre-vuelo con el motivo, sin
 ///   arrancar la grabación ni dejar archivo, y lo deja en la auditoría.</item>
 ///   <item>Lo que el mensaje propone graba de verdad: el mismo códec en esos contenedores (o el audio propuesto en ese
-///   contenedor) da un archivo legible.</item>
+///   contenedor, o esas frecuencias o bitrates) da un archivo legible.</item>
 /// </list>
 /// </summary>
 [Collection("Localizer")] // el motivo del rechazo sale en el idioma de la aplicación (estado global)
@@ -428,7 +430,238 @@ public sealed class ContainerCodecTests : IDisposable
         }
     }
 
+    // --- Frecuencia de muestreo del audio ---
+
+    private static readonly int[] AacRates = { 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 };
+    private static readonly int[] Mp3Rates = { 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000 };
+    private static readonly int[] Mp2LsfKbps = { 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 };
+    private static readonly int[] Mp2Mpeg1Kbps = { 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 };
+
+    /// <summary>Un perfil cuya frecuencia (o, con MP2, cuyo bitrate a esa frecuencia) rechaza el validador, y lo que propone su
+    /// mensaje: frecuencias con el mismo audio en el mismo contenedor, o bitrates a la misma frecuencia.</summary>
+    private sealed record RateCase(AudioCodec Audio, ContainerFormat Container, bool AudioOnly, int Rate, int Kbps,
+        int[] SuggestedRates, int[] SuggestedKbps);
+
+    /// <summary>Una fila por causa: MXF fuera de 48 kHz; el PCM de MP4, que es AAC, por encima de 96 kHz; AAC, FDK-AAC, Opus, MP3 y
+    /// MP2 a una que su codificador no abre; MP3 en MP4 por debajo de 16 kHz; MP2 con un bitrate que no es de la tabla de su
+    /// versión MPEG (256 kb/s, el de sus presets, a 24 kHz; 200 a 48 kHz). Con vídeo y en solo audio.</summary>
+    private static readonly RateCase[] RateCases =
+    {
+        new(AudioCodec.Pcm, ContainerFormat.Mxf, false, 44100, 256, new[] { 48000 }, Array.Empty<int>()),
+        new(AudioCodec.Pcm, ContainerFormat.Mxf, false, 96000, 256, new[] { 48000 }, Array.Empty<int>()),
+        new(AudioCodec.Pcm, ContainerFormat.Mp4, false, 192000, 256, AacRates, Array.Empty<int>()),
+        new(AudioCodec.Aac, ContainerFormat.Mkv, true, 192000, 256, AacRates, Array.Empty<int>()),
+        new(AudioCodec.FdkAac, ContainerFormat.Ts, false, 7350, 256, AacRates[1..], Array.Empty<int>()), // FDK no abre 7350
+        new(AudioCodec.Opus, ContainerFormat.Mkv, false, 44100, 256, new[] { 8000, 12000, 16000, 24000, 48000 }, Array.Empty<int>()),
+        new(AudioCodec.Mp3, ContainerFormat.Mp3Audio, true, 96000, 256, Mp3Rates, Array.Empty<int>()),
+        new(AudioCodec.Mp3, ContainerFormat.Mp4, false, 8000, 256, Mp3Rates[3..], Array.Empty<int>()), // de 16000 para arriba
+        new(AudioCodec.Mp2, ContainerFormat.ProgramStream, false, 8000, 128, new[] { 16000, 22050, 24000, 32000, 44100, 48000 }, Array.Empty<int>()),
+        new(AudioCodec.Mp2, ContainerFormat.ProgramStream, false, 24000, 256, Array.Empty<int>(), Mp2LsfKbps),
+        new(AudioCodec.Mp2, ContainerFormat.Wav, true, 48000, 200, Array.Empty<int>(), Mp2Mpeg1Kbps),
+    };
+
+    /// <summary>Lo que el validador rechaza (audio, contenedor, solo audio, Hz, kb/s). Con vídeo, el codificador o el muxer no
+    /// arrancan y el canal se queda «Grabando» con un archivo de 0 B; en solo audio, el motor relanza piezas de 0 B.</summary>
+    public static TheoryData<AudioCodec, ContainerFormat, bool, int, int> RejectedRates()
+    {
+        var data = new TheoryData<AudioCodec, ContainerFormat, bool, int, int>();
+        foreach (var c in RateCases) data.Add(c.Audio, c.Container, c.AudioOnly, c.Rate, c.Kbps);
+        return data;
+    }
+
+    /// <summary>Lo que proponen esos mensajes, una fila por propuesta: cada frecuencia con el mismo audio, contenedor y bitrate, y
+    /// cada bitrate a la misma frecuencia (<see cref="WithTheRule_TheChannelRefusesTheRate_AndRecordsNothing"/> comprueba que es
+    /// lo que dice el mensaje).</summary>
+    public static TheoryData<AudioCodec, ContainerFormat, bool, int, int> SuggestedRates()
+    {
+        var data = new TheoryData<AudioCodec, ContainerFormat, bool, int, int>();
+        var rows = RateCases.SelectMany(c => c.SuggestedRates.Select(r => (c.Audio, c.Container, c.AudioOnly, Rate: r, c.Kbps))
+                                     .Concat(c.SuggestedKbps.Select(k => (c.Audio, c.Container, c.AudioOnly, c.Rate, Kbps: k))));
+        foreach (var r in rows.Distinct()) data.Add(r.Audio, r.Container, r.AudioOnly, r.Rate, r.Kbps);
+        return data;
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(RejectedRates))]
+    public async Task WithoutTheRule_TheEngineLeavesNoReadableAudioAtThatRate(AudioCodec audio, ContainerFormat container, bool audioOnly, int rate, int kbps)
+    {
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+
+        var dir = NewDir("baioss-rmisfit");
+        var logs = new List<string>();
+        var loggers = new DecklinkRelayContinuityTests.CaptureLogger(l => { lock (logs) logs.Add(l); });
+        var source = new LavfiLiveSource(640, 360, FrameRate.P25);
+        try
+        {
+            await source.OpenAsync();
+            var profile = AudioProfile(audio, container, audioOnly, rate, kbps);
+            await using var capture = new FfmpegChannelEngine(locator, loggers.CreateLogger("Capture")) { OutputRoot = dir };
+            var states = new List<RecordingState>();
+            capture.StateChanged += (_, s) => { lock (states) states.Add(s); };
+            await capture.StartPreviewAsync(source, profile, "RMI");
+
+            Exception? startError = null;
+            try { await capture.StartRecordingAsync(Guid.NewGuid(), profile, "misfit"); }
+            catch (Exception ex) { startError = ex; }
+            await Task.Delay(TimeSpan.FromSeconds(4));
+            var stateAfter = capture.State;
+            if (startError is null) await capture.StopRecordingAsync();
+
+            var decoded = new List<(string File, long Bytes, double Seconds)>();
+            foreach (var f in Directory.GetFiles(dir))
+            {
+                long bytes = new FileInfo(f).Length;
+                decoded.Add((f, bytes, bytes == 0 ? 0 : await DecodedAudioSecondsAsync(locator.FfmpegPath, f)));
+            }
+            _output.WriteLine($"{audio} a {rate} Hz y {kbps} kb/s en {container}{(audioOnly ? " (solo audio)" : "")} SIN la regla ({locator.FfmpegPath}):");
+            _output.WriteLine($"  arranque: {(startError is null ? "sin excepción" : startError.GetType().Name + ": " + startError.Message)}; a los 4 s: {stateAfter}");
+            lock (states) _output.WriteLine($"  estados: {string.Join(" → ", states)}");
+            _output.WriteLine($"  archivos: {(decoded.Count == 0 ? "ninguno" : string.Join("; ", decoded.Select(d => $"{Path.GetFileName(d.File)} ({d.Bytes} B): {d.Seconds:0.00} s de audio")))}");
+            lock (logs)
+                foreach (var l in logs.Where(l => l.StartsWith("[Warning]", StringComparison.Ordinal) || l.StartsWith("[Error]", StringComparison.Ordinal)).Take(4))
+                    _output.WriteLine("  " + l);
+
+            // Ningún archivo lleva audio que se pueda oír: el codificador o el muxer no arrancan y no se escribe nada.
+            foreach (var d in decoded.Where(d => d.Seconds >= 1))
+                Assert.Fail($"{Path.GetFileName(d.File)}: el motor ya graba {audio} a {rate} Hz y {kbps} kb/s en {container} ({d.Seconds:0.0} s); la regla sobra para esta combinación");
+        }
+        finally
+        {
+            await source.DisposeAsync();
+            TryDelete(dir);
+        }
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(RejectedRates))]
+    public async Task WithTheRule_TheChannelRefusesTheRate_AndRecordsNothing(AudioCodec audio, ContainerFormat container, bool audioOnly, int rate, int kbps)
+    {
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+        var dir = NewDir("baioss-rrefused");
+        var source = new LavfiLiveSource(640, 360, FrameRate.P25);
+        try
+        {
+            await source.OpenAsync();
+            var profile = AudioProfile(audio, container, audioOnly, rate, kbps);
+            var bus = new RecordingBus();
+            await using var capture = new FfmpegChannelEngine(locator, new DecklinkRelayContinuityTests.CaptureLogger(_ => { })) { OutputRoot = dir };
+            await capture.StartPreviewAsync(source, profile, "RRJ");
+            await using var channel = new StandaloneChannelEngine("RRJ", source, profile, capture, bus: bus);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => channel.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual("prueba")));
+            _output.WriteLine($"{audio} a {rate} Hz y {kbps} kb/s en {container}{(audioOnly ? " (solo audio)" : "")} CON la regla: {ex.Message}");
+
+            // Lo que ve el operador en el aviso de Grabar (y la API, y la auditoría): el motivo y qué elegir, que es lo que prueba
+            // TheSuggestedRates_RecordReadableAudio.
+            var expected = RateCases.Single(c => c.Audio == audio && c.Container == container && c.AudioOnly == audioOnly && c.Rate == rate && c.Kbps == kbps);
+            Assert.StartsWith("Perfil de grabación inválido: ", ex.Message);
+            int from = ex.Message.LastIndexOf("elige ", StringComparison.Ordinal) + "elige ".Length;
+            if (expected.SuggestedKbps.Length > 0)
+            {
+                Assert.Contains($"El audio {audio} a {rate} Hz no se puede grabar a {kbps} kb/s: ", ex.Message);
+                Assert.Equal(expected.SuggestedKbps, Numbers(ex.Message[from..ex.Message.LastIndexOf(" kb/s.", StringComparison.Ordinal)]));
+            }
+            else
+            {
+                Assert.Contains($"El audio {audio} no se puede grabar a {rate} Hz", ex.Message);
+                Assert.Equal(expected.SuggestedRates, Numbers(ex.Message[from..ex.Message.LastIndexOf(" Hz.", StringComparison.Ordinal)]));
+            }
+            // Ni grabación ni archivo: el pre-vuelo corre antes de crear la sesión y de tocar FFmpeg; el canal sigue en reposo.
+            Assert.Equal(RecordingState.Idle, capture.State);
+            Assert.Null(channel.Status.SessionId);
+            Assert.Empty(Directory.GetFiles(dir));
+            var audited = Assert.Single(bus.Events.OfType<RecordingStartFailed>());
+            Assert.Equal(ex.Message, audited.Reason);
+        }
+        finally
+        {
+            await source.DisposeAsync();
+            TryDelete(dir);
+        }
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(SuggestedRates))]
+    public async Task TheSuggestedRates_RecordReadableAudio(AudioCodec audio, ContainerFormat container, bool audioOnly, int rate, int kbps)
+    {
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+        var dir = NewDir("baioss-rfit");
+        var source = new LavfiLiveSource(640, 360, FrameRate.P25);
+        try
+        {
+            await source.OpenAsync();
+            var profile = AudioProfile(audio, container, audioOnly, rate, kbps);
+            await using var capture = new FfmpegChannelEngine(locator, new DecklinkRelayContinuityTests.CaptureLogger(_ => { })) { OutputRoot = dir };
+            await capture.StartPreviewAsync(source, profile, "RFT");
+            await using var channel = new StandaloneChannelEngine("RFT", source, profile, capture);
+
+            await channel.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual("prueba"));
+            await Task.Delay(TimeSpan.FromSeconds(4));
+            await channel.StopRecordingAsync(RecordingStopReason.Operator);
+
+            var file = capture.LastOutputFile;
+            Assert.True(file is not null && File.Exists(file), $"no se generó el archivo: {file}");
+            string probed = await ProbeAudioCodecAsync(locator.FfprobePath, file!);
+            string probedRate = FirstLine(await RunAsync(locator.FfprobePath, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                "stream=sample_rate", "-of", "default=nw=1:nk=1", file!));
+            double seconds = await DecodedAudioSecondsAsync(locator.FfmpegPath, file!);
+            _output.WriteLine($"{audio} a {rate} Hz y {kbps} kb/s en {container}{(audioOnly ? " (solo audio)" : "")}: {Path.GetFileName(file)} " +
+                              $"({new FileInfo(file!).Length} B), audio «{probed}» a {probedRate} Hz, {seconds:0.00} s decodificados");
+            // PCM en MP4, MOV y TS es AAC; Opus decodifica siempre a 48 kHz y así lo declara el archivo.
+            Assert.Equal(audio switch
+            {
+                AudioCodec.Pcm => container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? "aac" : "pcm_s24le",
+                AudioCodec.Aac or AudioCodec.FdkAac => "aac",
+                AudioCodec.Opus => "opus",
+                AudioCodec.Mp3 => "mp3",
+                _ => "mp2",
+            }, probed);
+            Assert.Equal(audio is AudioCodec.Opus ? "48000" : rate.ToString(System.Globalization.CultureInfo.InvariantCulture), probedRate);
+            Assert.True(seconds >= 2, $"solo se decodificaron {seconds:0.00} s de audio de ~4 s grabados");
+        }
+        finally
+        {
+            await source.DisposeAsync();
+            TryDelete(dir);
+        }
+    }
+
+    [SkippableFact]
+    public async Task TheValidatorsRates_AreTheOnesThisFfmpegDeclares()
+    {
+        // El validador lleva la lista de cada codificador (FFmpeg las declara en «Supported sample rates» y no abre con otra). Si un
+        // FFmpeg futuro la cambia, esta prueba lo dice antes que un canal «Grabando» sin archivo. En MKV, que no limita ninguna; MP2
+        // a 128 kb/s, que vale a todas las suyas.
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+        int[] probe = { 1000, 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 47952, 48000, 64000, 88200, 96000, 176400, 192000, 384000 };
+        foreach (var audio in Enum.GetValues<AudioCodec>())
+        {
+            string encoder = FfmpegCodecMap.AudioEncoder(audio);
+            string help = await RunAsync(locator.FfmpegPath, "-hide_banner", "-h", $"encoder={encoder}");
+            Assert.Contains($"Encoder {encoder} ", help);
+            var line = help.Split('\n').FirstOrDefault(l => l.Contains("Supported sample rates:", StringComparison.Ordinal));
+            var declared = line is null ? null : Numbers(line[(line.IndexOf(':') + 1)..]);
+            _output.WriteLine($"{audio} ({encoder}): {(declared is null ? "cualquier frecuencia" : string.Join(" ", declared))}");
+            foreach (int rate in probe.Concat(declared ?? Array.Empty<int>()).Distinct())
+            {
+                var p = AudioProfile(audio, ContainerFormat.Mkv, audioOnly: false, rate, audio is AudioCodec.Mp2 ? 128 : 256);
+                bool accepted = !RecordingProfileValidator.Validate(p).Any(e => e.Contains(" Hz", StringComparison.Ordinal));
+                Assert.True(accepted == (declared?.Contains(rate) ?? true),
+                    $"{audio} a {rate} Hz: el validador {(accepted ? "lo acepta" : "lo rechaza")} y {encoder} {(declared?.Contains(rate) ?? true ? "lo declara" : "no lo declara")}");
+            }
+        }
+    }
+
     // --- Utilidades ---
+
+    /// <summary>«8000, 12000, 16000, 24000 o 48000» (o «… or …», o separados por comas): los números, en orden.</summary>
+    private static int[] Numbers(string list) => System.Text.RegularExpressions.Regex.Matches(list, @"\d+")
+        .Select(m => int.Parse(m.Value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
 
     /// <summary>Perfil por bitrate con un audio que el contenedor admite (MXF solo PCM; el PS de FFmpeg no acepta AAC ni PCM
     /// s24le): así lo único que puede fallar es el vídeo.</summary>
@@ -442,14 +675,14 @@ public sealed class ContainerCodecTests : IDisposable
     };
 
     /// <summary>Perfil con ese audio en ese contenedor, con el vídeo de sus presets (MPEG-2 en MXF y PS, H.264 en el resto, que
-    /// todos llevan) o en solo audio: así lo único que puede fallar es el audio.</summary>
-    private static RecordingProfile AudioProfile(AudioCodec audio, ContainerFormat container, bool audioOnly) => new()
+    /// todos llevan) o en solo audio: así lo único que puede fallar es el audio (o su frecuencia, o su bitrate).</summary>
+    private static RecordingProfile AudioProfile(AudioCodec audio, ContainerFormat container, bool audioOnly, int rate = 48_000, int kbps = 256) => new()
     {
         Name = $"{audio} · {container}", AudioOnly = audioOnly,
         VideoCodec = container is ContainerFormat.Mxf or ContainerFormat.ProgramStream ? VideoCodec.Mpeg2Video : VideoCodec.H264x264,
         HwAccel = HwAccel.None, VideoBitrate = Bitrate.FromMbps(4), GopSize = 25, RateControl = RateControlMode.ConstantBitrate,
         Container = container, AudioCodec = audio,
-        AudioLayout = AudioLayout.Stereo, AudioBitrate = Bitrate.FromKbps(256), AudioSampleRate = 48_000,
+        AudioLayout = AudioLayout.Stereo, AudioBitrate = Bitrate.FromKbps(kbps), AudioSampleRate = rate,
     };
 
     /// <summary>Lo que ffprobe dice del audio propuesto (en esos contenedores el PCM sigue siendo PCM: solo MP4, MOV y TS lo

@@ -387,4 +387,240 @@ public class RecordingProfileValidatorTests : IDisposable
         Assert.Equal("pcm_s24le", FfmpegCodecMap.EffectiveAudioEncoder(AudioCodec.Pcm, ContainerFormat.ProgramStream));
         Assert.NotEmpty(RecordingProfileValidator.Validate(WithAudio(AudioCodec.Pcm, ContainerFormat.ProgramStream, audioOnly: false)));
     }
+
+    // --- Frecuencia de muestreo del audio ---
+
+    /// <summary>Las frecuencias de la medida: las estándar de 7350 a 384000 Hz y la de 48 kHz con «pull-down» (47952).</summary>
+    private static readonly int[] MeasuredRates =
+        { 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 47952, 48000, 64000, 88200, 96000, 176400, 192000, 384000 };
+
+    /// <summary>El codificador que pone el motor: el PCM de MP4, MOV y TS es AAC (<see cref="PcmInMp4MovOrTs_Passes_BecauseTheEngineRecordsItAsAac"/>).</summary>
+    private static AudioCodec Encoded(AudioCodec audio, ContainerFormat container) =>
+        audio is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? AudioCodec.Aac : audio;
+
+    /// <summary>Si el codificador abre esa frecuencia: las que declara FFmpeg («Supported sample rates»); con otra, «Specified sample
+    /// rate N is not supported by the X encoder». El PCM, cualquiera.</summary>
+    private static bool EncoderOpens(AudioCodec encoded, int rate) => encoded switch
+    {
+        AudioCodec.Pcm => true,
+        AudioCodec.Aac => rate is 7350 or 8000 or 11025 or 12000 or 16000 or 22050 or 24000 or 32000 or 44100 or 48000 or 64000 or 88200 or 96000,
+        AudioCodec.FdkAac => rate is 8000 or 11025 or 12000 or 16000 or 22050 or 24000 or 32000 or 44100 or 48000 or 64000 or 88200 or 96000,
+        AudioCodec.Opus => rate is 8000 or 12000 or 16000 or 24000 or 48000,
+        AudioCodec.Mp3 => rate is 8000 or 11025 or 12000 or 16000 or 22050 or 24000 or 32000 or 44100 or 48000,
+        AudioCodec.Mp2 => rate is 16000 or 22050 or 24000 or 32000 or 44100 or 48000,
+        _ => throw new ArgumentOutOfRangeException(nameof(encoded)),
+    };
+
+    /// <summary>
+    /// Lo que hizo el motor real (FfmpegChannelEngine, el argv del producto, que pasa siempre -ar) el 2026-10-18 con FFmpeg 8.0 y
+    /// con el incluido, iguales, al grabar 4 s de un tono con cada audio en cada contenedor que lo lleva, con vídeo y en solo audio,
+    /// a cada una de <see cref="MeasuredRates"/>, y releer el archivo: true = graba y se decodifica entero. El codificador abre solo
+    /// sus frecuencias (<see cref="EncoderOpens"/>); además, el muxer MXF solo lleva 48 kHz y el MP4 no lleva MP3 por debajo de
+    /// 16 kHz (el MOV sí). MP2, con 128 kb/s, que vale a todas sus frecuencias (<see cref="Mp2_TakesOnlyTheBitratesOfItsMpegVersion"/>).
+    /// </summary>
+    private static bool RecordsAt(AudioCodec audio, ContainerFormat container, int rate)
+    {
+        var encoded = Encoded(audio, container);
+        bool carried = container switch
+        {
+            ContainerFormat.Mxf => rate == 48000,
+            ContainerFormat.Mp4 when encoded is AudioCodec.Mp3 => rate >= 16000,
+            _ => true,
+        };
+        return EncoderOpens(encoded, rate) && carried;
+    }
+
+    /// <summary>Ese audio en ese contenedor a esa frecuencia; MP2 a 128 kb/s, que vale a 16–48 kHz: aquí solo cuenta la frecuencia.</summary>
+    private static RecordingProfile WithAudioAt(AudioCodec audio, ContainerFormat container, bool audioOnly, int rate)
+    {
+        var p = WithAudio(audio, container, audioOnly);
+        p.AudioSampleRate = rate;
+        if (audio is AudioCodec.Mp2) p.AudioBitrate = Bitrate.FromKbps(128);
+        return p;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryAudioCodecInEveryContainer))]
+    public void SampleRates_AreRejected_ExactlyWhereTheEngineCannotRecordThem(AudioCodec audio, ContainerFormat container, bool audioOnly)
+    {
+        // A 48 kHz graban todos los audios en todos los contenedores que los llevan: lo que salga ahí es de otra regla (el contenedor
+        // no lleva ese audio, MXF necesita vídeo) y no cambia con la frecuencia.
+        var others = RecordingProfileValidator.Validate(WithAudioAt(audio, container, audioOnly, 48000));
+        Assert.DoesNotContain(others, e => e.Contains(" Hz", StringComparison.Ordinal));
+        bool carried = MeasuredAudio(audio, container) == AudioOutcome.Records;
+
+        foreach (int rate in MeasuredRates)
+        {
+            var errors = RecordingProfileValidator.Validate(WithAudioAt(audio, container, audioOnly, rate));
+            var added = errors.Except(others).ToList();
+            if (!carried || RecordsAt(audio, container, rate))
+            {
+                // Si el contenedor no lleva ese audio, el mensaje es ese (y propone otro audio): la frecuencia no añade nada.
+                Assert.True(added.Count == 0, $"{audio} en {container} a {rate} Hz: {string.Join(" | ", added)}");
+                continue;
+            }
+
+            string message = Assert.Single(added);
+            var encoded = Encoded(audio, container);
+            if (!EncoderOpens(encoded, rate) && encoded == audio)
+                Assert.StartsWith($"El audio {audio} no se puede grabar a {rate} Hz: FFmpeg no admite esa frecuencia con {audio} ", message);
+            else // el contenedor no la lleva, o ahí el PCM es AAC
+                Assert.StartsWith($"El audio {audio} no se puede grabar a {rate} Hz en {container}: FFmpeg no admite esa combinación ", message);
+            Assert.Contains("la grabación no arrancaría", message);
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryAudioCodecInEveryContainer))]
+    public void TheRatesTheMessageSuggests_AreEveryRateThatRecords(AudioCodec audio, ContainerFormat container, bool audioOnly)
+    {
+        Localizer.Language = AppLanguage.English;
+        foreach (int rate in MeasuredRates)
+        {
+            string? message = RecordingProfileValidator.Validate(WithAudioAt(audio, container, audioOnly, rate))
+                .SingleOrDefault(e => e.StartsWith($"{audio} audio can't be recorded at {rate} Hz", StringComparison.Ordinal));
+            if (message is null) continue;
+
+            // «… With Opus in Mkv, choose 8000, 12000, 16000, 24000 or 48000 Hz.»: de menor a mayor, todas las que graban (de las
+            // medidas) y ninguna más; con cada una, la frecuencia deja de ser un problema.
+            int from = message.LastIndexOf("choose ", StringComparison.Ordinal) + "choose ".Length;
+            var suggested = message[from..message.LastIndexOf(" Hz.", StringComparison.Ordinal)]
+                .Replace(" or ", ", ", StringComparison.Ordinal).Split(", ").Select(int.Parse).ToList();
+            Assert.Equal(MeasuredRates.Where(r => RecordsAt(audio, container, r)), suggested);
+            foreach (int alternative in suggested)
+                Assert.DoesNotContain(RecordingProfileValidator.Validate(WithAudioAt(audio, container, audioOnly, alternative)),
+                    e => e.Contains(" Hz", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void OpusAt44100_SaysWhyAndWhichRatesToChoose_InSpanish()
+    {
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Opus, ContainerFormat.Mkv, false, 44100)));
+        Assert.Equal("El audio Opus no se puede grabar a 44100 Hz: FFmpeg no admite esa frecuencia con Opus y la grabación no " +
+                     "arrancaría. Con Opus en Mkv, elige 8000, 12000, 16000, 24000 o 48000 Hz.", error);
+    }
+
+    [Fact]
+    public void MxfAt44100_SaysOnly48000_InEnglish()
+    {
+        Localizer.Language = AppLanguage.English;
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Pcm, ContainerFormat.Mxf, false, 44100)));
+        Assert.Equal("Pcm audio can't be recorded at 44100 Hz in Mxf: FFmpeg doesn't support that combination, so the recording " +
+                     "wouldn't start. With Pcm in Mxf, choose 48000 Hz.", error);
+    }
+
+    [Fact]
+    public void PcmInMp4_TakesTheRatesOfAac_BecauseTheEngineRecordsItAsAac()
+    {
+        // En MKV el PCM graba a 192 kHz; en MP4 es AAC, que no pasa de 96 kHz.
+        Assert.Empty(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Pcm, ContainerFormat.Mkv, false, 192000)));
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Pcm, ContainerFormat.Mp4, false, 192000)));
+        Assert.Equal("El audio Pcm no se puede grabar a 192000 Hz en Mp4: FFmpeg no admite esa combinación y la grabación no " +
+                     "arrancaría. Con Pcm en Mp4, elige 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, " +
+                     "88200 o 96000 Hz.", error);
+    }
+
+    [Fact]
+    public void Mp3InMp4_Below16000_IsRejected_ButNotInMov()
+    {
+        // El muxer MP4 lo rechaza («muxing mp3 at 8000hz is not standard, to mux anyway set strict to -1»); el MOV lo lleva.
+        Assert.Empty(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Mp3, ContainerFormat.Mov, false, 8000)));
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Mp3, ContainerFormat.Mp4, false, 8000)));
+        Assert.Equal("El audio Mp3 no se puede grabar a 8000 Hz en Mp4: FFmpeg no admite esa combinación y la grabación no " +
+                     "arrancaría. Con Mp3 en Mp4, elige 16000, 22050, 24000, 32000, 44100 o 48000 Hz.", error);
+    }
+
+    [Fact]
+    public void AnAudioTheContainerDoesNotCarry_GetsNoRateMessage()
+    {
+        // Opus no va en MOV a ninguna frecuencia: el mensaje propone otro audio (AAC, que sí graba a 44,1 kHz).
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Opus, ContainerFormat.Mov, false, 44100)));
+        Assert.StartsWith("El audio Opus no se puede grabar en Mov: ", error);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-44100)]
+    public void ARateThatIsNotPositive_OnlySaysSo(int rate)
+    {
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Opus, ContainerFormat.Mkv, false, rate)));
+        Assert.Equal("La frecuencia de muestreo de audio debe ser mayor que cero.", error);
+    }
+
+    [Theory]
+    [InlineData(ContainerFormat.Mkv, false)]
+    [InlineData(ContainerFormat.Avi, false)]
+    [InlineData(ContainerFormat.Wav, true)]
+    public void Pcm_RecordsAtAnyRate_OutsideMxfAndTheContainersWhereItIsAac(ContainerFormat container, bool audioOnly)
+    {
+        foreach (int rate in new[] { 7350, 8000, 44100, 47952, 48048, 96000, 176400, 192000, 352800, 384000, 768000 })
+            Assert.Empty(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Pcm, container, audioOnly, rate)));
+    }
+
+    [Theory]
+    [InlineData(16000)]
+    [InlineData(22050)]
+    [InlineData(24000)]
+    [InlineData(32000)]
+    [InlineData(44100)]
+    [InlineData(48000)]
+    public void Mp2_TakesOnlyTheBitratesOfItsMpegVersion(int rate)
+    {
+        // Medido con el motor (8.0 y el incluido): a 24 kHz (MPEG-2, LSF) graba toda la tabla LSF y no abre con 100, 192, 224, 256,
+        // 320 ni 384 kb/s («bitrate 256 is not allowed in mp2»); a 48 kHz (MPEG-1), toda la suya, y no con 8, 16, 24, 40, 144, 200,
+        // 300 ni 400; a 16, 22,05, 32 y 44,1 kHz, lo mismo en lo que se midió. Los presets de fábrica con MP2 (256 y 384 kb/s a
+        // 48 kHz) graban.
+        int[] table = rate is 16000 or 22050 or 24000
+            ? new[] { 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 }
+            : new[] { 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 };
+        for (int kbps = 1; kbps <= 448; kbps++)
+        {
+            var p = WithAudioAt(AudioCodec.Mp2, ContainerFormat.Mkv, audioOnly: false, rate);
+            p.AudioBitrate = Bitrate.FromKbps(kbps);
+            var errors = RecordingProfileValidator.Validate(p);
+            if (table.Contains(kbps))
+                Assert.True(errors.Count == 0, $"{kbps} kb/s a {rate} Hz: {string.Join(" | ", errors)}");
+            else
+                Assert.StartsWith($"El audio Mp2 a {rate} Hz no se puede grabar a {kbps} kb/s: ", Assert.Single(errors));
+        }
+    }
+
+    [Fact]
+    public void Mp2At24000With256_SaysWhichBitratesToChoose_InSpanish()
+    {
+        // El bitrate de los presets de MP2 (y el del editor): a 24 kHz no abre.
+        var p = WithAudioAt(AudioCodec.Mp2, ContainerFormat.ProgramStream, audioOnly: false, 24000);
+        p.AudioBitrate = Bitrate.FromKbps(256);
+        Assert.Equal("El audio Mp2 a 24000 Hz no se puede grabar a 256 kb/s: FFmpeg no admite esa combinación y la grabación no " +
+                     "arrancaría. A 24000 Hz, elige 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144 o 160 kb/s.",
+                     Assert.Single(RecordingProfileValidator.Validate(p)));
+    }
+
+    [Fact]
+    public void Mp2At48000With200_SaysWhichBitratesToChoose_InEnglish()
+    {
+        Localizer.Language = AppLanguage.English;
+        var p = WithAudioAt(AudioCodec.Mp2, ContainerFormat.Ts, audioOnly: false, 48000);
+        p.AudioBitrate = Bitrate.FromKbps(200);
+        Assert.Equal("Mp2 audio at 48000 Hz can't be recorded at 200 kb/s: FFmpeg doesn't support that combination, so the " +
+                     "recording wouldn't start. At 48000 Hz, choose 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320 or " +
+                     "384 kb/s.", Assert.Single(RecordingProfileValidator.Validate(p)));
+    }
+
+    [Fact]
+    public void TheRateTables_AreTheOnesOfTheEncodersTheEngineUses()
+    {
+        // Las frecuencias son las de cada codificador de FFmpeg: si el motor cambiara de codificador (el FDK para «Aac», p. ej.),
+        // esta prueba avisa de que las tablas del validador ya no valen.
+        Assert.Equal("pcm_s24le", FfmpegCodecMap.AudioEncoder(AudioCodec.Pcm));
+        Assert.Equal("aac", FfmpegCodecMap.AudioEncoder(AudioCodec.Aac));
+        Assert.Equal("libfdk_aac", FfmpegCodecMap.AudioEncoder(AudioCodec.FdkAac));
+        Assert.Equal("libopus", FfmpegCodecMap.AudioEncoder(AudioCodec.Opus));
+        Assert.Equal("libmp3lame", FfmpegCodecMap.AudioEncoder(AudioCodec.Mp3));
+        Assert.Equal("mp2", FfmpegCodecMap.AudioEncoder(AudioCodec.Mp2));
+        foreach (var container in Enum.GetValues<ContainerFormat>())
+            Assert.Equal(Encoded(AudioCodec.Pcm, container) is AudioCodec.Aac ? "aac" : "pcm_s24le",
+                FfmpegCodecMap.EffectiveAudioEncoder(AudioCodec.Pcm, container));
+    }
 }
