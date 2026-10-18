@@ -55,6 +55,16 @@ public sealed class FfmpegProgressParser
     /// </summary>
     public int FramesPerSourceFrame { get; set; } = 1;
 
+    /// <summary>
+    /// Cadencia (cuadros por segundo) a la que contar el progreso por TIEMPO DE MEDIOS, o null para contar los frames del preview
+    /// (lo de siempre). Con una fuente que solo trae sus cuadros reales (<c>ICaptureSource.DeliversSparseVideo</c>: NDI), el preview
+    /// pinta los que llegan —4 por segundo de un grafismo que declara 60— mientras se graba a la cadencia declarada: el contador de
+    /// frames, el FPS OUT y la alarma de frames perdidos hablan de esa cadencia, como cuando el receptor servía un cuadro por periodo,
+    /// y salen del tiempo de medios que lleva el proceso (<c>out_time</c>, que FFmpeg 7+ toma de la salida más atrasada). El fps de
+    /// FFmpeg (<see cref="RecorderStats.InputFps"/>) sigue siendo el de los cuadros que llegan.
+    /// </summary>
+    public double? MediaFrameRate { get; set; }
+
     /// <summary>Procesa una línea; devuelve stats cuando se cierra un bloque de progreso.</summary>
     public RecorderStats? Feed(string line)
     {
@@ -86,6 +96,8 @@ public sealed class FfmpegProgressParser
         bool knownTime = TryGetLong("out_time_us", out long outTimeUs);
         if (!knownTime || outTimeUs == 0) knownTime = TryGetLong("out_time_ms", out outTimeUs) || knownTime;
         if (!knownTime) outTimeUs = 0;
+        if (MediaFrameRate is { } mediaRate && mediaRate > 0)
+            frame = (long)Math.Floor(Math.Max(0, outTimeUs) * mediaRate / 1_000_000);
 
         // Heurística simple de salud de buffer: caída de fps respecto a la nominal.
         long delta = frame - _lastFrame;

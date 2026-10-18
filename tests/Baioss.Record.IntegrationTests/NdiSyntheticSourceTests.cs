@@ -262,16 +262,17 @@ public sealed class NdiSyntheticSourceTests
     /// <summary>
     /// Una fuente que entrega MENOS cuadros de los que declara (la mitad; o un grafismo que declara 60 y manda 4) se grababa
     /// comprimida en el tiempo: FFmpeg lee el vídeo a la tasa declarada y le pone las marcas por contador, así que 8 s de fuente
-    /// a media cadencia eran 4 s de vídeo, con el audio cada vez más desfasado. El receptor repite el último cuadro con su
-    /// propio reloj: en el archivo, las marcas de sincronía (cuadro blanco + pitido, una por segundo de la fuente) están a un
-    /// segundo unas de otras, el audio va con el vídeo de la primera a la última, y el preview va a la cadencia declarada. Un
+    /// a media cadencia eran 4 s de vídeo, con el audio cada vez más desfasado. El receptor le da a cada cuadro la marca de su
+    /// periodo (en NUT) y la grabación repite el último hasta el siguiente: en el archivo, las marcas de sincronía (cuadro blanco +
+    /// pitido, una por segundo de la fuente) están a un segundo unas de otras, a la cadencia del preset, y el audio va con el vídeo
+    /// de la primera a la última. El preview pinta los cuadros reales, a su ritmo, y FPS OUT dice la cadencia que se graba. Un
     /// grafismo como el de Offside Engine (BGRA con alfa, «interleaved» a 60000/1000) es un 60p: ni «120i» ni desentrelazado, y
     /// el receptor lo sirve en UYVY.
     /// </summary>
     [SkippableTheory]
     [InlineData(30000, 1001, 1, true, false)]    // a su ritmo: control de la medida
     [InlineData(30000, 1001, 2, true, false)]    // la mitad de lo que declara, con audio completo
-    [InlineData(30000, 1001, 2, false, false)]   // la mitad, sin audio: el silencio sigue a los cuadros servidos (repetidos incluidos)
+    [InlineData(30000, 1001, 2, false, false)]   // la mitad, sin audio: el silencio sigue a los periodos (los que rellena FFmpeg incluidos)
     [InlineData(60, 1, 15, false, false)]        // un grafismo: declara 60, manda 4 y no trae audio
     [InlineData(60000, 1000, 15, false, true)]   // …y como Offside Engine: BGRA con alfa, cuadros marcados «interleaved»
     public async Task ASourceSendingFewerFramesThanDeclared_IsRecordedInRealTime_InSyncWithItsAudio(int rateN, int rateD, int sendEvery, bool withAudio, bool graphics)
@@ -318,6 +319,7 @@ public sealed class NdiSyntheticSourceTests
             double p1 = clock.Elapsed.TotalSeconds;
             double previewFps;
             lock (previewAt) previewFps = previewAt.Count(t => t >= p0 && t < p1) / (p1 - p0);
+            double fpsOut = engine.Stats.OutputFps;
 
             var recording = Stopwatch.StartNew();
             await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_ritmo");
@@ -343,7 +345,7 @@ public sealed class NdiSyntheticSourceTests
             string I(double d) => d.ToString("0.000", CultureInfo.InvariantCulture);
             _out.WriteLine($"{declared:0.##} declarados{(graphics ? " (BGRA con alfa, «interleaved»)" : "")}, 1 de cada {sendEvery} enviado, " +
                            $"{(withAudio ? "con" : "sin")} audio (emisor hasta {sender.MaxLateMs:0} ms tarde): «{source.CurrentSignal.FormatLabel}» · " +
-                           $"preview {previewFps:0.00} fps · grabado {recordedFor:0.00} s → vídeo {I(vDur)} s desde {I(vStart)} ({vPackets} cuadros), " +
+                           $"preview {previewFps:0.00} fps, FPS OUT {fpsOut:0.00} · grabado {recordedFor:0.00} s → vídeo {I(vDur)} s desde {I(vStart)} ({vPackets} cuadros), " +
                            $"audio {I(aDur)} s desde {I(aStart)}, pico {maxVolume:0.0} dBFS");
             _out.WriteLine($"  marcas de vídeo: {string.Join(" ", flashes.Select(I))}");
             _out.WriteLine($"  pitidos:         {string.Join(" ", beeps.Select(I))}");
@@ -356,11 +358,15 @@ public sealed class NdiSyntheticSourceTests
             Assert.Equal((flashes.Count - 1) * markPeriod, flashSpan, 0.07);
             Assert.InRange(vPackets / vDur, 28.5, 31.5);
             Assert.True(vDur > recordedFor - 1.5, $"{I(vDur)} s de vídeo en {recordedFor:0.00} s de grabación.");
-            // El audio (o el silencio, que sigue a los cuadros servidos) cubre el vídeo salvo el final: al Detener, el proceso del
+            // El audio (o el silencio, que sigue a los periodos) cubre el vídeo salvo el final: al Detener, el proceso del
             // canal deja sin leer lo último del audio, que lleva detrás del vídeo (0,07–0,9 s medidos el 2026-10-17, también sin
             // este arreglo y con una fuente a su ritmo). La sincronía de verdad se mide con las marcas.
             Assert.True(aDur > vDur - 1.0, $"Vídeo {I(vDur)} s frente a audio {I(aDur)} s.");
-            Assert.InRange(previewFps, 0.85 * Math.Min(declared, 30), 1.15 * declared);
+            // El preview pinta los cuadros que manda la fuente —a su ritmo: ni las repeticiones de antes ni más (como mucho uno de
+            // mantenimiento si un hueco pasa de 300 ms)—, y FPS OUT dice la cadencia que se graba, la declarada.
+            double real = declared / sendEvery;
+            Assert.InRange(previewFps, 0.85 * real, 1.15 * real + 1.0 / (p1 - p0));
+            Assert.InRange(fpsOut, 0.85 * declared, 1.15 * declared);
             if (withAudio)
             {
                 // Y el audio con el vídeo, de la primera marca a la última: el mismo desfase (sin deriva) y pequeño. (La última marca
@@ -371,8 +377,10 @@ public sealed class NdiSyntheticSourceTests
             }
             else Assert.True(double.IsNegativeInfinity(maxVolume) || maxVolume < -80, $"Sin audio en la fuente, la pista debe ser silencio ({maxVolume:0.0} dBFS).");
             if (sendEvery > 1) Assert.Contains("que declara", cadenceLog);
-            // Nada que desentrelazar: ni bwdif en la grabación ni un solo campo en el preview.
-            Assert.Contains("-pixel_format uyvy422", recordPipeline);
+            // El vídeo llega en NUT, con sus marcas, y la grabación lo rellena al final de su rama, a la cadencia del preset. Nada que
+            // desentrelazar: ni bwdif en la grabación ni un solo campo en el preview.
+            Assert.Contains("-f nut", recordPipeline);
+            Assert.Contains("format=yuv420p,fps=30000/1001[vmain]", recordPipeline);
             Assert.DoesNotContain("bwdif", recordPipeline);
             Assert.DoesNotContain("field=type", recordPipeline);
         }

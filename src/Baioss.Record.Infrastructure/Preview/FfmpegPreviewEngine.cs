@@ -9,7 +9,13 @@ using Baioss.Record.Engine.FFmpeg;
 namespace Baioss.Record.Infrastructure.Preview;
 
 /// <summary>Un frame de preview en BGRA (8 bits/canal, top-down), listo para subir a textura/bitmap.</summary>
-public sealed record PreviewFrame(byte[] Bgra, int Width, int Height, int Stride);
+public sealed record PreviewFrame(byte[] Bgra, int Width, int Height, int Stride)
+{
+    /// <summary>Del preview de una fuente que solo trae sus cuadros reales (NDI con marcas: un grafismo que declara 60 y manda 4):
+    /// la llegada ES su ritmo, y la vista enseña cada frame al llegar en vez de repartirlos en una rejilla a la cadencia media (ver
+    /// <see cref="PreviewPresentationScheduler{T}"/>).</summary>
+    public bool AtSourcePace { get; init; }
+}
 
 /// <summary>
 /// Motor de preview de baja latencia basado en FFmpeg: decodifica la fuente a una resolución

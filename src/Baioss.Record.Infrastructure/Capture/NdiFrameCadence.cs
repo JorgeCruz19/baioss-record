@@ -1,12 +1,12 @@
 namespace Baioss.Record.Infrastructure.Capture;
 
 /// <summary>
-/// Cadencia del vídeo que el receptor NDI sirve a FFmpeg. El proceso del canal lee ese vídeo como <c>rawvideo</c> a la tasa
-/// DECLARADA y le pone las marcas por contador (cuadro n en n/fps), así que una fuente que entrega MENOS cuadros de los que declara
-/// se grababa comprimida en el tiempo y con el audio cada vez más desfasado (2026-10-17: «SRT (vMix - Output 1)» declara 29.97 y
-/// entrega ~10 —sus propias marcas saltan 2–7 periodos—; una salida de grafismo declara 60 y manda ~4, cuando cambia la imagen;
-/// en 21 s de grabación quedaban 4,9 s y 1,4 s de vídeo). Aquí se decide cuántas veces se sirve el último cuadro para que lo
-/// servido vaya a la cadencia declarada:
+/// Cadencia del vídeo que el receptor NDI sirve a FFmpeg: a la tasa DECLARADA, un periodo tras otro, aunque la fuente entregue MENOS
+/// cuadros de los que declara (2026-10-17: «SRT (vMix - Output 1)» declara 29.97 y entrega ~10 —sus propias marcas saltan 2–7
+/// periodos—; una salida de grafismo declara 60 y manda ~4, cuando cambia la imagen; cuando FFmpeg marcaba el vídeo por contador, en
+/// 21 s de grabación quedaban 4,9 s y 1,4 s de vídeo). Aquí se decide qué periodo ocupa cada cuadro real y cuántas veces se repite
+/// el último para que lo servido vaya a la cadencia declarada. El receptor solo le envía a FFmpeg los cuadros reales, cada uno con la
+/// marca de su periodo (NUT): las repeticiones son periodos que corren y que la grabación rellena repitiendo el anterior.
 /// <list type="bullet">
 ///   <item><b>Cuántos periodos ocupa cada cuadro real:</b> los que pasaron desde el anterior según el RELOJ DE LA FUENTE (la marca
 ///   <c>timestamp</c> que el SDK pone al enviarlo), no según la llegada: el vaivén de la red (vMix llega con hasta 150 ms) no se
@@ -16,18 +16,18 @@ namespace Baioss.Record.Infrastructure.Capture;
 ///   o si el reloj de la fuente salta respecto a la llegada (el primer cuadro de una conexión puede ser de hace segundos; un ajuste
 ///   de hora en el emisor), cuenta la llegada.</item>
 ///   <item><b>Cuándo se repite:</b> con nuestro reloj, en cuanto el siguiente cuadro va <see cref="Grace"/> periodos tarde, para que
-///   el preview y el proceso del canal sigan a su ritmo. Al llegar el cuadro real se cuadra la cuenta: las repeticiones que falten
-///   salen ya, delante de él; si se repitió de más (el cuadro solo venía tarde), se sirve igualmente con ese adelanto, que absorbe
-///   el siguiente hueco de la fuente. El adelanto se acota: nunca más de <see cref="MaxAhead"/> cuadros, ni más de
-///   <see cref="AheadHold"/> seguido (una fuente a su ritmo no tiene huecos que lo absorban): entonces se descarta un cuadro real,
-///   que pasa igualmente a ser el que se repite.</item>
+///   los periodos (y el silencio de una fuente sin audio) sigan al reloj. Al llegar el cuadro real se cuadra la cuenta: las
+///   repeticiones que falten corren ya, delante de él; si se repitió de más (el cuadro solo venía tarde), se sirve igualmente con
+///   ese adelanto, que absorbe el siguiente hueco de la fuente. El adelanto se acota: nunca más de <see cref="MaxAhead"/> cuadros,
+///   ni más de <see cref="AheadHold"/> seguido (una fuente a su ritmo no tiene huecos que lo absorban): entonces se descarta un
+///   cuadro real, que pasa igualmente a ser el que se repite.</item>
 ///   <item><b>Sin pasarse:</b> una fuente que va a su ritmo no recibe ninguna repetición (cada cuadro llega antes de vencer el
 ///   plazo), y un cuadro que cae en el mismo periodo que el anterior, según la fuente, no ocupa otro (una que manda más cuadros de
 ///   los que declara; la ráfaga con la que OBS por TCP vacía su cola al conectar): pasa a ser el que se repite, sin servirse.</item>
 /// </list>
-/// Los cuadros que se sirven —reales y repetidos— llevan cada uno su silencio cuando la fuente no trae audio
-/// (<see cref="NdiAudioGapFiller"/>), así que el audio sigue a lo servido. Puro: el reloj (monótono) lo pone el llamador, siempre
-/// desde el mismo hilo.
+/// Cada periodo —con su cuadro real o repetido— lleva su silencio cuando la fuente no trae audio (<see cref="NdiAudioGapFiller"/>),
+/// así que el audio sigue a las marcas del vídeo. Puro: el reloj (monótono) lo pone el llamador, siempre desde el mismo hilo (o
+/// bajo el mismo candado).
 /// </summary>
 internal sealed class NdiFrameCadence
 {

@@ -117,6 +117,51 @@ public sealed class NdiFeedTests : IAsyncDisposable
         Assert.Empty(await ReadToEndAsync(first));
     }
 
+    /// <summary>Enmarcado de prueba: la primera vez una cabecera (255), luego la marca 254 delante de cada elemento; los que
+    /// empiezan por 0 no son para este proceso.</summary>
+    private sealed class TestFraming : INdiFeedFraming<byte[]>
+    {
+        private bool _started;
+        public bool TryPrefix(byte[] item, out ReadOnlyMemory<byte> prefix)
+        {
+            prefix = default;
+            if (item[0] == 0) return false;
+            prefix = _started ? new byte[] { 254 } : new byte[] { 255, 254 };
+            _started = true;
+            return true;
+        }
+    }
+
+    [Fact]
+    public async Task WithFraming_EachConnectionGetsItsOwnHeaders_AndWhatItSkipsIsReleased()
+    {
+        // El vídeo en NUT: cada proceso que conecta recibe sus cabeceras delante de su primer elemento (un proceso relanzado
+        // también), y lo que su enmarcado no quiere no le llega, pero vuelve al pool igual.
+        int framings = 0;
+        await using var feed = new NdiFeed<byte[]>(16, b => b, _ => Interlocked.Increment(ref _released),
+            () => { Interlocked.Increment(ref framings); return new TestFraming(); });
+        var first = await ConnectAsync(feed);
+        feed.Enqueue(Item(1, 4));
+        feed.Enqueue(Item(0, 4)); // no es para este proceso
+        feed.Enqueue(Item(2, 4));
+        Assert.True(feed.End());
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+        {
+            var all = new MemoryStream();
+            await first.CopyToAsync(all, timeout.Token);
+            Assert.Equal(new byte[] { 255, 254, 1, 1, 1, 1, 254, 2, 2, 2, 2 }, all.ToArray());
+        }
+        await WaitUntilAsync(() => Volatile.Read(ref _released) == 3);
+
+        var second = await ConnectAsync(feed);
+        feed.Enqueue(Item(3, 4));
+        var buf = new byte[6];
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            await second.ReadExactlyAsync(buf, timeout.Token);
+        Assert.Equal(new byte[] { 255, 254, 3, 3, 3, 3 }, buf);
+        Assert.Equal(2, Volatile.Read(ref framings));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);

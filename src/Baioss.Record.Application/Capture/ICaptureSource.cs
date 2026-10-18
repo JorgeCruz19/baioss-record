@@ -101,6 +101,15 @@ public interface ICaptureSource : IAsyncDisposable
     bool DeliversInRealTime => false;
 
     /// <summary>
+    /// True si la entrada de vídeo trae SOLO los cuadros que la fuente envía, cada uno con su marca en la rejilla de su cadencia
+    /// declarada, con huecos entre ellos cuando la fuente manda menos de lo que declara (NDI, en NUT: un grafismo que declara 60
+    /// y manda 4 cuadros por segundo). La grabación rellena los huecos a la cadencia declarada (filtro <c>fps</c>, en el
+    /// codificador) y el preview pinta los cuadros tal como llegan; FFmpeg cuenta su progreso en los cuadros del preview, así que
+    /// el ritmo del canal se cuenta por tiempo de medios. False: un cuadro por periodo, lo de siempre.
+    /// </summary>
+    bool DeliversSparseVideo => false;
+
+    /// <summary>
     /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
     /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
     /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal

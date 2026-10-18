@@ -85,11 +85,29 @@ public sealed class PreviewPresentationScheduler<T> where T : class
 
     /// <summary>
     /// Llega un frame en <paramref name="arrival"/> (segundos). Se le asigna su turno; si la cola rebosa, los más viejos van a
-    /// <paramref name="discarded"/> (sus búferes se pueden reutilizar).
+    /// <paramref name="discarded"/> (sus búferes se pueden reutilizar). Con <paramref name="atSourcePace"/>, el frame es de una fuente
+    /// que solo trae sus cuadros reales (NDI con marcas): su llegada ES su ritmo —un grafismo que manda un cuadro cada 200–400 ms, un
+    /// vMix que se salta de uno a seis periodos— y una rejilla a la cadencia media los repartiría por igual, retrasando hasta
+    /// <see cref="MaxLead"/> los que llegan seguidos tras un hueco largo. Se enseña al llegar: en el refresco siguiente, nunca en el
+    /// mismo que el anterior.
     /// </summary>
-    public void Enqueue(T item, double arrival, ICollection<T> discarded)
+    public void Enqueue(T item, double arrival, ICollection<T> discarded, bool atSourcePace = false)
     {
         double due;
+        if (atSourcePace)
+        {
+            due = Math.Max(arrival + OnTimeMargin, _lastDue + WarmupSpacing);
+            LastLead = due - arrival;
+            _queue.Enqueue((item, due));
+            _lastDue = due;
+            _lastArrival = double.NaN; // si la fuente vuelve a su cadencia, la rejilla se mide de cero
+            while (_queue.Count > _capacity)
+            {
+                discarded.Add(_queue.Dequeue().Item);
+                Skipped++;
+            }
+            return;
+        }
         if (double.IsNaN(_lastArrival) || arrival < _lastArrival || arrival - _lastArrival > ResetGap())
         {
             // Tramo nuevo (el primero, o la fuente se paró: otro modo, señal perdida, carta de ajuste…): rejilla nueva, con

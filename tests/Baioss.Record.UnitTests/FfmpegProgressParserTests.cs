@@ -259,4 +259,39 @@ public class FfmpegProgressParserTests
         for (int s = 0; s < 10 && !alarm; s++) alarm = Second(lost: 3);
         Assert.True(alarm, "3 frames perdidos por segundo además de la conversión deben encender la alarma");
     }
+
+    [Fact]
+    public void WithASourceThatOnlyBringsItsRealFrames_TheTelemetryCountsTheDeclaredCadence_ByMediaTime()
+    {
+        // Un grafismo NDI que declara 60 y manda 4: el preview (la primera salida de vídeo, la que FFmpeg cuenta) pinta 4 por
+        // segundo mientras se graba a 60. FPS OUT y el contador hablan de la cadencia que se graba —por el tiempo de medios—, el fps
+        // de FFmpeg de los cuadros que llegan, y la alarma de frames perdidos no ve nada raro.
+        var now = TimeSpan.Zero;
+        var parser = new FfmpegProgressParser(() => now) { MediaFrameRate = 60 };
+        var detector = new SaturationDetector();
+        detector.Reset(realTimeSource: false);
+        var cadence = FrameRateConversion.For(new FrameRate(60, 1), null);
+        RecorderStats last = RecorderStats.Empty;
+        for (int s = 1; s <= 10; s++)
+        {
+            now += TimeSpan.FromSeconds(1);
+            parser.Feed($"frame={4 * s}");
+            parser.Feed("fps=4.00");
+            parser.Feed("drop_frames=0");
+            // out_time va a saltos (el de la salida más atrasada: el vídeo, que solo avanza con cada cuadro real).
+            parser.Feed($"out_time_us={(s * 1_000_000) - 150_000}");
+            last = parser.Feed("progress=continue")!;
+            Assert.False(detector.Update(new SaturationSample(last.DroppedFrames, last.FrameCount, last.MediaTimeUs, now), cadence));
+        }
+        Assert.Equal((long)(9.85 * 60), last.FrameCount);
+        Assert.InRange(last.OutputFps, 59, 61);
+        Assert.Equal(4.0, last.InputFps);
+
+        // Proceso nuevo (Grabar/Detener): su tiempo de medios vuelve a cero, y el contador con él.
+        now += TimeSpan.FromSeconds(1);
+        parser.Feed("frame=1");
+        parser.Feed("fps=4.00");
+        parser.Feed("out_time_us=N/A");
+        Assert.Equal(0, parser.Feed("progress=continue")!.FrameCount);
+    }
 }

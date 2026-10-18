@@ -149,17 +149,22 @@ public sealed class FfmpegArgumentBuilder
         // 2b) Audio multicanal: si la fuente entrega más de un estéreo, los canales se ELIGEN con pan (ver AudioRoutingFilter).
         string? audioFilter = AudioRoutingFilter(source, profile);
 
-        // 3) Filtros: si hay proxy, burn-in, un tamaño elegido (escalado) o salida entrelazada.
+        // 3) Filtros: si hay proxy, burn-in, un tamaño elegido (escalado), salida entrelazada o una fuente con huecos (que este
+        //    camino rellena a la entrada, a su cadencia: ver SparseVideoFill para el de los canales en vivo).
         bool gpu = FfmpegCodecMap.IsGpuEncoder(profile.VideoCodec);
         bool hasProxy = profile.Proxy is not null;
+        string? fill = source.DeliversSparseVideo && source.CurrentSignal.FrameRate is { Numerator: > 0, Denominator: > 0 } declared
+            ? string.Create(CultureInfo.InvariantCulture, $"fps={declared.Numerator}/{declared.Denominator}")
+            : null;
         bool needFilter = hasProxy || profile.BurnTimecode
                           || profile.TargetResolution is not null
-                          || profile.ScanType is not ScanType.Progressive;
+                          || profile.ScanType is not ScanType.Progressive
+                          || fill is not null;
         string mainVideo = "0:v:0";
 
         if (needFilter)
         {
-            var (filter, mainLabel) = BuildFilterGraph(profile, gpu, hasProxy);
+            var (filter, mainLabel) = BuildFilterGraph(profile, gpu, hasProxy, fill);
             args.Add("-filter_complex");
             args.Add(filter);
             mainVideo = mainLabel;
@@ -295,6 +300,10 @@ public sealed class FfmpegArgumentBuilder
             var recChain = new List<string>();
             // Desentrelazar ANTES de escalar: escalar en vertical cuadros con dos campos entretejidos los mezcla.
             string? deinterlace = DeinterlaceFilter(source.CurrentSignal, profile);
+            // Una fuente con huecos (NDI con marcas) se graba a cadencia constante: al final de la rama o, si algo de ella necesita un
+            // cuadro por periodo, al principio (ver SparseVideoFill).
+            var fill = SparseVideoFill(source, profile, deinterlace);
+            if (fill is { AtStart: true } early) recChain.Add(early.Filter);
             if (deinterlace is not null) recChain.Add(deinterlace);
             if (profile.TargetResolution is { } r)
                 recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
@@ -323,6 +332,7 @@ public sealed class FfmpegArgumentBuilder
             // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
             // la hacemos explícita. Si el formato ya coincide, es un no-op barato.
             recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={RecordingFilterPixelFormat(profile, recFrame, recRate)}"));
+            if (fill is { AtStart: false } late) recChain.Add(late.Filter);
 
             filter.Append("[0:v]split=2[vrec][vprev];");
             if (recChain.Count > 0)
@@ -430,6 +440,28 @@ public sealed class FfmpegArgumentBuilder
         bool perField = profile.OutputFrameRate is { Value: > 0 } output && signal.FrameRate is { Value: > 0 } input
                         && Math.Abs(output.Value - 2 * input.Value) < 0.01 * output.Value;
         return $"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all";
+    }
+
+    /// <summary>
+    /// Relleno de la grabación de una fuente con huecos (<see cref="ICaptureSource.DeliversSparseVideo"/>: NDI, que sirve solo los
+    /// cuadros que llegan, cada uno con su periodo): a cadencia constante —la del preset o, si la deja en nativo, la declarada por
+    /// la fuente— con un <c>fps</c>, que lo hace por las marcas: cada periodo con el último cuadro llegado en él o antes, y el
+    /// archivo acaba en el último periodo con cuadro (la duración de un periodo que FFmpeg le da). Va al FINAL de la rama: escalar,
+    /// desentrelazar y convertir al formato del codificador solo se hace con los cuadros reales, y el codificador recibe las
+    /// repeticiones como referencias al mismo cuadro (un emisor que imita al grafismo de Offside, 60 declarados y ~4 enviados: el
+    /// proceso del canal con NVENC pasó de ~2 a 0,28 núcleos). Va al PRINCIPIO, a la cadencia de la fuente —la rama ve entonces lo
+    /// mismo que antes, un cuadro por periodo—, si algo de ella lo necesita: el timecode quemado (drawtext cuenta cuadros, no
+    /// tiempo) y el desentrelazado por campo (bwdif pone el segundo campo a medio camino del cuadro siguiente, que tras un hueco cae
+    /// lejos, y al final del flujo alargaba el archivo). <c>-fps_mode cfr</c> no sirve: adelanta un periodo cada cuadro que llega
+    /// tras un hueco (medido con FFmpeg 8.0 y el incluido). Null si la fuente no tiene huecos o no se conoce su cadencia.
+    /// </summary>
+    internal static (string Filter, bool AtStart)? SparseVideoFill(ICaptureSource source, RecordingProfile profile, string? deinterlace)
+    {
+        if (!source.DeliversSparseVideo || profile.AudioOnly || source.CurrentSignal.FrameRate is not { Numerator: > 0, Denominator: > 0 } declared)
+            return null;
+        bool atStart = profile.BurnTimecode || (deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false);
+        var rate = atStart ? declared : profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } output ? output : declared;
+        return (string.Create(CultureInfo.InvariantCulture, $"fps={rate.Numerator}/{rate.Denominator}"), atStart);
     }
 
     /// <summary>
@@ -745,22 +777,29 @@ public sealed class FfmpegArgumentBuilder
         return args;
     }
 
-    private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy)
+    private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy, string? fill = null)
     {
         var sb = new StringBuilder();
         string mainIn;
+        string input = "[0:v]";
+        if (fill is not null)
+        {
+            sb.Append(CultureInfo.InvariantCulture, $"[0:v]{fill}[vfill]");
+            input = "[vfill]";
+        }
 
         if (hasProxy)
         {
             var px = p.Proxy!;
             string proxyScale = gpu ? "scale_cuda" : "scale";
-            sb.Append("[0:v]split=2[main][prx];");
+            if (sb.Length > 0) sb.Append(';');
+            sb.Append(CultureInfo.InvariantCulture, $"{input}split=2[main][prx];");
             sb.Append(CultureInfo.InvariantCulture, $"[prx]{proxyScale}={px.Resolution.Width}:{px.Resolution.Height}[proxout]");
             mainIn = "[main]";
         }
         else
         {
-            mainIn = "[0:v]";
+            mainIn = input;
         }
 
         // Cadena de filtros del video principal: escalado al tamaño elegido y/o burn-in de timecode.
@@ -782,9 +821,9 @@ public sealed class FfmpegArgumentBuilder
         }
 
         if (chain.Count == 0)
-            return (sb.ToString(), mainIn); // solo proxy: el principal va directo
+            return (sb.ToString(), mainIn); // solo proxy (o solo el relleno): el principal va directo
 
-        if (hasProxy) sb.Append(';');
+        if (sb.Length > 0) sb.Append(';');
         sb.Append(CultureInfo.InvariantCulture, $"{mainIn}{string.Join(',', chain)}[mainout]");
         return (sb.ToString(), "[mainout]");
     }

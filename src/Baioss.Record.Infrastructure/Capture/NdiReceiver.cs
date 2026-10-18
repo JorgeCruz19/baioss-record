@@ -9,18 +9,18 @@ using NewTek.NDI;
 namespace Baioss.Record.Infrastructure.Capture;
 
 /// <summary>
-/// Recibe vídeo + audio de una fuente NDI con el SDK NewTek y los SIRVE por dos sockets TCP loopback como
-/// flujos CRUDOS, para que FFmpeg los lea como dos entradas (vídeo <c>-f rawvideo</c>, audio <c>-f f32le</c>).
-/// Así una fuente NDI entra en el pipeline FFmpeg (preview + grabación) sin necesitar un FFmpeg compilado con NDI.
+/// Recibe vídeo + audio de una fuente NDI con el SDK NewTek y los SIRVE por dos sockets TCP loopback, para que FFmpeg los lea
+/// como dos entradas: el vídeo en NUT, con una marca de tiempo por cuadro (<c>-f nut</c>, ver <see cref="NdiNutFraming"/>), y el
+/// audio en crudo (<c>-f f32le</c>). Así una fuente NDI entra en el pipeline FFmpeg (preview + grabación) sin necesitar un FFmpeg
+/// compilado con NDI.
 ///
 /// <para>VÍDEO EN FORMATO NATIVO: se pide a NDI <c>UYVY_BGRA</c>, que entrega <b>UYVY</b> (YUV 4:2:2, 16 bpp)
 /// salvo que la fuente tenga alfa (entonces BGRA, 32 bpp). UYVY es la MITAD de bytes que BGRA —menos copia,
 /// menos tráfico de socket— y, al ser ya YUV, FFmpeg lo convierte a NV12/4:2:0 con un <c>swscale</c> mucho más
 /// barato que desde RGB. Por eso el BGRA de una fuente con alfa (un grafismo) se pasa a UYVY aquí, una vez por cuadro recibido
-/// (<see cref="BgraToUyvy"/>; el alfa no lo graba ninguna salida): FFmpeg convertía cada cuadro servido, repeticiones de la
-/// cadencia declarada incluidas. El <see cref="VideoPixelFormat"/> resultante (uyvy422; bgra solo con un ancho impar) lo lee la
-/// fuente para el <c>-pixel_format</c>. Los buffers de frame se alquilan de <see cref="ArrayPool{T}"/> y se devuelven tras
-/// escribirlos, para no generar basura (un frame es de varios MB; a 30-60 fps el GC se dispararía).</para>
+/// (<see cref="BgraToUyvy"/>; el alfa no lo graba ninguna salida). El <see cref="VideoPixelFormat"/> resultante (uyvy422; bgra
+/// solo con un ancho impar) va en las cabeceras del NUT. Los buffers de frame se alquilan de <see cref="ArrayPool{T}"/> y se
+/// devuelven tras escribirlos, para no generar basura (un frame es de varios MB; a 30-60 fps el GC se dispararía).</para>
 ///
 /// <para>Vídeo y audio se sirven en HILOS SEPARADOS con colas acotadas (<see cref="NdiFeed{T}"/>): FFmpeg abre sus entradas
 /// en serie y, mientras abre el audio, deja de leer el vídeo; con un solo hilo el <c>Write</c> de vídeo se bloquearía y
@@ -30,31 +30,22 @@ namespace Baioss.Record.Infrastructure.Capture;
 /// termine por sí mismo con todo lo que ya llegó: FFmpeg lee el audio por detrás del vídeo y, con la «q», lo que quedaba sin
 /// leer se perdía (el archivo acababa con el audio hasta 0,9 s más corto que el vídeo).</para>
 ///
-/// <para>Una fuente SIN audio (o que lo pierde) recibe silencio al ritmo de sus cuadros (<see cref="NdiAudioGapFiller"/>):
+/// <para>Una fuente SIN audio (o que lo pierde) recibe silencio al ritmo de los periodos de su cadencia (<see cref="NdiAudioGapFiller"/>):
 /// sin datos en la entrada de audio FFmpeg no arrancaba y el canal no tenía ni preview ni grabación.</para>
 ///
-/// <para>El vídeo se sirve a la cadencia DECLARADA aunque la fuente entregue menos (<see cref="NdiFrameCadence"/>): FFmpeg pone
-/// las marcas por contador, y sin esto una fuente que manda 10 de los 29.97 cuadros que declara se grababa comprimida en el
-/// tiempo y con el audio desfasado. El último cuadro se repite con un reloj propio cuando el siguiente no llega a tiempo, sin
-/// copiarlo (su búfer se comparte con la cola), y cada cuadro servido —real o repetido— lleva su silencio si no hay audio.</para>
+/// <para>CADENCIA DECLARADA, SIN SERVIRLA ENTERA: una fuente que entrega menos cuadros de los que declara (un grafismo que declara 60
+/// y manda 4, un vMix que manda 10 de 29.97) se graba a la cadencia declarada y en tiempo real. <see cref="NdiFrameCadence"/> decide
+/// qué periodo ocupa cada cuadro real según el reloj de la fuente y cuándo vence la repetición del último; cada cuadro real va a
+/// FFmpeg con la marca de su periodo, y las repeticiones no se envían: son periodos que avanzan (con su silencio, si no hay audio) y
+/// que la grabación rellena repitiendo el cuadro anterior (un <c>fps</c> en su rama). Antes el vídeo iba en <c>rawvideo</c>, que
+/// FFmpeg marca por contador, y había que servirle cada repetición entera: 60 cuadros de 1080 por segundo de una fuente que manda
+/// 4 atravesaban el socket, el preview y la conversión de la grabación (Offside, 2026-10-17: 1,86 núcleos el proceso del canal).
+/// El preview pinta los cuadros reales, a su ritmo. Si en <see cref="KeepAlive"/> no ha salido ningún cuadro, sale el último con el
+/// periodo en curso: el vídeo de FFmpeg avanza aunque la fuente calle, y el audio (que FFmpeg no lee por delante del vídeo) no se
+/// queda esperando; y al cerrar (<see cref="EndStream"/>), el último periodo vencido, para que la grabación llegue hasta él.</para>
 /// </summary>
 public sealed class NdiReceiver : IAsyncDisposable
 {
-    /// <summary>
-    /// Buffer alquilado del <see cref="ArrayPool{T}"/> + su longitud útil (Rent puede dar un array mayor). Un cuadro de vídeo
-    /// puede estar a la vez en la cola (una o varias veces, si se repite) y guardado como el último para repetirlo: vuelve al pool
-    /// cuando lo suelta el último que lo tiene (la cola al escribirlo o descartarlo, el receptor al llegar otro).
-    /// </summary>
-    private sealed class Frame
-    {
-        private int _refs = 1;
-        public Frame(byte[] buffer, int length) { Buffer = buffer; Length = length; }
-        public byte[] Buffer { get; }
-        public int Length { get; }
-        public Frame Share() { Interlocked.Increment(ref _refs); return this; }
-        public void Release() { if (Interlocked.Decrement(ref _refs) == 0) ArrayPool<byte>.Shared.Return(Buffer); }
-    }
-
     private readonly string _sourceName;
     private readonly ILogger _log;
     private readonly TcpListener _videoListener = new(IPAddress.Loopback, 0);
@@ -62,10 +53,13 @@ public sealed class NdiReceiver : IAsyncDisposable
     private readonly TaskCompletionSource<bool> _firstVideo = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Cada cuadro se suelta (Release) al escribirlo, al descartarlo la cola por saturación o si ya no se puede encolar (cierre),
-    // y vuelve al pool cuando lo suelta el último que lo tiene: un cuadro repetido está en la cola varias veces y además guardado
-    // como el último.
-    private readonly NdiFeed<Frame> _video = new(4, static f => f.Buffer.AsMemory(0, f.Length), static f => f.Release());
-    private readonly NdiFeed<Frame> _audio = new(16, static f => f.Buffer.AsMemory(0, f.Length), static f => f.Release());
+    // y vuelve al pool cuando lo suelta el último que lo tiene: un cuadro que se vuelve a enviar está en la cola y además guardado
+    // como el último. El vídeo va en NUT, cada proceso de FFmpeg con sus cabeceras y sus marcas (NdiNutFraming). El audio, en crudo:
+    // su cola cubre más de un segundo, lo que FFmpeg puede tardar en leerlo cuando el vídeo va detrás (un hueco de la fuente, el
+    // retraso del codificador).
+    private readonly NdiFeed<NdiVideoItem> _video = new(4, static i => i.Frame.Buffer.AsMemory(0, i.Frame.Length),
+        static i => i.Frame.Release(), static () => new NdiNutFraming());
+    private readonly NdiFeed<NdiFrame> _audio = new(64, static f => f.Buffer.AsMemory(0, f.Length), static f => f.Release());
 
     private CancellationTokenSource? _cts;
     private Task? _recvLoop;
@@ -76,11 +70,20 @@ public sealed class NdiReceiver : IAsyncDisposable
     private DateTimeOffset _lastPresenceLoss; // cuándo se perdió la presencia (para re-detectar formato si la caída fue larga)
     // Silencio cuando la fuente no trae audio (o deja de traerlo): sin datos en la entrada de audio, FFmpeg no arranca.
     private readonly NdiAudioGapFiller _silence = new();
-    // Cadencia declarada: cuántas veces se sirve el último cuadro (_last, con una referencia propia). Reloj monótono: un ajuste
-    // de la hora del sistema no debe soltar ni retener repeticiones.
+    // Cadencia declarada: qué periodo ocupa cada cuadro y cuándo vence la repetición del último (_last, con una referencia propia).
+    // Reloj monótono: un ajuste de la hora del sistema no debe soltar ni retener repeticiones. Lo comparten el bucle de recepción y
+    // EndStream (otro hilo): bajo _serve, como el periodo en curso, el silencio y lo que se encola.
+    private readonly object _serve = new();
     private readonly NdiFrameCadence _cadence = new();
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
-    private Frame? _last;
+    private NdiFrame? _last;
+    private NdiVideoFormat? _format;
+    // Periodos de la cadencia declarada desde que arrancó el receptor: el siguiente que ocupa un cuadro (real o repetido). Nunca
+    // vuelve atrás: cada proceso de FFmpeg cuenta sus marcas desde su primer cuadro.
+    private long _period;
+    private long _lastSentPeriod = -1;   // periodo del último cuadro encolado para FFmpeg
+    private TimeSpan _lastSentAt;        // y cuándo (nuestro reloj)
+    private TimeSpan _lastRealAt;        // llegada del último cuadro real (nuestro reloj)
     // Aviso de que la fuente entrega menos de lo que declara, por ventanas de unos segundos (cuadros reales y repeticiones).
     private TimeSpan _windowStart;
     private long _windowFrames, _windowRepeated;
@@ -98,9 +101,10 @@ public sealed class NdiReceiver : IAsyncDisposable
     public event Action<bool>? PresenceChanged;
 
     /// <summary>Se dispara cuando la fuente cambia de formato (resolución/pixel) EN CALIENTE sin perder presencia
-    /// (p. ej. vMix 720→1080 al vuelo): el receptor ya sirve el formato nuevo, pero el FFmpeg en marcha sigue con
-    /// el <c>-video_size</c> viejo hasta que el pipeline se RECONSTRUYA. La fuente lo usa para actualizar
-    /// <c>CurrentSignal</c> (y avisar). No se fuerza el rebuild aquí (sería una carrera con el slate). (N20/#32.)</summary>
+    /// (p. ej. vMix 720→1080 al vuelo): el receptor ya sirve el formato nuevo, pero el FFmpeg en marcha sigue con el de sus
+    /// cabeceras NUT —no se le escriben cuadros de otro: se queda con el último bueno— hasta que el pipeline se RECONSTRUYA. La
+    /// fuente lo usa para actualizar <c>CurrentSignal</c> (y avisar). No se fuerza el rebuild aquí (sería una carrera con el
+    /// slate). (N20/#32.)</summary>
     public event Action? FormatChanged;
 
     /// <summary>Sin frames de vídeo durante este tiempo ⇒ se considera pérdida de señal NDI.</summary>
@@ -110,6 +114,16 @@ public sealed class NdiReceiver : IAsyncDisposable
     /// (resolución/tasa/pixel) por si la fuente cambió mientras no emitía. Evita servir frames del nuevo formato
     /// con los parámetros viejos cacheados del primer frame histórico. (Auditoría 24/7, #32.)</summary>
     public TimeSpan FormatResetThreshold { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Sin enviar ningún cuadro a FFmpeg durante este tiempo (la fuente calla entre dos cuadros), se envía el último con el periodo
+    /// en curso. FFmpeg no deja que una entrada se adelante a la salida más retrasada: con una fuente que calla segundos (un grafismo
+    /// que solo manda cuando cambia la imagen), el vídeo del proceso se pararía con ella y el audio esperaría detrás, acumulándose en
+    /// el socket y en su cola. Acota esa espera, y lo que la grabación tarda en recibir los periodos que rellena. Por encima de los
+    /// huecos de las fuentes medidas (Offside, 200 ms; vMix, hasta 233 ms), para no gastar un cuadro entero en cada uno; los de
+    /// 400 ms de Offside, uno de cada cinco, llevan uno.
+    /// </summary>
+    public TimeSpan KeepAlive { get; init; } = TimeSpan.FromMilliseconds(300);
 
     public NdiReceiver(string sourceName, ILogger log)
     {
@@ -165,7 +179,7 @@ public sealed class NdiReceiver : IAsyncDisposable
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = _cts.Token;
-        _ = AcceptAsync(_videoListener, _video, token);
+        _ = AcceptAsync(_videoListener, _video, token, OnVideoAttached);
         _ = AcceptAsync(_audioListener, _audio, token);
         _recvLoop = Task.Run(() => ReceiveLoop(token), token);
 
@@ -178,7 +192,7 @@ public sealed class NdiReceiver : IAsyncDisposable
 
     // FFmpeg (cliente) se conecta a cada puerto al arrancar; ante reconexión (reinicio al alternar grabación)
     // se vuelve a aceptar el nuevo cliente: el flujo le sirve desde ya y cierra el anterior (ver NdiFeed.Attach).
-    private async Task AcceptAsync(TcpListener listener, NdiFeed<Frame> feed, CancellationToken ct)
+    private async Task AcceptAsync<T>(TcpListener listener, NdiFeed<T> feed, CancellationToken ct, Action? attached = null)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -187,6 +201,7 @@ public sealed class NdiReceiver : IAsyncDisposable
                 var next = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 next.NoDelay = true;
                 feed.Attach(next);
+                attached?.Invoke();
                 _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
             }
             catch (OperationCanceledException) { return; }
@@ -202,12 +217,24 @@ public sealed class NdiReceiver : IAsyncDisposable
     /// que sale del codificador de vídeo, que retiene cerca de un segundo— y con la «q» deja de leer en el acto: el audio que
     /// esperaba en el socket se perdía y el archivo acababa con el audio 0,1–0,9 s más corto que el vídeo. Con la entrada de
     /// vídeo cerrada, FFmpeg vacía el codificador y lee el audio pendiente hasta el mismo instante.</para>
+    /// <para>Antes, el último cuadro con el último periodo vencido, si no salió ya: los periodos que FFmpeg iba a rellenar repitiendo
+    /// el anterior solo los rellena hasta un cuadro, y sin él la grabación acababa en el último cuadro real —hasta
+    /// <see cref="KeepAlive"/> antes que el audio—.</para>
     /// </summary>
     public bool EndStream()
     {
-        bool video = _video.End();
-        bool audio = _audio.End();
-        return video && audio;
+        lock (_serve)
+        {
+            if (_last is not null)
+            {
+                var now = _clock.Elapsed;
+                AdvanceRepeats(now);
+                if (_period - 1 > _lastSentPeriod) EnqueueVideo(_last.Share(), _period - 1, now);
+            }
+            bool video = _video.End();
+            bool audio = _audio.End();
+            return video && audio;
+        }
     }
 
     private void ReceiveLoop(CancellationToken ct)
@@ -230,7 +257,7 @@ public sealed class NdiReceiver : IAsyncDisposable
                     break;
             }
 
-            // El siguiente cuadro no llegó a tiempo: se repite el último, para seguir a la cadencia declarada.
+            // El siguiente cuadro no llegó a tiempo: corren los periodos del último (y, si hace mucho que no sale ninguno, se envía).
             RepeatDue();
 
             // Detección de PÉRDIDA de señal NDI: si no llega vídeo en PresenceTimeout, notifica una sola vez
@@ -246,44 +273,94 @@ public sealed class NdiReceiver : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Conectó un proceso de FFmpeg al vídeo en un hueco de la fuente: le sale ya el último cuadro, con el periodo en curso. FFmpeg
+    /// no termina de abrir la entrada —ni pasa a abrir la del audio— hasta leer un cuadro, y el siguiente de una fuente a saltos
+    /// puede tardar hasta <see cref="KeepAlive"/>: el archivo empezaba ese tiempo después del Grabar (medido: 0,2 s menos de vídeo
+    /// y 0,1 s menos de audio con un grafismo que manda uno cada 250 ms). Con la fuente a su ritmo no hace falta (el siguiente
+    /// cuadro real llega antes de un periodo) y sería peor: ese cuadro es de hace un periodo, el vídeo del proceso empezaría un
+    /// periodo antes que su audio (medido: pitido 33 ms más adelantado) y el siguiente real caería en su mismo periodo.
+    /// </summary>
+    private void OnVideoAttached()
+    {
+        lock (_serve)
+        {
+            if (_last is null || FrameRateN <= 0 || FrameRateD <= 0) return;
+            var now = _clock.Elapsed;
+            if (now - _lastRealAt < TimeSpan.FromSeconds((double)FrameRateD / FrameRateN)) return;
+            AdvanceRepeats(now);
+            if (_period > _lastSentPeriod) EnqueueVideo(_last.Share(), _period, now);
+        }
+    }
+
     /// <summary>Espera máxima de <c>recv_capture_v2</c>: hasta que venza la siguiente repetición (y no más de 100 ms).</summary>
     private uint WaitMs()
     {
-        if (_cadence.UntilNextRepeat(_clock.Elapsed) is not { } until) return 100;
+        TimeSpan? next;
+        lock (_serve) next = _cadence.UntilNextRepeat(_clock.Elapsed);
+        if (next is not { } until) return 100;
         return (uint)Math.Clamp(Math.Ceiling(until.TotalMilliseconds), 1, 100);
     }
 
-    /// <summary>Sirve las repeticiones del último cuadro que vencieron (la fuente no envió el siguiente a tiempo).</summary>
+    /// <summary>Corren los periodos de las repeticiones del último cuadro que vencieron (la fuente no envió el siguiente a tiempo):
+    /// FFmpeg las rellena solo; si hace <see cref="KeepAlive"/> que no sale ningún cuadro, sale el último con el periodo en curso.</summary>
     private void RepeatDue()
     {
-        if (_last is null) return;
-        var now = _clock.Elapsed;
+        lock (_serve)
+        {
+            if (_last is null) return;
+            var now = _clock.Elapsed;
+            if (AdvanceRepeats(now) > 0 && now - _lastSentAt >= KeepAlive && _period - 1 > _lastSentPeriod)
+                EnqueueVideo(_last.Share(), _period - 1, now);
+            WatchCadence(now);
+        }
+    }
+
+    /// <summary>Las repeticiones del último cuadro que vencen ya, como periodos que pasan (con su silencio si no hay audio); devuelve
+    /// cuántas. Bajo <see cref="_serve"/>.</summary>
+    private int AdvanceRepeats(TimeSpan now)
+    {
         int due = _cadence.Due(now);
-        for (int i = 0; i < due; i++) ServeVideo(_last.Share());
+        if (due <= 0) return 0;
+        _period += due;
+        Silence(due);
         _windowRepeated += due;
-        WatchCadence(now);
+        return due;
     }
 
     /// <summary>Olvida el último cuadro y la referencia de la cadencia (pérdida de la fuente o cambio de formato: el cuadro
-    /// guardado ya no vale para repetirlo).</summary>
+    /// guardado ya no vale para repetirlo). Los periodos siguen donde iban: las marcas de cada proceso de FFmpeg no vuelven atrás.</summary>
     private void ResetCadence()
     {
-        _cadence.Reset();
-        _last?.Release();
-        _last = null;
-        _windowStart = _clock.Elapsed;
-        _windowFrames = _windowRepeated = 0;
+        lock (_serve)
+        {
+            _cadence.Reset();
+            _last?.Release();
+            _last = null;
+            _windowStart = _clock.Elapsed;
+            _windowFrames = _windowRepeated = 0;
+        }
+    }
+
+    /// <summary>Encola un cuadro para FFmpeg en el periodo <paramref name="period"/> (si ya no se puede encolar —cierre—, la cola lo
+    /// suelta). Bajo <see cref="_serve"/>.</summary>
+    private void EnqueueVideo(NdiFrame frame, long period, TimeSpan now)
+    {
+        _video.Enqueue(new NdiVideoItem(frame, period));
+        _lastSentPeriod = period;
+        _lastSentAt = now;
     }
 
     /// <summary>
-    /// Encola un cuadro para FFmpeg (uno real o el último, repetido) y, si la fuente no trae audio, el silencio que le toca: el
-    /// silencio sigue a los cuadros SERVIDOS, que son los que FFmpeg cuenta para las marcas del vídeo.
+    /// Pasaron <paramref name="periods"/> periodos del vídeo: si la fuente no trae audio, el silencio que les toca. El silencio sigue
+    /// a los PERIODOS —los que FFmpeg recibe con su cuadro y los que rellena repitiendo el anterior—, que son las marcas del vídeo.
+    /// Bajo <see cref="_serve"/>.
     /// </summary>
-    private void ServeVideo(Frame frame)
+    private void Silence(long periods)
     {
-        _video.Enqueue(frame); // si ya no se puede encolar (cierre), Enqueue lo suelta
+        if (periods <= 0) return;
         bool wasFilling = _silence.Filling;
-        int silent = _silence.OnVideo(DateTimeOffset.UtcNow, SampleRate, FrameRateN, FrameRateD);
+        int silent = _silence.OnPeriods(DateTimeOffset.UtcNow, periods, SampleRate, FrameRateN, FrameRateD);
         if (silent > 0) EnqueueSilence(silent);
         if (_silence.Filling && !wasFilling)
             _log.LogInformation("NDI: «{Source}» no trae audio; se envía silencio ({SR} Hz, {Ch} canales) para que el canal previsualice y grabe igual.",
@@ -304,8 +381,9 @@ public sealed class NdiReceiver : IAsyncDisposable
             if (!_shortWarned && repeatedShare > 0.05)
             {
                 _shortWarned = true;
-                _log.LogInformation("NDI: «{Source}» entrega {Real:0.#} cuadros/s de los {Declared:0.##} que declara; se repite el último " +
-                    "para servirlos a la cadencia declarada (y que la grabación dure lo que dura y vaya en sincronía con el audio).",
+                _log.LogInformation("NDI: «{Source}» entrega {Real:0.#} cuadros/s de los {Declared:0.##} que declara; la grabación repite el " +
+                    "último hasta el siguiente para ir a la cadencia declarada (y durar lo que dura, en sincronía con el audio), y el " +
+                    "preview pinta los que llegan.",
                     _sourceName, _windowFrames / window.TotalSeconds, declared);
             }
             else if (_shortWarned && repeatedShare < 0.01)
@@ -353,10 +431,10 @@ public sealed class NdiReceiver : IAsyncDisposable
         else if (FormatDiffers(v.xres, frameHeight, PixelFormatFor(v.FourCC, v.xres), interlaced, Width, Height, VideoPixelFormat, Interlaced))
         {
             // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel/barrido al
-            // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y BuildInputArguments
-            // sean correctos, AVISA (el FFmpeg en marcha sigue con el -video_size viejo → imagen corrupta hasta
-            // reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que la fuente
-            // actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
+            // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y las cabeceras del proceso siguiente
+            // sean correctas, AVISA (el FFmpeg en marcha no recibe cuadros del formato nuevo, que no caben en su flujo NUT: se
+            // queda con el último bueno hasta reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que
+            // la fuente actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
             int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat; bool oldInterlaced = Interlaced;
             ApplyFormat(ref v, frameHeight, interlaced);
             ResetCadence(); // el último cuadro es del formato anterior: no se repite
@@ -388,18 +466,24 @@ public sealed class NdiReceiver : IAsyncDisposable
                     Marshal.Copy(v.p_data + y * v.line_stride_in_bytes, buf, y * rowBytes, rowBytes);
         }
 
-        // A la cadencia declarada: antes de este cuadro, las repeticiones del anterior que la fuente se saltó y aún no salieron; y
-        // este, salvo que lo servido vaya ya demasiado por delante de la fuente. Sea como sea, es el que se repite a partir de
-        // ahora. Cada cuadro servido lleva su silencio si la fuente no trae audio (y, al detectarlo, los que ya pasaron sin él).
-        var frame = new Frame(buf, size);
-        var decision = _cadence.OnFrame(_clock.Elapsed, SourceTime(v.timestamp), FrameRateN, FrameRateD);
-        if (_last is not null)
-            for (int i = 0; i < decision.RepeatsBefore; i++) ServeVideo(_last.Share());
-        if (decision.Serve) ServeVideo(frame.Share());
-        _last?.Release();
-        _last = frame;
-        _windowFrames++;
-        _windowRepeated += decision.RepeatsBefore;
+        // A la cadencia declarada: antes de este cuadro corren los periodos del anterior que la fuente se saltó y aún no corrieron
+        // (FFmpeg los rellena repitiéndolo); este va con la marca de su periodo, salvo que lo servido vaya ya demasiado por delante
+        // de la fuente. Sea como sea, es el que se repite a partir de ahora. Cada periodo lleva su silencio si la fuente no trae
+        // audio (y, al detectarlo, los que ya pasaron sin él).
+        var frame = new NdiFrame(buf, size, _format);
+        lock (_serve)
+        {
+            var now = _clock.Elapsed;
+            _lastRealAt = now;
+            var decision = _cadence.OnFrame(now, SourceTime(v.timestamp), FrameRateN, FrameRateD);
+            _period += decision.RepeatsBefore;
+            if (decision.Serve) EnqueueVideo(frame.Share(), _period++, now);
+            Silence(decision.RepeatsBefore + (decision.Serve ? 1 : 0));
+            _last?.Release();
+            _last = frame;
+            _windowFrames++;
+            _windowRepeated += decision.RepeatsBefore;
+        }
     }
 
     /// <summary>Marca de un cuadro en el reloj de la fuente (la pone el SDK al enviarlo, en unidades de 100 ns); null si la fuente
@@ -413,7 +497,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         int bytes = samples * Math.Max(1, Channels) * sizeof(float);
         var buf = ArrayPool<byte>.Shared.Rent(bytes);
         Array.Clear(buf, 0, bytes); // los búferes del pool vuelven con datos viejos
-        _audio.Enqueue(new Frame(buf, bytes));
+        _audio.Enqueue(new NdiFrame(buf, bytes));
     }
 
     /// <summary>Lo más que va un entrelazado de verdad, en cuadros por segundo: 1080i60 (60 campos), con margen para una tasa
@@ -493,6 +577,7 @@ public sealed class NdiReceiver : IAsyncDisposable
         if (v.frame_rate_N > 0 && v.frame_rate_D > 0) { FrameRateN = v.frame_rate_N; FrameRateD = v.frame_rate_D; }
         VideoPixelFormat = PixelFormatFor(v.FourCC, v.xres);
         _bytesPerPixel = VideoPixelFormat == "uyvy422" ? 2 : 4;
+        _format = new NdiVideoFormat(Width, Height, VideoPixelFormat, FrameRateN, FrameRateD); // el de las cabeceras NUT
         if (v.FourCC is not (NDIlib.FourCC_type_e.FourCC_type_UYVY or NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX))
             _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
         else if (ConvertsToUyvy(v.FourCC, v.xres))
@@ -518,11 +603,15 @@ public sealed class NdiReceiver : IAsyncDisposable
 
     private void OnAudio(ref NDIlib.audio_frame_v2_t a)
     {
-        if (a.sample_rate > 0) SampleRate = a.sample_rate;
-        if (a.no_channels > 0) Channels = a.no_channels;
-        if (a.p_data == IntPtr.Zero || a.no_samples <= 0 || a.no_channels <= 0) return;
-        if (_silence.Filling) _log.LogInformation("NDI: «{Source}» vuelve a traer audio.", _sourceName);
-        _silence.OnAudio(DateTimeOffset.UtcNow);
+        if (a.p_data == IntPtr.Zero || a.no_samples <= 0 || a.no_channels <= 0)
+        {
+            lock (_serve)
+            {
+                if (a.sample_rate > 0) SampleRate = a.sample_rate;
+                if (a.no_channels > 0) Channels = a.no_channels;
+            }
+            return;
+        }
 
         // NDI entrega audio float PLANAR; FFmpeg -f f32le espera INTERLEAVED: se convierte con el helper del SDK.
         int bytes = a.no_samples * a.no_channels * sizeof(float);
@@ -536,7 +625,14 @@ public sealed class NdiReceiver : IAsyncDisposable
             NDIlib.util_audio_to_interleaved_32f_v2(ref a, ref dst);
             var buf = ArrayPool<byte>.Shared.Rent(bytes);
             Marshal.Copy(tmp, buf, 0, bytes);
-            _audio.Enqueue(new Frame(buf, bytes));
+            lock (_serve) // el silencio y su formato los comparte con EndStream
+            {
+                if (a.sample_rate > 0) SampleRate = a.sample_rate;
+                Channels = a.no_channels;
+                if (_silence.Filling) _log.LogInformation("NDI: «{Source}» vuelve a traer audio.", _sourceName);
+                _silence.OnAudio(DateTimeOffset.UtcNow);
+                _audio.Enqueue(new NdiFrame(buf, bytes));
+            }
         }
         finally { Marshal.FreeHGlobal(tmp); }
     }

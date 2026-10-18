@@ -154,7 +154,9 @@ This is where you decide **which video source is connected to each channel**.
   source (a 1080i from vMix or from a converter) is deinterlaced like the card's, and one without audio (graphics outputs,
   many PTZ cameras) is previewed and recorded with a silent track: that is why it shows the silence alarm. Some graphics
   outputs flag as interlaced frames that run at 50 or 60 per second, an interlaced format that does not exist: they are
-  treated as progressive (shown as "1920×1080 · 60p · NDI"). The alpha channel of an NDI source is not recorded.
+  treated as progressive (shown as "1920×1080 · 60p · NDI"). The alpha channel of an NDI source is not recorded. A source
+  that sends fewer frames than it declares (a graphics output that only sends when the picture changes) is previewed at its
+  real pace and recorded at the rate it declares, each picture repeated until the next; **FPS OUT** shows that rate.
 - **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see
   "Network sources" below).
 - **Demonstration clip:** a sample video that ships with the program (handy for testing).
