@@ -860,6 +860,12 @@ public sealed class FfmpegArgumentBuilder
             // siguiente token (-c:a) como su valor y deje «aac» suelto como nombre de archivo de salida → aborta
             // con EINVAL (-22) «Unable to choose an output format for 'aac'». Debe ir como «-no-scenecut 1».
             if (p.ClosedGop) list.AddRange(new[] { "-no-scenecut", "1" });
+            // En AVI, sin las unidades SEI: aun sin B-frames, NVENC escribe en el SEI de temporización un dpb_output_delay de un
+            // cuadro, y FFmpeg, que en AVI no tiene otra marca de presentación, lo aplica: el vídeo quedaba un cuadro por detrás del
+            // audio (medido con CBR, VBR y calidad constante; QuickSync escribe 0 y x264 no lo escribe). Solo en H.264: en HEVC la
+            // unidad de tipo 6 es un corte de imagen.
+            if (p.Container is ContainerFormat.Avi && p.VideoCodec is VideoCodec.H264Nvenc)
+                list.AddRange(new[] { "-bsf:v", "filter_units=remove_types=6" });
         }
         else if (p.VideoCodec is VideoCodec.H264Qsv or VideoCodec.H264Amf or VideoCodec.HevcQsv)
         {
@@ -878,7 +884,11 @@ public sealed class FfmpegArgumentBuilder
         {
             // MPEG-2 broadcast (XDCAM/IMX/PS/TS): CBR con VBV acotado.
             list.AddRange(new[] { "-b:v", bitrate, "-minrate", bitrate, "-maxrate", maxrate, "-bufsize", bufsize, "-g", gop });
-            if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
+            // En AVI, además, low_delay: no hay B-frames (FFmpeg no los usa si no se le piden), pero sin él la secuencia no lo
+            // promete y el decodificador retiene una imagen; sin marcas de presentación, el vídeo quedaba un cuadro por detrás del
+            // audio (medido). Con marcas (PS, TS, MXF…) ese retén no se nota.
+            string flags = (interlaced ? "+ilme+ildct" : "") + (p.Container is ContainerFormat.Avi ? "+low_delay" : "");
+            if (flags.Length > 0) { list.Add("-flags"); list.Add(flags); }
         }
         else if (DnxhdBitrateMbps(p, frame, rate) is { } dnxhdMbps)
         {
@@ -932,6 +942,10 @@ public sealed class FfmpegArgumentBuilder
             list.Add("-g"); list.Add(gop);
             if (interlaced) { list.Add("-flags"); list.Add("+ilme+ildct"); }
         }
+
+        // Sin B-frames donde el contenedor no guarda la reordenación (AVI, MXF con H.264): ver FfmpegCodecMap.KeepsReordering.
+        if (FfmpegCodecMap.ReordersFrames(p.VideoCodec) && !FfmpegCodecMap.KeepsReordering(p.Container, p.VideoCodec))
+            list.AddRange(new[] { "-bf", "0" });
 
         var pix = EncoderPixelFormat(p, frame, rate);
         if (pix is not null) { list.Add("-pix_fmt"); list.Add(pix); }

@@ -96,6 +96,29 @@ public static class FfmpegCodecMap
     public static bool IsGpuEncoder(VideoCodec codec) =>
         codec is VideoCodec.H264Nvenc or VideoCodec.HevcNvenc or VideoCodec.Av1Nvenc;
 
+    /// <summary>
+    /// True si el contenedor guarda la REORDENACIÓN de ese códec: cuándo se presenta cada cuadro, no solo en qué orden se
+    /// decodifica. AVI no guarda marcas de tiempo (cada cuadro va en su posición, en orden de decodificación, y quien lo lee lo
+    /// presenta cuando el decodificador lo suelta) y el MXF de FFmpeg solo guarda la de MPEG-2 (el desfase temporal de su
+    /// índice), no la de H.264. Ahí un códec que reordena (<see cref="ReordersFrames"/>) deja el vídeo tarde respecto al audio
+    /// tantos cuadros como reordena: medido con FFmpeg 8.0 y una fuente con un destello y un pitido por segundo, 2 cuadros con
+    /// x264 (80 ms a 25 fps) y 1 con QuickSync, en AVI y en MXF; en MP4, MOV, MKV, TS y PS, ninguno.
+    /// </summary>
+    public static bool KeepsReordering(ContainerFormat container, VideoCodec codec) => container switch
+    {
+        ContainerFormat.Avi => false,
+        ContainerFormat.Mxf => codec is VideoCodec.Mpeg2Video,
+        _ => true,
+    };
+
+    /// <summary>
+    /// True si el codificador reordena cuadros (B-frames) salvo que se le pida <c>-bf 0</c>: x264 y x265 por su preset,
+    /// QuickSync y AMF por lo que decida el driver. NVENC se pide siempre sin ellos, el MPEG-2 de FFmpeg no los usa si no se le
+    /// piden y ProRes y DNxHD/HR son intra.
+    /// </summary>
+    public static bool ReordersFrames(VideoCodec codec) =>
+        codec is VideoCodec.H264x264 or VideoCodec.H265x265 or VideoCodec.H264Qsv or VideoCodec.HevcQsv or VideoCodec.H264Amf;
+
     /// <summary>Banderas de entrada para decode acelerado por hardware.</summary>
     public static IEnumerable<string> HwAccelInput(HwAccel accel) => accel switch
     {

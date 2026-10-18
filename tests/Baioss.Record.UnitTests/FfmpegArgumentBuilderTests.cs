@@ -1536,4 +1536,122 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains("-af pan=stereo|c0=c4|c1=c5,ebur128=peak=true", joined);
         Assert.DoesNotContain("-ac ", joined);
     }
+
+    // --- Contenedores que no guardan la reordenación del códec (AVI; MXF con H.264): el vídeo a la hora del audio ---
+
+    private static RecordingProfile Coded(VideoCodec codec, ContainerFormat container, ScanType scan = ScanType.Progressive) => new()
+    {
+        Name = "c", VideoCodec = codec, HwAccel = HwAccel.None, VideoBitrate = Bitrate.FromMbps(20), GopSize = 50,
+        TargetResolution = new Resolution(1920, 1080), OutputFrameRate = FrameRate.P25, ScanType = scan,
+        AudioCodec = AudioCodec.Pcm, AudioLayout = AudioLayout.Stereo, Container = container,
+    };
+
+    /// <summary>Las tres construcciones que graban: el proceso del canal, la carta de ajuste y el archivo único.</summary>
+    private static IEnumerable<string[]> RecordingCommands(RecordingProfile profile) => new[]
+    {
+        NewLiveBuilder(profile).BuildLive(recording: true, 640, 360).ToArray(),
+        NewLiveBuilder(profile).BuildSlate(recording: true, 640, 360).ToArray(),
+        new FfmpegArgumentBuilder().From(new FakeCaptureSource("C:/clips/in.mp4")).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .Build().ToArray(),
+    };
+
+    /// <summary>Veces que aparecen seguidos, en este orden, los tokens de <paramref name="sequence"/>.</summary>
+    private static int Occurrences(string[] args, params string[] sequence)
+        => Enumerable.Range(0, Math.Max(0, args.Length - sequence.Length + 1)).Count(i => args.Skip(i).Take(sequence.Length).SequenceEqual(sequence));
+
+    [Fact]
+    public void CatalogAviPresets_RecordWithoutBFrames()
+    {
+        // AVI no guarda cuándo se presenta cada cuadro: con los B-frames de x264 el vídeo quedaba 2 cuadros (80 ms a 25 fps) por
+        // detrás del audio (barrido NDI del 2026-10-18, y lo mismo con una fuente lavfi). En el canal, en la carta de ajuste y en
+        // el archivo único; el entrelazado conserva sus banderas.
+        var avi = Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns().Where(p => p.Container == ContainerFormat.Avi).ToList();
+        Assert.Equal(new[] { "AVI · H.264 1080p25", "AVI · H.264 1080i25" }, avi.Select(p => p.Name));
+        foreach (var preset in avi)
+        {
+            var profile = preset.ToProfile();
+            string flags = profile.ScanType is ScanType.Progressive ? "" : "-flags +ilme+ildct ";
+            foreach (var args in RecordingCommands(profile))
+            {
+                Assert.Contains($"-c:v libx264 -preset veryfast -b:v 20000000 -maxrate 20000000 -bufsize 50000000 -g 50 {flags}-bf 0 -pix_fmt yuv420p",
+                    string.Join(' ', args));
+                Assert.Equal(1, Occurrences(args, "-bf"));
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.H264x264, ContainerFormat.Avi)]
+    [InlineData(VideoCodec.H265x265, ContainerFormat.Avi)]
+    [InlineData(VideoCodec.H264Qsv, ContainerFormat.Avi)]
+    [InlineData(VideoCodec.HevcQsv, ContainerFormat.Avi)]
+    [InlineData(VideoCodec.H264Amf, ContainerFormat.Avi)]
+    [InlineData(VideoCodec.H264x264, ContainerFormat.Mxf)] // el MXF de FFmpeg solo guarda la reordenación de MPEG-2
+    [InlineData(VideoCodec.H264Qsv, ContainerFormat.Mxf)]
+    [InlineData(VideoCodec.H264Amf, ContainerFormat.Mxf)]
+    public void ACodecWithBFrames_GoesWithoutThem_WhereTheContainerCannotKeepTheirOrder(VideoCodec codec, ContainerFormat container)
+    {
+        // Medido con FFmpeg 8.0 y una fuente con un destello y un pitido por segundo: x264 2 cuadros tarde, QuickSync 1.
+        foreach (var args in RecordingCommands(Coded(codec, container)))
+        {
+            Assert.Equal(1, Occurrences(args, "-bf", "0"));
+            Assert.Equal(1, Occurrences(args, "-bf"));
+        }
+    }
+
+    [Theory]
+    [InlineData(ContainerFormat.Mp4)]
+    [InlineData(ContainerFormat.Mov)]
+    [InlineData(ContainerFormat.Mkv)]
+    [InlineData(ContainerFormat.Ts)]
+    [InlineData(ContainerFormat.ProgramStream)]
+    public void ACodecWithBFrames_KeepsThem_WhereTheContainerStoresTheirOrder(ContainerFormat container)
+    {
+        // Ahí la marca de presentación de cada cuadro viaja con él: los B-frames no desplazan el vídeo y se quedan (comprimen más).
+        foreach (var codec in new[] { VideoCodec.H264x264, VideoCodec.H265x265, VideoCodec.H264Qsv, VideoCodec.HevcQsv, VideoCodec.H264Amf })
+            foreach (var args in RecordingCommands(Coded(codec, container)))
+            {
+                Assert.Equal(0, Occurrences(args, "-bf"));
+                Assert.Equal(0, Occurrences(args, "-bsf:v"));
+            }
+    }
+
+    [Fact]
+    public void H264Nvenc_InAvi_DropsTheTimingSeiThatDelaysEveryFrame()
+    {
+        // NVENC ya va sin B-frames, pero su SEI de temporización presenta cada cuadro uno después (dpb_output_delay): en AVI, sin
+        // otra marca, FFmpeg lo aplica y el vídeo quedaba un cuadro por detrás del audio. Solo en AVI (en MP4 o MXF manda la marca
+        // del contenedor) y solo en H.264: en HEVC el tipo de unidad 6 es un corte de imagen.
+        foreach (var args in RecordingCommands(Coded(VideoCodec.H264Nvenc, ContainerFormat.Avi)))
+        {
+            Assert.Equal(1, Occurrences(args, "-bsf:v", "filter_units=remove_types=6"));
+            Assert.Equal(1, Occurrences(args, "-bf", "0"));
+            Assert.Equal(1, Occurrences(args, "-bf"));
+        }
+        foreach (var (codec, container) in new[] { (VideoCodec.H264Nvenc, ContainerFormat.Mp4), (VideoCodec.H264Nvenc, ContainerFormat.Mxf),
+                                                   (VideoCodec.HevcNvenc, ContainerFormat.Avi) })
+            foreach (var args in RecordingCommands(Coded(codec, container)))
+                Assert.Equal(0, Occurrences(args, "-bsf:v"));
+    }
+
+    [Theory]
+    [InlineData(ScanType.Progressive, "+low_delay")]
+    [InlineData(ScanType.InterlacedTff, "+ilme+ildct+low_delay")]
+    public void Mpeg2_InAvi_PromisesNoBFrames_SoTheDecoderHoldsNoPicture(ScanType scan, string aviFlags)
+    {
+        // El MPEG-2 de FFmpeg no usa B-frames, pero sin low_delay la secuencia no lo promete y el decodificador retiene una imagen:
+        // en AVI el vídeo quedaba un cuadro por detrás del audio. Con marcas (TS, PS, MXF) ese retén no se nota: como siempre.
+        foreach (var args in RecordingCommands(Coded(VideoCodec.Mpeg2Video, ContainerFormat.Avi, scan)))
+        {
+            Assert.Equal(1, Occurrences(args, "-flags", aviFlags));
+            Assert.Equal(1, Occurrences(args, "-flags"));
+            Assert.Equal(0, Occurrences(args, "-bf"));
+        }
+        foreach (var container in new[] { ContainerFormat.Ts, ContainerFormat.ProgramStream, ContainerFormat.Mxf })
+            foreach (var args in RecordingCommands(Coded(VideoCodec.Mpeg2Video, container, scan)))
+            {
+                Assert.DoesNotContain(args, a => a.Contains("low_delay", StringComparison.Ordinal));
+                Assert.Equal(scan is ScanType.Progressive ? 0 : 1, Occurrences(args, "-flags", "+ilme+ildct"));
+            }
+    }
 }
