@@ -52,6 +52,8 @@ public static class AuditText
                 "StorageLow" => StorageLow(j),
                 "StorageEmergencyEntered" or "StorageEmergencyCleared" => StorageEmergency(j),
                 "RecordingInterrupted" => Interrupted(j),
+                // El motivo ya va en palabras (y con comas: el limpiador genérico lo partiría).
+                "EncoderFailed" => Str(j, "Reason"),
                 "RecordingFileUnverified" => Unverified(j),
                 "StorageStalled" => Localizer.F("Audit_DiskStall_Detail", Str(j, "Volume") ?? "?"),
                 "StorageStallCleared" => Localizer.F("Audit_DiskStallCleared_Detail", Str(j, "Volume") ?? "?",

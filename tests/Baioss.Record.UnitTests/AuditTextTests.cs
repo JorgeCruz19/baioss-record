@@ -133,6 +133,18 @@ public class AuditTextTests : IDisposable
     }
 
     [Fact]
+    public void Una_Grabacion_Que_No_Se_Podia_Producir_Muestra_Su_Motivo_Entero()
+    {
+        // El motivo lleva comas (la queja de FFmpeg y la lista de códecs): el limpiador genérico lo partía en «campos».
+        const string reason = "El contenedor MXF no admite lo que pide el preset (vídeo mpeg2video, audio aac): FFmpeg no pudo escribir " +
+                              "la cabecera del archivo («Codec 'aac' (86018) is not supported by the bitstream filter 'pcm_rechunk'»). Elige otro contenedor o códec.";
+        var payload = System.Text.Json.JsonSerializer.Serialize(new { ChannelId = Guid.NewGuid(), SessionId = Guid.NewGuid(), Reason = reason });
+
+        Assert.Equal(reason, AuditText.Detail("EncoderFailed", payload, "EncoderFailed { Reason = … }"));
+        Assert.Equal("Fallo del codificador", AuditText.Category("EncoderFailed"));
+    }
+
+    [Fact]
     public void Un_Archivo_Danado_Muestra_Nombre_Tamano_Y_Que_No_Se_Reproduce()
     {
         var payload = """{"FilePath":"D:\\rec\\06-09-2026_TEST SUNDAY_9.mp4","SizeBytes":2924741632}""";

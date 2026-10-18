@@ -128,6 +128,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _engine.SegmentClosed += OnSegmentClosed;
         _engine.AlarmChanged += OnEngineAlarm;
         _engine.RecordingInterrupted += OnRecordingInterrupted;
+        _engine.RecordingFailed += OnRecordingFailed;
         _engine.FileUnverified += OnFileUnverified;
         _engine.InputOverrun += OnInputOverrun;
         _onSourceSignal = (_, _) => Raise();
@@ -520,7 +521,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         if (_session is not null)
         {
             _session.EndedAt = DateTimeOffset.UtcNow;
-            _session.State = RecordingState.Idle;
+            // Como la grabación que no llegó a arrancar (StartRecordingCoreAsync): la que terminó por un fallo queda en Error.
+            _session.State = reason == RecordingStopReason.Error ? RecordingState.Error : RecordingState.Idle;
             _session.StopReason = reason;
             if (_sessions is not null)
             {
@@ -694,6 +696,34 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         _ = _bus.PublishAsync(new RecordingInterrupted(ChannelId, s.Id, e.ExitCode, e.Reason));
     }
 
+    /// <summary>
+    /// La grabación no se podía producir con su preset (el contenedor rechazó la cabecera, o un codificador no abre y no hay
+    /// alternativa) y el motor ya la terminó, con la alarma en el canal: a la auditoría el fallo con su motivo, y la sesión se cierra
+    /// como cualquier parada, por error (RecordingStopped). En otra tarea y tras el semáforo de transiciones: el motor avisa con el
+    /// suyo tomado, y un arranque aún en curso (el fallo llega en el primer segundo) publica antes su RecordingStarted, así que la
+    /// auditoría dice «iniciada», «fallo», «detenida» en ese orden. Sin efecto si para entonces la sesión ya es otra o ya se cerró.
+    /// </summary>
+    private void OnRecordingFailed(object? sender, string reason)
+    {
+        if (_session is not { } failed) return;
+        _ = Task.Run(async () =>
+        {
+            await _transition.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (!ReferenceEquals(_session, failed)) return;
+                if (_bus is not null)
+                {
+                    try { await _bus.PublishAsync(new EncoderFailed(ChannelId, failed.Id, reason), CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception ex) { _log?.LogError(ex, "No se pudo auditar el fallo de la grabación del canal {Key}.", _key); }
+                }
+                await StopRecordingCoreAsync(RecordingStopReason.Error, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex) { _log?.LogError(ex, "Canal {Key}: no se pudo cerrar la grabación que falló.", _key); }
+            finally { _transition.Release(); }
+        });
+    }
+
     /// <summary>Un archivo recién cerrado no pasó la verificación: a la auditoría (qué archivo, cuánto), y el
     /// segmento queda marcado como <see cref="SegmentStatus.Corrupt"/> en la BD para que el historial no lo
     /// presente como una pieza sana.</summary>
@@ -751,6 +781,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         AlarmType.FramesDropped => "Frames perdidos — el equipo no da abasto (CPU/GPU/disco)",
         AlarmType.RecordingUnverified => "Grabación sin verificar — el archivo podría estar dañado",
         AlarmType.DiskStalled => "El disco de destino no responde — la grabación espera sin cortar",
+        AlarmType.RecordingFailed => "Grabación detenida: este preset no se puede grabar — motivo en el registro de actividad",
         _ => t.ToString(),
     };
 
@@ -880,6 +911,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     public async ValueTask DisposeAsync()
     {
         _engine.RecordingInterrupted -= OnRecordingInterrupted;
+        _engine.RecordingFailed -= OnRecordingFailed;
         _engine.FileUnverified -= OnFileUnverified;
         _engine.InputOverrun -= OnInputOverrun;
         // Nada de lo que llegue tarde del motor o de la fuente debe tocar ya este canal (estado, alarmas, bus).

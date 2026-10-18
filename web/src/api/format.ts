@@ -174,6 +174,7 @@ const alarmKeys: Record<AlarmType, Key> = {
   [AlarmType.RecordingUnverified]: 'alarm.recordingUnverified',
   [AlarmType.DiskEmergency]: 'alarm.diskEmergency',
   [AlarmType.DiskStalled]: 'alarm.diskStalled',
+  [AlarmType.RecordingFailed]: 'alarm.recordingFailed',
 }
 /** Etiqueta de una alarma, o `fallback` (el texto de la aplicación) si es un tipo que el panel no conoce. */
 export const alarmLabel = (a: AlarmType, fallback: string): string => (alarmKeys[a] ? tr(alarmKeys[a]) : fallback)

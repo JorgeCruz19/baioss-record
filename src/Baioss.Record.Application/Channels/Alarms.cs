@@ -28,6 +28,10 @@ public enum AlarmType
     /// <summary>El disco de destino NO RESPONDE (no acepta escrituras): la grabación espera sin cortar y reanuda
     /// sola cuando el disco vuelve. Si dura, hay que mirar el disco (cable, USB, SMR, antivirus). Incidente 2026-09-06.</summary>
     DiskStalled,
+    /// <summary>La grabación se detuvo sola porque su preset no se puede grabar: el contenedor no admite lo que pide (FFmpeg no pudo
+    /// escribir la cabecera del archivo: AAC en MXF, ProRes en MP4…), o un codificador no abre y no hay alternativa. Repetirla fallaría
+    /// igual. Sigue activa hasta la próxima grabación; el motivo, en la auditoría (fallo del codificador).</summary>
+    RecordingFailed,
 }
 
 /// <summary>Una alarma activa de un canal, con desde cuándo está activa y un mensaje legible.</summary>
@@ -35,7 +39,7 @@ public sealed record ChannelAlarm(AlarmType Type, string Message, DateTimeOffset
 {
     /// <summary>True para alarmas que exigen acción inmediata del operador (rojas).</summary>
     public bool IsCritical => Type is AlarmType.SignalLoss or AlarmType.DiskCritical or AlarmType.DiskEmergency
-        or AlarmType.RecordingUnverified or AlarmType.DiskStalled;
+        or AlarmType.RecordingUnverified or AlarmType.DiskStalled or AlarmType.RecordingFailed;
 }
 
 /// <summary>

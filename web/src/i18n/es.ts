@@ -359,6 +359,7 @@ export const es = {
   'alarm.recordingUnverified': 'Grabación sin verificar',
   'alarm.diskEmergency': 'Disco casi lleno',
   'alarm.diskStalled': 'Disco no responde',
+  'alarm.recordingFailed': 'Grabación fallida',
   'health.unknown': 'Sin medir',
   'health.ok': 'Con espacio',
   'health.warning': 'Aviso',

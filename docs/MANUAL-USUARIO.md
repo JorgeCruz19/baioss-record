@@ -470,6 +470,7 @@ El programa te avisa con un cartel sobre la vista previa cuando detecta:
 - **Disco:** queda poco espacio.
 - **Frames perdidos:** el equipo no da abasto (CPU, GPU o disco) y la grabación puede perder cuadros: la entrada o la tarjeta tiraron cuadros que no se recogían a tiempo, o, con una tarjeta o un archivo, el proceso va de forma sostenida por detrás del tiempo real. Los cuadros que el preset descarta a propósito para cambiar la cadencia **no** la encienden. Si aparece, baja la carga (menos canales a la vez, un preset más ligero o codificación por GPU) o revisa el disco; el registro dice qué la encendió.
 - **El disco no responde:** el disco de destino ha dejado de aceptar escrituras. La grabación **espera sin cortar** y reanuda sola cuando el disco vuelve; si dura más de unos segundos, revisa ese disco (cable, USB, antivirus).
+- **Grabación detenida: este preset no se puede grabar:** la grabación se paró sola nada más empezar porque el formato del preset no admite lo que pide (por ejemplo, audio AAC en un MXF, que solo lleva PCM) o un codificador no arranca con esa configuración. No se graba nada ni queda un archivo vacío, y la vista previa sigue. El motivo exacto está en el **registro de actividad** («Fallo del codificador»): cambia el contenedor o el códec del preset y vuelve a grabar; el aviso se quita al empezar la siguiente grabación.
 
 ---
 
