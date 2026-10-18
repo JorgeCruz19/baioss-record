@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using Baioss.Record.Application.Presets;
+using Baioss.Record.Application.Recording;
 using Baioss.Record.Engine.FFmpeg;
 
 namespace Baioss.Record.App.Presets;
@@ -224,6 +225,13 @@ public sealed partial class PresetManagerViewModel : ObservableObject, IDisposab
         if (target is not { IsConfigurable: true, IsRecording: false })
         {
             StatusMessage = Loc.F("Pre_Msg_CannotApply", target.Key);
+            return;
+        }
+        // Un preset propio guardado antes de que el editor validara, o importado de otro equipo, puede no poder grabar (HEVC en
+        // AVI, ProRes en MP4…): no se le pone al canal, que si no avisaría a la hora de grabar. Se dice por qué, aquí mismo.
+        if (RecordingProfileValidator.Validate(SelectedPreset!.ToProfile()) is { Count: > 0 } problems)
+        {
+            StatusMessage = Loc.F("Pre_Msg_CannotRecord", SelectedPreset.Name, string.Join(" ", problems));
             return;
         }
         target.ApplyPreset(SelectedPreset!);

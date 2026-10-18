@@ -286,6 +286,10 @@
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="{loc:T Ch_Preset}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"
                                                Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,6,0"/>
+                                    <!-- Perfil que no puede grabar (HEVC en AVI, ProRes en MP4…): en rojo, el color de «no
+                                         graba»; el tooltip del badge dice por qué y qué contenedor elegir. -->
+                                    <TextBlock Text="⚠" FontSize="11" Foreground="{StaticResource RecBrush}" VerticalAlignment="Center"
+                                               Margin="0,0,4,0" Visibility="{Binding PresetCannotRecord, Converter={StaticResource BoolToVis}}"/>
                                     <TextBlock Text="{Binding PresetText}" FontSize="11" FontWeight="SemiBold" Foreground="White"
                                                TextTrimming="CharacterEllipsis" MaxWidth="180" VerticalAlignment="Center"/>
                                 </StackPanel>

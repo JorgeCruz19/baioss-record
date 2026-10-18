@@ -24,6 +24,7 @@ public static class Strings
         ["Common_Accept"] = "Aceptar",
         ["Common_Apply"] = "Aplicar",
         ["Common_And"] = "y",
+        ["Common_Or"] = "o",
         ["Common_Browse"] = "Examinar…",
         ["Common_Edit"] = "Editar",
         ["Common_Delete"] = "Eliminar",
@@ -88,6 +89,7 @@ public static class Strings
         ["Ch_NativeResolution"] = "nativa",
         ["Ch_Preset"] = "PRESET",
         ["Ch_PresetTip"] = "Con este preset se grabará al pulsar Grabar: {0}. Se cambia en «Presets de grabación».",
+        ["Ch_PresetTip_Invalid"] = "Con este preset el canal NO puede grabar ({0}):\n{1}\nCámbialo en «Presets de grabación».",
         ["Ch_Cadence"] = "CADENCIA",
         ["Ch_Profile_AudioOnly"] = "Solo audio · {0} · {1}",
 
@@ -513,6 +515,7 @@ public static class Strings
         ["Pre_Confirm_Delete"] = "¿Eliminar el preset '{0}'?",
         ["Pre_Confirm_Title"] = "Confirmar",
         ["Pre_Msg_CannotApply"] = "El Canal {0} no admite aplicar el preset ahora (¿grabando o no configurable?).",
+        ["Pre_Msg_CannotRecord"] = "No se aplica «{0}»: con este preset no se puede grabar. {1}",
 
         // --- Grabaciones ---
         ["Rec_Title"] = "Grabaciones",
@@ -671,6 +674,22 @@ public static class Strings
         ["PreEd_AudioTracks"] = "Pistas de audio",
         ["PreEd_AudioTracksHint"] = "Con fuentes de 8/16 canales: Single = una pista con lo elegido (estéreo del par elegido; con varios pares, una pista estéreo por par; 5.1/7.1 con los primeros canales) · PairsAsTracks = una pista estéreo por par · Multichannel = todos los canales en una pista PCM (MXF/MKV/AVI/WAV); con AAC, Opus o MP2 se guarda una pista por par",
         ["PreEd_AudioOnly"] = "Solo audio",
+        ["PreEd_Invalid_Title"] = "Preset no válido",
+        ["PreEd_Invalid_Body"] = "Con estos ajustes no se podría grabar:\n\n{0}\n\nCorrígelos para guardar el preset.",
+
+        // --- Validación del perfil de grabación (lo que impide grabar; lo ve el operador al guardar un preset, en el canal y al pulsar Grabar) ---
+        ["Prof_Err_Invalid"] = "Perfil de grabación inválido: {0}",
+        ["Prof_Err_VideoBitrate"] = "El bitrate de vídeo debe ser mayor que cero.",
+        ["Prof_Err_MaxBitrate"] = "El bitrate máximo no puede ser menor que el bitrate de vídeo.",
+        ["Prof_Err_Gop"] = "El tamaño de GOP debe ser al menos 1.",
+        ["Prof_Err_Quality"] = "La calidad (CRF/CQ) debe estar entre 0 y 51.",
+        ["Prof_Err_ResolutionPositive"] = "La resolución de salida debe ser positiva.",
+        ["Prof_Err_ResolutionEven"] = "La resolución de salida debe tener anchura y altura PARES (requisito de los códecs 4:2:0).",
+        ["Prof_Err_AudioBitrate"] = "El bitrate de audio debe ser mayor que cero.",
+        ["Prof_Err_SampleRate"] = "La frecuencia de muestreo de audio debe ser mayor que cero.",
+        ["Prof_Err_AudioOnlyContainer"] = "El contenedor {0} solo lleva audio: marca «Solo audio» o elige un contenedor de vídeo.",
+        ["Prof_Err_ContainerUnreadable"] = "{0} no se puede grabar en {1}: FFmpeg escribe el archivo sin dar error, pero sale ilegible. Para {2}, elige {3}.",
+        ["Prof_Err_ContainerRefuses"] = "{0} no se puede grabar en {1}: FFmpeg no admite esa combinación y la grabación no arrancaría. Para {2}, elige {3}.",
 
         // --- Diálogos de la aplicación ---
         ["Dlg_Close_Title"] = "Cerrar Baioss Record",
@@ -693,6 +712,7 @@ public static class Strings
         ["Common_Accept"] = "OK",
         ["Common_Apply"] = "Apply",
         ["Common_And"] = "and",
+        ["Common_Or"] = "or",
         ["Common_Browse"] = "Browse…",
         ["Common_Edit"] = "Edit",
         ["Common_Delete"] = "Delete",
@@ -757,6 +777,7 @@ public static class Strings
         ["Ch_NativeResolution"] = "native",
         ["Ch_Preset"] = "PRESET",
         ["Ch_PresetTip"] = "This preset is used when you press Record: {0}. Change it in \"Recording presets\".",
+        ["Ch_PresetTip_Invalid"] = "The channel can NOT record with this preset ({0}):\n{1}\nChange it in \"Recording presets\".",
         ["Ch_Cadence"] = "FRAME RATE",
         ["Ch_Profile_AudioOnly"] = "Audio only · {0} · {1}",
 
@@ -1182,6 +1203,7 @@ public static class Strings
         ["Pre_Confirm_Delete"] = "Delete the preset '{0}'?",
         ["Pre_Confirm_Title"] = "Confirm",
         ["Pre_Msg_CannotApply"] = "Channel {0} cannot take the preset right now (recording, or not configurable?).",
+        ["Pre_Msg_CannotRecord"] = "\"{0}\" was not applied: this preset can't record. {1}",
 
         // --- Recordings ---
         ["Rec_Title"] = "Recordings",
@@ -1340,6 +1362,22 @@ public static class Strings
         ["PreEd_AudioTracks"] = "Audio tracks",
         ["PreEd_AudioTracksHint"] = "With 8/16-channel sources: Single = one track with the selection (stereo of the chosen pair; with several pairs, one stereo track per pair; 5.1/7.1 with the first channels) · PairsAsTracks = one stereo track per pair · Multichannel = all channels in one PCM track (MXF/MKV/AVI/WAV); with AAC, Opus or MP2 one track per pair is stored",
         ["PreEd_AudioOnly"] = "Audio only",
+        ["PreEd_Invalid_Title"] = "Invalid preset",
+        ["PreEd_Invalid_Body"] = "These settings couldn't record:\n\n{0}\n\nFix them to save the preset.",
+
+        // --- Recording profile validation (what stops a recording; shown when saving a preset, on the channel and on Record) ---
+        ["Prof_Err_Invalid"] = "Invalid recording profile: {0}",
+        ["Prof_Err_VideoBitrate"] = "The video bitrate must be greater than zero.",
+        ["Prof_Err_MaxBitrate"] = "The maximum bitrate can't be lower than the video bitrate.",
+        ["Prof_Err_Gop"] = "The GOP size must be at least 1.",
+        ["Prof_Err_Quality"] = "The quality (CRF/CQ) must be between 0 and 51.",
+        ["Prof_Err_ResolutionPositive"] = "The output resolution must be positive.",
+        ["Prof_Err_ResolutionEven"] = "The output resolution must have an EVEN width and height (required by 4:2:0 codecs).",
+        ["Prof_Err_AudioBitrate"] = "The audio bitrate must be greater than zero.",
+        ["Prof_Err_SampleRate"] = "The audio sample rate must be greater than zero.",
+        ["Prof_Err_AudioOnlyContainer"] = "The {0} container holds audio only: tick \"Audio only\" or choose a video container.",
+        ["Prof_Err_ContainerUnreadable"] = "{0} can't be recorded in {1}: FFmpeg writes the file without any error, but it can't be read. For {2}, choose {3}.",
+        ["Prof_Err_ContainerRefuses"] = "{0} can't be recorded in {1}: FFmpeg doesn't support that combination, so the recording wouldn't start. For {2}, choose {3}.",
 
         // --- Application dialogs ---
         ["Dlg_Close_Title"] = "Close Baioss Record",

@@ -254,6 +254,10 @@ Un **preset** define **cómo se graba** el vídeo: el formato del archivo, la re
 - **＋ Nuevo / ✎ Editar / ⧉ Duplicar / 🗑 Eliminar:** crear tus propios presets a partir de los existentes.
 - **⭱ Importar / ⭳ Exportar:** llevarte tus presets a otro equipo o guardarlos como copia.
 
+Si un preset no podría grabar (por ejemplo **HEVC en AVI** o **ProRes en MP4**, que FFmpeg no sabe guardar), el editor no
+lo guarda: te dice por qué y qué contenedor elegir. Un **⚠ rojo** en la etiqueta **PRESET** de un canal avisa de lo mismo
+en un canal que ya lo tenía puesto: pasa el ratón por encima para ver el motivo y aplícale otro preset.
+
 **Grabar con la tarjeta gráfica NVIDIA (presets NVENC):** los presets **H.264 NVENC** y **HEVC NVENC** graban con la
 tarjeta NVIDIA en vez de con el procesador, así que el equipo va más holgado con varios canales. Hay uno por cada
 formato habitual (720p, 1080p y 4K a 25, 29.97, 50, 59.94…). Escribe **NVENC** en el buscador para verlos todos.

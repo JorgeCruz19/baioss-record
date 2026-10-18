@@ -273,6 +273,37 @@ flowchart TD
 Los enums se serializan como texto (estables ante reordenamientos). Al importar, cada preset
 recibe una identidad nueva como personalizado.
 
+### Presets que no podrían grabar (contenedor × códec)
+
+[`RecordingProfileValidator`](../src/Baioss.Record.Application/Recording/RecordingProfileValidator.cs) rechaza un perfil que
+FFmpeg no puede grabar: bitrate o GOP a cero, resolución impar… y un **contenedor que no lleva el códec de vídeo**. Lo
+aplican el editor (al pulsar **Aceptar**: lista los motivos y no cierra), el gestor (no **aplica** a un canal un preset
+propio o importado que lo incumpla), el panel del canal (un **⚠ rojo** en el badge PRESET, con el motivo en el tooltip, si
+el perfil guardado del canal no puede grabar) y el pre-vuelo de Grabar (manual, programada o por la API: aviso y auditoría
+«No se pudo iniciar», sin sesión ni archivo). Los mensajes van en el idioma de la aplicación y proponen contenedores.
+
+Medido el 2026-10-18 con FFmpeg 8.0 y con el incluido (git-2026-06-14), iguales: 2 s de cada códec en cada contenedor,
+releídos con `ffprobe` y una decodificación entera. *Rechaza* = el muxer no abre la salida y la grabación no arranca;
+*ilegible* = FFmpeg escribe el archivo **sin error**, pero no se puede leer.
+
+| Familia | AVI | MXF | MP4 | MOV | MKV | TS | PS |
+|---|---|---|---|---|---|---|---|
+| **HEVC** (x265, QuickSync, NVENC) | ilegible (FourCC 0 → `rawvideo`) | rechaza | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **AV1** (NVENC) | ✓ (`AV01`) | rechaza | ✓ | rechaza («only supported in MP4») | ✓ | ilegible (datos privados) | ilegible |
+| **ProRes** | ✓ | ✓ | rechaza | ✓ | ✓ | ilegible (datos privados) | ilegible |
+| **DNxHD/DNxHR** | ver nota | ✓ | rechaza | ✓ | ✓ | ilegible (datos privados) | ilegible |
+| **H.264**, **MPEG-2** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+- WAV y MP3 solo llevan audio: con vídeo el muxer rechaza la pista, así que piden **Solo audio**.
+- HEVC degrada dentro de HEVC (NVENC → QuickSync → libx265), así que un HEVC en AVI o MXF fallaba en cualquier equipo. AV1
+  solo lo codifica av1_nvenc (NVIDIA Ada): sin ella el canal degrada a libx264 y graba H.264, pero en una Ada el mismo
+  preset no graba.
+- **Nota DNx en AVI:** el DNxHD clásico (los CID de 1080/720, y el DNxHR entrelazado, que el motor graba como DNxHD) sale
+  con FourCC 0 y se relee como `rawvideo`; el DNxHR por perfil lleva `AVdh` y se lee. Depende del tamaño de la fuente, así
+  que el validador no lo juzga. Con `-tag:v AVdn` el DNxHD clásico en AVI sí se lee (medido): es cosa del argv.
+- Lo cubren `RecordingProfileValidatorTests` (la matriz entera) y, con el FFmpeg real, `ContainerCodecTests` (sin la regla
+  FFmpeg no deja vídeo legible; con ella el canal rechaza el perfil; lo que el mensaje propone graba).
+
 ## Verificación
 
 El smoke test [`tools/Baioss.Record.SmokeTest`](../tools/Baioss.Record.SmokeTest/Program.cs)

@@ -255,6 +255,10 @@ A **preset** defines **how** the video is recorded: the file format, the resolut
 - **＋ New / ✎ Edit / ⧉ Duplicate / 🗑 Delete:** create your own presets from the existing ones.
 - **⭱ Import / ⭳ Export:** take your presets to another machine or keep them as a backup.
 
+If a preset couldn't record (for example **HEVC in AVI** or **ProRes in MP4**, which FFmpeg can't store), the editor won't
+save it: it tells you why and which container to choose. A red **⚠** on a channel's **PRESET** tag warns about the same
+thing on a channel that already had such a preset: hover over it to see why, and apply another preset to it.
+
 **Recording with the NVIDIA graphics card (NVENC presets):** the **H.264 NVENC** and **HEVC NVENC** presets record
 with the NVIDIA card instead of the processor, so the machine has more headroom with several channels. There is one for
 each common format (720p, 1080p and 4K at 25, 29.97, 50, 59.94…). Type **NVENC** in the search box to list them all.
