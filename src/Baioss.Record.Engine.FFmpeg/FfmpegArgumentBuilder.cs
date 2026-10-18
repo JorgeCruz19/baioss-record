@@ -896,6 +896,10 @@ public sealed class FfmpegArgumentBuilder
             // 25) y, a diferencia de DNxHR, admite DCT entrelazada: un «1080i» graba de verdad los dos campos.
             list.AddRange(new[] { "-profile:v", "dnxhd", "-b:v", (dnxhdMbps * 1_000_000L).ToString(CultureInfo.InvariantCulture) });
             if (interlaced) { list.Add("-flags"); list.Add("+ildct"); }
+            // En AVI, con el FourCC de Avid: sin él, FFmpeg escribe el DNxHD clásico con FourCC 0 y el archivo se relee como
+            // rawvideo, ilegible y sin error. Con «AVdn» se relee como dnxhd (medido con FFmpeg 8.0 y con el incluido, en archivo
+            // único, en segmentos y por tee). DNxHR no lo necesita: ya sale con «AVdh».
+            if (p.Container is ContainerFormat.Avi) list.AddRange(new[] { "-tag:v", "AVdn" });
         }
         else if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr)
         {

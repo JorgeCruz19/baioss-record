@@ -134,6 +134,9 @@ ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
   El builder emite `-profile:v dnxhd -b:v <clave> -flags +ildct` tras un `setfield`: cuadros entrelazados TFF de verdad.
   Comprobado con la DeckLink: en MXF `field_order tt`; en MOV el muxer de FFmpeg declara el entrelazado de DNxHD en el
   átomo `ARES` de Avid y no en `fiel`, así que ffprobe dice `unknown`, pero el cuadro decodificado es entrelazado TFF.
+- **En AVI, con `-tag:v AVdn`** (el FourCC de Avid). Sin él, FFmpeg escribe el DNxHD clásico con FourCC 0 y el archivo se
+  relee como `rawvideo`: ilegible y sin error. Con él se relee como `dnxhd` (medido con FFmpeg 8.0 y con el incluido, en
+  archivo único, en segmentos y por `tee`). DNxHR no lo necesita: ya sale con `AVdh`.
 - **A prueba de bitrates libres** (`FfmpegArgumentBuilder.DnxhdBitrateMbps`, con los 13 CID que el FFmpeg empaquetado
   acepta sin `-strict experimental`): una clave válida se respeta tal cual; cualquier otra —con FFmpeg sería «video
   parameters incompatible with DNxHD» y la grabación no arrancaría— se ajusta al CID cuyos Mbps reales a esa cadencia
@@ -301,16 +304,13 @@ releídos con `ffprobe` y una decodificación entera. *Rechaza* = el muxer no ab
 | **HEVC** (x265, QuickSync, NVENC) | ilegible (FourCC 0 → `rawvideo`) | rechaza | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **AV1** (NVENC) | ✓ (`AV01`) | rechaza | ✓ | rechaza («only supported in MP4») | ✓ | ilegible (datos privados) | ilegible |
 | **ProRes** | ✓ | ✓ | rechaza | ✓ | ✓ | ilegible (datos privados) | ilegible |
-| **DNxHD/DNxHR** | ver nota | ✓ | rechaza | ✓ | ✓ | ilegible (datos privados) | ilegible |
+| **DNxHD/DNxHR** | ✓ (`AVdn`, `AVdh`) | ✓ | rechaza | ✓ | ✓ | ilegible (datos privados) | ilegible |
 | **H.264**, **MPEG-2** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 - WAV y MP3 solo llevan audio: con vídeo el muxer rechaza la pista, así que piden **Solo audio**.
 - HEVC degrada dentro de HEVC (NVENC → QuickSync → libx265), así que un HEVC en AVI o MXF fallaba en cualquier equipo. AV1
   solo lo codifica av1_nvenc (NVIDIA Ada): sin ella el canal degrada a libx264 y graba H.264, pero en una Ada el mismo
   preset no graba.
-- **Nota DNx en AVI:** el DNxHD clásico (los CID de 1080/720, y el DNxHR entrelazado, que el motor graba como DNxHD) sale
-  con FourCC 0 y se relee como `rawvideo`; el DNxHR por perfil lleva `AVdh` y se lee. Depende del tamaño de la fuente, así
-  que el validador no lo juzga. Con `-tag:v AVdn` el DNxHD clásico en AVI sí se lee (medido): es cosa del argv.
 - Lo cubren `RecordingProfileValidatorTests` (la matriz entera) y, con el FFmpeg real, `ContainerCodecTests` (sin la regla
   FFmpeg no deja vídeo legible; con ella el canal rechaza el perfil; lo que el mensaje propone graba).
 

@@ -86,14 +86,13 @@ public static class RecordingProfileValidator
     };
 
     /// <summary>Contenedores que se le proponen a cada familia en el mensaje: los que la llevan con su identificador estándar
-    /// y FFmpeg relee enteros. No todos los que la aceptan: AV1 en AVI o HEVC en PS se leen, pero no son lo que nadie espera, y
-    /// DNx en AVI solo se lee como DNxHR (ver <see cref="MisfitOf"/>).</summary>
+    /// y FFmpeg relee enteros. No todos los que la aceptan: AV1 en AVI o HEVC en PS se leen, pero no son lo que nadie espera.</summary>
     private static ContainerFormat[] Suggested(Family family) => family switch
     {
         Family.Hevc => new[] { ContainerFormat.Mp4, ContainerFormat.Mov, ContainerFormat.Mkv, ContainerFormat.Ts },
         Family.Av1 => new[] { ContainerFormat.Mp4, ContainerFormat.Mkv },
         Family.ProRes => new[] { ContainerFormat.Mov, ContainerFormat.Mxf, ContainerFormat.Mkv },
-        _ => new[] { ContainerFormat.Mxf, ContainerFormat.Mov, ContainerFormat.Mkv },
+        _ => new[] { ContainerFormat.Mxf, ContainerFormat.Mov, ContainerFormat.Mkv, ContainerFormat.Avi },
     };
 
     /// <summary>Qué hace FFmpeg con un códec (una familia de vídeo o un audio) en un contenedor que no lo admite.</summary>
@@ -112,8 +111,8 @@ public static class RecordingProfileValidator
     /// <summary>
     /// Medido el 2026-10-18 con FFmpeg 8.0 y con el incluido (git-2026-06-14), iguales: 2 s codificados en cada contenedor de
     /// vídeo con cada códec del producto y releídos con ffprobe y una decodificación entera. AV1 se midió con libsvtav1 y
-    /// libaom (av1_nvenc solo abre en una NVIDIA Ada). Lo que no está aquí se relee bien. DNxHD en AVI depende del CID (el
-    /// DNxHD clásico sale como rawvideo, el DNxHR no), que se decide con el tamaño de la fuente: no se puede juzgar aquí.
+    /// libaom (av1_nvenc solo abre en una NVIDIA Ada). Lo que no está aquí se relee bien, también el DNxHD clásico en AVI: va
+    /// con el FourCC «AVdn» que le pone FfmpegArgumentBuilder.
     /// </summary>
     private static Misfit MisfitOf(Family family, ContainerFormat container) => (family, container) switch
     {

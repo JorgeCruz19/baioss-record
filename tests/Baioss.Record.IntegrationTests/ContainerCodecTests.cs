@@ -82,6 +82,8 @@ public sealed class ContainerCodecTests : IDisposable
         { VideoCodec.DnxHr, ContainerFormat.Mxf },
         { VideoCodec.DnxHd, ContainerFormat.Mov },
         { VideoCodec.DnxHr, ContainerFormat.Mkv },
+        { VideoCodec.DnxHd, ContainerFormat.Avi }, // DNxHD clásico (CID 1252 a 720p): sin -tag:v AVdn, FourCC 0 y rawvideo
+        { VideoCodec.DnxHr, ContainerFormat.Avi }, // DNxHR por perfil: ya sale con «AVdh»
         { VideoCodec.Av1Nvenc, ContainerFormat.Mp4 },
         { VideoCodec.Av1Nvenc, ContainerFormat.Mkv },
     };

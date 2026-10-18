@@ -196,6 +196,15 @@ public class RecordingProfileValidatorTests : IDisposable
         Assert.StartsWith("ProRes no se puede grabar en Mp4:", error);
     }
 
+    [Fact]
+    public void DnxInMp4_AlsoSuggestsAvi()
+    {
+        // En AVI el DNxHR sale con «AVdh» y el DNxHD clásico con el «AVdn» que le pone FfmpegArgumentBuilder: los dos se releen.
+        var error = Assert.Single(RecordingProfileValidator.Validate(With(VideoCodec.DnxHd, ContainerFormat.Mp4)));
+        Assert.Equal("DnxHd (DNxHD/DNxHR) no se puede grabar en Mp4: FFmpeg no admite esa combinación y la grabación no " +
+                     "arrancaría. Para DNxHD/DNxHR, elige Mxf, Mov, Mkv o Avi.", error);
+    }
+
     [Theory]
     [MemberData(nameof(EveryVideoCodecInEveryVideoContainer))]
     public void TheContainersTheMessageSuggests_DoRecordThatCodec(VideoCodec codec, ContainerFormat container)
