@@ -57,7 +57,7 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; }),
 
-        Make("H.264 · 4K UHD 2160p50", PresetCategory.H264, "3840×2160p50, 60 Mbps, MP4, AAC.", p =>
+        Make("H.264 · 4K UHD 2160p50", PresetCategory.H264, "3840×2160p50, 60 Mbps, MP4, AAC. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 50; p.VideoBitrateMbps = 60; p.MaxBitrateMbps = 80; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p; }),
 
@@ -112,7 +112,7 @@ public static class PresetCatalog
           p.FrameRateNum = 30000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 18; p.MaxBitrateMbps = 24; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; }),
 
-        Make("H.264 · 4K UHD 2160p59.94", PresetCategory.H264, "3840×2160p59.94 (60000/1001), 80 Mbps, MP4, AAC.", p =>
+        Make("H.264 · 4K UHD 2160p59.94", PresetCategory.H264, "3840×2160p59.94 (60000/1001), 80 Mbps, MP4, AAC. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H264x264; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 80; p.MaxBitrateMbps = 100; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p; }),
 
@@ -165,18 +165,18 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 10; p.MaxBitrateMbps = 14; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
-        Make("HEVC · 4K UHD 2160p50 10-bit", PresetCategory.H265, "3840×2160p50 10-bit, 35 Mbps VBR, MP4.", p =>
+        Make("HEVC · 4K UHD 2160p50 10-bit", PresetCategory.H265, "3840×2160p50 10-bit, 35 Mbps VBR, MP4. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H265x265; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 50; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 45; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p10le;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
         // ---- HEVC · familia 59.94 (MP4) ----
-        Make("HEVC · FullHD 1080p59.94", PresetCategory.H265, "1920×1080p59.94 (60000/1001), 12 Mbps VBR, MP4, AAC.", p =>
+        Make("HEVC · FullHD 1080p59.94", PresetCategory.H265, "1920×1080p59.94 (60000/1001), 12 Mbps VBR, MP4, AAC. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H265x265; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 12; p.MaxBitrateMbps = 16; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.RateControl = RateControlMode.VariableBitrate; }),
 
-        Make("HEVC · 4K UHD 2160p59.94 10-bit", PresetCategory.H265, "3840×2160p59.94 (60000/1001) 10-bit, 45 Mbps VBR, MP4.", p =>
+        Make("HEVC · 4K UHD 2160p59.94 10-bit", PresetCategory.H265, "3840×2160p59.94 (60000/1001) 10-bit, 45 Mbps VBR, MP4. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mp4; p.VideoCodec = VideoCodec.H265x265; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.VideoBitrateMbps = 45; p.MaxBitrateMbps = 60; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p10le;
           p.RateControl = RateControlMode.VariableBitrate; }),
@@ -416,7 +416,7 @@ public static class PresetCatalog
           p.FrameRateNum = 25; p.VideoBitrateMbps = 16; p.MaxBitrateMbps = 20; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p;
           p.ScanType = ScanType.InterlacedTff; }),
 
-        Make("MKV · HEVC 4K 10-bit", PresetCategory.Mkv, "Matroska con HEVC 3840×2160p50 10-bit, 35 Mbps VBR.", p =>
+        Make("MKV · HEVC 4K 10-bit", PresetCategory.Mkv, "Matroska con HEVC 3840×2160p50 10-bit, 35 Mbps VBR. " + HeavyCpuNote, p =>
         { p.Container = ContainerFormat.Mkv; p.VideoCodec = VideoCodec.H265x265; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 50; p.VideoBitrateMbps = 35; p.MaxBitrateMbps = 45; p.GopSize = 50; p.PixelFormat = PixelFormat.Yuv420p10le;
           p.RateControl = RateControlMode.VariableBitrate; }),
@@ -472,6 +472,12 @@ public static class PresetCatalog
     // Cola de la descripción de los presets NVENC: qué hace el preset si el equipo no tiene NVIDIA (EncoderFallbackChain).
     private const string NvencH264Note = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync, AMF o CPU.";
     private const string NvencHevcNote = "Codifica la GPU NVIDIA (NVENC); sin ella, el canal pasa solo a QuickSync o a CPU (x265).";
+
+    // Cola de la descripción de los presets por CPU que un procesador de 6 núcleos no codifica en tiempo real (medido el 2026-10-19
+    // en un i7-8700, 6 núcleos y 12 hilos, con FactoryPresetRecordingTests y una fuente 1080i59.94 como la de una DeckLink: x264 a
+    // 2160p50 al 72 % del tiempo real y a 2160p59.94 al 42 %; x265 4K de 10 bits al 16–19 %; x265 1080p59.94 al 52 %). Todos tienen un
+    // gemelo NVENC que llega desde su formato (el MKV, en MP4).
+    private const string HeavyCpuNote = "Codifica la CPU y pide muchos núcleos: con 6 no llega a tiempo real; para grabar en vivo, su gemelo NVENC.";
 
     /// <param name="name">Nombre visible del preset.</param>
     /// <param name="category">Familia del preset (panel izquierdo del gestor).</param>
