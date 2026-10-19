@@ -108,7 +108,8 @@ public sealed class NetworkPreviewContinuityTests
         string? logPath = Environment.GetEnvironmentVariable("NET_CONTINUITY_LOG");
         var logLines = new List<string>();
         void Log(string s) { lock (logLines) logLines.Add($"{sw.Elapsed.TotalSeconds,7:0.00} s {s}"); }
-        Microsoft.Extensions.Logging.ILoggerFactory loggerFactory = logPath is null ? NullLoggerFactory.Instance : new CaptureLogger(Log);
+        // Siempre se recoge (el registro dice cómo se cerró el archivo); solo se vuelca a NET_CONTINUITY_LOG si se pide.
+        Microsoft.Extensions.Logging.ILoggerFactory loggerFactory = new CaptureLogger(Log);
         long lastCompleted = 0;
         try
         {
@@ -202,6 +203,9 @@ public sealed class NetworkPreviewContinuityTests
             Assert.True(file is not null && File.Exists(file), "No se generó el archivo.");
             double duration = await DurationAsync(locator.FfprobePath, file!);
             Assert.True(duration >= 12 + 2.0, $"El archivo dura {duration:0.0} s para 12 s de botón: el pre-roll no se grabó.");
+            // 4) Al Detener, el relé le cerró la entrada al proceso que grababa y FFmpeg acabó solo con todo lo que le llegó (sin la
+            //    «q», que FFmpeg solo mira una vez por segundo: hasta 1 s más de grabación y de espera).
+            lock (logLines) Assert.Contains(logLines, l => l.Contains("archivo cerrado en", StringComparison.Ordinal) && l.Contains("(fin de entrada)", StringComparison.Ordinal));
         }
         finally
         {

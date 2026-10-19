@@ -200,6 +200,65 @@ public class RawStreamRelayTests
     }
 
     [Fact]
+    public async Task EndInput_DeliversEverythingAlreadyQueued_ThenEof_OnlyToThatConsumer()
+    {
+        // Al Detener, el relé le da fin de flujo al proceso que grababa: recibe ENTERO lo que ya se le había encolado —aunque su
+        // socket aún no lo hubiera aceptado— y después EOF, así que FFmpeg termina solo con todo dentro, sin la «q». El flujo sigue
+        // para los demás consumidores, y lo que llega después no cuenta como descarte.
+        var bytes = await File.ReadAllBytesAsync(Fixture);
+        var units = await UnitsAsync(bytes);
+        int headersEnd = units[units.FindIndex(u => u.Kind == NutUnitKind.Syncpoint)].Offset, index = units[^1].Offset;
+        byte[] Body(int times) => Enumerable.Repeat(bytes[headersEnd..index], times).SelectMany(b => b).ToArray();
+        var before = Body(100); // 1,9 MB: más de lo que caben en los búferes del socket de un lector que no lee
+        var after = Body(10).Concat(bytes[index..]).ToArray();
+
+        await using var relay = new RawStreamRelay("t", NullLogger.Instance);
+        relay.Start();
+        int overflows = 0;
+        relay.ConsumerOverflow += (_, _) => Interlocked.Increment(ref overflows);
+        var ended = new TaskCompletionSource<RawStreamRelay.ConsumerReport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        relay.ConsumerClosed += r => { if (r.How == "fin de flujo pedido") ended.TrySetResult(r); };
+
+        var reservation = relay.ReserveConsumer();
+        Assert.False(reservation.EndInput()); // su proceso aún no conectó: no hay a quién cerrarle nada
+        using var recorder = new TcpClient { ReceiveBufferSize = 4096 };
+        await recorder.ConnectAsync(IPAddress.Loopback, relay.ConsumerPort);
+        var rec = recorder.GetStream();
+        using var other = await ConnectAsync(relay.ConsumerPort); // el proceso del preview, sin reserva
+        await WaitUntilAsync(() => relay.ConsumerCount == 2, "alta de los dos consumidores");
+
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        await src.WriteAsync(bytes.AsMemory(0, headersEnd));
+        Assert.Equal(bytes[..headersEnd], await ReadExactlyAsync(rec, headersEnd)); // conectado: ya le llegan las cabeceras
+        var otherReading = ReadToEndAsync(other.GetStream());
+        await src.WriteAsync(before);
+        await WaitUntilAsync(() => relay.ForwardedBytes >= headersEnd + before.Length, "el relé reparta lo de antes del fin");
+
+        Assert.True(reservation.EndInput());
+        Assert.False(reservation.EndInput()); // ya pedido
+        await src.WriteAsync(after);
+        await WaitUntilAsync(() => relay.ForwardedBytes >= headersEnd + before.Length + after.Length, "el relé reparta lo de después");
+
+        Assert.Equal(before, await ReadToEndAsync(rec)); // todo lo de antes del fin, y EOF con el origen aún conectado
+        var report = await ended.Task.WaitAsync(Timeout);
+        Assert.Equal(100 * units.Count(u => u.Video), report.VideoFramesWritten);
+        Assert.Equal(report.VideoFramesQueued, report.VideoFramesWritten);
+        Assert.True(relay.SourceConnected);
+        source.Close();
+        Assert.Equal(bytes[..headersEnd].Concat(before).Concat(after).ToArray(), await otherReading); // el otro, el flujo entero
+        Assert.Equal(0, overflows);
+    }
+
+    private static async Task<byte[]> ReadExactlyAsync(NetworkStream stream, int count)
+    {
+        using var cts = new CancellationTokenSource(Timeout);
+        var buffer = new byte[count];
+        await stream.ReadExactlyAsync(buffer, cts.Token);
+        return buffer;
+    }
+
+    [Fact]
     public async Task InvalidStream_CutsTheSource_AndConsumersSeeEof()
     {
         await using var relay = new RawStreamRelay("t", NullLogger.Instance);

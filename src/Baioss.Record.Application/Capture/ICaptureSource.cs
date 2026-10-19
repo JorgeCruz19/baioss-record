@@ -151,9 +151,21 @@ public interface ICaptureSource : IAsyncDisposable
     /// proceso conectado y su entrada se va a cerrar: el cierre ordenado espera entonces a que FFmpeg salga solo. Lo necesita
     /// una fuente que sirve vídeo y audio en DOS entradas (NDI): FFmpeg lee el audio por detrás del vídeo —su planificador lo
     /// frena a la par de lo que sale del codificador de vídeo— y con la «q» lo que aún no había leído se perdía (el archivo
-    /// acababa con el audio 0,1–0,9 s más corto que el vídeo). Con vídeo y audio en una sola entrada no pasa: false (la «q»).
+    /// acababa con el audio 0,1–0,9 s más corto que el vídeo). Una fuente que sirve a varios procesos a la vez (un relé) lo hace
+    /// por proceso: <see cref="NewestConsumerEndInput"/>. false: la «q».
     /// </summary>
     bool EndInput() => false;
+
+    /// <summary>
+    /// Cómo darle más tarde FIN DE FLUJO al proceso construido en el último <see cref="BuildInputArguments"/> —ESE, no el más
+    /// nuevo—, en una fuente que reparte su flujo a varios procesos a la vez (un relé: ver <see cref="SupportsOverlappingProcesses"/>).
+    /// Como <see cref="EndInput"/>: lo que ya le llegó se le entrega, se le cierra la entrada y FFmpeg termina por sí mismo (EOF) con
+    /// todo dentro. Al Detener, el proceso que grababa se retira cuando el preview ya lo pinta el siguiente: es a él, no al nuevo, a
+    /// quien hay que cerrársela. Con la «q», FFmpeg no la lee hasta su siguiente vuelta de <c>-stats_period</c> (1 s): el archivo
+    /// seguía grabando y tardaba en cerrarse hasta 1 s más, y lo que esperaba en el socket no llegaba a él. El motor la toma justo
+    /// después de construir los argumentos de cada proceso, como <see cref="NewestConsumerLiveCheck"/>. null: <see cref="EndInput"/>.
+    /// </summary>
+    Func<bool>? NewestConsumerEndInput => null;
 
     /// <summary>
     /// True si la entrada de un proceso nuevo empieza con PRE-ROLL (el relé de una entrada de red entrega material anterior

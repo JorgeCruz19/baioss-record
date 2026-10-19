@@ -177,6 +177,10 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     /// <summary>La reserva del último proceso construido, capturada para ese proceso (ver <see cref="ICaptureSource.NewestConsumerLiveCheck"/>).</summary>
     public Func<bool>? NewestConsumerLiveCheck => _reservation is { } reservation ? () => reservation.IsLive : null;
 
+    /// <summary>Fin de flujo para el proceso del último <see cref="BuildInputArguments"/>: su consumidor del relé recibe lo que tenía
+    /// en cola y se le cierra el socket (ver <see cref="ICaptureSource.NewestConsumerEndInput"/>).</summary>
+    public Func<bool>? NewestConsumerEndInput => _reservation is { } reservation ? reservation.EndInput : null;
+
     /// <summary>Colchón de preview configurado en la fuente (Entradas → Fuentes de red), 0 si no tiene.</summary>
     public int PreviewBufferMs => _input?.PreviewBufferMs ?? 0;
 

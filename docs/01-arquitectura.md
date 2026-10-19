@@ -152,7 +152,17 @@ entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; ha
 `HandoffTimeout` si la máquina va saturada y el proceso nuevo no llega a «al día»), porque su entrada trae pre-roll
 (`ICaptureSource.DeliversPreroll`); con el relé en crudo de DeckLink no hay pre-roll y el relevo se hace con el primer
 frame del proceso nuevo (≈ 0,5–1 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales
-grabando, Detener tardaba 15 s). Luego envía la «q» al grabador y espera a que FFmpeg cierre el archivo (hasta
+grabando, Detener tardaba 15 s). Luego le cierra la ENTRADA al grabador: con un relé (DeckLink, red) el relé le escribe lo
+que ya tenía en cola y le cierra su socket (`RelayReservation.EndInput`, tomada para ese proceso al construirlo:
+`ICaptureSource.NewestConsumerEndInput`), y con NDI el receptor le cierra sus dos entradas; FFmpeg termina solo (EOF) con todo
+lo que le llegó. Las fuentes que el proceso abre él mismo (DirectShow, DeckLink sin relé, archivo), la carta de ajuste y un
+FFmpeg que no sale en 5 s tras el fin de flujo reciben la «q», que FFmpeg 8.0 solo mira una vez por `-stats_period` (1 s):
+hasta 1 s más de grabación y de espera, y lo que esperaba en el socket no llega al archivo. Medido en la DeckLink con señal de
+TV (`StopTailMeasurementTests`, H.264 1080i MP4, 10 Detener de cada): el archivo se cierra en 0,18–0,36 s en vez de 0,42–1,33 s,
+Detener tarda 0,47–0,67 s en vez de 0,79–1,67 s, el archivo deja de grabar en el instante en que se le cierra la entrada (antes,
+hasta 1,00 s después) y FFmpeg lee todo lo que el relé le escribió (con la «q», los 1–2 últimos frames se quedaban en el socket).
+Con un preset que lleva la máquina al límite, el proceso que graba va unas décimas por detrás del directo y Detener espera a
+que codifique ese atraso en vez de tirarlo (ProRes 422 HQ 1080p59.94: cierre 1,2–1,6 s). Después espera a que FFmpeg cierre el archivo (hasta
 `GracefulTimeout`, 30 s; si vence, lo mata y avisa «FFmpeg no finalizó en…»), emite el segmento, espera su fila en la
 BD y publica `RecordingStopped` (el bus solo encola para la auditoría y para cada panel web: desde 2026-09 cada WebSocket
 tiene su cola y su escritor, y un panel lento ya no alarga el Detener). El diálogo del nombre se abre al instante y el
@@ -166,7 +176,7 @@ contenido, 0,24 s), y ese tiempo lo espera Detener. Lo que puede alargarlo adem�
 motor: un antivirus que escanea el archivo al cerrarlo (crece con el tamaño), SQLite bloqueada por otro escritor
 (hasta 30 s) o un cliente del panel web que no lee.
 Para saberlo sin adivinar, el registro deja dos líneas por cada Detener: «Canal X: relevo del preview en A s y archivo
-cerrado en B s» (motor) y «Canal X: grabación detenida en T s (motor, base de datos, eventos)» (canal).
+cerrado en B s (fin de entrada | «q»)» (motor) y «Canal X: grabación detenida en T s (motor, base de datos, eventos)» (canal).
 
 **Carta de ajuste a tiempo real.** Al perder la señal grabando con «Carta de ajuste al perder señal», el motor cambia el
 proceso del canal por el de `FfmpegArgumentBuilder.BuildSlate`: barras SMPTE con el rótulo «SIN SEÑAL» y silencio (con

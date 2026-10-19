@@ -520,7 +520,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 Detach(previous); // su salida no es una caída que recuperar (N6)
                 var close = Stopwatch.StartNew();
                 await RetireAsync(previous, previousSink).ConfigureAwait(false);
-                _log.LogInformation("Canal {Key}: apagado: archivo cerrado en {Close:0.0} s.", _channelKey, close.Elapsed.TotalSeconds);
+                _log.LogInformation("Canal {Key}: apagado: archivo cerrado en {Close:0.00} s ({How}).", _channelKey, close.Elapsed.TotalSeconds, HowClosed(previous));
             }
             else if (previousSink is not null)
             {
@@ -592,7 +592,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 var retire = Stopwatch.StartNew();
                 await RetireAsync(previous, previousSink).ConfigureAwait(false);
                 if (previous.FinalizeOnStop)
-                    _log.LogInformation("Canal {Key}: archivo cerrado en {Close:0.0} s (sin relevo: la fuente no admite dos aperturas).", _channelKey, retire.Elapsed.TotalSeconds);
+                    _log.LogInformation("Canal {Key}: archivo cerrado en {Close:0.00} s ({How}; sin relevo: la fuente no admite dos aperturas).", _channelKey, retire.Elapsed.TotalSeconds, HowClosed(previous));
                 if (previousFile is not null) { EmitSegmentFile(previousFile, optimizeSeek: FragmentedMp4); previousFile = null; }
             }
         }
@@ -718,8 +718,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             ? builder.BuildSlate(recording, FrameWidth, FrameHeight)
             : builder.BuildLive(recording, FrameWidth, FrameHeight);
         // «¿Va al día?» de ESTE proceso: la reserva que acaba de tomar su BuildInputArguments (la de la fuente cambia con el
-        // siguiente proceso que se construya; con Grabar y Detener seguidos, un relevo se juzgaba con la del siguiente).
+        // siguiente proceso que se construya; con Grabar y Detener seguidos, un relevo se juzgaba con la del siguiente). Y, por lo
+        // mismo, cómo cerrarle la entrada a ESTE proceso cuando se retire (ver EndInput en el supervisor, más abajo).
         sink.IsLive = source.NewestConsumerLiveCheck;
+        var endInput = source.NewestConsumerEndInput;
         // Cadencia del PREVIEW de este proceso: la de la fuente o, si desentrelaza un cuadro por campo, el doble. Con ella se
         // juzga el relevo y entrega el colchón (0 = paso directo), que se vuelve a fijar en cada proceso: la señal puede
         // haberse redetectado con otra tasa, o el operador haber cambiado el colchón de la fuente. Y el progreso de FFmpeg, que
@@ -767,10 +769,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         {
             StallTimeout = TimeSpan.FromSeconds(30),
             FinalizeOnStop = recording,
-            // Una fuente con vídeo y audio en entradas separadas (NDI) cierra la entrada del proceso que graba de ella y FFmpeg acaba
-            // solo con todo lo que ya llegó: con la «q» se perdía el final del audio (ver ICaptureSource.EndInput). Las demás
-            // fuentes, y la carta de ajuste (no lee la fuente), siguen con la «q».
-            EndInput = recording && !slate ? source.EndInput : null,
+            // Al retirar el proceso que graba, la fuente le cierra la entrada y FFmpeg acaba solo con todo lo que ya le llegó: un relé
+            // (DeckLink, red) cierra el socket de ESTE proceso, y NDI sus dos entradas. Con la «q», FFmpeg no la atiende hasta su
+            // siguiente vuelta de -stats_period (hasta 1 s más de grabación y de espera al Detener) y lo que aún esperaba en su
+            // entrada no llegaba al archivo (con NDI, el final del audio). Ver ICaptureSource.NewestConsumerEndInput y EndInput. Las
+            // demás fuentes, y la carta de ajuste (no lee la fuente), siguen con la «q».
+            EndInput = recording && !slate ? endInput ?? source.EndInput : null,
             // La GRABACIÓN de la fuente en vivo NO se auto-relanza en el supervisor (reabriría el archivo con -y y
             // lo truncaría): su caída la gestiona el motor en una PIEZA NUEVA (OnRecordingProcessDied). El PREVIEW
             // (sin archivo) y la carta de ajuste (bars generadas; truncarlas es cosmético) sí se auto-relanzan. (N1.)
@@ -819,12 +823,21 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         var handoff = sw.Elapsed;
         await RetireAsync(outgoing, outgoingSink).ConfigureAwait(false);
         // Al detener una grabación, cuánto costó cada fase: el relevo del preview (el nuevo toma el mando) y el cierre
-        // del archivo (la «q» y lo que FFmpeg tarde en escribir el índice o el moov). Es lo primero que hay que leer
+        // del archivo (el fin de entrada o la «q», y lo que FFmpeg tarde en escribir el índice o el moov). Es lo primero que hay que leer
         // cuando el operador dice que «tarda en aparecer el diálogo del nombre».
         if (outgoing.FinalizeOnStop)
-            _log.LogInformation("Canal {Key}: relevo del preview en {Handoff:0.0} s y archivo cerrado en {Close:0.0} s.",
-                _channelKey, handoff.TotalSeconds, (sw.Elapsed - handoff).TotalSeconds);
+            _log.LogInformation("Canal {Key}: relevo del preview en {Handoff:0.00} s y archivo cerrado en {Close:0.00} s ({How}).",
+                _channelKey, handoff.TotalSeconds, (sw.Elapsed - handoff).TotalSeconds, HowClosed(outgoing));
     }
+
+    /// <summary>Cómo se cerró el archivo de un proceso ya retirado, para el registro del Detener.</summary>
+    private static string HowClosed(FfmpegProcessSupervisor retired) => retired.LastOrderlyStop switch
+    {
+        OrderlyStop.EndOfInput => "fin de entrada",
+        OrderlyStop.Quit => "«q»",
+        OrderlyStop.Forced => "forzado",
+        _ => "ya había salido",
+    };
 
     private async Task RetireAsync(FfmpegProcessSupervisor supervisor, PreviewSink? sink)
     {

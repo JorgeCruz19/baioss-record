@@ -71,8 +71,16 @@ public sealed class RawStreamRelay : IAsyncDisposable
         public volatile bool Started;
         /// <summary>Se desconectó, el flujo terminó o la reserva caducó: ya no hay nada que esperar de él.</summary>
         public volatile bool Closed;
+        /// <summary>Se le dio fin de flujo (<see cref="RelayReservation.EndInput"/>, bajo el candado del relé): ya no se le encola
+        /// nada; su bomba le escribe lo que tenía en cola y le cierra el socket.</summary>
+        public volatile bool Ended;
         /// <summary>Se le descartó algo y aún no ha pasado el siguiente punto de sincronía (bajo el candado del relé).</summary>
         public bool Dropping;
+        /// <summary>Número en el flujo (<see cref="VideoFramesForwarded"/>) del primer frame de vídeo que se le encoló; −1 si aún
+        /// ninguno. Con él y los escritos se sabe hasta qué frame del flujo le llegó (diagnóstico).</summary>
+        public long FirstVideoFrame = -1;
+        /// <summary>Frames de vídeo que se le encolaron (bajo el candado del relé) y que su socket aceptó (su bomba).</summary>
+        public long VideoFramesQueued, VideoFramesWritten;
         /// <summary>
         /// ¿Consume ya el flujo en directo? Conectado, arrancado y con un atraso de como mucho DOS unidades del tamaño
         /// mayor visto (la que se le está escribiendo y una en cola). No sirve «nada pendiente»: una escritura de 4 MB
@@ -165,8 +173,27 @@ public sealed class RawStreamRelay : IAsyncDisposable
             var consumer = NewConsumer();
             _reserved.Enqueue((consumer, Stopwatch.GetTimestamp()));
             _log.LogDebug("Relé crudo {Name}: consumidor reservado ({Headers} cabeceras guardadas).", _name, _headers.Count);
-            return new RelayReservation(0, () => consumer.IsLive);
+            return new RelayReservation(0, () => consumer.IsLive, () => EndInput(consumer));
         }
+    }
+
+    /// <summary>
+    /// Fin de flujo para un consumidor (ver <see cref="RelayReservation.EndInput"/>): desde este instante no se le encola nada
+    /// —lo que llegue es de los demás, y no cuenta como descarte—; su bomba le escribe lo que ya tenía en cola, unidades enteras
+    /// (FFmpeg recibe frames completos), y le cierra el socket. False si su proceso nunca conectó, ya se cerró o ya se le pidió.
+    /// </summary>
+    private bool EndInput(Consumer consumer)
+    {
+        long pending;
+        lock (_sync)
+        {
+            if (!consumer.Connected || consumer.Closed || consumer.Ended) return false;
+            consumer.Ended = true;
+            pending = Interlocked.Read(ref consumer.PendingBytes);
+        }
+        consumer.Queue.Writer.TryComplete();
+        _log.LogDebug("Relé crudo {Name}: fin de flujo para un consumidor; se le escribe lo que tenía en cola ({Bytes} bytes) y se le cierra el socket.", _name, pending);
+        return true;
     }
 
     /// <summary>Alta + instantánea de las cabeceras, atómicas respecto a cada unidad entrante. Bajo <see cref="_sync"/>.</summary>
@@ -329,7 +356,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
     /// <summary>Encola una unidad a un consumidor (una referencia más), salvo que su cola supere el tope en bytes. Bajo <see cref="_sync"/>.</summary>
     private bool Enqueue(Consumer consumer, NutUnit unit)
     {
-        if (consumer.Closed) return true; // se está retirando: no es un descarte
+        if (consumer.Closed || consumer.Ended) return true; // se está retirando: no es un descarte
         // Tras un descarte se reanuda SOLO en un punto de sincronía: en NUT la marca de tiempo de un frame es relativa a la
         // del frame anterior de su flujo, y solo un punto de sincronía la fija de nuevo; una unidad suelta tras el hueco
         // llegaba con una marca calculada sobre otra base (marca hacia atrás en la grabación).
@@ -338,7 +365,15 @@ public sealed class RawStreamRelay : IAsyncDisposable
         consumer.Dropping = false;
         unit.Retain();
         Interlocked.Add(ref consumer.PendingBytes, unit.Length);
-        if (consumer.Queue.Writer.TryWrite(unit)) return true;
+        if (consumer.Queue.Writer.TryWrite(unit))
+        {
+            if (unit.IsVideoFrame)
+            {
+                if (consumer.FirstVideoFrame < 0) consumer.FirstVideoFrame = VideoFramesForwarded + 1; // esta unidad se cuenta al acabar de repartirla
+                consumer.VideoFramesQueued++;
+            }
+            return true;
+        }
         Interlocked.Add(ref consumer.PendingBytes, -unit.Length);
         unit.Release();
         return true; // cola completada (consumidor en cierre)
@@ -394,6 +429,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
     /// se fue → FFmpeg ve EOF) o cuando el consumidor se desconecta (el motor reemplazó el proceso).</summary>
     private async Task PumpConsumerAsync(TcpClient client, Consumer consumer, CancellationToken ct)
     {
+        string how = "el consumidor cerró el socket";
         try
         {
             using (client)
@@ -405,7 +441,11 @@ public sealed class RawStreamRelay : IAsyncDisposable
                 consumer.HeadersSent = true;
                 await foreach (var unit in consumer.Queue.Reader.ReadAllAsync(ct).ConfigureAwait(false))
                 {
-                    try { await stream.WriteAsync(unit.Bytes, ct).ConfigureAwait(false); }
+                    try
+                    {
+                        await stream.WriteAsync(unit.Bytes, ct).ConfigureAwait(false);
+                        if (unit.IsVideoFrame) Interlocked.Increment(ref consumer.VideoFramesWritten);
+                    }
                     finally
                     {
                         Interlocked.Add(ref consumer.PendingBytes, -unit.Length);
@@ -413,9 +453,10 @@ public sealed class RawStreamRelay : IAsyncDisposable
                     }
                 }
                 await stream.FlushAsync(ct).ConfigureAwait(false);
+                how = consumer.Ended ? "fin de flujo pedido" : "fin del flujo";
             }
         }
-        catch (OperationCanceledException) { /* cierre del relé */ }
+        catch (OperationCanceledException) { how = "cierre del relé"; }
         catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: el consumidor cerró el socket.", _name); }
         finally
         {
@@ -424,7 +465,31 @@ public sealed class RawStreamRelay : IAsyncDisposable
             consumer.Queue.Writer.TryComplete();
             while (consumer.Queue.Reader.TryRead(out var pending)) { Interlocked.Add(ref consumer.PendingBytes, -pending.Length); pending.Release(); }
             foreach (var h in consumer.Headers) h.Release();
+            ReportClosed(consumer, how);
         }
+    }
+
+    /// <summary>Lo que recibió un consumidor, al cerrarse: el número en el flujo de su primer frame de vídeo (−1 si ninguno), los
+    /// que se le encolaron y los que su socket aceptó (diagnóstico y tests).</summary>
+    internal readonly record struct ConsumerReport(long FirstVideoFrame, long VideoFramesQueued, long VideoFramesWritten, string How)
+    {
+        /// <summary>Número en el flujo del último frame de vídeo que su socket aceptó (−1 si ninguno).</summary>
+        public long LastVideoFrameWritten => VideoFramesWritten > 0 ? FirstVideoFrame + VideoFramesWritten - 1 : -1;
+    }
+
+    /// <summary>Un consumidor se cerró (tests: lo que recibió el proceso que grababa frente a lo que quedó en su archivo).</summary>
+    internal event Action<ConsumerReport>? ConsumerClosed;
+
+    private void ReportClosed(Consumer consumer, string how)
+    {
+        long queued;
+        lock (_sync) queued = consumer.VideoFramesQueued;
+        var report = new ConsumerReport(consumer.FirstVideoFrame, queued, Interlocked.Read(ref consumer.VideoFramesWritten), how);
+        if (report.VideoFramesQueued > 0)
+            _log.LogDebug("Relé crudo {Name}: consumidor cerrado ({How}): {Written} de {Queued} frames de vídeo escritos (n.º {First}–{Last} del flujo).",
+                _name, how, report.VideoFramesWritten, report.VideoFramesQueued, report.FirstVideoFrame, report.LastVideoFrameWritten);
+        try { ConsumerClosed?.Invoke(report); }
+        catch (Exception ex) { _log.LogDebug(ex, "Relé crudo {Name}: un suscriptor del cierre de un consumidor falló.", _name); }
     }
 
     private void CloseConsumers()

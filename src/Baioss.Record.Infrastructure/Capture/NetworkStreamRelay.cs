@@ -74,6 +74,11 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
         public volatile bool Writing;
         /// <summary>Se desconectó, el flujo terminó o la reserva caducó: ya no hay nada que esperar de él.</summary>
         public volatile bool Closed;
+        /// <summary>Su socket ya conectó (bajo el candado del relé, al aceptarlo).</summary>
+        public bool Connected;
+        /// <summary>Se le dio fin de flujo (<see cref="RelayReservation.EndInput"/>, bajo el candado del relé): ya no se le encola
+        /// nada; su bomba le escribe lo que tenía en cola y le cierra el socket.</summary>
+        public volatile bool Ended;
         /// <summary>Bytes en su cola aún sin escribir a su socket (el tope de la contrapresión se mide en BYTES).</summary>
         public long PendingBytes;
         /// <summary>¿Consume ya el flujo en directo? Ver <see cref="RelayReservation.IsLive"/>.</summary>
@@ -177,8 +182,27 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
             _reserved.Enqueue((consumer, Stopwatch.GetTimestamp()));
             int frames = _preroll.Sum(p => p.VideoFrames);
             _log.LogDebug("Relé {Name}: consumidor reservado; pre-roll de {Frames} frames de vídeo ({Bytes} bytes).", _name, frames, _prerollLength);
-            return new RelayReservation(frames, () => consumer.IsLive);
+            return new RelayReservation(frames, () => consumer.IsLive, () => EndInput(consumer));
         }
+    }
+
+    /// <summary>
+    /// Fin de flujo para un consumidor (ver <see cref="RelayReservation.EndInput"/>): desde este instante no se le encola nada
+    /// —lo que llegue es de los demás, y no cuenta como descarte—; su bomba le escribe lo que ya tenía en cola (paquetes TS
+    /// enteros) y le cierra el socket. False si su proceso nunca conectó, ya se cerró o ya se le pidió.
+    /// </summary>
+    private bool EndInput(Consumer consumer)
+    {
+        long pending;
+        lock (_sync)
+        {
+            if (!consumer.Connected || consumer.Closed || consumer.Ended) return false;
+            consumer.Ended = true;
+            pending = Interlocked.Read(ref consumer.PendingBytes);
+        }
+        consumer.Queue.Writer.TryComplete();
+        _log.LogDebug("Relé {Name}: fin de flujo para un consumidor; se le escribe lo que tenía en cola ({Bytes} bytes) y se le cierra el socket.", _name, pending);
+        return true;
     }
 
     /// <summary>Alta + instantánea del pre-roll, atómicas respecto a cada fragmento entrante. Bajo <see cref="_sync"/>.</summary>
@@ -299,7 +323,7 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
 
                     foreach (var c in _consumers)
                     {
-                        if (c.Closed) continue; // ya no espera nada: no cuenta como descarte
+                        if (c.Closed || c.Ended) continue; // ya no espera nada: no cuenta como descarte
                         if (Interlocked.Read(ref c.PendingBytes) + chunk.Length > ConsumerQueueMaxBytes) { dropped++; continue; }
                         if (c.Queue.Writer.TryWrite(chunk)) Interlocked.Add(ref c.PendingBytes, chunk.Length);
                         else dropped++;
@@ -442,6 +466,7 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
             {
                 reserved = _reserved.TryDequeue(out var reservation);
                 consumer = reserved ? reservation.Consumer : NewConsumer();
+                consumer.Connected = true;
             }
             _log.LogDebug("Relé {Name}: consumidor conectado (puerto {Port}{Reserved}); pre-roll de {Bytes} bytes.", _name, ConsumerPort, reserved ? ", reservado" : "", consumer.Preroll.Sum(c => c.Length));
             _ = Task.Run(() => PumpConsumerAsync(client, consumer, ct), CancellationToken.None);
@@ -530,12 +555,23 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
 public sealed class RelayReservation
 {
     private readonly Func<bool> _isLive;
+    private readonly Func<bool>? _endInput;
 
-    internal RelayReservation(int videoFrames, Func<bool> isLive)
+    internal RelayReservation(int videoFrames, Func<bool> isLive, Func<bool>? endInput = null)
     {
         VideoFrames = videoFrames;
         _isLive = isLive;
+        _endInput = endInput;
     }
+
+    /// <summary>
+    /// Fin de flujo para el proceso de ESTE consumidor: se le escribe lo que ya tenía en cola y después se le cierra el socket,
+    /// así que FFmpeg termina por sí mismo (EOF) con todo lo que le llegó; lo que llegue después ya no es suyo. Al Detener, el
+    /// proceso que grababa sale así en décimas: con la «q», FFmpeg no la lee hasta su siguiente vuelta de <c>-stats_period</c>
+    /// (1 s), así que grababa y tardaba en cerrar hasta 1 s más, y lo que esperaba en el socket no llegaba al archivo. False si su
+    /// proceso no llegó a conectar, ya se cerró o ya se le pidió: no hay a quién cerrarle nada (entonces, la «q»).
+    /// </summary>
+    public bool EndInput() => _endInput?.Invoke() ?? false;
 
     /// <summary>PES de vídeo (frames) de la instantánea del pre-roll reservada.</summary>
     public int VideoFrames { get; }

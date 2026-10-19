@@ -76,6 +76,7 @@ public class FfmpegProcessSupervisorTests
         Assert.Equal(1, ended);
         Assert.True(stop.Elapsed > TimeSpan.FromSeconds(1.2), $"Lo cortó a los {stop.Elapsed.TotalSeconds:0.00} s en vez de esperar a que acabara solo.");
         Assert.False(sup.IsRunning);
+        Assert.Equal(OrderlyStop.EndOfInput, sup.LastOrderlyStop);
     }
 
     [Fact]
@@ -96,6 +97,7 @@ public class FfmpegProcessSupervisorTests
 
         Assert.True(stop.Elapsed < TimeSpan.FromSeconds(5), $"El cierre tardó {stop.Elapsed.TotalSeconds:0.0} s: debía pasar a la «q» y forzar.");
         Assert.False(sup.IsRunning);
+        Assert.Equal(OrderlyStop.Forced, sup.LastOrderlyStop); // el intérprete no atiende la «q»
     }
 
     [Fact]
@@ -117,6 +119,7 @@ public class FfmpegProcessSupervisorTests
 
         Assert.Equal(1, ended);
         Assert.True(stop.Elapsed < TimeSpan.FromSeconds(5), $"El cierre esperó {stop.Elapsed.TotalSeconds:0.0} s sin que la fuente cerrara nada.");
+        Assert.NotEqual(OrderlyStop.EndOfInput, sup.LastOrderlyStop);
     }
 }
 

@@ -271,6 +271,10 @@ public sealed class DecklinkCaptureSource : ICaptureSource
     /// <summary>La reserva del último proceso construido, capturada para ese proceso (ver <see cref="ICaptureSource.NewestConsumerLiveCheck"/>).</summary>
     public Func<bool>? NewestConsumerLiveCheck => _reservation is { } reservation ? () => reservation.IsLive : null;
 
+    /// <summary>Fin de flujo para el proceso del último <see cref="BuildInputArguments"/> (relé): su consumidor recibe lo que tenía en
+    /// cola y se le cierra el socket (ver <see cref="ICaptureSource.NewestConsumerEndInput"/>). En captura directa, null: la «q».</summary>
+    public Func<bool>? NewestConsumerEndInput => _reservation is { } reservation ? reservation.EndInput : null;
+
     /// <summary>El relé en crudo no entrega pre-roll: nada que saltarse.</summary>
     public int PreviewFramesToSkip => _reservation?.VideoFrames ?? 0;
 

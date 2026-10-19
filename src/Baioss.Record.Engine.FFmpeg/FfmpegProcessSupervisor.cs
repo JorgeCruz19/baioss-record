@@ -4,6 +4,19 @@ using Microsoft.Extensions.Logging;
 
 namespace Baioss.Record.Engine.FFmpeg;
 
+/// <summary>Cómo terminó el cierre ordenado de un proceso que escribía un archivo (ver <see cref="FfmpegProcessSupervisor.LastOrderlyStop"/>).</summary>
+public enum OrderlyStop
+{
+    /// <summary>No hubo cierre ordenado que hacer: el proceso ya había salido (o no escribía archivo).</summary>
+    None,
+    /// <summary>Se le cerró la entrada y salió solo con todo lo que le llegó.</summary>
+    EndOfInput,
+    /// <summary>Con la «q».</summary>
+    Quit,
+    /// <summary>No salió a tiempo (o no se le pudo enviar la «q») y se le mató.</summary>
+    Forced,
+}
+
 /// <summary>
 /// Lanza y supervisa un proceso FFmpeg. Núcleo de la resiliencia 24/7:
 ///  - reinicia con backoff exponencial si el proceso muere de forma inesperada;
@@ -76,11 +89,15 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
     /// <summary>
     /// Con <see cref="FinalizeOnStop"/>: cómo cerrarle la ENTRADA al proceso para que termine por sí mismo (fin de flujo) con
     /// todo lo que ya le llegó, antes de recurrir a la «q». Devuelve true si la entrada se va a cerrar; el cierre ordenado espera
-    /// entonces hasta <see cref="EndOfInputTimeout"/> a que FFmpeg salga solo y, si no, envía la «q». Para una fuente que sirve
-    /// vídeo y audio en entradas separadas (NDI): con la «q», FFmpeg deja de leer en el acto y el audio que aún esperaba en su
-    /// entrada se perdía. null = la «q» de siempre.
+    /// entonces hasta <see cref="EndOfInputTimeout"/> a que FFmpeg salga solo y, si no, envía la «q». Con la «q», FFmpeg deja de
+    /// leer en el acto y lo que aún esperaba en su entrada se perdía (con NDI, que sirve vídeo y audio en entradas separadas, el
+    /// final del audio), y no la lee hasta su siguiente vuelta de <c>-stats_period</c>: hasta 1 s más de grabación y de espera.
+    /// Con un relé (DeckLink, red), el fin de flujo de ESE proceso. null = la «q» de siempre.
     /// </summary>
     public Func<bool>? EndInput { get; init; }
+
+    /// <summary>Cómo terminó el último cierre ordenado (diagnóstico: el registro del Detener lo cuenta).</summary>
+    public OrderlyStop LastOrderlyStop { get; private set; }
 
     /// <summary>Espera máxima a que FFmpeg salga solo tras <see cref="EndInput"/> (vaciar el codificador y escribir el índice es
     /// cosa de décimas); después, la «q».</summary>
@@ -462,8 +479,8 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             return;
         }
 
-        // Si se le puede cerrar la entrada (NDI), FFmpeg vacía el codificador, lee lo que le quedaba y sale solo: nada se pierde.
-        if (await EndInputAndWaitAsync(_process).ConfigureAwait(false)) return;
+        // Si se le puede cerrar la entrada (relé, NDI), FFmpeg lee lo que le quedaba, vacía el codificador y sale solo: nada se pierde.
+        if (await EndInputAndWaitAsync(_process).ConfigureAwait(false)) { LastOrderlyStop = OrderlyStop.EndOfInput; return; }
 
         try
         {
@@ -473,14 +490,23 @@ public sealed class FfmpegProcessSupervisor : IAsyncDisposable
             // fuerza el cierre. Antes eran 5 s fijos: en grabaciones grandes o con varios canales cerrando a
             // la vez, el flush no llegaba a tiempo y se mataba a mitad → archivo corrupto.
             using var timeout = new CancellationTokenSource(GracefulTimeout);
-            try { await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false); }
+            try
+            {
+                await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                LastOrderlyStop = OrderlyStop.Quit;
+            }
             catch (OperationCanceledException)
             {
                 _log.LogWarning("FFmpeg no finalizó en {Timeout} tras 'q'; forzando cierre.", GracefulTimeout);
+                LastOrderlyStop = OrderlyStop.Forced;
                 try { _process.Kill(entireProcessTree: true); } catch { /* noop */ }
             }
         }
-        catch { try { _process.Kill(entireProcessTree: true); } catch { /* noop */ } }
+        catch
+        {
+            LastOrderlyStop = OrderlyStop.Forced;
+            try { _process.Kill(entireProcessTree: true); } catch { /* noop */ }
+        }
     }
 
     /// <summary>Cierra la entrada del proceso (<see cref="EndInput"/>) y espera a que salga solo. False si no hay cómo, la fuente

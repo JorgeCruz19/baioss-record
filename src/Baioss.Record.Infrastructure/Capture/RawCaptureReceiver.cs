@@ -157,6 +157,9 @@ public sealed class RawCaptureReceiver : IRawCaptureReceiver
     /// <summary>Consumidores dados de alta en el relé (diagnóstico y tests).</summary>
     public int ConsumerCount => _relay.ConsumerCount;
 
+    /// <summary>El relé (tests: lo que recibió cada consumidor).</summary>
+    internal RawStreamRelay Relay => _relay;
+
     /// <summary>Veces que el proceso de captura terminó y se relanzó desde el arranque (diagnóstico y tests: con la tarjeta
     /// sana debe quedarse en 0 por muchos Grabar/Detener que haya).</summary>
     public int Restarts { get; private set; }
