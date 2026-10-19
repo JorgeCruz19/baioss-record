@@ -164,7 +164,7 @@ public sealed class FfmpegArgumentBuilder
 
         if (needFilter)
         {
-            var (filter, mainLabel) = BuildFilterGraph(profile, gpu, hasProxy, fill);
+            var (filter, mainLabel) = BuildFilterGraph(profile, gpu, hasProxy, fill, source.CurrentSignal.FrameRate);
             args.Add("-filter_complex");
             args.Add(filter);
             mainVideo = mainLabel;
@@ -319,14 +319,7 @@ public sealed class FfmpegArgumentBuilder
             if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
             else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
             if (profile.BurnTimecode)
-            {
-                // El timecode quemado avanza al ritmo REAL de la fuente/salida (no «25» fijo): con 25 fijo
-                // derivaba en fuentes 29.97/30/50/60 y el campo FF nunca alcanzaba sus valores. (Auditoría #18.)
-                int tcRate = Math.Max(1, (int)Math.Round(
-                    (profile.OutputFrameRate ?? source.CurrentSignal.FrameRate ?? FrameRate.P25).Value, MidpointRounding.AwayFromZero));
-                recChain.Add(string.Create(CultureInfo.InvariantCulture,
-                    $"drawtext=timecode='00\\:00\\:00\\:00':rate={tcRate}:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20"));
-            }
+                recChain.AddRange(TimecodeFilters(profile, TimecodeInputRate(source.CurrentSignal.FrameRate, deinterlace, fill)));
             // SIEMPRE como último paso de la rama de grabación: convertir al formato del encoder. La fuente puede
             // entregar un pixel format que el encoder por hardware NO acepta (NDI sirve uyvy422 y h264_nvenc lo
             // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
@@ -450,18 +443,49 @@ public sealed class FfmpegArgumentBuilder
     /// desentrelazar y convertir al formato del codificador solo se hace con los cuadros reales, y el codificador recibe las
     /// repeticiones como referencias al mismo cuadro (un emisor que imita al grafismo de Offside, 60 declarados y ~4 enviados: el
     /// proceso del canal con NVENC pasó de ~2 a 0,28 núcleos). Va al PRINCIPIO, a la cadencia de la fuente —la rama ve entonces lo
-    /// mismo que antes, un cuadro por periodo—, si algo de ella lo necesita: el timecode quemado (drawtext cuenta cuadros, no
-    /// tiempo) y el desentrelazado por campo (bwdif pone el segundo campo a medio camino del cuadro siguiente, que tras un hueco cae
-    /// lejos, y al final del flujo alargaba el archivo). <c>-fps_mode cfr</c> no sirve: adelanta un periodo cada cuadro que llega
-    /// tras un hueco (medido con FFmpeg 8.0 y el incluido). Null si la fuente no tiene huecos o no se conoce su cadencia.
+    /// mismo que antes, un cuadro por periodo—, si algo de ella lo necesita: el timecode quemado (drawtext numera los cuadros que le
+    /// entran, no el tiempo: los recibe a la cadencia que se graba) y el desentrelazado por campo (bwdif pone el segundo campo a medio
+    /// camino del cuadro siguiente, que tras un hueco cae lejos, y al final del flujo alargaba el archivo: este va a la cadencia
+    /// declarada, y bwdif la dobla a la del preset). Con el timecode a la declarada, un grafismo que declara 60 grabado a 29.97 le
+    /// daba a drawtext 60 cuadros por segundo con rate=30: el timecode corría al doble (medido el 2026-10-18), y el paso a 29.97 lo
+    /// hacía después -r, con el pitido de una marca ~50 ms más por delante de su destello que sin timecode. <c>-fps_mode cfr</c> no
+    /// sirve: adelanta un periodo cada cuadro que llega tras un hueco (medido con FFmpeg 8.0 y el incluido). Null si la fuente no
+    /// tiene huecos o no se conoce su cadencia.
     /// </summary>
-    internal static (string Filter, bool AtStart)? SparseVideoFill(ICaptureSource source, RecordingProfile profile, string? deinterlace)
+    internal static (string Filter, bool AtStart, FrameRate Rate)? SparseVideoFill(ICaptureSource source, RecordingProfile profile, string? deinterlace)
     {
         if (!source.DeliversSparseVideo || profile.AudioOnly || source.CurrentSignal.FrameRate is not { Numerator: > 0, Denominator: > 0 } declared)
             return null;
-        bool atStart = profile.BurnTimecode || (deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false);
-        var rate = atStart ? declared : profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } output ? output : declared;
-        return (string.Create(CultureInfo.InvariantCulture, $"fps={rate.Numerator}/{rate.Denominator}"), atStart);
+        bool perField = deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false;
+        bool atStart = profile.BurnTimecode || perField;
+        var rate = perField ? declared : profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } output ? output : declared;
+        return (string.Create(CultureInfo.InvariantCulture, $"fps={rate.Numerator}/{rate.Denominator}"), atStart, rate);
+    }
+
+    /// <summary>Cadencia de los cuadros que llegan a drawtext en la rama de grabación: la del relleno si va al principio (fuente con
+    /// huecos) o la de la señal; el doble si bwdif saca un cuadro por campo. Null si no se conoce.</summary>
+    internal static FrameRate? TimecodeInputRate(FrameRate? signalRate, string? deinterlace, (string Filter, bool AtStart, FrameRate Rate)? fill)
+    {
+        var rate = fill is { AtStart: true } early ? early.Rate : signalRate;
+        bool perField = deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false;
+        return perField && rate is { } r ? new FrameRate(r.Numerator * 2, r.Denominator) : rate;
+    }
+
+    /// <summary>
+    /// El timecode quemado: drawtext, que numera los cuadros que le ENTRAN y los rotula a <c>rate</c>, a la cadencia que se graba (la
+    /// del preset o, en nativo, la que le llega; auditoría #18: la real, no «25» fijo). Si le llega otra —la DeckLink a 29.97 con un
+    /// preset a 25—, un <c>fps</c> delante la convierte: antes el timecode corría de más o de menos (1,2× en ese caso) y la conversión
+    /// la hacía después -r. Dos cadencias a menos de un 0,2 % (59.94 y 60) son la misma: no se convierte.
+    /// </summary>
+    internal static IEnumerable<string> TimecodeFilters(RecordingProfile profile, FrameRate? entering)
+    {
+        var recorded = profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } output ? output : entering;
+        if (profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } target && entering is { Value: > 0 } input
+            && Math.Abs(input.Value - target.Value) > 0.002 * target.Value)
+            yield return string.Create(CultureInfo.InvariantCulture, $"fps={target.Numerator}/{target.Denominator}");
+        int tcRate = Math.Max(1, (int)Math.Round((recorded ?? FrameRate.P25).Value, MidpointRounding.AwayFromZero));
+        yield return string.Create(CultureInfo.InvariantCulture,
+            $"drawtext=timecode='00\\:00\\:00\\:00':rate={tcRate}:fontcolor=white:box=1:boxcolor=black@0.5:x=20:y=20");
     }
 
     /// <summary>
@@ -777,7 +801,9 @@ public sealed class FfmpegArgumentBuilder
         return args;
     }
 
-    private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy, string? fill = null)
+    /// <param name="signalRate">Cadencia de la señal (la del relleno, si lo hay, que va a esa misma): la de los cuadros que le llegan al
+    /// timecode quemado.</param>
+    private (string Filter, string MainLabel) BuildFilterGraph(RecordingProfile p, bool gpu, bool hasProxy, string? fill = null, FrameRate? signalRate = null)
     {
         var sb = new StringBuilder();
         string mainIn;
@@ -815,8 +841,8 @@ public sealed class FfmpegArgumentBuilder
             chain.Add("setfield=mode=bff");
         if (p.BurnTimecode)
         {
-            string tc = "drawtext=timecode='00\\:00\\:00\\:00':rate=25:fontcolor=white:" +
-                        "box=1:boxcolor=black@0.5:x=20:y=20";
+            // A la cadencia que se graba, como en el canal (TimecodeFilters): aquí iba con «25» fijo.
+            string tc = string.Join(',', TimecodeFilters(p, signalRate));
             chain.Add(gpu ? $"hwdownload,format=nv12,{tc}" : tc);
         }
 

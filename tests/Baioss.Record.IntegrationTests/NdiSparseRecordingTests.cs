@@ -507,10 +507,12 @@ public sealed class NdiSparseRecordingTests
         });
     }
 
-    /// <summary>Con timecode quemado (drawtext cuenta cuadros, no tiempo), el relleno va al principio, a la cadencia declarada.</summary>
-    [SkippableFact(Skip = "Fallo conocido (2026-10-18): con una fuente que declara 60 y un preset a 29.97, el timecode quemado corre al doble " +
-                          "(drawtext con rate=30 recibe los 60 cuadros/s del relleno) y el pitido va ~50 ms más por delante de su destello " +
-                          "que sin timecode. Quitar el Skip con el arreglo.")]
+    /// <summary>
+    /// Con timecode quemado (drawtext numera los cuadros que le entran, no el tiempo), el relleno va al principio, a la cadencia que
+    /// se graba: a la declarada (60) con un preset a 29.97, drawtext con rate=30 recibía 60 cuadros por segundo y el timecode corría
+    /// al doble, y el pitido iba ~50 ms más por delante de su destello que sin timecode (2026-10-18).
+    /// </summary>
+    [SkippableFact]
     public async Task WithBurnedTimecode_TheGapsAreFilledBeforeDrawtext()
     {
         SkipWithoutNdi();
@@ -524,8 +526,8 @@ public sealed class NdiSparseRecordingTests
             double handover = Math.Max(0, rec.StopSeconds - 0.6);
             await AssertFileAsync(rec.Files[0], profile, GraphicsRate, sender.MarkPeriod, rec.RecordedFor + 0.3 + handover / 2, 1.5 + handover / 2);
             AssertFill(rec, atStart: true);
-            Assert.Contains("[vrec]fps=60000/1000,", rec.Pipeline());
-            Assert.Contains("drawtext=timecode=", rec.Pipeline());
+            Assert.Contains("[vrec]fps=30000/1001,", rec.Pipeline());
+            Assert.Contains("drawtext=timecode='00\\:00\\:00\\:00':rate=30:", rec.Pipeline());
         });
     }
 
