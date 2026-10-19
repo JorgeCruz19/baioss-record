@@ -673,10 +673,14 @@ public sealed class NdiSparseRecordingTests
         return (streams, formatDuration);
     }
 
-    /// <summary>Marcas de tiempo (s) de los paquetes de vídeo, ordenadas: para buscar huecos.</summary>
+    /// <summary>
+    /// Instantes (s) en que se presenta cada cuadro de vídeo decodificado, ordenados: para buscar huecos. De los cuadros y no de los
+    /// paquetes: el PS de FFmpeg deja sin PTS algunos paquetes de vídeo (5 de 250 en un MPEG-2 SD, con su DTS), y contarlos por el
+    /// PTS hacía ver un hueco de 120–200 ms en un vídeo continuo.
+    /// </summary>
     private static async Task<double[]> VideoPtsAsync(string ffprobe, string file)
     {
-        var (csv, _, _) = await RunAsync(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", file);
+        var (csv, _, _) = await RunAsync(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", file);
         return csv.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(l => double.TryParse(l.TrimEnd(','), NumberStyles.Float, CultureInfo.InvariantCulture, out var x) ? x : double.NaN)
             .Where(x => !double.IsNaN(x)).OrderBy(x => x).ToArray();
