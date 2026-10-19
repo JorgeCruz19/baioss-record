@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
@@ -97,6 +98,9 @@ public sealed class DecklinkHardwareTests
         public long Overruns;
         public long RelayDrops;
         public readonly List<(double At, long Count)> RelayDropLog = new();
+        /// <summary>Cada bloque de progreso del proceso del canal (uno por <c>-stats_period</c>): cuándo llegó y su <c>out_time</c>
+        /// (µs; −1 mientras FFmpeg no lo sabe), que FFmpeg toma de la salida más atrasada: grabando, la del códec.</summary>
+        public readonly List<(double At, long MediaTimeUs)> Progress = new();
         public IReadOnlyList<double>? LastPeaks;
         /// <summary>Cada ronda de medidores (un true-peak por canal) con el instante en que llegó.</summary>
         public readonly List<(double At, double[] Peaks)> PeakLog = new();
@@ -150,6 +154,7 @@ public sealed class DecklinkHardwareTests
                 rig.LastPeaks = p;
                 lock (rig.PeakLog) rig.PeakLog.Add((clock.Elapsed.TotalSeconds, p.ToArray()));
             };
+            engine.StatsUpdated += (_, s) => { lock (rig.Progress) rig.Progress.Add((clock.Elapsed.TotalSeconds, s.MediaTimeUs)); };
             await source.OpenAsync();
             await engine.StartPreviewAsync(source, baseProfile, key);
             return rig;
@@ -590,6 +595,78 @@ public sealed class DecklinkHardwareTests
     private static string LastRecordingPipeline(List<string> log, string key)
     {
         lock (log) return log.LastOrDefault(l => l.Contains($"Pipeline canal {key} (grabación+preview)", StringComparison.Ordinal)) ?? "";
+    }
+
+    /// <summary>Valor numérico de una opción en los argumentos de un proceso, tal como los registró el motor.</summary>
+    private static double OptionValue(string pipeline, string option)
+    {
+        var tokens = pipeline.Split(' ');
+        int i = Array.IndexOf(tokens, option);
+        Assert.True(i >= 0 && i + 1 < tokens.Length, $"El proceso no lleva {option}: {pipeline}");
+        return double.Parse(tokens[i + 1], CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Cuánto puede durar el archivo de una grabación detenida, a partir de los instantes que midió la prueba (reloj del canal), de
+    /// los cuadros que pintó el preview y de la cola del Detener que registró el motor. El archivo empieza justo después de que
+    /// Grabar vuelva (el proceso conecta al relé y arranca en el cuadro siguiente) y tiene todo hasta el Detener. Después, el motor
+    /// sigue grabando hasta que el proceso de preview nuevo toma el relevo (así el preview no se congela) y entonces cierra el de
+    /// grabación. Hasta ese relevo el preview lo pinta el propio proceso de grabación, con los mismos cuadros que codifica: el archivo
+    /// tiene además los que enseñó. Si lo cierra con la «q», el archivo no tiene por qué llegar hasta ella: con la CPU al límite ese
+    /// proceso va atrasado (el relé le guarda hasta 128 MiB, ≈1 s de 1080i), y lo que aún no había leído al ver la «q» no entra
+    /// (medido: un MXF que acabó 0,44 s antes de la «q», con otras pruebas ocupando la CPU, sin un solo cuadro repetido). Por arriba,
+    /// FFmpeg solo mira la «q» una vez por <c>-stats_period</c>: hasta un periodo más de archivo, y nunca más de lo que tardó en
+    /// cerrarse. Si en cambio le corta la entrada («fin de entrada» en el registro: el relé le entrega lo que tenía en cola y le
+    /// cierra el socket), FFmpeg no lee nada después de ese instante. Uno u otro salieron cuando aún faltaba ese cierre para que el
+    /// Detener volviera.
+    /// </summary>
+    private static (double Min, double Max, string Detail) StoppedRecordingWindow(Rig rig, List<string> log, string key,
+        double start, double started, double stop, double stopped)
+    {
+        string line;
+        lock (log) line = log.LastOrDefault(l => l.Contains($"Canal {key}: relevo del preview en ", StringComparison.Ordinal)) ?? "";
+        var tail = Regex.Match(line, @"relevo del preview en ([\d.]+) s y archivo cerrado en ([\d.]+) s(?: \(([^)]*)\))?");
+        Assert.True(tail.Success, $"El motor no registró la cola del Detener del canal {key}.");
+        double handover = double.Parse(tail.Groups[1].Value, CultureInfo.InvariantCulture);
+        double close = double.Parse(tail.Groups[2].Value, CultureInfo.InvariantCulture);
+        bool endOfInput = tail.Groups[3].Value == "fin de entrada";
+        double retire = stopped - close;
+        // Hasta 0,1 s antes de cerrarlo: el preview nuevo toma el relevo con su primer cuadro y pinta enseguida los que leyó al
+        // sondear la entrada, que no son de este archivo.
+        double shown = rig.FramesBetween(stop, retire - 0.1) / rig.Source.CurrentSignal.FrameRate!.Value.Value;
+        // Lo que FFmpeg aún lee tras la «q»; con fin de entrada, nada.
+        double period = endOfInput ? 0 : OptionValue(LastRecordingPipeline(log, key), "-stats_period");
+        double reading = endOfInput ? 0 : Math.Min(close, period);
+        // Por debajo, lo que el archivo empieza tras Grabar y lo que el preview iba por detrás al Detener: esos cuadros cuentan dos
+        // veces, antes del Detener y entre los enseñados (sin CPU ajena, el archivo quedó 0,25–0,79 s por encima de este mínimo con
+        // 0,2 de margen; con la CPU al límite el preview se atrasa más). Por encima, el redondeo del cierre en el registro y un
+        // cuadro.
+        double min = stop - started + shown - 0.3;
+        double max = retire - start + reading + 0.15;
+        return (min, max, $"Grabar {started - start:0.00} s · Detener a los {stop - started:0.00} s · relevo {handover:0.0} s con {shown:0.00} s " +
+                          $"enseñados · {(endOfInput ? "fin de entrada" : "«q»")} a los {retire - started:0.00} s · cierre {close:0.00} s" +
+                          $"{(endOfInput ? "" : $" (la «q» se mira cada {period:0.##} s)")} → archivo de {min:0.00}–{max:0.00} s");
+    }
+
+    /// <summary>
+    /// Cuánto de lo grabado puede perder la pieza fMP4 de un proceso de grabación que muere, medido en la propia grabación: lo que
+    /// aún no había salido del códec (el retardo de x264 y el arranque: el reloj desde que Grabar volvió frente al <c>out_time</c> de
+    /// cada progreso del proceso, que FFmpeg toma de su salida más atrasada) y el fragmento aún abierto, que el muxer solo escribe al
+    /// completarlo (<c>-frag_duration</c> del pipeline). Del códec cuenta el menor retraso de la grabación: si se pierden cuadros
+    /// por el camino, el <c>out_time</c> se queda atrás y no se le perdona.
+    /// </summary>
+    private static (double Budget, string Detail) KilledPieceBudget(Rig rig, string pipeline, double started, double killed)
+    {
+        double[] behind;
+        lock (rig.Progress) behind = rig.Progress.Where(p => p.At > started && p.At < killed && p.MediaTimeUs > 0)
+            .Select(p => p.At - started - p.MediaTimeUs / 1e6).ToArray();
+        Assert.True(behind.Length >= 3, $"El proceso de grabación solo dio {behind.Length} progresos con tiempo antes de morir.");
+        double codec = behind.Min();
+        double fragment = OptionValue(pipeline, "-frag_duration") / 1e6;
+        // Y lo que ese retraso baila de un progreso a otro (0,06 s medidos) y un par de cuadros: el que cierra el fragmento y lo que
+        // queda en el búfer de escritura de FFmpeg (32 KiB: con imagen en movimiento, menos de un cuadro).
+        double budget = codec + fragment + 0.15;
+        return (budget, $"del códec {codec:0.00} s (al morir {behind[^1]:0.00} s) + fragmento abierto {fragment:0.##} s");
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -1052,22 +1129,31 @@ public sealed class DecklinkHardwareTests
                     await WaitUntilAsync(() => a.Source.CurrentSignal.State == SignalState.Locked && b.Source.CurrentSignal.State == SignalState.Locked,
                         TimeSpan.FromSeconds(20), "SEÑAL OK en las dos");
                     await WaitUntilAsync(() => a.FramesBetween(0, double.MaxValue) > 30 && b.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en las dos");
-                    var t = Stopwatch.StartNew();
+                    // Cada canal con su reloj: cuándo se pidió Grabar y cuándo volvió, y lo mismo con Detener.
+                    static async Task<double> ClockAfter(Rig rig, Task task) { await task; return rig.Clock.Elapsed.TotalSeconds; }
                     double recFromA = a.Clock.Elapsed.TotalSeconds, recFromB = b.Clock.Elapsed.TotalSeconds;
-                    await Task.WhenAll(a.Engine.StartRecordingAsync(Guid.NewGuid(), pa), b.Engine.StartRecordingAsync(Guid.NewGuid(), pb));
-                    double started = t.Elapsed.TotalSeconds;
+                    var started = await Task.WhenAll(ClockAfter(a, a.Engine.StartRecordingAsync(Guid.NewGuid(), pa)), ClockAfter(b, b.Engine.StartRecordingAsync(Guid.NewGuid(), pb)));
                     await Task.Delay(30_000);
-                    double stop = t.Elapsed.TotalSeconds;
                     double recToA = a.Clock.Elapsed.TotalSeconds, recToB = b.Clock.Elapsed.TotalSeconds;
-                    await Task.WhenAll(a.Engine.StopRecordingAsync(), b.Engine.StopRecordingAsync());
+                    var stopped = await Task.WhenAll(ClockAfter(a, a.Engine.StopRecordingAsync()), ClockAfter(b, b.Engine.StopRecordingAsync()));
                     await Task.Delay(1500);
                     _out.WriteLine($"A: desbordes {a.Overruns}, descartes {a.RelayDrops} (grabando {a.RelayDropsBetween(recFromA, recToA)}) · " +
                                    $"B: desbordes {b.Overruns}, descartes {b.RelayDrops} (grabando {b.RelayDropsBetween(recFromB, recToB)})");
-                    foreach (var (rig, dir, codec, from, to) in new[] { (a, dirA, "h264", recFromA, recToA), (b, dirB, "mpeg2video", recFromB, recToB) })
+                    // Con los dos a la vez, el relevo del Detener tarda más (0,4–4,1 s medidos, frente a 0,2–0,4 s con uno solo) y el
+                    // archivo crece con él: cada uno se juzga con la cola de SU Detener.
+                    var windows = new[]
+                    {
+                        StoppedRecordingWindow(a, log, "A", recFromA, started[0], recToA, stopped[0]),
+                        StoppedRecordingWindow(b, log, "B", recFromB, started[1], recToB, stopped[1]),
+                    };
+                    _out.WriteLine($"A: {windows[0].Detail}");
+                    _out.WriteLine($"B: {windows[1].Detail}");
+                    foreach (var (rig, dir, codec, from, to, window) in new[] { (a, dirA, "h264", recFromA, recToA, windows[0]), (b, dirB, "mpeg2video", recFromB, recToB, windows[1]) })
                     {
                         var files = Directory.GetFiles(dir);
                         Assert.Single(files);
-                        await AssertContinuousRecordingAsync(files[0], stop - started + 0.3, rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.5, codec);
+                        await AssertContinuousRecordingAsync(files[0], (window.Min + window.Max) / 2, rig.Source.CurrentSignal.FrameRate!.Value.Value,
+                            (window.Max - window.Min) / 2, codec);
                         Assert.Equal(0, rig.Receiver.Restarts);
                         Assert.Equal(0, rig.RelayDropsBetween(from, to));
                         Assert.Equal(0, Interlocked.Read(ref rig.Overruns));
@@ -1418,6 +1504,7 @@ public sealed class DecklinkHardwareTests
                 await WaitUntilAsync(() => rig.Source.CurrentSignal.State == SignalState.Locked, TimeSpan.FromSeconds(20), "SEÑAL OK");
                 await WaitUntilAsync(() => rig.FramesBetween(0, double.MaxValue) > 30, TimeSpan.FromSeconds(20), "preview en marcha");
                 await rig.Engine.StartRecordingAsync(Guid.NewGuid(), profile);
+                double tStarted = rig.Clock.Elapsed.TotalSeconds;
                 await Task.Delay(10_000);
                 double tKill = rig.Clock.Elapsed.TotalSeconds;
                 Assert.True(rig.Engine.KillRecorderProcessForTest(), "No había proceso de grabación que matar.");
@@ -1438,7 +1525,15 @@ public sealed class DecklinkHardwareTests
                 if (fragmentedMp4)
                 {
                     var cut = await ProbeAsync(files[0]);
-                    Assert.True(cut.Video!.Duration >= 8.0, $"La pieza cortada solo conserva {cut.Video.Duration:0.0} s de ~10.");
+                    double recorded = tKill - tStarted, kept = cut.Video!.Duration;
+                    var (budget, detail) = KilledPieceBudget(rig, LastRecordingPipeline(log, "A"), tStarted, tKill);
+                    _out.WriteLine($"Pieza cortada: {kept:0.00} s de {recorded:0.00} s grabados hasta la muerte del proceso; pierde {recorded - kept:0.00} s de {budget:0.00} s posibles ({detail}).");
+                    // No se le perdona el búfer de escritura de FFmpeg (32 KiB): con imagen en movimiento es menos de un cuadro, pero con
+                    // una imagen fija x264 saca paquetes diminutos y guarda segundos, que mueren con el proceso (4–5 s con una carta fija).
+                    double buffered = 32 * 1024 / (new FileInfo(files[0]).Length / kept);
+                    Assert.True(recorded - kept <= budget,
+                        $"La pieza cortada conserva {kept:0.00} s de {recorded:0.00} s grabados: pierde {recorded - kept:0.00} s, y al morir el proceso solo " +
+                        $"le faltaban {budget:0.00} s por llegar al disco ({detail}; los 32 KiB del búfer de escritura de FFmpeg son {buffered:0.00} s de este archivo).");
                     Assert.Empty(rig.Unverified);
                 }
                 else
