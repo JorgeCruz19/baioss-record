@@ -33,7 +33,13 @@ public class DecklinkCaptureSourceRelayTests
         public event EventHandler? AudioChannelsRejected;
         public event EventHandler<long>? DataDropped;
 
-        public RelayReservation? ReserveConsumer() { Reservations++; return new RelayReservation(0, () => Live); }
+        /// <summary>Reservas (por orden, desde 1) a las que se les dio fin de flujo.</summary>
+        public readonly List<int> Ended = new();
+        public RelayReservation? ReserveConsumer()
+        {
+            int reservation = ++Reservations;
+            return new RelayReservation(0, () => Live, () => { Ended.Add(reservation); return true; });
+        }
         public Task StartAsync(CancellationToken ct = default) { Starts++; return Task.CompletedTask; }
         public Task RestartAsync(CancellationToken ct = default) { Restarts++; return Task.CompletedTask; }
         public ValueTask DisposeAsync() { Disposed = true; return default; }
@@ -162,6 +168,31 @@ public class DecklinkCaptureSourceRelayTests
 
         Assert.Equal(args, source.BuildProbeArguments());
         Assert.Equal(1, receiver.Reservations); // el sondeo no reserva
+    }
+
+    [Fact]
+    public async Task TheEndOfInputTakenForAProcess_EndsThatProcessesConsumer_NotTheNewestOne()
+    {
+        // Al Detener, el proceso del preview nuevo se construye ANTES de retirar el que grababa: el fin de flujo que el motor tomó
+        // al construir el de grabación le cierra la entrada a ese, no al preview que acaba de reservar su consumidor.
+        var (source, receiver) = RelaySource();
+        await source.OpenAsync();
+        receiver.RaiseOpened(Description);
+        source.BuildInputArguments(); // el proceso que graba
+        var endRecording = source.NewestConsumerEndInput;
+        source.BuildInputArguments(); // el preview que lo releva
+        Assert.NotNull(endRecording);
+        Assert.True(endRecording!());
+        Assert.Equal(new[] { 1 }, receiver.Ended);
+        source.BuildProbeArguments(); // el sondeo no reserva: no cambia nada
+        Assert.True(source.NewestConsumerEndInput!());
+        Assert.Equal(new[] { 1, 2 }, receiver.Ended);
+
+        // Captura directa (sin relé): el proceso abre la tarjeta él mismo; no hay entrada que cerrarle (la «q»).
+        var direct = new DecklinkCaptureSource(Definition());
+        await direct.OpenAsync();
+        direct.BuildInputArguments();
+        Assert.Null(direct.NewestConsumerEndInput);
     }
 
     [Fact]

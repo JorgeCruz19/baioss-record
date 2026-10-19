@@ -171,6 +171,71 @@ public sealed class DecklinkRelayContinuityTests
     }
 
     [SkippableFact]
+    public async Task Stop_EndsTheRecordingByEndOfInput_AndEveryFrameTheRelayWroteReachesTheFile()
+    {
+        // Al Detener, el relé le da fin de flujo al proceso que grababa y FFmpeg termina solo con todo lo que le llegó: antes la «q»
+        // esperaba a la siguiente vuelta de -stats_period (1 s) —el archivo seguía grabando y tardaba en cerrarse hasta 1 s más— y
+        // lo que esperaba en el socket no llegaba al archivo. Medido con la DeckLink sintética (StopTailMeasurementTests): cierre de
+        // 0,24–1,08 s con la «q» y 0,21–0,29 s así.
+        Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"baioss-dl-eof-{Guid.NewGuid():N}");
+        var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+        var log = new List<string>();
+        var loggers = new CaptureLogger(l => { lock (log) log.Add(l); });
+        try
+        {
+            var (source, _) = SyntheticSource(locator, SyntheticDevice(1280, 720, 25), loggers);
+            await using var _s = source;
+            await source.OpenAsync();
+            var receiver = (RawCaptureReceiver)source.Receiver!;
+            var closed = new List<RawStreamRelay.ConsumerReport>();
+            receiver.Relay.ConsumerClosed += r => { lock (closed) closed.Add(r); };
+            await using var engine = new FfmpegChannelEngine(locator, loggers.CreateLogger("Engine")) { OutputRoot = outputRoot };
+            int frames = 0;
+            engine.FrameReady += (_, _) => Interlocked.Increment(ref frames);
+            await engine.StartPreviewAsync(source, Profile(), "DL");
+            await WaitUntilAsync(() => source.CurrentSignal.State == SignalState.Locked, TimeSpan.FromSeconds(20), "la tarjeta sintética abra");
+            await WaitUntilAsync(() => Volatile.Read(ref frames) >= 25, TimeSpan.FromSeconds(20), "preview en marcha");
+
+            await engine.StartRecordingAsync(Guid.NewGuid(), Profile());
+            await Task.Delay(4000);
+            lock (closed) closed.Clear(); // el del preview que relevó la grabación
+            await engine.StopRecordingAsync();
+            await Task.Delay(1500); // verificación + remux faststart en segundo plano
+
+            string[] lines; lock (log) lines = log.ToArray();
+            Assert.Contains(lines, l => l.Contains("archivo cerrado en", StringComparison.Ordinal) && l.Contains("(fin de entrada)", StringComparison.Ordinal));
+            RawStreamRelay.ConsumerReport recording;
+            lock (closed) recording = closed.Single(r => r.How == "fin de flujo pedido");
+            Assert.Equal(recording.VideoFramesQueued, recording.VideoFramesWritten); // nada se quedó en la cola sin escribirle
+            var file = engine.LastOutputFile;
+            Assert.True(file is not null && File.Exists(file), "No se generó el archivo.");
+            var probe = await ProbeAsync(locator.FfprobePath, file!);
+            var packets = await VideoPacketsAsync(locator.FfprobePath, file!);
+            // Todo lo que el relé le escribió está en el archivo. Uno menos, al PRINCIPIO: el FFmpeg que entra a mitad del flujo
+            // descarta el primer frame tras el punto de sincronía en que arranca (su demuxer NUT rechaza un punto de sincronía que
+            // apunta antes del inicio); y la cadencia constante del MP4 puede repetir el primero. Con la «q» faltaban además los que
+            // esperaban en el socket, y los de la cola, sin escribir.
+            Assert.InRange(packets, recording.VideoFramesWritten - 1, recording.VideoFramesWritten + 1);
+            Assert.Equal(2, probe.AudioChannels);
+        }
+        finally
+        {
+            try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, true); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>Paquetes de vídeo del archivo (frames).</summary>
+    private static async Task<long> VideoPacketsAsync(string ffprobe, string file)
+    {
+        var psi = new ProcessStartInfo(ffprobe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in new[] { "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", file }) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        string s = await p.StandardOutput.ReadToEndAsync(); await p.WaitForExitAsync();
+        return long.Parse(s.Trim().TrimEnd(','), CultureInfo.InvariantCulture);
+    }
+
+    [SkippableFact]
     public async Task CaptureProcessDeath_ReopensTheDevice_AndThePreviewRecoversAlone()
     {
         Skip.IfNot(TestAssets.FfmpegDir is not null, "FFmpeg no disponible en tools/.");

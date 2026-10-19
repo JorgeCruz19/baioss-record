@@ -458,4 +458,58 @@ public class NetworkStreamRelayTests
         await WaitAsync(() => Interlocked.Read(ref dropped) > 0, "no se avisó de los descartes");
         Assert.True(relay.SourceConnected);
     }
+
+    [Fact]
+    public async Task EndInput_DeliversEverythingAlreadyQueued_ThenEof_OnlyToThatConsumer()
+    {
+        // Al Detener, el relé le da fin de flujo al proceso que grababa: recibe ENTERO lo que ya se le había encolado —aunque su
+        // socket aún no lo hubiera aceptado— y después EOF, así que FFmpeg termina solo con todo dentro, sin la «q». El flujo sigue
+        // para los demás consumidores, y lo que llega después no cuenta como descarte.
+        await using var relay = new NetworkStreamRelay("test", NullLogger.Instance);
+        relay.Start();
+        long overflows = 0;
+        relay.ConsumerOverflow += (_, n) => Interlocked.Add(ref overflows, n);
+
+        var reservation = relay.ReserveConsumer();
+        Assert.False(reservation.EndInput()); // su proceso aún no conectó: no hay a quién cerrarle nada
+        using var source = await ConnectAsync(relay.SourcePort);
+        var src = source.GetStream();
+        using var recorder = new TcpClient { ReceiveBufferSize = 4096 };
+        await recorder.ConnectAsync(IPAddress.Loopback, relay.ConsumerPort);
+        var rec = recorder.GetStream();
+        var first = TsPackets(2, 1);
+        await src.WriteAsync(first);
+        Assert.Equal(first, await ReadExactlyAsync(rec, first.Length)); // conectado y al día
+        using var other = await ConnectAsync(relay.ConsumerPort); // el proceso del preview, sin reserva: pre-roll + en vivo
+        await WaitAsync(() => relay.ConsumerCount == 2, "no se registró el segundo consumidor");
+        var otherReading = ReadToEndAsync(other.GetStream());
+
+        var before = TsPackets(10_000, 2); // 1,9 MB: más de lo que caben en los búferes del socket de un lector que no lee
+        await src.WriteAsync(before);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length + before.Length, "el relé no repartió lo de antes del fin");
+        Assert.True(reservation.EndInput());
+        Assert.False(reservation.EndInput()); // ya pedido
+        var after = TsPackets(500, 3);
+        await src.WriteAsync(after);
+        await WaitAsync(() => relay.ForwardedBytes >= first.Length + before.Length + after.Length, "el relé no repartió lo de después");
+
+        Assert.Equal(before, await ReadToEndAsync(rec)); // todo lo de antes del fin, y EOF con el origen aún conectado
+        Assert.True(relay.SourceConnected);
+        source.Close();
+        Assert.Equal(first.Concat(before).Concat(after).ToArray(), await otherReading); // el otro, el flujo entero
+        Assert.Equal(0, Interlocked.Read(ref overflows));
+    }
+
+    private static async Task<byte[]> ReadToEndAsync(NetworkStream stream)
+    {
+        using var cts = new CancellationTokenSource(Timeout);
+        var all = new MemoryStream();
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            int n = await stream.ReadAsync(buffer, cts.Token);
+            if (n <= 0) return all.ToArray();
+            all.Write(buffer, 0, n);
+        }
+    }
 }

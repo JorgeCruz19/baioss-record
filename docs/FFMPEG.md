@@ -325,6 +325,29 @@ que aún esperaba en el socket se perdía y el archivo acababa con el audio 0,1�
 vídeo leído hasta 5,21 s y audio hasta 4,52–4,95 s). Al retirar un proceso que graba de una fuente NDI, el receptor le
 entrega lo que ya tenía en cola y le cierra los dos sockets en el mismo instante (`NdiReceiver.EndStream`, `NdiFeed`):
 FFmpeg vacía el codificador, lee el audio pendiente hasta ese instante y sale solo (EOF, código 0) en 0,1–0,25 s; si no
-sale en 5 s, la «q» de siempre (`FfmpegProcessSupervisor.EndInput`). DeckLink, red y archivo traen vídeo y audio en una
-sola entrada y siguen con la «q». Probado con `NdiSyntheticSourceTests` y con `SplitInputStopTests` (el mismo camino sin
-el runtime NDI).
+sale en 5 s, la «q» de siempre (`FfmpegProcessSupervisor.EndInput`). Probado con `NdiSyntheticSourceTests` y con
+`SplitInputStopTests` (el mismo camino sin el runtime NDI).
+
+**DeckLink y red al Detener: fin de flujo del relé.** FFmpeg 8.0 solo mira el teclado en su bucle principal, una vez por
+`-stats_period` (1 s en el motor, que es también el ritmo de la telemetría): la «q» llega a leerse hasta 1 s después, y mientras
+tanto el archivo sigue grabando; luego FFmpeg deja de leer en el acto y lo que esperaba en el socket no llega al archivo
+(medido con un lavfi `-re`: sale 0,04–0,96 s después de la «q»; con `-stats_period 0.1`, 0,04–0,12 s). Los relés (DeckLink en
+crudo y red) reparten el flujo a cada proceso por su propio socket, así que al retirar el que grababa el relé le escribe lo que
+ya tenía en cola, en unidades enteras (frames NUT o paquetes TS), y le cierra el socket: FFmpeg lee hasta el final, vacía el
+codificador y sale solo (`RelayReservation.EndInput`; el motor la toma al construir cada proceso, como su comprobación de «al
+día», porque al Detener el preview que lo releva ya tiene su propio consumidor). Medido con H.264 Broadcast 1080i MP4
+(`StopTailMeasurementTests`, con los informes de FFmpeg), en la DeckLink Duo (1) con señal de TV (10 + 10 Detener): cierre
+0,18–0,36 s (mediana 0,35) frente a 0,42–1,33 s (0,70) con la «q», Detener 0,47–0,67 s frente a 0,79–1,67 s, el archivo acaba
+en el instante del fin de flujo (con la «q», hasta 1,00 s después) y FFmpeg lee todos los frames que el relé le escribió (con
+la «q», los 1–2 últimos se quedaban en el socket); con la DeckLink sintética, lo mismo (cierre 0,26–0,45 s frente a 0,32–1,31 s).
+En `DecklinkHardwareTests`, `RecordStopCycles` pasa de archivos de 5,2 o 6,3 s a 5,21–5,27 s y `TwoInputs` de 31,6–32,7 s
+(fallaba) a 30,30–30,73 s para 30 s. Con la máquina al límite (ProRes 422 HQ 1080p59.94, el proceso que graba va unas décimas
+por detrás del directo) el Detener espera a que FFmpeg codifique ese atraso (cierre 1,2–1,6 s, 4,4 s con carga añadida) en vez
+de tirarlo: el archivo llega hasta el Detener. Si FFmpeg no sale en 5 s, la «q». Un
+frame de menos al PRINCIPIO de cada proceso es otra cosa y viene de antes: el que entra a mitad del flujo descarta el primer
+frame (y ~2 bloques de audio) tras el punto de sincronía en que arranca, porque el demuxer NUT de FFmpeg rechaza un punto de
+sincronía cuyo `back_ptr` apunta antes del inicio del flujo. La otra opción medida, bajar `-stats_period` a 0,1 s en el
+proceso que graba, acorta la «q» (cierre 0,24–0,33 s) pero sigue perdiendo lo que espera en el socket, y obliga a submuestrear
+el progreso para la telemetría (la alarma de frames perdidos y la de saturación cuentan con muestras de ~1 s). Siguen con la
+«q»: DirectShow y DeckLink sin relé (el proceso abre el dispositivo él mismo), un archivo, la carta de ajuste y un FFmpeg que
+no sale en 5 s tras el fin de flujo.
