@@ -62,10 +62,18 @@ internal sealed class NdiFeed<T> : IAsyncDisposable
     private Pipe Open()
     {
         var pipe = new Pipe(Channel.CreateBounded<T>(
-            new BoundedChannelOptions(_capacity) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true }, _release));
+            new BoundedChannelOptions(_capacity) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true },
+            item => { Interlocked.Increment(ref _dropped); _release(item); }));
         pipe.Writer = Task.Run(() => WriteLoopAsync(pipe));
         return pipe;
     }
+
+    /// <summary>El enmarcado del proceso conectado ahora (null si no hay ninguno o el flujo no lleva).</summary>
+    public INdiFeedFraming<T>? CurrentFraming => _current.Connection?.Framing;
+
+    /// <summary>Elementos descartados por la cola llena (FFmpeg no leía) desde que se creó el flujo.</summary>
+    public long Dropped => Interlocked.Read(ref _dropped);
+    private long _dropped;
 
     /// <summary>Encola para el proceso conectado (o el siguiente, si aún no conectó). Si no se puede (cerrado), lo suelta.</summary>
     public void Enqueue(T item)
