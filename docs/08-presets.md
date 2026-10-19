@@ -465,9 +465,15 @@ el archivo: continuidad, cadencia, cuadros entrelazados TFF **en el códec** (no
 descarta nada mientras graba, es decir, que el equipo da abasto en tiempo real. Para ProRes/DNxHD cubre ProRes 422 HQ
 1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, 422 HQ 1080p59.94, DNxHD 220 1080i59.94 (MOV y MXF OP1A) y un canal con el
 perfil DNxHR 1080i antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). Último resultado
-(2026-10-16, Core i7-8700, señal 1080i59.94): 7/7, sin un cuadro descartado. Esa noche la emisora estaba fuera de emisión
-(carta fija y sin audio): sin movimiento, idet no clasifica cuadros y la prueba omite el peine y el nivel de audio (lo
-anota en la salida); las cifras de tiempo real con contenido de verdad son las de la tabla de ProRes.
+(2026-10-19, Core i7-8700, FFmpeg 8.0, TV en directo en Duo (1) y Duo (2), Duo (3) sin señal; main con los entrelazados por
+campos, el Detener por fin de entrada y un medidor por canal): 44 de 45 (la grabación larga, omitida), sin un cuadro descartado.
+Los ocho entrelazados graban TFF en el códec a 29,97. TwoInputs, dos canales a la vez: 3 de 3, con relevos de 0,4–0,8 s y el
+archivo cerrado 0,17–0,48 s después, por fin de entrada. Matar el proceso de grabación deja la pieza fMP4 legible y la MP4
+estándar sin índice pero avisada, y los 16 medidores marcan cada uno su canal. Aparte, en f8410d3, con idet cuadro a cuadro en la
+imagen y en el croma: el croma de los entrelazados en 4:2:0 peina TFF donde peina la imagen (antes de f8410d3, en ningún cuadro),
+y los progresivos bajan del 60–100 % de peine de la señal al 0–5 % del archivo. Con la emisora en un anuncio en PsF (idet
+«progresivo») la prueba no juzga el peine de esa fila, y sin movimiento ni audio (fuera de emisión) idet no clasifica cuadros y
+omite el peine y el nivel de audio (lo anota en la salida).
 
 ### Los 94 presets grabando en vivo
 
