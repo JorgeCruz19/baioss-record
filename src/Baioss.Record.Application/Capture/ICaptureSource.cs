@@ -110,6 +110,15 @@ public interface ICaptureSource : IAsyncDisposable
     bool DeliversSparseVideo => false;
 
     /// <summary>
+    /// Versión del formato de vídeo que sirve la fuente (tamaño, píxel, cadencia o barrido), en las que lo sirven en un flujo con el
+    /// formato en sus cabeceras (NDI, en NUT): un proceso de FFmpeg solo recibe cuadros del formato con el que se conectó, así que si
+    /// esto cambia mientras corre —la fuente cambió de formato en caliente—, el motor lo rehace con el nuevo. Antes se quedaba sin
+    /// vídeo hasta que el vigilante lo mataba a los 30 s, y el MP4 estándar que grababa no se podía leer (medido el 2026-10-18). 0 en
+    /// las demás fuentes: su formato no cambia bajo un proceso en marcha, o lo gestionan ellas.
+    /// </summary>
+    int VideoFormatVersion => 0;
+
+    /// <summary>
     /// El motor le cuenta a la fuente lo que FFmpeg dijo al ABRIR el dispositivo: el modo de vídeo que la tarjeta DETECTÓ
     /// en la señal, o <c>null</c> si no pudo detectarlo («Cannot Autodetect input stream or No signal»). Solo tiene
     /// sentido para DeckLink en autodetección (sin <c>format_code</c>): ahí la fuente publica el formato en su señal

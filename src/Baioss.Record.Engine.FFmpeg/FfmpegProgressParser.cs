@@ -111,8 +111,9 @@ public sealed class FfmpegProgressParser
         return new RecorderStats(
             InputFps: fps,
             // El ritmo de AHORA, no la media desde el arranque; mientras el proceso es demasiado nuevo para medirlo, la media
-            // de FFmpeg (que en un proceso recién nacido viene a ser lo mismo).
-            OutputFps: InstantRate(frame) ?? fps,
+            // de FFmpeg (que en un proceso recién nacido viene a ser lo mismo), o, contando por tiempo de medios, esa cadencia: el
+            // fps de FFmpeg es el de los cuadros que llegan, y una fuente con huecos enseñaba ~4 en el primer segundo de cada proceso.
+            OutputFps: InstantRate(frame) ?? (MediaFrameRate is { } media && media > 0 ? media : fps),
             DroppedFrames: drop,
             DuplicatedFrames: dup,
             Bitrate: new Bitrate(bitrate),

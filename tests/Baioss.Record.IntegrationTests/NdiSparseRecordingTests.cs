@@ -593,21 +593,20 @@ public sealed class NdiSparseRecordingTests
     }
 
     /// <summary>
-    /// La fuente pasa de 1920×1080 a 1280×720 en caliente mientras graba (vMix cambiando su salida): la señal lo dice y la grabación
-    /// tiene que seguir con el formato nuevo enseguida, sin quedarse sin vídeo hasta que el vigilante mate el proceso.
+    /// La fuente pasa de 1920×1080 a 1280×720 en caliente mientras graba (vMix cambiando su salida): la señal lo dice y el canal rehace
+    /// el proceso enseguida, con el formato nuevo, en una pieza nueva. La de antes del cambio se cierra bien y se lee. Antes el proceso
+    /// se quedaba sin vídeo hasta que el vigilante lo mataba a los 30 s, y ese MP4 estándar, sin moov, se perdía (2026-10-18).
     /// </summary>
-    [SkippableFact(Skip = "Fallo conocido (2026-10-18): el receptor no escribe cuadros del formato nuevo en la conexión NUT en marcha y nada " +
-                          "rehace el proceso: la grabación se para hasta que el vigilante lo mata (30 s) y el MP4 de antes del cambio queda " +
-                          "sin moov. Quitar el Skip con el arreglo.")]
+    [SkippableFact]
     public async Task AHotResolutionChange_IsPickedUpByTheRecording_WithoutAStall()
     {
         SkipWithoutNdi();
         var profile = Preset("H.264 NVENC · FullHD 1080p29.97").ToProfile();
         using var sender = LikeOffside();
         double changedAt = 0;
-        using var rec = await RecordAsync(sender, profile, 45, async r =>
+        using var rec = await RecordAsync(sender, profile, 20, async r =>
         {
-            await Task.Delay(5000);
+            await Task.Delay(6000);
             changedAt = r.Now; sender.Resize(1280, 720);
         });
         await CheckAsync(rec, async () =>
@@ -618,20 +617,18 @@ public sealed class NdiSparseRecordingTests
             _out.WriteLine($"Cambio a 1280×720 a {changedAt:0.00} s · señal «1280×720» {(relabelled > 0 ? $"a {relabelled:0.00} s" : "nunca")} · " +
                            $"grabación rehecha {(rebuilt.Count > 0 ? string.Join(", ", rebuilt.Select(t => $"a {t:0.00} s")) : "nunca")} · " +
                            $"interrupciones: {string.Join("; ", rec.Interruptions.Select(i => $"{i.ExitCode} {i.Reason}"))} · piezas: {rec.Files.Count}");
-            double total = 0;
-            foreach (var f in rec.Files)
-            {
-                var (streams, formatDuration) = await ProbeAsync(new FfmpegLocator(TestAssets.FfmpegDir!).FfprobePath, f);
-                var v = streams.FirstOrDefault(s => s.Type == "video");
-                double d = v is null ? 0 : double.IsNaN(v.Duration) ? formatDuration : v.Duration;
-                total += d;
-                _out.WriteLine($"  {Path.GetFileName(f)}: {d:0.00} s");
-            }
-            _out.WriteLine($"Entre las piezas: {total:0.00} s de {rec.RecordedFor:0.00} s grabados.");
             Assert.True(relabelled > 0, "La señal no pasó a 1280×720.");
-            Assert.True(rebuilt.Count > 0 && rebuilt[0] - changedAt < 10,
-                $"La grabación no siguió con el formato nuevo en 10 s ({(rebuilt.Count > 0 ? $"a los {rebuilt[0] - changedAt:0.0} s" : "nunca")}).");
-            Assert.True(total >= rec.RecordedFor - 10, $"Faltan {rec.RecordedFor - total:0.0} s de grabación.");
+            Assert.True(rebuilt.Count > 0 && rebuilt[0] - changedAt < 5,
+                $"La grabación no siguió con el formato nuevo en 5 s ({(rebuilt.Count > 0 ? $"a los {rebuilt[0] - changedAt:0.0} s" : "nunca")}).");
+            Assert.Empty(rec.Interruptions); // un relevo ordenado, no una caída
+            Assert.Empty(rec.Unverified);
+            Assert.True(rec.Files.Count == 2, "Se esperaban dos piezas, la de antes y la de después del cambio: " +
+                                              string.Join(", ", rec.Files.Select(Path.GetFileName)));
+            // Las dos se leen, a la cadencia del preset, sin huecos y con sus marcas y su audio; entre las dos, lo grabado.
+            double total = 0;
+            foreach (var f in rec.Files) total += await AssertFileAsync(f, profile, GraphicsRate, sender.MarkPeriod);
+            _out.WriteLine($"Entre las piezas: {total:0.00} s de {rec.RecordedFor:0.00} s grabados.");
+            Assert.True(total >= rec.RecordedFor - 2.5, $"Faltan {rec.RecordedFor - total:0.0} s de grabación.");
         });
     }
 

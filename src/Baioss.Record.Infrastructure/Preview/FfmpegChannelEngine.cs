@@ -39,6 +39,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private PreviewPacer Pacer => _pacer ??= new PreviewPacer(FrameWidth * 4 * FrameHeight, DeliverFrame, _channelKey);
     // El preview del proceso en marcha trae solo los cuadros reales de la fuente (NDI con marcas): ver PreviewFrame.AtSourcePace.
     private volatile bool _previewAtSourcePace;
+    // Versión del formato de vídeo de la fuente con la que se construyó el proceso en marcha (ICaptureSource.VideoFormatVersion; -1
+    // con la carta de ajuste): si la de la fuente cambia, ese proceso ya no recibe vídeo y se rehace (RebuildForNewFormatAsync).
+    private volatile int _builtFormatVersion = -1;
+    private volatile bool _formatRebuildPending;
     private void DeliverFrame(byte[] bgra)
     {
         // Un suscriptor que lance no debe tumbar la entrega: en paso directo la excepción subía al lector del sumidero, que
@@ -731,6 +735,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         bool sparse = source.DeliversSparseVideo && !slate;
         _parser.MediaFrameRate = sparse && source.CurrentSignal.FrameRate is { Value: > 0 } declared ? declared.Value : null;
         _previewAtSourcePace = sparse;
+        _builtFormatVersion = slate ? -1 : source.VideoFormatVersion;
 
         if (recording && builder.IsSegmentedOutput && !string.IsNullOrEmpty(builder.SegmentPrefixGlob))
             lock (_segGlobs) if (!_segGlobs.Contains(builder.SegmentPrefixGlob, StringComparer.OrdinalIgnoreCase)) _segGlobs.Add(builder.SegmentPrefixGlob);
@@ -1541,6 +1546,12 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         if (info.State == SignalState.Locked)
         {
             if (_slate) { _ = ExitSlateAsync(); return; } // la señal volvió: reanuda la fuente real
+            // La fuente cambió de formato y el proceso en marcha no puede seguirla (ICaptureSource.VideoFormatVersion): se rehace ya.
+            if (_builtFormatVersion >= 0 && _source is { } changed && changed.VideoFormatVersion != _builtFormatVersion && !_formatRebuildPending)
+            {
+                _formatRebuildPending = true;
+                _ = Task.Run(RebuildForNewFormatAsync);
+            }
             // La grabación cayó sin señal y su reintento espera el backoff: sale ya (ver RecoveryWait).
             if (_recovering) _recoveryWait.SignalReturned();
             // Sin proceso aún (la fuente no tenía señal al enlazar): el bucle de espera levanta el preview ya.
@@ -1556,6 +1567,37 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         _slatePending = true;
         _log.LogWarning("Canal {Key}: la fuente reportó pérdida de señal; pasando a carta de ajuste.", _channelKey);
         _ = Task.Run(EnterSlateAsync);
+    }
+
+    /// <summary>
+    /// La fuente sirve ya otro formato que el del proceso en marcha (NDI que cambia de tamaño en caliente: vMix al cambiar su salida),
+    /// y ese proceso no recibe cuadros que no caben en su flujo: se rehace con el formato nuevo. El viejo se cierra en orden —con NDI,
+    /// la fuente acaba sus entradas y FFmpeg cierra el archivo, que se lee— y, si grababa, la grabación sigue en una pieza nueva.
+    /// Antes se quedaba sin vídeo hasta que el vigilante lo mataba a los 30 s, y la pieza de antes del cambio, un MP4 estándar sin
+    /// moov, se perdía (medido el 2026-10-18). Con la carta de ajuste o una recuperación en curso no hace nada: esas ya rehacen el
+    /// proceso con la señal que haya.
+    /// </summary>
+    private async Task RebuildForNewFormatAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed || _slate || _recovering || _supervisor is null || _source is not { } source) return;
+            if (_builtFormatVersion < 0 || source.VideoFormatVersion == _builtFormatVersion) return; // otro ya lo rehízo
+            bool recording = _state is RecordingState.Recording or RecordingState.Starting;
+            _log.LogWarning("Canal {Key}: la fuente cambió de formato en caliente (ahora «{Label}»); se rehace el proceso{Piece}.",
+                _channelKey, source.CurrentSignal.FormatLabel, recording ? " y la grabación sigue en una pieza nueva" : "");
+            await ReplaceProcessAsync(recording, slate: false, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Canal {Key}: no se pudo rehacer el proceso con el formato nuevo de la fuente.", _channelKey);
+        }
+        finally
+        {
+            _formatRebuildPending = false;
+            _gate.Release();
+        }
     }
 
     // --- Grabación que no se puede producir con su perfil ---

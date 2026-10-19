@@ -287,11 +287,14 @@ public class FfmpegProgressParserTests
         Assert.InRange(last.OutputFps, 59, 61);
         Assert.Equal(4.0, last.InputFps);
 
-        // Proceso nuevo (Grabar/Detener): su tiempo de medios vuelve a cero, y el contador con él.
+        // Proceso nuevo (Grabar/Detener): su tiempo de medios vuelve a cero, y el contador con él. Hasta que hay con qué medir el
+        // ritmo, FPS OUT dice la cadencia que se graba, no los 4 cuadros que llegan (enseñaba ~4 el primer segundo de cada proceso).
         now += TimeSpan.FromSeconds(1);
         parser.Feed("frame=1");
         parser.Feed("fps=4.00");
         parser.Feed("out_time_us=N/A");
-        Assert.Equal(0, parser.Feed("progress=continue")!.FrameCount);
+        var first = parser.Feed("progress=continue")!;
+        Assert.Equal(0, first.FrameCount);
+        Assert.Equal(60.0, first.OutputFps);
     }
 }

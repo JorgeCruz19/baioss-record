@@ -135,6 +135,16 @@ public sealed class NdiReceiver : IAsyncDisposable
     public int AudioPort { get; private set; }
     public int Width { get; private set; }
     public int Height { get; private set; }
+
+    /// <summary>
+    /// Cuántos formatos distintos (tamaño, píxel, cadencia o barrido) ha servido el receptor: el primer cuadro lo deja en 1, y cada
+    /// cambio —en caliente o al volver de una caída larga con otro formato— lo sube. Un proceso de FFmpeg solo recibe cuadros del
+    /// formato de sus cabeceras NUT: si este número ya no es el de cuando se conectó, ese proceso no tendrá más vídeo y el canal
+    /// tiene que rehacerlo (ver <see cref="Baioss.Record.Application.Capture.ICaptureSource.VideoFormatVersion"/>).
+    /// </summary>
+    public int FormatVersion => Volatile.Read(ref _formatVersion);
+    private int _formatVersion;
+    private (NdiVideoFormat? Format, bool Interlaced) _appliedFormat;
     /// <summary><c>-pixel_format</c> de FFmpeg para el vídeo, según el FourCC real del primer frame (uyvy422 / bgra).</summary>
     public string VideoPixelFormat { get; private set; } = "uyvy422";
     public int FrameRateN { get; private set; } = 30000;
@@ -432,14 +442,14 @@ public sealed class NdiReceiver : IAsyncDisposable
         {
             // CAMBIO DE FORMATO EN CALIENTE, sin hueco de presencia (N20): la fuente cambió resolución/pixel/barrido al
             // vuelo (p. ej. vMix 720→1080). Re-fija el formato para que la copia de frame y las cabeceras del proceso siguiente
-            // sean correctas, AVISA (el FFmpeg en marcha no recibe cuadros del formato nuevo, que no caben en su flujo NUT: se
-            // queda con el último bueno hasta reconstruir el pipeline: rebind o salida de slate) y notifica FormatChanged para que
-            // la fuente actualice CurrentSignal. No se fuerza el rebuild aquí: sería una carrera con el slate. (#32/N20.)
+            // sean correctas, AVISA y notifica FormatChanged para que la fuente actualice CurrentSignal: el FFmpeg en marcha no
+            // recibe cuadros del formato nuevo, que no caben en su flujo NUT, y el canal lo rehace al ver que FormatVersion
+            // cambió (FfmpegChannelEngine). Aquí no se toca el proceso: sería una carrera con el slate. (#32/N20.)
             int oldW = Width, oldH = Height; string oldPix = VideoPixelFormat; bool oldInterlaced = Interlaced;
             ApplyFormat(ref v, frameHeight, interlaced);
             ResetCadence(); // el último cuadro es del formato anterior: no se repite
-            _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP}{OI} → {W}x{H} {P}{I}); el pipeline en " +
-                "marcha seguirá con el formato anterior hasta reconstruirse (rebind o salida de carta de ajuste).",
+            _log.LogWarning("NDI: «{Source}» cambió de formato en caliente ({OW}x{OH} {OP}{OI} → {W}x{H} {P}{I}); el canal rehace " +
+                "su proceso con el formato nuevo.",
                 _sourceName, oldW, oldH, oldPix, oldInterlaced ? " entrelazado" : "", Width, Height, VideoPixelFormat, Interlaced ? " entrelazado" : "");
             try { FormatChanged?.Invoke(); } catch { /* no romper el bucle de recepción */ }
         }
@@ -578,6 +588,11 @@ public sealed class NdiReceiver : IAsyncDisposable
         VideoPixelFormat = PixelFormatFor(v.FourCC, v.xres);
         _bytesPerPixel = VideoPixelFormat == "uyvy422" ? 2 : 4;
         _format = new NdiVideoFormat(Width, Height, VideoPixelFormat, FrameRateN, FrameRateD); // el de las cabeceras NUT
+        if ((_format, Interlaced) != _appliedFormat)
+        {
+            _appliedFormat = (_format, Interlaced);
+            Interlocked.Increment(ref _formatVersion);
+        }
         if (v.FourCC is not (NDIlib.FourCC_type_e.FourCC_type_UYVY or NDIlib.FourCC_type_e.FourCC_type_BGRA or NDIlib.FourCC_type_e.FourCC_type_BGRX))
             _log.LogWarning("NDI: FourCC inesperado {FourCC} en «{Source}»; se asume bgra.", v.FourCC, _sourceName);
         else if (ConvertsToUyvy(v.FourCC, v.xres))
