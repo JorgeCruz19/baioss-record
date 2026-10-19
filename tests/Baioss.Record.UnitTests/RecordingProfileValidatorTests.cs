@@ -632,4 +632,289 @@ public class RecordingProfileValidatorTests : IDisposable
             Assert.Equal(Encoded(AudioCodec.Pcm, container) is AudioCodec.Aac ? "aac" : "pcm_s24le",
                 FfmpegCodecMap.EffectiveAudioEncoder(AudioCodec.Pcm, container));
     }
+
+    // --- Cadencia ---
+
+    private static RecordingProfile At(int numerator, int denominator, VideoCodec codec = VideoCodec.H264x264, ContainerFormat container = ContainerFormat.Mp4)
+    {
+        var p = With(codec, container);
+        p.OutputFrameRate = new FrameRate(numerator, denominator);
+        return p;
+    }
+
+    [Theory]
+    [InlineData(25, 1001)] // 0,025: lo que dejaba el editor en la copia de un preset 29.97 al escribir 25 (cambiaba solo el numerador)
+    [InlineData(1, 2)]
+    [InlineData(0, 1)]
+    [InlineData(25, 0)]
+    [InlineData(121, 1)]
+    [InlineData(2500, 1)]  // 25 con dos ceros de más
+    public void AFrameRateOutsideOneTo120_IsRejected(int numerator, int denominator)
+        => Assert.StartsWith("La cadencia ", Assert.Single(RecordingProfileValidator.Validate(At(numerator, denominator))));
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(24000, 1001)]
+    [InlineData(25, 1)]
+    [InlineData(30000, 1001)]
+    [InlineData(50, 1)]
+    [InlineData(60000, 1001)]
+    [InlineData(120, 1)]
+    [InlineData(25, 2)]
+    public void AFrameRateFromOneTo120_IsAccepted(int numerator, int denominator)
+        => Assert.Empty(RecordingProfileValidator.Validate(At(numerator, denominator)));
+
+    [Fact]
+    public void AFrameRateOf25Over1001_SaysWhatToType()
+        => Assert.Equal("La cadencia 25/1001 no es válida: tiene que estar entre 1 y 120 cuadros por segundo (25, 29.97, 50, 59.94…), " +
+                        "o vacía para grabar la de la fuente.", Assert.Single(RecordingProfileValidator.Validate(At(25, 1001))));
+
+    [Theory]
+    [InlineData(VideoCodec.Mpeg2Video, 15, 1)]
+    [InlineData(VideoCodec.Mpeg2Video, 10, 1)]
+    [InlineData(VideoCodec.H264x264, 12, 1)]
+    [InlineData(VideoCodec.ProRes, 1, 1)]
+    [InlineData(VideoCodec.DnxHr, 110, 1)]
+    public void Mxf_RefusesTheFrameRatesItsMuxerDoesNotKnow(VideoCodec codec, int numerator, int denominator)
+        => Assert.StartsWith($"No se puede grabar a {numerator} cuadros por segundo en Mxf: el contenedor no admite esa cadencia",
+            Assert.Single(RecordingProfileValidator.Validate(At(numerator, denominator, codec, ContainerFormat.Mxf))));
+
+    [Fact]
+    public void Mxf_SaysWhichFrameRatesToChoose()
+        => Assert.Equal("No se puede grabar a 15 cuadros por segundo en Mxf: el contenedor no admite esa cadencia y la grabación no " +
+                        "arrancaría. En Mxf, elige 23.976 o 24.",
+            Assert.Single(RecordingProfileValidator.Validate(At(15, 1, VideoCodec.Mpeg2Video, ContainerFormat.Mxf))));
+
+    [Theory]
+    [InlineData(24000, 1001)] [InlineData(24, 1)] [InlineData(25, 1)] [InlineData(30000, 1001)] [InlineData(30, 1)]
+    [InlineData(48, 1)] [InlineData(50, 1)] [InlineData(60000, 1001)] [InlineData(60, 1)] [InlineData(100, 1)]
+    [InlineData(120000, 1001)] [InlineData(120, 1)]
+    public void Mxf_TakesTheBroadcastFrameRates(int numerator, int denominator)
+    {
+        foreach (var codec in new[] { VideoCodec.Mpeg2Video, VideoCodec.H264x264, VideoCodec.ProRes, VideoCodec.DnxHr })
+        {
+            var errors = RecordingProfileValidator.Validate(At(numerator, denominator, codec, ContainerFormat.Mxf));
+            // 119.88 sí lo lleva el MXF, pero MPEG-2 no lo codifica.
+            if (codec is VideoCodec.Mpeg2Video && numerator == 120000)
+                Assert.StartsWith("MPEG-2 no codifica a 119.88 cuadros por segundo", Assert.Single(errors));
+            else
+                Assert.Empty(errors);
+        }
+    }
+
+    [Theory]
+    [InlineData(13, 1, "12 o 15")]
+    [InlineData(26, 1, "24 o 25")]
+    [InlineData(55, 1, "50 o 59.94")]
+    [InlineData(119, 1, "100 o 120")]
+    public void Mpeg2_RefusesTheFrameRatesItCannotEncode_AndSaysTheNearest(int numerator, int denominator, string nearest)
+        => Assert.Equal($"MPEG-2 no codifica a {numerator} cuadros por segundo: FFmpeg lo grabaría sin avisar a otra cadencia. Con " +
+                        $"MPEG-2, elige {nearest}.",
+            Assert.Single(RecordingProfileValidator.Validate(At(numerator, denominator, VideoCodec.Mpeg2Video, ContainerFormat.Ts))));
+
+    [Theory]
+    [InlineData(12, 1)] [InlineData(15, 1)] [InlineData(24000, 1001)] [InlineData(25, 1)] [InlineData(30000, 1001)]
+    [InlineData(48, 1)] [InlineData(50, 1)] [InlineData(60000, 1001)] [InlineData(100, 1)] [InlineData(120, 1)]
+    public void Mpeg2_TakesTheFrameRatesItEncodes(int numerator, int denominator)
+        => Assert.Empty(RecordingProfileValidator.Validate(At(numerator, denominator, VideoCodec.Mpeg2Video, ContainerFormat.Ts)));
+
+    [Fact]
+    public void EveryFactoryPresetFrameRate_IsAccepted()
+    {
+        foreach (var preset in Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns())
+            Assert.True(RecordingProfileValidator.Validate(preset.ToProfile()).Count == 0, preset.Name);
+    }
+
+    // --- Formato de píxel, perfil intra, barrido y tamaño ---
+
+    private static RecordingProfile Video(VideoCodec codec, PixelFormat pixel = PixelFormat.Auto, EncoderProfile profile = EncoderProfile.Auto,
+        ScanType scan = ScanType.Progressive, Resolution? size = null)
+    {
+        var container = codec switch
+        {
+            VideoCodec.ProRes or VideoCodec.DnxHd or VideoCodec.DnxHr => ContainerFormat.Mov,
+            VideoCodec.Mpeg2Video => ContainerFormat.Ts,
+            _ => ContainerFormat.Mp4,
+        };
+        var p = With(codec, container);
+        p.PixelFormat = pixel;
+        p.EncoderProfile = profile;
+        p.ScanType = scan;
+        p.TargetResolution = size ?? new Resolution(1920, 1080);
+        return p;
+    }
+
+    [Theory]
+    // Medido con el motor y FFmpeg 8.0: lo que el codificador no admite, FFmpeg lo cambia sin avisar por el más parecido.
+    [InlineData(VideoCodec.Mpeg2Video, PixelFormat.Yuv420p10le, "Auto, Yuv420p o Yuv422p")]  // sale en yuv420p
+    [InlineData(VideoCodec.Mpeg2Video, PixelFormat.Yuv444p10le, "Auto, Yuv420p o Yuv422p")]
+    [InlineData(VideoCodec.H264Qsv, PixelFormat.Yuv422p10le, "Auto o Yuv420p")]            // sale en yuv420p
+    [InlineData(VideoCodec.H264Qsv, PixelFormat.Yuv444p10le, "Auto o Yuv420p")]
+    [InlineData(VideoCodec.ProRes, PixelFormat.Yuv420p10le, "Auto, Yuv422p10le o Yuv444p10le")] // sale en yuv422p10le
+    [InlineData(VideoCodec.ProRes, PixelFormat.Yuv422p, "Auto, Yuv422p10le o Yuv444p10le")]
+    [InlineData(VideoCodec.DnxHr, PixelFormat.Yuv420p, "Auto, Yuv422p, Yuv422p10le o Yuv444p10le")]  // sale en yuv422p
+    [InlineData(VideoCodec.DnxHd, PixelFormat.Yuv420p10le, "Auto, Yuv422p, Yuv422p10le o Yuv444p10le")]
+    public void APixelFormatTheCodecDoesNotEncode_IsRejected(VideoCodec codec, PixelFormat pixel, string choose)
+        => Assert.Equal($"{codec} no codifica en {pixel}: la grabación saldría en otro formato de píxel sin avisar. Con {codec}, elige {choose}.",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, pixel))));
+
+    [Theory]
+    [InlineData(VideoCodec.H264x264)]
+    [InlineData(VideoCodec.H265x265)]
+    [InlineData(VideoCodec.H264Nvenc)] // por hardware: lo que la tarjeta no hace degrada a CPU, que lo graba
+    [InlineData(VideoCodec.HevcNvenc)]
+    [InlineData(VideoCodec.HevcQsv)]
+    public void EveryPixelFormat_IsAccepted_WhereTheCodecOrItsFallbackEncodesIt(VideoCodec codec)
+    {
+        foreach (var pixel in Enum.GetValues<PixelFormat>())
+            Assert.Empty(RecordingProfileValidator.Validate(Video(codec, pixel)));
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.ProRes4444Xq, "ProRes", "DNxHR")]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.ProResHq, "ProRes", "DNxHR")]
+    [InlineData(VideoCodec.ProRes, EncoderProfile.DnxHrHq, "DNxHR", "ProRes")]
+    public void AnIntraProfileOfTheOtherFamily_IsRejected(VideoCodec codec, EncoderProfile profile, string family, string own)
+        => Assert.Equal($"El perfil {profile} es de {family}: con {codec} no se usa y la grabación no saldría con él. Elige un perfil de {own} o Auto.",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, profile: profile))));
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrHq, PixelFormat.Yuv422p10le, PixelFormat.Yuv422p)]  // «pixel format is incompatible»
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrHqx, PixelFormat.Yuv422p, PixelFormat.Yuv422p10le)]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHr444, PixelFormat.Yuv422p, PixelFormat.Yuv444p10le)]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.DnxHrHqx, PixelFormat.Yuv422p, PixelFormat.Yuv422p10le)]
+    [InlineData(VideoCodec.ProRes, EncoderProfile.ProRes4444, PixelFormat.Yuv422p10le, PixelFormat.Yuv444p10le)]
+    [InlineData(VideoCodec.ProRes, EncoderProfile.ProResHq, PixelFormat.Yuv444p10le, PixelFormat.Yuv422p10le)]
+    public void AnIntraProfileThatContradictsThePixelFormat_IsRejected(VideoCodec codec, EncoderProfile profile, PixelFormat pixel, PixelFormat wanted)
+        => Assert.Equal($"El perfil {profile} graba en {wanted}, no en {pixel}: FFmpeg no abriría el codificador o grabaría el del perfil sin avisar. " +
+                        $"Elige {wanted} o deja el formato de píxel en Auto.",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, pixel, profile))));
+
+    [Fact]
+    public void AnIntraProfileWithItsPixelFormat_OrWithAuto_IsAccepted()
+    {
+        foreach (var profile in new[] { EncoderProfile.ProResProxy, EncoderProfile.ProResLt, EncoderProfile.ProResStandard, EncoderProfile.ProResHq,
+                     EncoderProfile.ProRes4444, EncoderProfile.ProRes4444Xq })
+        {
+            Assert.Empty(RecordingProfileValidator.Validate(Video(VideoCodec.ProRes, PixelFormat.Auto, profile)));
+            var pixel = profile is EncoderProfile.ProRes4444 or EncoderProfile.ProRes4444Xq ? PixelFormat.Yuv444p10le : PixelFormat.Yuv422p10le;
+            Assert.Empty(RecordingProfileValidator.Validate(Video(VideoCodec.ProRes, pixel, profile)));
+        }
+        foreach (var (profile, pixel) in new[] { (EncoderProfile.DnxHrLb, PixelFormat.Yuv422p), (EncoderProfile.DnxHrSq, PixelFormat.Yuv422p),
+                     (EncoderProfile.DnxHrHq, PixelFormat.Yuv422p), (EncoderProfile.DnxHrHqx, PixelFormat.Yuv422p10le), (EncoderProfile.DnxHr444, PixelFormat.Yuv444p10le) })
+        {
+            Assert.Empty(RecordingProfileValidator.Validate(Video(VideoCodec.DnxHr, PixelFormat.Auto, profile)));
+            Assert.Empty(RecordingProfileValidator.Validate(Video(VideoCodec.DnxHr, pixel, profile)));
+        }
+        // En un códec que no es intra el perfil no se usa: un ProRes que quedó al pasar el preset a x264 no impide grabar.
+        Assert.Empty(RecordingProfileValidator.Validate(Video(VideoCodec.H264x264, profile: EncoderProfile.ProRes4444Xq)));
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.H264Nvenc)] // declara los cuadros progresivos: peine en lo que se mueve
+    [InlineData(VideoCodec.HevcNvenc)]
+    [InlineData(VideoCodec.Av1Nvenc)]
+    [InlineData(VideoCodec.H264Qsv)]
+    [InlineData(VideoCodec.HevcQsv)]
+    [InlineData(VideoCodec.H264Amf)]
+    [InlineData(VideoCodec.H265x265)]
+    public void AnEncoderThatDoesNotInterlace_IsRejectedForAnInterlacedPreset(VideoCodec codec)
+    {
+        foreach (var scan in new[] { ScanType.InterlacedTff, ScanType.InterlacedBff })
+            Assert.Equal($"{codec} no codifica entrelazado: guardaría los dos campos en cuadros progresivos, con peine en todo lo que se mueve. " +
+                         $"Para {scan}, elige H264x264, Mpeg2Video, ProRes o DnxHd; con {codec}, un barrido progresivo.",
+                Assert.Single(RecordingProfileValidator.Validate(Video(codec, scan: scan))));
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrLb, PixelFormat.Auto, 1920, 1080)]      // LB no tiene DNxHD equivalente
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHr444, PixelFormat.Auto, 1920, 1080)]     // ni 4:4:4
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv444p10le, 1920, 1080)]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv422p, 720, 576)]        // DNxHD no tiene SD
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrHq, PixelFormat.Auto, 1280, 720)]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv422p10le, 1440, 1080)]  // 1440×1080i solo en 8 bits
+    public void ADnxThatHasNoInterlacedCid_IsRejectedForAnInterlacedPreset(VideoCodec codec, EncoderProfile profile, PixelFormat pixel, int w, int h)
+        => Assert.StartsWith($"Este {codec} no se puede grabar entrelazado: el DNxHD entrelazado solo existe a 1920x1080",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, pixel, profile, ScanType.InterlacedTff, new Resolution(w, h)))));
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv422p, 1920, 1080)]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv422p10le, 1920, 1080)]
+    [InlineData(VideoCodec.DnxHd, EncoderProfile.Auto, PixelFormat.Yuv422p, 1440, 1080)]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrSq, PixelFormat.Auto, 1920, 1080)]  // se graba como su DNxHD
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.DnxHrHqx, PixelFormat.Auto, 1920, 1080)]
+    public void ADnxWithAnInterlacedCid_IsAcceptedForAnInterlacedPreset(VideoCodec codec, EncoderProfile profile, PixelFormat pixel, int w, int h)
+        => Assert.Empty(RecordingProfileValidator.Validate(Video(codec, pixel, profile, ScanType.InterlacedTff, new Resolution(w, h))));
+
+    [Theory]
+    [InlineData(VideoCodec.H264x264, PixelFormat.Auto, 578, "576 o 580")]   // x264: «height not divisible by 4 (720x578)»
+    [InlineData(VideoCodec.H264x264, PixelFormat.Yuv420p10le, 486, "484 o 488")]
+    [InlineData(VideoCodec.Mpeg2Video, PixelFormat.Yuv420p, 1082, "1080 o 1084")]
+    public void AnInterlaced420Preset_NeedsAHeightThatIsAMultipleOf4(VideoCodec codec, PixelFormat pixel, int height, string choose)
+        => Assert.Equal($"Un entrelazado en 4:2:0 necesita un alto múltiplo de 4 (cada campo con un número par de líneas): a {height} líneas no " +
+                        $"se grabaría bien. Elige {choose}.",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, pixel, scan: ScanType.InterlacedTff, size: new Resolution(720, height)))));
+
+    [Theory]
+    [InlineData(VideoCodec.Mpeg2Video, PixelFormat.Yuv422p, 486)] // en 4:2:2, cada campo lleva todas sus líneas de croma
+    [InlineData(VideoCodec.ProRes, PixelFormat.Auto, 578)]
+    [InlineData(VideoCodec.H264x264, PixelFormat.Yuv422p, 486)]
+    public void AnInterlaced422Preset_TakesAnyEvenHeight(VideoCodec codec, PixelFormat pixel, int height)
+        => Assert.Empty(RecordingProfileValidator.Validate(Video(codec, pixel, scan: ScanType.InterlacedTff, size: new Resolution(720, height))));
+
+    [Theory]
+    [InlineData(4096, 2160)] // DCI 4K: «Width or Height are not allowed to be multiples of 4096»
+    [InlineData(8192, 4320)]
+    [InlineData(1920, 4096)]
+    public void Mpeg2_RefusesAWidthOrHeightThatIsAMultipleOf4096(int w, int h)
+        => Assert.StartsWith($"MPEG-2 no codifica a {w}x{h}: no admite un ancho ni un alto múltiplo de 4096",
+            Assert.Single(RecordingProfileValidator.Validate(Video(VideoCodec.Mpeg2Video, size: new Resolution(w, h)))));
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHr, 160, 90)] // «Input dimensions too small, input must be at least 256x120»
+    [InlineData(VideoCodec.DnxHr, 254, 720)]
+    [InlineData(VideoCodec.DnxHd, 320, 118)]
+    public void Dnx_RefusesASizeBelow256x120(VideoCodec codec, int w, int h)
+        => Assert.Equal($"{codec} no codifica a {w}x{h}: el tamaño mínimo es 256x120, el codificador no abriría y la grabación no arrancaría. " +
+                        "Elige un tamaño mayor o el de la fuente.",
+            Assert.Single(RecordingProfileValidator.Validate(Video(codec, size: new Resolution(w, h)))));
+
+    // --- Canales y bitrate del audio ---
+
+    [Theory]
+    [InlineData(AudioCodec.Mp2, ContainerFormat.Ts, AudioLayout.Surround51)]
+    [InlineData(AudioCodec.Mp2, ContainerFormat.ProgramStream, AudioLayout.Surround71)]
+    [InlineData(AudioCodec.Mp3, ContainerFormat.Mp4, AudioLayout.Surround51)]
+    [InlineData(AudioCodec.Mp3, ContainerFormat.Avi, AudioLayout.Surround71)]
+    public void Mp2AndMp3_OnlyCarryMonoOrStereo(AudioCodec audio, ContainerFormat container, AudioLayout layout)
+    {
+        // Medido con el motor y FFmpeg 8.0: MP2 en 7.1 no abre («Error while opening encoder») y la grabación no arranca.
+        var p = WithAudio(audio, container, audioOnly: false);
+        p.AudioLayout = layout;
+        p.AudioBitrate = Bitrate.FromKbps(192);
+        Assert.Equal($"El audio {audio} no se puede grabar en {layout}: solo lleva Mono o Stereo, el codificador no abriría y la grabación " +
+                     $"no arrancaría. Con {audio}, elige Mono o Stereo; para {layout}, el audio Aac o Pcm.",
+                     Assert.Single(RecordingProfileValidator.Validate(p)));
+        // Con varias pistas (los pares de una fuente multicanal) cada una es estéreo: se graba.
+        p.AudioTracks = AudioTrackMode.PairsAsTracks;
+        Assert.Empty(RecordingProfileValidator.Validate(p));
+    }
+
+    [Theory]
+    [InlineData(AudioLayout.Mono, 256, true)]
+    [InlineData(AudioLayout.Mono, 320, false)]
+    [InlineData(AudioLayout.Stereo, 512, true)]
+    [InlineData(AudioLayout.Stereo, 520, false)]
+    [InlineData(AudioLayout.Surround51, 1536, true)]
+    [InlineData(AudioLayout.Surround51, 1600, false)] // «The bit rate 1600000 bps is unsupported. Please choose a value between 500 and 1536000»
+    [InlineData(AudioLayout.Surround71, 2048, true)]
+    public void Opus_TakesUpTo256KbpsPerChannel(AudioLayout layout, int kbps, bool records)
+    {
+        var p = WithAudio(AudioCodec.Opus, ContainerFormat.Mkv, audioOnly: false);
+        p.AudioLayout = layout;
+        p.AudioBitrate = Bitrate.FromKbps(kbps);
+        var errors = RecordingProfileValidator.Validate(p);
+        if (records) Assert.Empty(errors);
+        else Assert.StartsWith($"El audio Opus no se puede grabar a {kbps} kb/s con ", Assert.Single(errors));
+    }
 }
