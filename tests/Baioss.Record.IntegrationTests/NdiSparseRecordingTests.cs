@@ -318,6 +318,7 @@ public sealed class NdiSparseRecordingTests
         _out.WriteLine($"Fuente «{rec.FormatLabel}» (emisor hasta {sender.MaxLateMs:0} ms tarde) · grabado {rec.RecordedFor:0.00} s · " +
                        $"Detener {rec.StopSeconds:0.00} s · FPS OUT {rec.FpsOut:0.00} · {rec.Files.Count} archivo(s)");
         _out.WriteLine("  FPS OUT: " + string.Join(" ", rec.FpsOutSamples.Select(s => s.Fps.ToString("0.0", CultureInfo.InvariantCulture))));
+        lock (rec.Log) foreach (var (at, line) in rec.Log.Where(l => l.Line.Contains("fin de flujo", StringComparison.Ordinal))) _out.WriteLine($"  {at,7:0.00} s {line}");
         // Un emisor que se queda parado (equipo cargado: medido una vez, 2,5 s) manda luego de golpe los periodos atrasados, y sus
         // marcas ya no están a un segundo: la medida no vale, ni para bien ni para mal.
         if (sender.MaxLateMs > 250)

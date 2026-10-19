@@ -33,6 +33,7 @@ internal sealed class NdiFrame
     public void Release() { if (Interlocked.Decrement(ref _refs) == 0) ArrayPool<byte>.Shared.Return(Buffer); }
 }
 
-/// <summary>Un cuadro de vídeo servido a FFmpeg y el periodo de la cadencia declarada que ocupa (contado por el receptor desde que
-/// arrancó; cada proceso de FFmpeg lo ve desde su primer cuadro).</summary>
-internal readonly record struct NdiVideoItem(NdiFrame Frame, long Period);
+/// <summary>Un cuadro de vídeo servido a FFmpeg, el periodo de la cadencia declarada que ocupa (contado por el receptor desde que
+/// arrancó; cada proceso de FFmpeg lo ve desde su primer cuadro) y el instante de la fuente en que empieza ese periodo, si se conoce
+/// (con él se alinea el comienzo del audio de cada proceso: ver <see cref="NdiAudioAligner"/>).</summary>
+internal readonly record struct NdiVideoItem(NdiFrame Frame, long Period, TimeSpan? Source = null);

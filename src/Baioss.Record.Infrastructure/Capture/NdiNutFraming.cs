@@ -31,6 +31,12 @@ internal sealed class NdiNutFraming : INdiFeedFraming<NdiVideoItem>
     /// <summary>Cuadros no escritos a este proceso: de otro formato o sin avanzar en el tiempo.</summary>
     public long Skipped { get; private set; }
 
+    /// <summary>El instante de la fuente del periodo 0 de este proceso (el de su primer cuadro), en cuanto se le escribe; null antes o
+    /// si no se conoce. Lo lee otro hilo: el que conecta el audio del mismo proceso, para empezarlo ahí.</summary>
+    public TimeSpan? FirstSource => _written && _firstSourceTicks != long.MinValue ? TimeSpan.FromTicks(Volatile.Read(ref _firstSourceTicks)) : null;
+    private long _firstSourceTicks = long.MinValue;
+    private volatile bool _written;
+
     public bool TryPrefix(NdiVideoItem item, out ReadOnlyMemory<byte> prefix)
     {
         prefix = default;
@@ -40,6 +46,8 @@ internal sealed class NdiNutFraming : INdiFeedFraming<NdiVideoItem>
             _writer = new NutRawVideoWriter(format.Width, format.Height, format.PixelFormat, format.RateN, format.RateD);
             _format = format;
             _first = _last = item.Period;
+            Volatile.Write(ref _firstSourceTicks, item.Source?.Ticks ?? long.MinValue);
+            _written = true;
             var first = new byte[_writer.Preamble.Length + NutRawVideoWriter.MaxFrameHeaderBytes];
             _writer.Preamble.CopyTo(first, 0);
             int n = _writer.WriteFrameHeader(first.AsSpan(_writer.Preamble.Length), 0, item.Frame.Length);

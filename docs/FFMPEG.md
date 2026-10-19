@@ -300,6 +300,22 @@ imita a Offside (1080 BGRA a 60000/1000, uno de cada 12 periodos) 2,11 y 1,93 �
 ese día mandaba ~28 de 29.97, sin cambio apreciable. Con las marcas de `NdiSyntheticSourceTests` (destello + pitido), el pitido
 iba 0,035 s por delante del destello a su ritmo y 0,069 s a media cadencia; ahora, 0,033–0,038 s en los dos.
 
+**NDI: el audio empieza en el instante del primer cuadro de vídeo.** FFmpeg lee el vídeo NDI (en NUT, cada cuadro con la marca
+de su periodo) y el audio (crudo, que cuenta muestras desde la primera que recibe) por dos entradas, y cada una empieza en 0. El
+audio empezaba en el primer bloque que llegaba tras conectarse, y lo que el vídeo llega más tarde que su audio (el SDK lo
+descomprime) más lo que tarda FFmpeg en pasar de una entrada a otra quedaba como desfase fijo de toda la grabación, más con el
+equipo cargado y en cualquier contenedor: en el barrido de `NdiSparseRecordingTests`, el pitido de cada marca iba 30–86 ms por
+delante de su destello (mediana 56) sin carga y 36–135 ms (mediana 62) con la aplicación instalada previsualizando las dos
+DeckLink (2026-10-18). No era la cola: no se descartaba ningún bloque. Ahora cada cuadro que el receptor encola lleva el instante
+de la fuente de su periodo (contado desde el último cuadro real con marca), `NdiNutFraming` recuerda el del primero de cada
+proceso, y al conectarse el audio de ese proceso `NdiAudioAligner` le da el audio desde ese instante por las marcas NDI del
+audio: recorta el bloque guardado que lo contiene, espera descartando lo de antes si aún no ha llegado o empieza con silencio si
+es anterior a lo guardado (3 s). Sin marcas, o con el silencio de relleno de una fuente sin audio, lo de siempre. Medido: la fila
+sincronizada de `NdiSyntheticSourceTests` pasa de −36 ms a −2/+2 ms, con y sin carga; en el barrido, mediana −15 ms sin carga
+(0 a −42) y −28 ms con carga (−8 a −35), y lo que queda es sobre todo el grano de la medida (el destello se fecha al cuadro de
+salida: 40 ms a 25 fps) y cómo pone cada emisor las marcas al vídeo y al audio. Las fuentes reales siguen igual de bien: OBS y
+vMix, audio y vídeo de la misma duración (+0,015 y −0,028 s en 20 s).
+
 **NDI al Detener.** FFmpeg (7 y posteriores) no deja que una entrada se adelante a la salida más retrasada, y la más
 retrasada es la del codificador de vídeo, que retiene cerca de un segundo (x264 `veryfast`: anticipación, cuadros B e hilos).
 Con NDI el audio va en su propia entrada, así que FFmpeg lo lee por detrás del vídeo, y la «q» lo para en el acto: el audio

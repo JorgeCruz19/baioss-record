@@ -81,6 +81,12 @@ public sealed class NdiReceiver : IAsyncDisposable
     // Periodos de la cadencia declarada desde que arrancó el receptor: el siguiente que ocupa un cuadro (real o repetido). Nunca
     // vuelve atrás: cada proceso de FFmpeg cuenta sus marcas desde su primer cuadro.
     private long _period;
+    // El último cuadro real servido con marca: su periodo y su instante en el reloj de la fuente. Con ellos se sabe el instante de la
+    // fuente de cualquier periodo (el de una repetición que se envía, el primero de cada proceso), para alinear el audio a él.
+    private long _anchorPeriod;
+    private TimeSpan? _anchorSource;
+    // El audio de cada proceso de FFmpeg empieza en el instante de la fuente de su primer cuadro de vídeo (ver NdiAudioAligner).
+    private readonly NdiAudioAligner _aligner = new();
     private long _lastSentPeriod = -1;   // periodo del último cuadro encolado para FFmpeg
     private TimeSpan _lastSentAt;        // y cuándo (nuestro reloj)
     private TimeSpan _lastRealAt;        // llegada del último cuadro real (nuestro reloj)
@@ -189,8 +195,8 @@ public sealed class NdiReceiver : IAsyncDisposable
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = _cts.Token;
-        _ = AcceptAsync(_videoListener, _video, token, OnVideoAttached);
-        _ = AcceptAsync(_audioListener, _audio, token);
+        _ = AcceptAsync(_videoListener, client => { _video.Attach(client); OnVideoAttached(); }, token);
+        _ = AcceptAsync(_audioListener, AttachAudio, token);
         _recvLoop = Task.Run(() => ReceiveLoop(token), token);
 
         var done = await Task.WhenAny(_firstVideo.Task, Task.Delay(firstFrameTimeout, ct)).ConfigureAwait(false);
@@ -202,7 +208,7 @@ public sealed class NdiReceiver : IAsyncDisposable
 
     // FFmpeg (cliente) se conecta a cada puerto al arrancar; ante reconexión (reinicio al alternar grabación)
     // se vuelve a aceptar el nuevo cliente: el flujo le sirve desde ya y cierra el anterior (ver NdiFeed.Attach).
-    private async Task AcceptAsync<T>(TcpListener listener, NdiFeed<T> feed, CancellationToken ct, Action? attached = null)
+    private async Task AcceptAsync(TcpListener listener, Action<TcpClient> attach, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -210,8 +216,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             {
                 var next = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 next.NoDelay = true;
-                feed.Attach(next);
-                attached?.Invoke();
+                attach(next);
                 _log.LogDebug("NDI: FFmpeg conectó a un socket de «{Source}».", _sourceName);
             }
             catch (OperationCanceledException) { return; }
@@ -243,6 +248,8 @@ public sealed class NdiReceiver : IAsyncDisposable
             }
             bool video = _video.End();
             bool audio = _audio.End();
+            _log.LogInformation("NDI: «{Source}» fin de flujo; descartados por cola llena hasta ahora: {Video} cuadros y {Audio} bloques de audio.",
+                _sourceName, _video.Dropped, _audio.Dropped);
             return video && audio;
         }
     }
@@ -303,6 +310,26 @@ public sealed class NdiReceiver : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Conectó el audio de un proceso de FFmpeg (siempre después de su vídeo: FFmpeg abre las entradas en serie y no pasa al audio
+    /// hasta leer un cuadro). Su audio empieza en el instante de la fuente de su primer cuadro de vídeo, con lo guardado o esperando a
+    /// que llegue (<see cref="NdiAudioAligner"/>); con silencio de relleno no hace falta, que ya sigue a los periodos del vídeo. Bajo
+    /// el mismo candado que el audio en directo, para que ningún bloque nuevo se le cuele delante.
+    /// </summary>
+    private void AttachAudio(TcpClient client)
+    {
+        lock (_serve)
+        {
+            _audio.Attach(client);
+            if (_silence.Filling) return;
+            var videoStart = (_video.CurrentFraming as NdiNutFraming)?.FirstSource;
+            var (blocks, outcome, amount) = _aligner.StartAt(videoStart);
+            foreach (var b in blocks) _audio.Enqueue(b);
+            _log.LogDebug("NDI: audio del proceso de «{Source}» alineado con su primer cuadro de vídeo: {Outcome} ({Ms:0} ms).",
+                _sourceName, outcome, amount.TotalMilliseconds);
+        }
+    }
+
     /// <summary>Espera máxima de <c>recv_capture_v2</c>: hasta que venza la siguiente repetición (y no más de 100 ms).</summary>
     private uint WaitMs()
     {
@@ -347,6 +374,7 @@ public sealed class NdiReceiver : IAsyncDisposable
             _cadence.Reset();
             _last?.Release();
             _last = null;
+            _anchorSource = null; // el siguiente cuadro real vuelve a fijar la referencia
             _windowStart = _clock.Elapsed;
             _windowFrames = _windowRepeated = 0;
         }
@@ -356,10 +384,17 @@ public sealed class NdiReceiver : IAsyncDisposable
     /// suelta). Bajo <see cref="_serve"/>.</summary>
     private void EnqueueVideo(NdiFrame frame, long period, TimeSpan now)
     {
-        _video.Enqueue(new NdiVideoItem(frame, period));
+        _video.Enqueue(new NdiVideoItem(frame, period, PeriodSource(period)));
         _lastSentPeriod = period;
         _lastSentAt = now;
     }
+
+    /// <summary>El instante de la fuente en que empieza el periodo <paramref name="period"/>, contado desde el último cuadro real con
+    /// marca (null sin él). Bajo <see cref="_serve"/>.</summary>
+    private TimeSpan? PeriodSource(long period)
+        => _anchorSource is { } anchor && FrameRateN > 0 && FrameRateD > 0
+            ? anchor + TimeSpan.FromTicks((long)Math.Round((period - _anchorPeriod) * (double)TimeSpan.TicksPerSecond * FrameRateD / FrameRateN))
+            : null;
 
     /// <summary>
     /// Pasaron <paramref name="periods"/> periodos del vídeo: si la fuente no trae audio, el silencio que les toca. El silencio sigue
@@ -373,8 +408,11 @@ public sealed class NdiReceiver : IAsyncDisposable
         int silent = _silence.OnPeriods(DateTimeOffset.UtcNow, periods, SampleRate, FrameRateN, FrameRateD);
         if (silent > 0) EnqueueSilence(silent);
         if (_silence.Filling && !wasFilling)
+        {
+            _aligner.Forget(); // el silencio sigue a los periodos: no hay audio que alinear
             _log.LogInformation("NDI: «{Source}» no trae audio; se envía silencio ({SR} Hz, {Ch} canales) para que el canal previsualice y grabe igual.",
                 _sourceName, SampleRate, Channels);
+        }
     }
 
     /// <summary>Avisa (una vez por episodio) cuando la fuente entrega claramente menos cuadros de los que declara y se están
@@ -485,9 +523,14 @@ public sealed class NdiReceiver : IAsyncDisposable
         {
             var now = _clock.Elapsed;
             _lastRealAt = now;
-            var decision = _cadence.OnFrame(now, SourceTime(v.timestamp), FrameRateN, FrameRateD);
+            var source = SourceTime(v.timestamp);
+            var decision = _cadence.OnFrame(now, source, FrameRateN, FrameRateD);
             _period += decision.RepeatsBefore;
-            if (decision.Serve) EnqueueVideo(frame.Share(), _period++, now);
+            if (decision.Serve)
+            {
+                if (source is not null) { _anchorPeriod = _period; _anchorSource = source; }
+                EnqueueVideo(frame.Share(), _period++, now);
+            }
             Silence(decision.RepeatsBefore + (decision.Serve ? 1 : 0));
             _last?.Release();
             _last = frame;
@@ -646,7 +689,14 @@ public sealed class NdiReceiver : IAsyncDisposable
                 Channels = a.no_channels;
                 if (_silence.Filling) _log.LogInformation("NDI: «{Source}» vuelve a traer audio.", _sourceName);
                 _silence.OnAudio(DateTimeOffset.UtcNow);
-                _audio.Enqueue(new NdiFrame(buf, bytes));
+                // Se guarda (para alinear el audio del próximo proceso con su vídeo) y se encola, salvo lo que el proceso recién
+                // conectado aún no deba recibir: el audio de antes del instante de su primer cuadro.
+                var block = new NdiFrame(buf, bytes);
+                var start = SourceTime(a.timestamp);
+                _aligner.Remember(start, block, a.no_samples, a.sample_rate, a.no_channels);
+                var admitted = _aligner.Admit(start, block, a.no_samples);
+                if (!ReferenceEquals(admitted, block)) block.Release();
+                if (admitted is not null) _audio.Enqueue(admitted);
             }
         }
         finally { Marshal.FreeHGlobal(tmp); }
