@@ -286,8 +286,10 @@ FFmpeg guarda en memoria cada uno que lee, y con uno por cuadro un proceso de d�
 tiempo de medio periodo y la cadencia en la información del flujo (`r_frame_rate`): con ella FFmpeg da a cada cuadro la duración
 de un periodo y la tiene por fiable, y el archivo acaba en el último periodo con cuadro. La rama de grabación rellena los huecos
 con un `fps` (`FfmpegArgumentBuilder.SparseVideoFill`) a la cadencia del preset o, en nativo, a la declarada: al final de la
-rama, para escalar y convertir solo los cuadros reales, o al principio si hay timecode quemado (drawtext cuenta cuadros) o
-desentrelazado por campo (bwdif pone el segundo campo a medio camino del cuadro siguiente). `-fps_mode cfr` no sirve: adelanta un
+rama, para escalar y convertir solo los cuadros reales, o al principio si hay timecode quemado (drawtext cuenta cuadros),
+desentrelazado por campo (bwdif pone el segundo campo a medio camino del cuadro siguiente) o un preset entrelazado que teje los
+campos de una fuente progresiva al doble de su cadencia (`interlace`: un campo de cada periodo, como Offside a 60 con un
+1080i59.94). `-fps_mode cfr` no sirve: adelanta un
 periodo cada cuadro que llega tras un hueco (medido con 8.0 y la incluida). El preview pinta los cuadros reales, a su ritmo, y la
 vista los enseña al llegar en vez de repartirlos en una rejilla a la cadencia media (`PreviewFrame.AtSourcePace`: con la rejilla,
 vMix llegaba a 250 ms de retardo); FPS OUT, la alarma de frames perdidos y la línea de salud se cuentan por tiempo de medios a la

@@ -38,4 +38,18 @@ public static class EncoderFallbackChain
         // Ya es CPU/intra (libx264/265, ProRes, DNxHD/HR, MPEG-2): sin degradación.
         _ => null,
     };
+
+    /// <summary>
+    /// Como <see cref="Next(VideoCodec)"/>, saltándose los escalones que no graban el formato de píxel pedido. H.264 por QuickSync y
+    /// por AMF solo codifican 4:2:0 de 8 bits: con otro, FFmpeg les da nv12 sin avisar y el archivo sale en 4:2:0 de 8 bits (medido
+    /// el 2026-10-19: un H.264 NVENC 4:2:2 de 10 bits en una Quadro P400, que no lo hace, degradaba a h264_qsv y grababa 4:2:0 de
+    /// 8). Con un formato así se baja directo a la CPU (libx264), que lo graba.
+    /// </summary>
+    public static VideoCodec? Next(VideoCodec current, PixelFormat pixel)
+    {
+        var next = Next(current);
+        while (next is VideoCodec.H264Qsv or VideoCodec.H264Amf && pixel is not (PixelFormat.Auto or PixelFormat.Yuv420p))
+            next = Next(next.Value);
+        return next;
+    }
 }

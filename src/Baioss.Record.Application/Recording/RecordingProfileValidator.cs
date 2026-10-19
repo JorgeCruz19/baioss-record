@@ -1,16 +1,21 @@
 using System.Globalization;
 using Baioss.Record.Application.Localization;
+using Baioss.Record.Application.Presets;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.ValueObjects;
 
 namespace Baioss.Record.Application.Recording;
 
 /// <summary>
 /// Validaciones PURAS de un <see cref="RecordingProfile"/> antes de grabar: detecta combinaciones que
-/// harían fallar a FFmpeg al arrancar o producir un archivo inválido (bitrate/GOP a cero, resolución
-/// impar o nula, calidad fuera de rango, audio sin bitrate, un contenedor que no puede llevar el códec de
-/// vídeo o el de audio, una frecuencia de muestreo que el audio o el contenedor no admiten). Devuelve mensajes
-/// legibles en el idioma de la aplicación; lista vacía = perfil válido. Sin estado ni IO: testeable de forma aislada.
+/// harían fallar a FFmpeg al arrancar, producir un archivo inválido o uno distinto del que pide el perfil (bitrate/GOP a cero,
+/// resolución impar o nula, calidad fuera de rango, audio sin bitrate, un contenedor que no puede llevar el códec de
+/// vídeo o el de audio, una frecuencia de muestreo que el audio o el contenedor no admiten, una cadencia fuera de rango o que el
+/// MXF o MPEG-2 no llevan, un formato de píxel o un perfil intra que el códec no graba, un entrelazado que el codificador no
+/// codifica, un tamaño que no abre, canales o bitrate de audio que el codificador no admite). Devuelve mensajes legibles en el
+/// idioma de la aplicación; lista vacía = perfil válido. Sin estado ni IO: testeable de forma aislada. Lo que acepta graba lo que
+/// pide: lo comprueba PresetCombinationSweepTests con el FFmpeg real.
 /// </summary>
 public static class RecordingProfileValidator
 {
@@ -41,7 +46,12 @@ public static class RecordingProfileValidator
                     errors.Add(Localizer.T("Prof_Err_ResolutionPositive"));
                 else if (r.Width % 2 != 0 || r.Height % 2 != 0)
                     errors.Add(Localizer.T("Prof_Err_ResolutionEven"));
+                else if (SizeProblem(p, r) is { } size)
+                    errors.Add(size);
             }
+            if (FrameRateProblem(p) is { } frameRate)
+                errors.Add(frameRate);
+            errors.AddRange(VideoFormatProblems(p));
         }
 
         errors.AddRange(AudioContainerProblems(p));
@@ -51,6 +61,8 @@ public static class RecordingProfileValidator
             errors.Add(Localizer.T("Prof_Err_SampleRate"));
         else if (SampleRateProblem(p) is { } rate)
             errors.Add(rate);
+        if (AudioChannelsProblem(p) is { } channels)
+            errors.Add(channels);
 
         return errors;
     }
@@ -284,6 +296,213 @@ public static class RecordingProfileValidator
         }
         return null;
     }
+
+    // --- Formato de píxel, perfil intra, barrido y tamaño, por códec ---
+
+    /// <summary>
+    /// Los formatos de píxel que graba cada códec tal como se piden (además de Auto, que es el suyo), o null si los graba todos. Con
+    /// otro, el codificador no lo admite y FFmpeg lo cambia sin avisar por el más parecido que sí (medido el 2026-10-18 con el motor
+    /// real y FFmpeg 8.0): MPEG-2 a 10 bits sale en 8; ProRes y DNx no tienen 4:2:0 (ni ProRes 8 bits) y salen en 4:2:2; H.264 por
+    /// QuickSync solo hace 4:2:0 de 8 bits. Lo de NVENC, HEVC por QuickSync y AMF depende de la tarjeta: lo que no hace degrada (con la
+    /// alarma EncoderFallback) al codificador por CPU, que lo graba.
+    /// </summary>
+    private static PixelFormat[]? PixelFormatsOf(VideoCodec codec) => codec switch
+    {
+        VideoCodec.Mpeg2Video => new[] { PixelFormat.Yuv420p, PixelFormat.Yuv422p },
+        VideoCodec.H264Qsv => new[] { PixelFormat.Yuv420p },
+        VideoCodec.ProRes => new[] { PixelFormat.Yuv422p10le, PixelFormat.Yuv444p10le },
+        VideoCodec.DnxHd or VideoCodec.DnxHr => new[] { PixelFormat.Yuv422p, PixelFormat.Yuv422p10le, PixelFormat.Yuv444p10le },
+        _ => null,
+    };
+
+    private static bool IsProResProfile(EncoderProfile e) => e is EncoderProfile.ProResProxy or EncoderProfile.ProResLt
+        or EncoderProfile.ProResStandard or EncoderProfile.ProResHq or EncoderProfile.ProRes4444 or EncoderProfile.ProRes4444Xq;
+
+    private static bool IsDnxProfile(EncoderProfile e) => e is EncoderProfile.DnxHrLb or EncoderProfile.DnxHrSq or EncoderProfile.DnxHrHq
+        or EncoderProfile.DnxHrHqx or EncoderProfile.DnxHr444;
+
+    /// <summary>El formato de píxel con el que graba cada perfil intra: ProRes 4444/XQ y DNxHR 444 en 4:4:4 de 10 bits, DNxHR HQX en
+    /// 4:2:2 de 10 bits, el resto de ProRes en 4:2:2 de 10 bits y DNxHR LB, SQ y HQ en 4:2:2 de 8 (FfmpegArgumentBuilder.ProResFormat y
+    /// el codificador dnxhd, que con otro no abre: «pixel format is incompatible with DNxHR LB/SQ/HQ profile»).</summary>
+    private static PixelFormat ProfilePixelFormat(EncoderProfile e) => e switch
+    {
+        EncoderProfile.ProRes4444 or EncoderProfile.ProRes4444Xq or EncoderProfile.DnxHr444 => PixelFormat.Yuv444p10le,
+        EncoderProfile.DnxHrHqx => PixelFormat.Yuv422p10le,
+        EncoderProfile.DnxHrLb or EncoderProfile.DnxHrSq or EncoderProfile.DnxHrHq => PixelFormat.Yuv422p,
+        _ => PixelFormat.Yuv422p10le, // los ProRes 422
+    };
+
+    /// <summary>
+    /// ¿Codifica entrelazado de verdad, con los dos campos y los cuadros marcados? x264, MPEG-2, ProRes y el DNxHD clásico (también
+    /// el DNxHR SQ, HQ o HQX, que el motor graba como su DNxHD). NVENC, QuickSync y AMF, y x265, guardan los dos campos en cuadros
+    /// progresivos: H.264 por NVENC los declara progresivos y el reproductor no desentrelaza, con peine en todo lo que se mueve; HEVC
+    /// solo lo dice el contenedor (medido el 2026-10-18 con idet y las marcas de los cuadros decodificados).
+    /// </summary>
+    private static bool Interlaces(RecordingProfile p) => p.VideoCodec switch
+    {
+        VideoCodec.H264x264 or VideoCodec.Mpeg2Video or VideoCodec.ProRes => true,
+        VideoCodec.DnxHd or VideoCodec.DnxHr => DnxInterlaces(p),
+        _ => false,
+    };
+
+    /// <summary>El DNxHD clásico tiene CID entrelazado a 1920×1080 (8 y 10 bits) y a 1440×1080 (8 bits), y no en 4:4:4; DNxHR no tiene
+    /// ninguno, y LB no tiene DNxHD equivalente. Sin tamaño fijo se graba el de la fuente: no se sabe aquí, y se deja.</summary>
+    private static bool DnxInterlaces(RecordingProfile p)
+    {
+        var pixel = p.PixelFormat is PixelFormat.Auto && IsDnxProfile(p.EncoderProfile) ? ProfilePixelFormat(p.EncoderProfile) : p.PixelFormat;
+        if (pixel is PixelFormat.Yuv444p10le) return false;
+        if (p.VideoCodec is VideoCodec.DnxHr && p.EncoderProfile is EncoderProfile.DnxHrLb) return false;
+        bool tenBit = pixel is PixelFormat.Yuv422p10le or PixelFormat.Yuv420p10le;
+        return p.TargetResolution is not { } r || (r.Width == 1920 && r.Height == 1080) || (r.Width == 1440 && r.Height == 1080 && !tenBit);
+    }
+
+    /// <summary>¿Sale en 4:2:0? Lo que importa al alto de un entrelazado: cada campo lleva la mitad de las líneas de croma.</summary>
+    private static bool Is420(RecordingProfile p) =>
+        (PixelFormatsOf(p.VideoCodec) is not { } allowed || allowed.Contains(PixelFormat.Yuv420p))
+        && p.PixelFormat is PixelFormat.Auto or PixelFormat.Yuv420p or PixelFormat.Yuv420p10le;
+
+    /// <summary>Los mensajes si el formato de píxel, el perfil intra o el barrido no se graban como los pide el perfil.</summary>
+    private static IEnumerable<string> VideoFormatProblems(RecordingProfile p)
+    {
+        if (p.PixelFormat is not PixelFormat.Auto && PixelFormatsOf(p.VideoCodec) is { } allowed && !allowed.Contains(p.PixelFormat))
+            yield return Localizer.F("Prof_Err_PixelFormatCodec", p.VideoCodec, p.PixelFormat, OrList(allowed.Prepend(PixelFormat.Auto).ToList()));
+        else if (ProfileProblem(p) is { } profile)
+            yield return profile;
+
+        if (p.ScanType is not ScanType.Progressive)
+        {
+            if (!Interlaces(p))
+                yield return p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr
+                    ? Localizer.F("Prof_Err_InterlacedDnx", p.VideoCodec)
+                    : Localizer.F("Prof_Err_Interlaced", p.VideoCodec, p.ScanType,
+                        OrList(new[] { VideoCodec.H264x264, VideoCodec.Mpeg2Video, VideoCodec.ProRes, VideoCodec.DnxHd }));
+            else if (Is420(p) && p.TargetResolution is { Height: > 0 } r && r.Height % 4 != 0)
+                yield return Localizer.F("Prof_Err_InterlacedHeight", Number(r.Height), Number(r.Height - r.Height % 4), Number(r.Height - r.Height % 4 + 4));
+        }
+    }
+
+    /// <summary>
+    /// El mensaje si el perfil intra no es del códec (uno de ProRes en DNx o al revés, que quedó al cambiarle el códec al preset) o si
+    /// contradice el formato de píxel elegido (ProRes 4444 en 4:2:2, DNxHR HQ en 10 bits: FFmpeg no abre el DNxHR y el ProRes saldría en
+    /// el del perfil). En los demás códecs el perfil intra no se usa y no se mira.
+    /// </summary>
+    private static string? ProfileProblem(RecordingProfile p)
+    {
+        var e = p.EncoderProfile;
+        if (p.VideoCodec is VideoCodec.ProRes && IsDnxProfile(e))
+            return Localizer.F("Prof_Err_ProfileFamily", e, "DNxHR", p.VideoCodec, "ProRes");
+        if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr && IsProResProfile(e))
+            return Localizer.F("Prof_Err_ProfileFamily", e, "ProRes", p.VideoCodec, "DNxHR");
+        bool own = p.VideoCodec is VideoCodec.ProRes ? IsProResProfile(e) : p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr && IsDnxProfile(e);
+        if (own && p.PixelFormat is not PixelFormat.Auto && ProfilePixelFormat(e) is var wanted && wanted != p.PixelFormat)
+            return Localizer.F("Prof_Err_ProfilePixelFormat", e, wanted, p.PixelFormat);
+        return null;
+    }
+
+    /// <summary>
+    /// El mensaje si el códec no abre a ese tamaño, o null. MPEG-2 no admite un ancho ni un alto múltiplo de 4096 («Width or Height
+    /// are not allowed to be multiples of 4096»: el DCI 4K, 4096×2160); DNxHR (y un DNxHD sin CID a ese tamaño, que el motor graba en
+    /// DNxHR) no baja de 256×120 («Input dimensions too small»). Medido el 2026-10-18 con FFmpeg 8.0 y el incluido.
+    /// </summary>
+    private static string? SizeProblem(RecordingProfile p, Resolution r)
+    {
+        if (p.VideoCodec is VideoCodec.Mpeg2Video && (r.Width % 4096 == 0 || r.Height % 4096 == 0))
+            return Localizer.F("Prof_Err_SizeMpeg2", $"{r.Width}x{r.Height}");
+        if (p.VideoCodec is VideoCodec.DnxHd or VideoCodec.DnxHr && (r.Width < 256 || r.Height < 120))
+            return Localizer.F("Prof_Err_SizeMin", p.VideoCodec, $"{r.Width}x{r.Height}", "256x120");
+        return null;
+    }
+
+    // --- Canales y bitrate del audio ---
+
+    private static int LayoutChannels(AudioLayout layout) => layout switch
+    {
+        AudioLayout.Mono => 1, AudioLayout.Surround51 => 6, AudioLayout.Surround71 => 8, _ => 2,
+    };
+
+    /// <summary>
+    /// El mensaje si el audio no puede llevar los canales del perfil, o el bitrate con esos canales, o null. MP2 y MP3 solo codifican
+    /// mono y estéreo (lo que declaran): con 5.1 o 7.1 el codificador no abre y la grabación no arranca (medido el 2026-10-18 con el
+    /// motor real y FFmpeg 8.0). Opus admite como mucho 256 kb/s por canal («The bit rate 1600000 bps is unsupported. Please choose
+    /// a value between 500 and 1536000» con 5.1). Con varias pistas (pares de una fuente multicanal) cada una es estéreo.
+    /// </summary>
+    private static string? AudioChannelsProblem(RecordingProfile p)
+    {
+        // Si el contenedor no lleva ese audio, ya lo dice AudioContainerProblems.
+        if (AudioMisfitOf(p.AudioCodec, p.Container) != Misfit.None) return null;
+        var encoded = Encoded(p.AudioCodec, p.Container);
+        if (encoded is AudioCodec.Mp2 or AudioCodec.Mp3 && p.AudioTracks is AudioTrackMode.Single && LayoutChannels(p.AudioLayout) > 2)
+            return Localizer.F("Prof_Err_AudioLayout", p.AudioCodec, p.AudioLayout,
+                OrList(new[] { AudioLayout.Mono, AudioLayout.Stereo }), OrList(new[] { AudioCodec.Aac, AudioCodec.Pcm }));
+        if (encoded is AudioCodec.Opus)
+        {
+            int perTrack = p.AudioTracks is AudioTrackMode.Single ? LayoutChannels(p.AudioLayout) : 2;
+            long maxKbps = 256L * perTrack;
+            long kbps = p.AudioBitrate.BitsPerSecond / 1000;
+            if (kbps > maxKbps)
+                return Localizer.F("Prof_Err_AudioBitrateChannels", p.AudioCodec, kbps.ToString(CultureInfo.InvariantCulture),
+                    perTrack.ToString(CultureInfo.InvariantCulture), maxKbps.ToString(CultureInfo.InvariantCulture));
+        }
+        return null;
+    }
+
+    // --- Cadencia ---
+
+    /// <summary>Lo que se admite como cadencia de un preset: de 1 a 120 cuadros por segundo. Una de 25/1001 (un preset 29.97
+    /// duplicado al que se le escribió 25 cuando el editor solo dejaba cambiar el numerador) graba un cuadro cada 40 s.</summary>
+    private const double MinFps = 1, MaxFps = 120;
+
+    /// <summary>
+    /// Las cadencias que codifica MPEG-2: las que declara mpeg2video (las ocho de su tabla y las de su extensión de cadencia). Con
+    /// otra, FFmpeg la cambia sin avisar por la más cercana de estas, y el archivo no lleva la del preset (medido el 2026-10-18 con
+    /// FFmpeg 8.0: 13 → 12, 26 → 25, 55 → 59.94, 119 → 120).
+    /// </summary>
+    private static readonly (int N, int D)[] Mpeg2Rates =
+    {
+        (1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1), (8, 1), (9, 1), (10, 1), (12, 1), (15, 1), (16, 1), (18, 1), (20, 1), (24, 1),
+        (25, 1), (30, 1), (32, 1), (36, 1), (40, 1), (45, 1), (48, 1), (50, 1), (60, 1), (72, 1), (75, 1), (80, 1), (90, 1), (96, 1),
+        (100, 1), (120, 1), (1000, 1001), (1200, 1001), (1250, 1001), (1500, 1001), (1600, 1001), (1875, 1001), (2000, 1001),
+        (2400, 1001), (2500, 1001), (3000, 1001), (3750, 1001), (4000, 1001), (4800, 1001), (5000, 1001), (6000, 1001), (7500, 1001),
+        (8000, 1001), (10000, 1001), (12000, 1001), (15000, 1001), (20000, 1001), (24000, 1001), (30000, 1001), (60000, 1001),
+    };
+
+    /// <summary>Las del muxer MXF (las de su tabla de «content package rate»): con otra no escribe la cabecera («Unsupported frame
+    /// rate 25/1001») y la grabación no arranca.</summary>
+    private static readonly (int N, int D)[] MxfRates =
+    {
+        (24000, 1001), (24, 1), (25, 1), (30000, 1001), (30, 1), (48000, 1001), (48, 1), (50, 1), (60000, 1001), (60, 1),
+        (72000, 1001), (72, 1), (75, 1), (90000, 1001), (90, 1), (96000, 1001), (96, 1), (100, 1), (120000, 1001), (120, 1),
+    };
+
+    /// <summary>El mensaje si la cadencia del preset no se puede grabar, o null: fuera de <see cref="MinFps"/>…<see cref="MaxFps"/>,
+    /// una que el muxer MXF no admite o una que MPEG-2 no codifica. Con la de la fuente (null) no hay nada que mirar aquí.</summary>
+    private static string? FrameRateProblem(RecordingProfile p)
+    {
+        if (p.OutputFrameRate is not { } rate) return null;
+        if (rate.Numerator <= 0 || rate.Denominator <= 0 || rate.Value < MinFps - 1e-9 || rate.Value > MaxFps + 1e-9)
+            return Localizer.F("Prof_Err_FrameRate", Fps(rate.Numerator, rate.Denominator),
+                Number((int)MinFps), Number((int)MaxFps));
+        if (p.Container is ContainerFormat.Mxf && !Holds(MxfRates, rate))
+            return Localizer.F("Prof_Err_FrameRateContainer", Fps(rate.Numerator, rate.Denominator), p.Container, Nearest(MxfRates, rate));
+        if (p.VideoCodec is VideoCodec.Mpeg2Video && !Holds(Mpeg2Rates, rate))
+            return Localizer.F("Prof_Err_FrameRateCodec", "MPEG-2", Fps(rate.Numerator, rate.Denominator), Nearest(Mpeg2Rates, rate));
+        return null;
+    }
+
+    /// <summary>¿Está <paramref name="rate"/> en la lista? Por el valor de la fracción (50/1 = 100/2).</summary>
+    private static bool Holds((int N, int D)[] rates, FrameRate rate) =>
+        rates.Any(r => (long)r.N * rate.Denominator == (long)rate.Numerator * r.D);
+
+    /// <summary>Las dos de la lista más cercanas a <paramref name="rate"/>, de menor a mayor («24 o 25»), entre las que se
+    /// escriben fácil: las enteras y las NTSC de siempre (23.976, 29.97, 47.952, 59.94, 119.88), no 12000/1001.</summary>
+    private static string Nearest((int N, int D)[] rates, FrameRate rate) =>
+        OrList(rates.Where(r => r.N >= r.D * MinFps && r.N <= r.D * MaxFps)
+            .Where(r => r.D == 1 || (r.D == 1001 && r.N is 24000 or 30000 or 48000 or 60000 or 120000))
+            .OrderBy(r => Math.Abs((double)r.N / r.D - rate.Value)).Take(2)
+            .OrderBy(r => (double)r.N / r.D).Select(r => Fps(r.N, r.D)).ToList());
+
+    /// <summary>Una cadencia como la escribe el operador en el editor («29.97», «25», «7500/1001»).</summary>
+    private static string Fps(int numerator, int denominator) => PresetFrameRate.Format(numerator, denominator);
 
     /// <summary>«44100», sin separador de miles: como lo enseña el gestor de presets.</summary>
     private static string Number(int n) => n.ToString(CultureInfo.InvariantCulture);

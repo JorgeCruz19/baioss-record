@@ -470,7 +470,8 @@ public sealed partial class ChannelViewModel : ObservableObject, IDisposable
         // Conversión de cadencia: la tasa de la señal frente a la que fija el preset (solo con señal y un preset con vídeo).
         var cadence = FrameRateConversion.For(
             status.Signal.State == SignalState.Locked ? status.Signal.FrameRate : null,
-            _config is { Profile.AudioOnly: false } config ? config.Profile.OutputFrameRate : null);
+            _config is { Profile.AudioOnly: false } config ? config.Profile.OutputFrameRate : null,
+            status.Signal.Scan, _config?.Profile.ScanType ?? ScanType.Progressive);
         HasCadenceNotice = cadence.IsMismatch;
         CadenceBadge = cadence.Badge() ?? "";
         CadenceToolTip = cadence.Describe() ?? "";

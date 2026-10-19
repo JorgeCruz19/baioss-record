@@ -440,7 +440,8 @@ public sealed class NdiSparseRecordingTests
     /// <summary>
     /// Un grafismo como Offside (declara 60, manda 4) con los presets de fábrica de todas las familias: códecs por CPU y NVENC,
     /// entrelazados (setfield antes del relleno), SD, 4K, contenedores MP4, TS, PS, MXF, MOV, MKV y AVI, y solo audio. La rama de
-    /// grabación rellena al final: escala y convierte solo los cuadros reales.
+    /// grabación rellena al final: escala y convierte solo los cuadros reales. Salvo los entrelazados a la mitad de sus 60 (1080i59.94
+    /// y 480i59.94): tejen los campos de dos periodos seguidos (WeaveFilter), que pide un cuadro por periodo, y rellenan al principio.
     /// </summary>
     [SkippableTheory]
     [InlineData("H.264 Broadcast · FullHD 1080p25")]
@@ -474,7 +475,9 @@ public sealed class NdiSparseRecordingTests
             double handover = Math.Max(0, rec.StopSeconds - 0.6);
             await AssertFileAsync(rec.Files[0], profile, GraphicsRate, sender.MarkPeriod, rec.RecordedFor + 0.3 + handover / 2, 1.5 + handover / 2);
             if (profile.AudioOnly) return;
-            AssertFill(rec, atStart: false);
+            bool woven = profile.ScanType is not ScanType.Progressive && profile.OutputFrameRate is { Value: > 0 } output
+                         && Math.Abs(GraphicsRate - 2 * output.Value) < 0.01 * GraphicsRate;
+            AssertFill(rec, atStart: woven);
             Assert.InRange(rec.FpsOut, 0.85 * GraphicsRate, 1.15 * GraphicsRate); // FPS OUT: la cadencia declarada de la fuente
         });
     }

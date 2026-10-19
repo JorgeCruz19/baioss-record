@@ -62,7 +62,7 @@
                     <TextBox  Grid.Row="4" Grid.Column="3" Text="{Binding HeightValue}"/>
 
                     <TextBlock Grid.Row="5" Grid.Column="0" Text="{loc:T PreEd_Fps}"/>
-                    <TextBox  Grid.Row="5" Grid.Column="1" Text="{Binding FrameRateValue}"/>
+                    <TextBox  Grid.Row="5" Grid.Column="1" Text="{Binding FrameRateText}"/>
                     <TextBlock Grid.Row="5" Grid.Column="2" Text="{loc:T PreEd_Gop}"/>
                     <TextBox  Grid.Row="5" Grid.Column="3" Text="{Binding GopValue}"/>
 

@@ -53,6 +53,27 @@ public class EncoderFallbackChainTests
         Assert.Equal(new[] { VideoCodec.HevcQsv, VideoCodec.H265x265 }, seen);
         Assert.Equal("hevc_qsv", FfmpegCodecMap.VideoEncoder(VideoCodec.HevcQsv));
     }
+
+    [Theory]
+    [InlineData(PixelFormat.Yuv422p)]
+    [InlineData(PixelFormat.Yuv420p10le)]
+    [InlineData(PixelFormat.Yuv422p10le)]
+    [InlineData(PixelFormat.Yuv444p10le)]
+    public void Next_WithAFormatQuickSyncAndAmfDoNotEncode_GoesStraightToTheCpu(PixelFormat pixel)
+    {
+        // H.264 por QuickSync y por AMF solo hacen 4:2:0 de 8 bits: FFmpeg les da nv12 sin avisar. Medido en una P400 (que no hace
+        // H.264 4:2:2 ni de 10 bits): el NVENC degradaba a h264_qsv y el archivo salía en 4:2:0 de 8 bits.
+        Assert.Equal(VideoCodec.H264x264, EncoderFallbackChain.Next(VideoCodec.H264Nvenc, pixel));
+        Assert.Equal(VideoCodec.H264x264, EncoderFallbackChain.Next(VideoCodec.H264Qsv, pixel));
+        // HEVC por QuickSync no los cambia: si no los hace, no abre y baja a libx265.
+        Assert.Equal(VideoCodec.HevcQsv, EncoderFallbackChain.Next(VideoCodec.HevcNvenc, pixel));
+    }
+
+    [Theory]
+    [InlineData(PixelFormat.Auto)]
+    [InlineData(PixelFormat.Yuv420p)]
+    public void Next_With420At8Bits_KeepsTheWholeChain(PixelFormat pixel)
+        => Assert.Equal(VideoCodec.H264Qsv, EncoderFallbackChain.Next(VideoCodec.H264Nvenc, pixel));
 }
 
 public class FfmpegEncoderErrorTests

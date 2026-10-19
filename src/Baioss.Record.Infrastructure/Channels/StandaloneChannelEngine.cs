@@ -77,6 +77,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
     // Tasa de salida del perfil con el que se graba AHORA (la que decide la conversión de cadencia); null = la de la fuente.
     private FrameRate? _recordingOutputRate;
+    // …y su barrido: de un entrelazado a un progresivo al doble (o al revés) no se descarta ni se repite nada.
+    private ScanType _recordingOutputScan;
 
     // Alarmas activas del canal (negro/congelado/silencio/slate/disco) y estado del almacenamiento.
     private readonly object _alarmLock = new();
@@ -265,6 +267,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         {
             _saturation.Reset(_source.DeliversInRealTime);
             _recordingOutputRate = profile.OutputFrameRate;
+            _recordingOutputScan = profile.ScanType;
         }
         _lastInputDropUtc = DateTimeOffset.MinValue;
         _lastDiskLevel = DiskLevel.Ok; // que la grabación nueva publique StorageLow si ya empieza con el disco bajo
@@ -444,7 +447,8 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
         // 5) Cadencia: si el preset graba a otra tasa que la de la fuente, FFmpeg convierte descartando o repitiendo frames.
         //    No bloquea (puede ser justo lo que se quiere: una entrega a 25 desde una fuente a 29,97), pero queda dicho: es lo
         //    primero que hay que saber ante una grabación «a saltos», y la alarma de frames perdidos descuenta esos descartes.
-        if (!profile.AudioOnly) LogCadence(FrameRateConversion.For(_source.CurrentSignal.FrameRate, profile.OutputFrameRate));
+        if (!profile.AudioOnly)
+            LogCadence(FrameRateConversion.For(_source.CurrentSignal.FrameRate, profile.OutputFrameRate, _source.CurrentSignal.Scan, profile.ScanType));
     }
 
     private void LogCadence(FrameRateConversion cadence)
@@ -839,7 +843,7 @@ public sealed class StandaloneChannelEngine : IChannelEngine, IConfigurableRecor
             {
                 bool wasSaturated = _saturation.Active;
                 // La tasa de la fuente se relee en cada muestra: una tarjeta en autodetección puede redetectar el modo a mitad.
-                var cadence = FrameRateConversion.For(_source.CurrentSignal.FrameRate, _recordingOutputRate);
+                var cadence = FrameRateConversion.For(_source.CurrentSignal.FrameRate, _recordingOutputRate, _source.CurrentSignal.Scan, _recordingOutputScan);
                 saturated = _saturation.Update(
                     new SaturationSample(stats.DroppedFrames, stats.FrameCount, stats.MediaTimeUs, _clock.Elapsed), cadence);
                 if (saturated != wasSaturated) LogSaturation(saturated, cadence);

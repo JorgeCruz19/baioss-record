@@ -155,7 +155,7 @@ ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
 
 ```text
 # DNxHD 220 · 1080i59.94 (MOV), grabando de una DeckLink
-ffmpeg ... -filter_complex "[0:v]split=2[vrec][vprev];[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p[vmain];..." \
+ffmpeg ... -filter_complex "[0:v]split=2[vrec][vprev];[vrec]scale=1920:1080:interl=1,setfield=mode=tff,format=yuv422p[vmain];..." \
   -map [vmain] -map 0:a:0? -c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p \
   -c:a aac -ar 48000 -b:a 256000 -ac 2 -r 30000/1001 -field_order tt ... -f mov -y <salida>
 ```
@@ -207,8 +207,42 @@ codificador: ≈ 9.
 
 ```text
 # ProRes 422 HQ · 1080i59.94
-ffmpeg ... "[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p10le[vmain]" ... \
+ffmpeg ... "[vrec]scale=1920:1080:interl=1,setfield=mode=tff,format=yuv422p10le[vmain]" ... \
   -map [vmain] -c:v prores_aw -profile:v 3 -flags +ildct -pix_fmt yuv422p10le ... -r 30000/1001 -field_order tt -f mov ...
+```
+
+### Presets entrelazados: cada campo por su lado
+
+Un preset entrelazado (1080i, 576i, 480i) graba los dos campos de cada cuadro, cada uno de su instante. La rama de grabación
+(`FfmpegArgumentBuilder.BuildLive`) los trata por separado en tres casos que antes los estropeaban (medido el 2026-10-18 con
+`idet` en la imagen y en el croma de lo grabado, con `FactoryPresetRecordingTests`):
+
+- **Escalar y convertir el croma, por campos (`scale=…:interl=1`).** Sin ello, el escalado vertical mezclaba los dos campos
+  (un «H.264 · SD PAL» o un «MPEG-2 · SD PAL» desde el 1080i59.94 de la DeckLink salía sin campos, con el movimiento doblado)
+  y, aun sin cambiar de tamaño, la conversión del croma de 4:2:2 (uyvy422 de la tarjeta) a 4:2:0 promediaba el de los dos
+  campos: color fantasma en todo lo que se mueve en los 1080i de H.264, MPEG-2 TS y XDCAM HD 35. Los 4:2:2 (XDCAM HD422,
+  ProRes, DNxHD) no cambian de croma; van igual.
+- **Fuente con el otro orden de campos (`fieldorder`).** La NTSC de la DeckLink va con el campo inferior primero y los presets
+  480i con el superior: cambiar solo la marca (`setfield`) los reproducía en el orden inverso, el movimiento a saltos atrás y
+  adelante. `fieldorder` desplaza la imagen una línea; como no admite croma submuestreado en vertical, la conversión al formato
+  del codificador va detrás, otra vez por campos.
+- **Fuente progresiva al doble de cadencia (`interlace`).** Un 1080p59.94 (un emisor NDI) con un preset 1080i29.97, o un
+  1080p50 con uno 1080i25: `-r` tiraba un cuadro de cada dos y marcaba los demás como entrelazados, con los dos campos del mismo
+  instante (la mitad del movimiento). Ahora cada cuadro grabado lleva un campo de un cuadro de la fuente y el otro del
+  siguiente. Con una fuente con huecos (NDI) el relleno va delante, a la cadencia de la fuente, como con `bwdif` por campo.
+- **Solo donde swscale puede:** escalar por campos a un destino 4:2:0 de alto no múltiplo de 4 (486, 574, 578, 1082) hace caer a
+  FFmpeg (segfault, medido con FFmpeg 8.0): ahí el motor convierte como antes (`CanScaleByFields`). El validador ya no acepta
+  un entrelazado 4:2:0 a esos altos; queda la NTSC de 486 líneas grabada a su tamaño.
+- **El aviso de cadencia** («CADENCIA ⚠ 59,94 → 29,97») ya no sale al pasar de campos a cuadros (1080i29.97 → 1080p59.94, un cuadro
+  por campo) ni al tejerlos (1080p59.94 → 1080i29.97): no se descarta ni se repite nada (`FrameRateConversion.ByFields`), y la
+  alarma de frames perdidos no descuenta descartes que no hay.
+
+```text
+# MPEG-2 TS · SD NTSC 480i59.94, grabando la NTSC de una DeckLink (720×486, campo inferior primero)
+ffmpeg ... "[vrec]scale=720:480:interl=1,setfield=mode=bff,fieldorder=tff,scale=interl=1,format=yuv420p[vmain]" ...
+
+# XDCAM HD422 · 1080i59.94 50 Mbps, grabando un 1080p59.94 por NDI (el relleno de los huecos, delante)
+ffmpeg ... "[vrec]fps=60000/1001,scale=1920:1080,interlace=scan=tff,scale=interl=1,setfield=mode=tff,format=yuv422p[vmain]" ...
 ```
 
 ## Línea de comandos generada (ejemplos reales)
@@ -225,7 +259,7 @@ ffmpeg -hide_banner -progress pipe:1 -stats_period 1 -i <entrada> \
   -af ebur128=peak=true -movflags +faststart -f mp4 -y <salida>
 
 # XDCAM HD422 · 1080i25 50 Mbps (MXF OP1A)
-ffmpeg ... -filter_complex "[0:v]scale=1920:1080,setfield=mode=tff[mainout]" ... \
+ffmpeg ... -filter_complex "[0:v]scale=1920:1080:interl=1,setfield=mode=tff[mainout]" ... \
   -c:v mpeg2video -b:v 50000000 -minrate 50000000 -maxrate 50000000 -bufsize 100000000 -g 12 \
   -flags +ilme+ildct -pix_fmt yuv422p -c:a pcm_s24le -ar 48000 -ac 2 -field_order tt -f mxf -y <salida>
 
@@ -366,6 +400,45 @@ lleva, con vídeo y en solo audio, de 7350 a 384000 Hz (y 47952 y 768000 con PCM
   FFmpeg real, `ContainerCodecTests` (una fila por causa, sin y con la regla; una por propuesta; y que las listas del
   validador son las que declara ese FFmpeg).
 
+### Presets propios: lo demás que el editor comprueba
+
+Además de contenedor × códec y la frecuencia de muestreo, el validador rechaza las combinaciones que FFmpeg no graba como las
+pide el preset. Medido el 2026-10-18/19 con el motor real (`FfmpegChannelEngine`, sin el validador) y FFmpeg 8.0: 3 s de cada
+combinación, un eje cada vez, releídos enteros con `ffprobe`, `idet` y las marcas de los cuadros decodificados
+(`PresetCombinationSweepTests`, 547 combinaciones; la regla es que lo que el validador acepta graba lo que pide).
+
+| Qué | Lo que hace FFmpeg sin la regla | La regla |
+|---|---|---|
+| **Cadencia** fuera de 1…120 fps (25/1001: la copia de un preset 29.97 a la que el editor solo dejaba cambiar el numerador) | graba un cuadro cada 40 s | de 1 a 120 cuadros por segundo |
+| **Cadencia en MXF** que el muxer no conoce (1, 10, 12, 15, 20, 40, 150…) | no escribe la cabecera («Unsupported frame rate»): no arranca | las de su tabla: 23.976, 24, 25, 29.97, 30, 47.952, 48, 50, 59.94, 60, 71.928, 72, 75, 89.91, 90, 95.904, 96, 100, 119.88 y 120 |
+| **Cadencia en MPEG-2** que no codifica (13, 26, 55…) | la cambia sin avisar por la más cercana (13 → 12) | las que declara mpeg2video |
+| **Píxel** que el códec no codifica | lo cambia sin avisar: MPEG-2 a 10 bits sale en 8, ProRes/DNx en 4:2:0 salen en 4:2:2, H.264 por QuickSync solo hace 4:2:0 de 8 bits | los suyos |
+| **Perfil intra de la otra familia** (ProRes 4444 XQ en un DNxHR) | colaba su 4:4:4 y FFmpeg no abría `dnxhr_hq` (también arreglado en el motor) | un perfil de su familia o Auto |
+| **Perfil intra contra el píxel** (DNxHR HQ en 10 bits, HQX u 444 en 8, ProRes 4444 en 4:2:2) | DNxHR no abre (código -22); ProRes graba el del perfil | el píxel del perfil o Auto |
+| **Entrelazado** con NVENC, QuickSync, AMF o x265 | los dos campos en cuadros progresivos: H.264 por NVENC los declara progresivos y se ve peine; HEVC solo lo dice el contenedor | x264, MPEG-2, ProRes o DNxHD |
+| **DNx entrelazado** sin CID entrelazado (SD, 720p, 4:4:4, DNxHR LB) | campos en cuadros progresivos | 1920×1080 (8 y 10 bits) o 1440×1080 (8 bits) |
+| **Entrelazado 4:2:0** con un alto que no es múltiplo de 4 (578, 486, 1082) | x264 no abre («height not divisible by 4»); escalarlo por campos hace caer a FFmpeg, así que el motor ahí lo convierte como antes, mezclando el croma | un alto múltiplo de 4 |
+| **MPEG-2** a un ancho o alto múltiplo de 4096 (DCI 4K) | no abre | otro tamaño |
+| **DNxHR** por debajo de 256×120 | no abre («Input dimensions too small») | 256×120 o más |
+| **MP2/MP3 en 5.1 o 7.1** | el codificador no abre: no arranca | mono o estéreo |
+| **Opus** por encima de 256 kb/s por canal | «The bit rate … is unsupported»: no arranca | hasta 256 kb/s por canal |
+
+- Lo que depende de la tarjeta (NVENC en 4:2:2 o 10 bits de H.264, HEVC por QuickSync en 4:4:4, AMF sin GPU AMD, AV1 sin una
+  NVIDIA Ada) no se rechaza: el canal **degrada** con la alarma *EncoderFallback* al codificador por CPU, que lo graba. Con un
+  formato que no es 4:2:0 de 8 bits la degradación de H.264 se salta QuickSync y AMF (`EncoderFallbackChain.Next(codec, píxel)`):
+  los dos lo cambiaban a nv12 sin avisar, y un H.264 NVENC 4:2:2 de 10 bits en la P400 acababa en un 4:2:0 de 8 bits de QuickSync.
+- **Solo intra por NVENC (GOP 1):** h264_nvenc no abre con `-g 1` («Gop Length should be greater than number of B frames + 1»)
+  y el canal degradaba a QuickSync; el motor lo pide con `-g 0`, que es solo intra (todos los cuadros I).
+- **Campo FPS del editor:** se escribe la cadencia («25», «29.97» o «29,97», «59.94», «23.976» o la fracción «30000/1001»;
+  vacío = la de la fuente) y se guarda exacta (`PresetFrameRate`). Antes era un entero que iba al numerador: un preset nuevo no
+  podía ser 29.97 y en la copia de uno 29.97 el campo decía «30000».
+- Lo cubren `RecordingProfileValidatorTests` (cada regla, con su mensaje), `PresetFrameRateTests` y, con el FFmpeg real,
+  `PresetCombinationSweepTests` (`BAIOSS_COMBO_SWEEP=1`, ~75 min; `BAIOSS_COMBO_ONLY` con trozos de los nombres repite unas
+  filas, `BAIOSS_COMBO_ACCEPTED_ONLY=1` graba solo lo que el validador acepta y `BAIOSS_COMBO_REPORT` deja el TSV). Último
+  resultado (2026-10-19, P400 y sin GPU AMD): de las 547 el validador acepta 432, y graban lo que piden; 28 degradan con su
+  alarma al codificador por CPU, todas por la tarjeta (AV1 y AMF, H.264 NVENC en 10 bits o 4:2:2, HEVC NVENC o QuickSync en
+  4:2:2 o 4:4:4 y un HEVC NVENC de 64×64).
+
 ## Verificación
 
 El smoke test [`tools/Baioss.Record.SmokeTest`](../tools/Baioss.Record.SmokeTest/Program.cs)
@@ -395,6 +468,42 @@ perfil DNxHR 1080i antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_Records
 (2026-10-16, Core i7-8700, señal 1080i59.94): 7/7, sin un cuadro descartado. Esa noche la emisora estaba fuera de emisión
 (carta fija y sin audio): sin movimiento, idet no clasifica cuadros y la prueba omite el peine y el nivel de audio (lo
 anota en la salida); las cifras de tiempo real con contenido de verdad son las de la tabla de ProRes.
+
+### Los 94 presets grabando en vivo
+
+[`FactoryPresetRecordingTests`](../tests/Baioss.Record.IntegrationTests/FactoryPresetRecordingTests.cs) (opcional:
+`BAIOSS_PRESET_SWEEP=1`, ~65 min) graba 10 s con cada preset de fábrica por el canal completo —el pre-vuelo del validador y el
+motor unificado, con la cola de escritura y el fMP4 de la aplicación— desde una fuente en vivo, y relee lo grabado entero
+(`RecordedFileCheck`, el mismo que usa el barrido de combinaciones): el códec, el perfil, el píxel, el tamaño, la cadencia, el
+barrido (`idet` en la imagen y en el croma, y la marca de los cuadros decodificados) y el audio; que se decodifica entero sin
+errores y con el audio tan largo como el vídeo; y que va en tiempo real (el proceso al 97 % o más, sin la alarma de frames
+perdidos y sin degradar el codificador). Tres fuentes: la del formato del propio preset, la de las DeckLink de este equipo
+(1080i59.94 TFF en uyvy422) y, para los 26 entrelazados, un 1080p al doble de su cadencia como el de un emisor NDI, que se teje.
+`BAIOSS_PRESET_ONLY` («NVENC», «1080i59.94|ProRes») y `BAIOSS_PRESET_FEEDS` («DeckLink,Own») repiten unas filas;
+`BAIOSS_PRESET_REPORT` deja una fila por preset en un TSV y `BAIOSS_PRESET_KEEP` conserva lo grabado.
+
+Último resultado (2026-10-19, Core i7-8700 de 6 núcleos y 12 hilos, Quadro P400, FFmpeg 8.0): 201 de 214 filas. Los 94 graban
+el códec, el perfil, el píxel, el tamaño, la cadencia, el barrido y el audio que dicen, y se leen enteros; los 26 entrelazados,
+también desde el 1080p al doble. Lo que no llega a tiempo real son seis presets que codifica la CPU, cuya descripción lo avisa y
+remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
+
+| Preset | Desde su formato | Desde la DeckLink (1080i59.94) |
+|---|---|---|
+| H.264 · 4K UHD 2160p50 (x264) | 0,55–0,63× | 0,72× |
+| H.264 · 4K UHD 2160p59.94 (x264) | 0,46–0,53× | 0,42× |
+| HEVC · 4K UHD 2160p50 10-bit (x265) | 0,16–0,20× | 0,19× |
+| HEVC · 4K UHD 2160p59.94 10-bit (x265) | 0,15–0,17× | 0,16× |
+| MKV · HEVC 4K 10-bit (x265) | 0,17–0,18× | 0,19× |
+| HEVC · FullHD 1080p59.94 (x265) | 0,58–0,71× | 0,52× |
+| H.264 NVENC · 4K UHD 2160p59.94 | 1,04× | 0,94×: desentrelazar y escalar a 4K van por la CPU (5,5 núcleos) |
+
+- Por debajo del tiempo real el vídeo se queda corto: de 10 s grabados, entre 2,3 y 8,6 s. x264 y x265 ya van con
+  `-preset veryfast`; los que pide un 4K o un 1080p59.94 por CPU necesitan más núcleos o el gemelo NVENC (el HEVC NVENC 4K59.94
+  llega desde la DeckLink, 1,03×). Una DeckLink Duo 2 no entrega 4K: grabarla en 4K es escalar el HD.
+- Los que más CPU piden y llegan: ProRes 422 HQ 4K25 (8,1–8,7 núcleos, 1,02–1,04×), Archive HEVC 1080p (7,7), HEVC 1080p25
+  (7,4) y H.264 Broadcast 1080p59.94 (6,6 desde la DeckLink, 1,02×).
+- Lo que encontró en el motor (el croma y los campos de los entrelazados, el orden de campos, el tejido de un progresivo al
+  doble, el perfil intra de otra familia, la degradación según el píxel y el GOP 1 de NVENC) está arreglado y descrito arriba.
 
 ## Extender el catálogo
 
