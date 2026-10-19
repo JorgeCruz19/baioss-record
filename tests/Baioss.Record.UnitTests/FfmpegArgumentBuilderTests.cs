@@ -332,6 +332,38 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.DoesNotContain("-b:v", joined);
     }
 
+    [Theory]
+    [InlineData(VideoCodec.H264Nvenc)]
+    [InlineData(VideoCodec.HevcNvenc)]
+    public void Build_AnIntraOnlyNvencPreset_AsksForGop0(VideoCodec codec)
+    {
+        // Con -g 1, h264_nvenc no abre («Gop Length should be greater than number of B frames + 1»); -g 0 es solo intra.
+        var p = Progressive(codec, FrameRate.P25);
+        p.GopSize = 1;
+        Assert.Contains("-g 0 -bf 0", Build(p).Joined);
+        p.GopSize = 50;
+        Assert.Contains("-g 50 -bf 0", Build(p).Joined);
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.ProRes4444Xq, "-c:v dnxhd -profile:v dnxhr_hq -pix_fmt yuv422p")]
+    [InlineData(VideoCodec.DnxHr, EncoderProfile.ProRes4444, "-c:v dnxhd -profile:v dnxhr_hq -pix_fmt yuv422p")]
+    [InlineData(VideoCodec.H264x264, EncoderProfile.ProRes4444Xq, "-pix_fmt yuv420p")]
+    [InlineData(VideoCodec.H264x264, EncoderProfile.DnxHr444, "-pix_fmt yuv420p")]
+    [InlineData(VideoCodec.ProRes, EncoderProfile.DnxHr444, "-c:v prores_aw -profile:v 3")]
+    public void AnIntraProfileOfAnotherFamily_DoesNotPickThePixelFormat(VideoCodec codec, EncoderProfile profile, string expected)
+    {
+        // El perfil que quedó en un preset al cambiarle el códec: antes un ProRes 4444 XQ colaba su yuv444p10le y FFmpeg no abría
+        // «dnxhr_hq» con él (la grabación no arrancaba), y x264 grababa 4:4:4 de 10 bits sin que nadie lo pidiera.
+        var p = Dnxhr1080(EncoderProfile.Auto, FrameRate.P25, ScanType.Progressive, PixelFormat.Auto);
+        p.VideoCodec = codec;
+        p.EncoderProfile = profile;
+        p.Container = ContainerFormat.Mov;
+        var joined = Build(p).Joined;
+        Assert.Contains(expected, joined);
+        Assert.DoesNotContain("yuv444p10le", joined);
+    }
+
     // --- DNxHD clásico: el bitrate elige el CID ---
 
     private static RecordingProfile Dnxhd(int width, int height, FrameRate rate, ScanType scan, double mbps, PixelFormat pix = PixelFormat.Yuv422p) => new()
@@ -349,7 +381,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         // DNxHD clásico sí: CID 1243 (220 Mbps a 29.97) con DCT entrelazada y los cuadros marcados TFF.
         var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff),
             Dnxhd(1920, 1080, FrameRate.P2997, ScanType.InterlacedTff, 220));
-        Assert.Contains("[vrec]scale=1920:1080,setfield=mode=tff,format=yuv422p[vmain]", joined);
+        Assert.Contains("[vrec]scale=1920:1080:interl=1,setfield=mode=tff,format=yuv422p[vmain]", joined);
         Assert.Contains("-c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p", joined);
         Assert.Contains("-field_order tt", joined);
         Assert.DoesNotContain("dnxhr", joined);
@@ -722,6 +754,133 @@ public class FfmpegArgumentBuilderTests : IDisposable
         profile.TargetResolution = null;
         var joined = string.Join(' ', new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out").Build());
         Assert.Contains("-filter_complex [0:v]fps=60000/1000[vfill] -map [vfill]", joined);
+    }
+
+    // --- Preset entrelazado: cada campo por su lado ---
+
+    private static RecordingProfile Interlaced(VideoCodec codec, Resolution? size, FrameRate rate, ScanType scan = ScanType.InterlacedTff) => new()
+    {
+        Name = "i", VideoCodec = codec, HwAccel = HwAccel.None, VideoBitrate = Bitrate.FromMbps(16), GopSize = 12,
+        TargetResolution = size, OutputFrameRate = rate, ScanType = scan,
+        AudioCodec = AudioCodec.Aac, AudioLayout = AudioLayout.Stereo, Container = ContainerFormat.Ts,
+    };
+
+    private static SignalInfo Signal(int width, int height, FrameRate rate, ScanType? scan) => new(SignalState.Locked,
+        new Resolution(width, height), rate, AudioLayout.Stereo, HasAudio: true, Timecode: null, Bitrate: null, Scan: scan);
+
+    [Fact]
+    public void BuildLive_InterlacedPreset_ScalesAndConvertsEachFieldApart()
+    {
+        // 1080i59.94 de la DeckLink (uyvy422) → un preset 1080i en 4:2:0: la conversión del croma promediaba el de los dos campos
+        // (idet veía el croma progresivo: color fantasma en lo que se mueve), y un 576i desde un 1080i salía sin campos. Con interl=1,
+        // cada campo por su lado; el preset 4:2:2 no cambia de croma, pero va igual.
+        var signal = Signal1080(FrameRate.P2997, ScanType.InterlacedTff);
+        Assert.Equal(new[] { "scale=interl=1", "setfield=mode=tff", "format=yuv420p" },
+            RecordChain(BuildLiveFrom(signal, Interlaced(VideoCodec.Mpeg2Video, null, FrameRate.P2997))));
+        Assert.Equal(new[] { "scale=720:576:interl=1", "setfield=mode=tff", "format=yuv420p" },
+            RecordChain(BuildLiveFrom(signal, Interlaced(VideoCodec.H264x264, new Resolution(720, 576), FrameRate.P25))));
+        var xdcam = Interlaced(VideoCodec.Mpeg2Video, new Resolution(1920, 1080), FrameRate.P2997);
+        xdcam.PixelFormat = PixelFormat.Yuv422p;
+        Assert.Equal(new[] { "scale=1920:1080:interl=1", "setfield=mode=tff", "format=yuv422p" }, RecordChain(BuildLiveFrom(signal, xdcam)));
+    }
+
+    [Theory]
+    [InlineData(720, 578, PixelFormat.Yuv420p, false)]   // 289 líneas por campo en 4:2:0: swscale tumba a FFmpeg (segfault)
+    [InlineData(720, 486, PixelFormat.Yuv420p, false)]   // la NTSC de la DeckLink, a su tamaño, en 4:2:0
+    [InlineData(1920, 1082, PixelFormat.Yuv420p, false)]
+    [InlineData(720, 578, PixelFormat.Yuv422p, true)]    // en 4:2:2, a cualquier alto par
+    [InlineData(720, 486, PixelFormat.Yuv422p, true)]
+    [InlineData(720, 576, PixelFormat.Yuv420p, true)]
+    [InlineData(720, 480, PixelFormat.Yuv420p, true)]
+    [InlineData(1920, 1080, PixelFormat.Yuv420p, true)]
+    public void BuildLive_InterlacedPreset_SplitsTheFieldsOnlyWhereSwscaleCan(int width, int height, PixelFormat pix, bool byFields)
+    {
+        // Medido el 2026-10-19 con FFmpeg 8.0 desde un 1080i: escalar por campos a 574, 578, 486 o 1082 en 4:2:0 hace caer a FFmpeg.
+        // Ahí se convierte como antes (mezcla el croma de los campos, pero graba).
+        var profile = Interlaced(VideoCodec.Mpeg2Video, new Resolution(width, height), FrameRate.P2997);
+        profile.PixelFormat = pix;
+        string format = pix is PixelFormat.Yuv422p ? "yuv422p" : "yuv420p";
+        Assert.Equal(new[] { $"scale={width}:{height}{(byFields ? ":interl=1" : "")}", "setfield=mode=tff", $"format={format}" },
+            RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile)));
+        // Lo mismo a tamaño nativo con una fuente de ese alto.
+        profile.TargetResolution = null;
+        var native = RecordChain(BuildLiveFrom(Signal(width, height, FrameRate.P2997, ScanType.InterlacedTff), profile));
+        Assert.Equal(byFields, native.Contains("scale=interl=1"));
+    }
+
+    [Fact]
+    public void BuildLive_ShiftingTheFieldsAtAHeightSwscaleCannotSplit_LeavesTheConversionToFfmpeg()
+    {
+        var profile = Interlaced(VideoCodec.Mpeg2Video, null, FrameRate.P2997);
+        var chain = RecordChain(BuildLiveFrom(Signal(720, 486, FrameRate.P2997, ScanType.InterlacedBff), profile));
+        Assert.Equal(new[] { "setfield=mode=bff", "fieldorder=tff", "format=yuv420p" }, chain);
+    }
+
+    [Fact]
+    public void Build_InterlacedPreset_ScalesEachFieldApart()
+    {
+        Assert.Contains("scale=720:576:interl=1,setfield=mode=tff", Build(Interlaced(VideoCodec.H264x264, new Resolution(720, 576), FrameRate.P25)).Joined);
+        Assert.Contains("scale=1920:1080:interl=1,setfield=mode=bff",
+            Build(Interlaced(VideoCodec.Mpeg2Video, new Resolution(1920, 1080), FrameRate.P25, ScanType.InterlacedBff)).Joined);
+        // A tamaño nativo de una fuente que aún no dijo el suyo no se sabe si swscale puede (ver CanScaleByFields): como siempre.
+        var native = Build(Interlaced(VideoCodec.Mpeg2Video, null, FrameRate.P25, ScanType.InterlacedBff)).Joined;
+        Assert.Contains("setfield=mode=bff", native);
+        Assert.DoesNotContain("interl=1", native);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedBff, ScanType.InterlacedTff, "bff", "tff")] // NTSC de la DeckLink (inferior primero) → un 480i TFF
+    [InlineData(ScanType.InterlacedTff, ScanType.InterlacedBff, "tff", "bff")]
+    public void BuildLive_InterlacedPreset_FromASourceWithTheOtherFieldOrder_ShiftsTheFields(ScanType source, ScanType preset, string from, string to)
+    {
+        // Cambiar solo la marca reproducía los campos en el orden inverso: el movimiento, a saltos atrás y adelante. fieldorder no
+        // admite croma submuestreado en vertical: la conversión, por campos, detrás.
+        var chain = RecordChain(BuildLiveFrom(Signal(720, 486, FrameRate.P2997, source),
+            Interlaced(VideoCodec.Mpeg2Video, new Resolution(720, 480), FrameRate.P2997, preset)));
+        Assert.Equal(new[] { "scale=720:480:interl=1", $"setfield=mode={from}", $"fieldorder={to}", "scale=interl=1", "format=yuv420p" }, chain);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedTff)]
+    [InlineData(null)] // barrido desconocido: no hay nada que cambiar
+    public void BuildLive_InterlacedPreset_FromASourceWithItsFieldOrder_OnlyMarksIt(ScanType? source)
+        => Assert.Equal(new[] { "scale=interl=1", "setfield=mode=tff", "format=yuv420p" },
+            RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, source), Interlaced(VideoCodec.Mpeg2Video, null, FrameRate.P2997))));
+
+    [Theory]
+    [InlineData(60000, 1001, 30000, 1001, ScanType.InterlacedTff, "tff")] // NDI 1080p59.94 → 1080i59.94
+    [InlineData(50, 1, 25, 1, ScanType.InterlacedTff, "tff")]             // 1080p50 → 1080i25
+    [InlineData(60000, 1001, 30000, 1001, ScanType.InterlacedBff, "bff")]
+    public void BuildLive_InterlacedPreset_FromAProgressiveSourceAtTwiceItsRate_WeavesTheFields(int srcN, int srcD, int outN, int outD,
+        ScanType scan, string parity)
+    {
+        // -r tiraba un cuadro de cada dos y marcaba los que quedaban como entrelazados: los dos campos del mismo instante, la mitad del
+        // movimiento. interlace teje un campo de cada cuadro: escalar antes (cuadros progresivos), convertir después, por campos.
+        var chain = RecordChain(BuildLiveFrom(Signal1080(new FrameRate(srcN, srcD), ScanType.Progressive),
+            Interlaced(VideoCodec.Mpeg2Video, new Resolution(1920, 1080), new FrameRate(outN, outD), scan)));
+        Assert.Equal(new[] { "scale=1920:1080", $"interlace=scan={parity}", "scale=interl=1", $"setfield=mode={parity}", "format=yuv420p" }, chain);
+    }
+
+    [Theory]
+    [InlineData(30000, 1001, ScanType.Progressive)] // a la misma cadencia: cada cuadro son los dos campos de un instante
+    [InlineData(60000, 1001, null)]                 // barrido desconocido
+    [InlineData(60000, 1001, ScanType.InterlacedTff)]
+    public void BuildLive_InterlacedPreset_OtherwiseDoesNotWeave(int srcN, int srcD, ScanType? scan)
+        => Assert.DoesNotContain(RecordChain(BuildLiveFrom(Signal1080(new FrameRate(srcN, srcD), scan),
+                Interlaced(VideoCodec.Mpeg2Video, new Resolution(1920, 1080), FrameRate.P2997))),
+            f => f.StartsWith("interlace", StringComparison.Ordinal));
+
+    [Fact]
+    public void BuildLive_ASourceWithGapsThatIsWoven_IsFilledFirst_AtItsRate_AndTheTimecodeCountsTheWovenRate()
+    {
+        // Como bwdif por campo, interlace necesita un cuadro por periodo de la fuente; drawtext recibe los tejidos (29.97).
+        var profile = Interlaced(VideoCodec.H264x264, new Resolution(1920, 1080), FrameRate.P2997);
+        profile.BurnTimecode = true;
+        var joined = BuildLiveSparse(Signal1080(FrameRate.P5994, ScanType.Progressive), profile);
+        Assert.Equal(new[] { "fps=60000/1001", "scale=1920:1080", "interlace=scan=tff", "scale=interl=1", "setfield=mode=tff" },
+            RecordChain(joined).Take(5));
+        Assert.Contains("drawtext=timecode='00\\:00\\:00\\:00':rate=30:", joined);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(joined, "fps="));
     }
 
     [Fact]

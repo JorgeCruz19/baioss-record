@@ -1,5 +1,6 @@
 using System.Globalization;
 using Baioss.Record.Application.Localization;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.ValueObjects;
 
 namespace Baioss.Record.Application.Channels;
@@ -17,7 +18,12 @@ public readonly record struct FrameRateConversion
     // 30 frente a 29,97 es un 0,1 %: eso SÍ es una conversión (FFmpeg descarta un frame de cada 1001).
     private const double SameRateTolerance = 0.0005;
 
-    private FrameRateConversion(FrameRate? source, FrameRate? output) { Source = source; Output = output; }
+    private FrameRateConversion(FrameRate? source, FrameRate? output, bool byFields)
+    {
+        Source = source;
+        Output = output;
+        ByFields = byFields;
+    }
 
     /// <summary>Tasa a la que llega la fuente; null si no se conoce.</summary>
     public FrameRate? Source { get; }
@@ -25,14 +31,33 @@ public readonly record struct FrameRateConversion
     /// <summary>Tasa que fija el perfil (<c>-r</c>); null = la de la fuente, sin conversión.</summary>
     public FrameRate? Output { get; }
 
+    /// <summary>
+    /// La conversión es de campos a cuadros o al revés, sin descartar ni repetir nada: un entrelazado lleva dos campos por cuadro, y el
+    /// motor saca un cuadro por campo de un 1080i29.97 para un preset 1080p59.94 (bwdif) y teje dos cuadros de un 1080p59.94 en uno de
+    /// un preset 1080i29.97 (interlace). Antes la etiqueta decía que se repetía o se descartaba la mitad de los frames.
+    /// </summary>
+    public bool ByFields { get; }
+
     /// <param name="source">Tasa a la que llega la fuente (la de su señal), o null si no se conoce.</param>
     /// <param name="output">Tasa de salida del perfil (<c>RecordingProfile.OutputFrameRate</c>), o null si sigue a la fuente.</param>
-    public static FrameRateConversion For(FrameRate? source, FrameRate? output) => new(Valid(source), Valid(output));
+    /// <param name="sourceScan">Barrido de la señal, si se conoce.</param>
+    /// <param name="outputScan">Barrido del perfil.</param>
+    public static FrameRateConversion For(FrameRate? source, FrameRate? output, ScanType? sourceScan = null, ScanType outputScan = ScanType.Progressive)
+    {
+        var s = Valid(source);
+        var o = Valid(output);
+        // La misma tolerancia que FfmpegArgumentBuilder.DeinterlaceFilter y WeaveFilter, que deciden si se hace.
+        static bool Twice(double twice, double once) => Math.Abs(twice - 2 * once) < 0.01 * twice;
+        bool byFields = s is { } sr && o is { } or
+            && ((sourceScan is ScanType.InterlacedTff or ScanType.InterlacedBff && outputScan is ScanType.Progressive && Twice(or.Value, sr.Value))
+                || (sourceScan is ScanType.Progressive && outputScan is not ScanType.Progressive && Twice(sr.Value, or.Value)));
+        return new(s, o, byFields);
+    }
 
     private static FrameRate? Valid(FrameRate? rate) => rate is { Numerator: > 0, Denominator: > 0 } r ? r : null;
 
-    /// <summary>El perfil fija una tasa distinta de la de la fuente (las dos conocidas).</summary>
-    public bool IsMismatch => Source is { } s && Output is { } o && Math.Abs(o.Value - s.Value) > SameRateTolerance * s.Value;
+    /// <summary>El perfil fija una tasa distinta de la de la fuente (las dos conocidas), y no es pasar de campos a cuadros o al revés.</summary>
+    public bool IsMismatch => !ByFields && Source is { } s && Output is { } o && Math.Abs(o.Value - s.Value) > SameRateTolerance * s.Value;
 
     /// <summary>El preset graba MÁS LENTO que la fuente: FFmpeg descarta frames de entrada para convertir.</summary>
     public bool DropsFrames => IsMismatch && Output!.Value.Value < Source!.Value.Value;

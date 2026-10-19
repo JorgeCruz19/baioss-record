@@ -1667,7 +1667,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             var current = _recordProfile;
             if (current is null || _state is not (RecordingState.Recording or RecordingState.Starting)) return;
 
-            var next = EncoderFallbackChain.Next(current.VideoCodec);
+            var next = EncoderFallbackChain.Next(current.VideoCodec, current.PixelFormat);
             if (next is null)
             {
                 // Ya es CPU/intra y no abre con lo que pide el perfil (tamaño, formato de píxel, tasa…): no hay a qué degradar, y

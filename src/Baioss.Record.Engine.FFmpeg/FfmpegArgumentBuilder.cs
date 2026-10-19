@@ -300,13 +300,23 @@ public sealed class FfmpegArgumentBuilder
             var recChain = new List<string>();
             // Desentrelazar ANTES de escalar: escalar en vertical cuadros con dos campos entretejidos los mezcla.
             string? deinterlace = DeinterlaceFilter(source.CurrentSignal, profile);
+            // Lo contrario: un preset entrelazado con una fuente progresiva al doble de su cadencia teje los campos (ver WeaveFilter).
+            string? weave = WeaveFilter(source.CurrentSignal, profile);
             // Una fuente con huecos (NDI con marcas) se graba a cadencia constante: al final de la rama o, si algo de ella necesita un
             // cuadro por periodo, al principio (ver SparseVideoFill).
-            var fill = SparseVideoFill(source, profile, deinterlace);
+            var fill = SparseVideoFill(source, profile, deinterlace, weave);
             if (fill is { AtStart: true } early) recChain.Add(early.Filter);
             if (deinterlace is not null) recChain.Add(deinterlace);
+            // Un preset entrelazado escala y convierte cada CAMPO por separado (interl=1). Si no, el escalado vertical mezclaba los
+            // dos campos (un 576i desde un 1080i salía sin campos, con el movimiento doblado) y la conversión del croma de 4:2:2 a
+            // 4:2:0 promediaba los de los dos campos aun sin cambiar de tamaño: color fantasma en todo lo que se mueve (medido con idet
+            // en el croma de los presets 1080i en 4:2:0 desde un 1080i59.94 en uyvy422, como el de la DeckLink, el 2026-10-18). Solo
+            // donde swscale lo hace bien (ver CanScaleByFields): con otro alto, la conversión de siempre, que no tumba a FFmpeg.
+            bool interlaced = profile.ScanType is not ScanType.Progressive;
+            string recFormat = RecordingFilterPixelFormat(profile, recFrame, recRate);
+            bool byFields = interlaced && CanScaleByFields(recFrame, recFormat);
             if (profile.TargetResolution is { } r)
-                recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
+                recChain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}{(byFields && weave is null ? ":interl=1" : "")}"));
             // …y convertir al formato del encoder DESPUÉS de bwdif, también sin tamaño fijo. bwdif sale en el formato en que
             // entra: sin un scale detrás, el format= final se lo impone y FFmpeg convierte la fuente ANTES de desentrelazar. Con
             // la DeckLink (uyvy422) y un destino 4:2:0, el croma de los dos campos se promediaba: una franja de color tan ancha
@@ -316,15 +326,17 @@ public sealed class FfmpegArgumentBuilder
             // (Un format=yuv422p fijo delante de bwdif no sirve: a una fuente 4:2:0 le mezclaría los campos al subirla a 4:2:2.)
             else if (deinterlace is not null)
                 recChain.Add("scale");
-            if (profile.ScanType is ScanType.InterlacedTff) recChain.Add("setfield=mode=tff");
-            else if (profile.ScanType is ScanType.InterlacedBff) recChain.Add("setfield=mode=bff");
+            if (weave is not null) recChain.Add(weave);
+            // Sin tamaño fijo (o tras tejer los campos, que es después de escalar), la conversión por campos va en un scale sin tamaño.
+            if (byFields && (weave is not null || profile.TargetResolution is null)) recChain.Add("scale=interl=1");
+            if (interlaced) recChain.AddRange(FieldOrderFilters(source.CurrentSignal, profile, woven: weave is not null, byFields));
             if (profile.BurnTimecode)
-                recChain.AddRange(TimecodeFilters(profile, TimecodeInputRate(source.CurrentSignal.FrameRate, deinterlace, fill)));
+                recChain.AddRange(TimecodeFilters(profile, TimecodeInputRate(source.CurrentSignal.FrameRate, deinterlace, fill, woven: weave is not null)));
             // SIEMPRE como último paso de la rama de grabación: convertir al formato del encoder. La fuente puede
             // entregar un pixel format que el encoder por hardware NO acepta (NDI sirve uyvy422 y h264_nvenc lo
             // rechaza con EINVAL/-22); al venir de un filter_complex FFmpeg no auto-inserta la conversión, así que
             // la hacemos explícita. Si el formato ya coincide, es un no-op barato.
-            recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={RecordingFilterPixelFormat(profile, recFrame, recRate)}"));
+            recChain.Add(string.Create(CultureInfo.InvariantCulture, $"format={recFormat}"));
             if (fill is { AtStart: false } late) recChain.Add(late.Filter);
 
             filter.Append("[0:v]split=2[vrec][vprev];");
@@ -436,6 +448,49 @@ public sealed class FfmpegArgumentBuilder
     }
 
     /// <summary>
+    /// Entrelazado de la rama de grabación cuando el preset es ENTRELAZADO y la señal PROGRESIVA al doble de su cadencia (1080p59.94
+    /// de un NDI → 1080i29.97, 1080p50 → 1080i25): cada cuadro grabado lleva un campo de un cuadro de la fuente y el otro campo del
+    /// siguiente, el movimiento de la fuente a la cadencia de campo. Sin él, <c>-r</c> tiraba un cuadro de cada dos y marcaba los que
+    /// quedaban como entrelazados: los dos campos del mismo instante, la mitad del movimiento. Con una señal progresiva a la misma
+    /// cadencia, cada cuadro es los dos campos de un instante (como siempre); señal entrelazada o desconocida, o preset progresivo: null.
+    /// </summary>
+    internal static string? WeaveFilter(SignalInfo signal, RecordingProfile profile)
+    {
+        if (profile.AudioOnly || profile.ScanType is ScanType.Progressive || signal.Scan is not ScanType.Progressive) return null;
+        if (profile.OutputFrameRate is not { Value: > 0 } output || signal.FrameRate is not { Value: > 0 } input
+            || Math.Abs(input.Value - 2 * output.Value) >= 0.01 * input.Value)
+            return null;
+        return $"interlace=scan={(profile.ScanType is ScanType.InterlacedBff ? "bff" : "tff")}";
+    }
+
+    /// <summary>
+    /// La marca de campos de un preset entrelazado. Si la señal es entrelazada con el otro orden de campos (la NTSC de la DeckLink va
+    /// con el inferior primero y los presets 480i con el superior), <c>fieldorder</c> desplaza la imagen una línea para que el campo
+    /// que va primero en el tiempo sea el que pide el preset: solo cambiar la marca hacía que se reprodujeran en el orden inverso (el
+    /// movimiento a saltos atrás y adelante). fieldorder no admite croma submuestreado en vertical, así que la conversión al formato
+    /// del codificador, otra vez por campos, va detrás. Con los campos ya tejidos (<paramref name="woven"/>), con la misma paridad o
+    /// con una señal de barrido desconocido, solo la marca.
+    /// </summary>
+    internal static IReadOnlyList<string> FieldOrderFilters(SignalInfo signal, RecordingProfile profile, bool woven, bool byFields = true)
+    {
+        string target = profile.ScanType is ScanType.InterlacedBff ? "bff" : "tff";
+        string? source = signal.Scan switch { ScanType.InterlacedTff => "tff", ScanType.InterlacedBff => "bff", _ => null };
+        if (woven || source is null || source == target) return new[] { $"setfield=mode={target}" };
+        return byFields
+            ? new[] { $"setfield=mode={source}", $"fieldorder={target}", "scale=interl=1" }
+            : new[] { $"setfield=mode={source}", $"fieldorder={target}" };
+    }
+
+    /// <summary>
+    /// ¿Se puede escalar y convertir por campos (<c>scale</c> con <c>interl=1</c>) a ese tamaño y formato? Con un destino 4:2:0 el
+    /// alto tiene que ser múltiplo de 4, cada campo con un número par de líneas: a 486, 574, 578 o 1082 swscale tumba a FFmpeg
+    /// (segfault, medido el 2026-10-19 con FFmpeg 8.0 desde un 1080i). En 4:2:2 y 4:4:4, a cualquier alto par. Sin tamaño conocido,
+    /// no: la conversión de siempre, que mezcla el croma de los campos pero graba.
+    /// </summary>
+    internal static bool CanScaleByFields(Resolution? frame, string pixelFormat) =>
+        frame is { Height: > 0 } f && (f.Height % 4 == 0 || pixelFormat is not ("yuv420p" or "nv12" or "yuv420p10le" or "p010le"));
+
+    /// <summary>
     /// Relleno de la grabación de una fuente con huecos (<see cref="ICaptureSource.DeliversSparseVideo"/>: NDI, que sirve solo los
     /// cuadros que llegan, cada uno con su periodo): a cadencia constante —la del preset o, si la deja en nativo, la declarada por
     /// la fuente— con un <c>fps</c>, que lo hace por las marcas: cada periodo con el último cuadro llegado en él o antes, y el
@@ -452,23 +507,28 @@ public sealed class FfmpegArgumentBuilder
     /// sirve: adelanta un periodo cada cuadro que llega tras un hueco (medido con FFmpeg 8.0 y el incluido). Null si la fuente no
     /// tiene huecos o no se conoce su cadencia.
     /// </summary>
-    internal static (string Filter, bool AtStart, FrameRate Rate)? SparseVideoFill(ICaptureSource source, RecordingProfile profile, string? deinterlace)
+    internal static (string Filter, bool AtStart, FrameRate Rate)? SparseVideoFill(ICaptureSource source, RecordingProfile profile, string? deinterlace,
+        string? weave = null)
     {
         if (!source.DeliversSparseVideo || profile.AudioOnly || source.CurrentSignal.FrameRate is not { Numerator: > 0, Denominator: > 0 } declared)
             return null;
-        bool perField = deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false;
+        // Como bwdif por campo, tejer los campos (WeaveFilter) necesita un cuadro por periodo de la fuente.
+        bool perField = (deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false) || weave is not null;
         bool atStart = profile.BurnTimecode || perField;
         var rate = perField ? declared : profile.OutputFrameRate is { Numerator: > 0, Denominator: > 0 } output ? output : declared;
         return (string.Create(CultureInfo.InvariantCulture, $"fps={rate.Numerator}/{rate.Denominator}"), atStart, rate);
     }
 
     /// <summary>Cadencia de los cuadros que llegan a drawtext en la rama de grabación: la del relleno si va al principio (fuente con
-    /// huecos) o la de la señal; el doble si bwdif saca un cuadro por campo. Null si no se conoce.</summary>
-    internal static FrameRate? TimecodeInputRate(FrameRate? signalRate, string? deinterlace, (string Filter, bool AtStart, FrameRate Rate)? fill)
+    /// huecos) o la de la señal; el doble si bwdif saca un cuadro por campo, la mitad si se tejieron los campos de dos cuadros
+    /// (<paramref name="woven"/>). Null si no se conoce.</summary>
+    internal static FrameRate? TimecodeInputRate(FrameRate? signalRate, string? deinterlace, (string Filter, bool AtStart, FrameRate Rate)? fill,
+        bool woven = false)
     {
         var rate = fill is { AtStart: true } early ? early.Rate : signalRate;
         bool perField = deinterlace?.Contains("send_field", StringComparison.Ordinal) ?? false;
-        return perField && rate is { } r ? new FrameRate(r.Numerator * 2, r.Denominator) : rate;
+        if (perField && rate is { } r) return new FrameRate(r.Numerator * 2, r.Denominator);
+        return woven && rate is { } w ? new FrameRate(w.Numerator, w.Denominator * 2) : rate;
     }
 
     /// <summary>
@@ -832,8 +892,14 @@ public sealed class FfmpegArgumentBuilder
         // El escalado va por software (scale): así el encoder (incl. NVENC) funciona con frames de CPU
         // sin exigir una cadena _cuda completa, manteniéndolo robusto en cualquier GPU.
         var chain = new List<string>();
+        // Entrelazado: escalado y conversión al formato del codificador por campos, como en la rama de grabación en vivo (y, como allí,
+        // solo a un alto que swscale aguanta: ver CanScaleByFields).
+        bool byFields = p.ScanType is not ScanType.Progressive
+                        && CanScaleByFields(p.TargetResolution ?? _source?.CurrentSignal.Resolution, EncoderPixelFormat(p, p.TargetResolution, p.OutputFrameRate) ?? "nv12");
         if (p.TargetResolution is { } r)
-            chain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}"));
+            chain.Add(string.Create(CultureInfo.InvariantCulture, $"scale={r.Width}:{r.Height}{(byFields ? ":interl=1" : "")}"));
+        else if (byFields)
+            chain.Add("scale=interl=1");
         // Marca los cuadros como entrelazados (campo TFF/BFF) para que el encoder los codifique así.
         if (p.ScanType is ScanType.InterlacedTff)
             chain.Add("setfield=mode=tff");
@@ -881,7 +947,9 @@ public sealed class FfmpegArgumentBuilder
                 default: // CBR
                     list.AddRange(new[] { "-rc", "cbr", "-b:v", bitrate }); break;
             }
-            list.AddRange(new[] { "-g", gop, "-bf", "0" });
+            // Solo intra (GOP 1) se le pide a NVENC con -g 0: con -g 1, h264_nvenc no abre («Gop Length should be greater than number
+            // of B frames + 1») y el canal degradaba a QuickSync (medido el 2026-10-19 con una P400; con -g 0, todos los cuadros I).
+            list.AddRange(new[] { "-g", p.GopSize <= 1 ? "0" : gop, "-bf", "0" });
             // -no-scenecut (NVENC) es booleano y EXIGE valor explícito: la forma «bare» hace que FFmpeg tome el
             // siguiente token (-c:a) como su valor y deje «aac» suelto como nombre de archivo de salida → aborta
             // con EINVAL (-22) «Unable to choose an output format for 'aac'». Debe ir como «-no-scenecut 1».
@@ -992,7 +1060,7 @@ public sealed class FfmpegArgumentBuilder
         if (p.VideoCodec is VideoCodec.ProRes) return ProResFormat(p).PixelFormat;
         if (DnxhdBitrateMbps(p, frame, rate) is not null) return DnxhdPixelFormat(p);
         return FfmpegCodecMap.PixelFormatArg(p.PixelFormat)
-               ?? ProfilePixelFormat(p.EncoderProfile)
+               ?? ProfilePixelFormat(p.VideoCodec, p.EncoderProfile)
                ?? DefaultPixelFormat(p.VideoCodec);
     }
 
@@ -1106,7 +1174,7 @@ public sealed class FfmpegArgumentBuilder
     /// <summary>Formato de píxel del DNxHD clásico: 8 bits salvo que el preset pida 10 bits —en el formato de píxel o con el
     /// perfil HQX— (los CID «x»: 220x…) o 4:4:4, que no tiene CID clásico en FFmpeg y deja el preset en DNxHR 444.</summary>
     private static string DnxhdPixelFormat(RecordingProfile p)
-        => (FfmpegCodecMap.PixelFormatArg(p.PixelFormat) ?? ProfilePixelFormat(p.EncoderProfile)) switch
+        => (FfmpegCodecMap.PixelFormatArg(p.PixelFormat) ?? ProfilePixelFormat(p.VideoCodec, p.EncoderProfile)) switch
         {
             "yuv422p10le" or "yuv420p10le" => "yuv422p10le",
             "yuv444p10le" => "yuv444p10le",
@@ -1130,13 +1198,15 @@ public sealed class FfmpegArgumentBuilder
         return args;
     }
 
-    /// <summary>Píxel natural de un perfil intra cuando el preset no fija PixelFormat explícito.</summary>
-    private static string? ProfilePixelFormat(EncoderProfile profile) => profile switch
-    {
-        EncoderProfile.ProRes4444 or EncoderProfile.ProRes4444Xq or EncoderProfile.DnxHr444 => "yuv444p10le",
-        EncoderProfile.DnxHrHqx => "yuv422p10le",
-        _ => null
-    };
+    /// <summary>
+    /// Píxel natural de un perfil DNxHR cuando el preset no fija PixelFormat explícito (HQX 10 bits, 444 4:4:4), y solo con DNx. Un
+    /// perfil de otra familia que quedó en un preset al cambiarle el códec (ProRes 4444 XQ con DNxHR o con x264) no dice nada:
+    /// antes colaba su 4:4:4 y FFmpeg no abría «dnxhr_hq» con yuv444p10le (la grabación no arrancaba) o x264 grababa 4:4:4 de 10
+    /// bits sin que nadie lo pidiera (medido el 2026-10-19). ProRes saca el suyo de <see cref="ProResFormat"/>.
+    /// </summary>
+    private static string? ProfilePixelFormat(VideoCodec codec, EncoderProfile profile) => codec is VideoCodec.DnxHd or VideoCodec.DnxHr
+        ? profile switch { EncoderProfile.DnxHr444 => "yuv444p10le", EncoderProfile.DnxHrHqx => "yuv422p10le", _ => null }
+        : null;
 
     private static string? DefaultPixelFormat(VideoCodec codec) => codec switch
     {

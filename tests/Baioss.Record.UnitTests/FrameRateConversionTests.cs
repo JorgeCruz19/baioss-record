@@ -1,6 +1,7 @@
 using System.Globalization;
 using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Localization;
+using Baioss.Record.Domain;
 using Baioss.Record.Domain.ValueObjects;
 using Xunit;
 
@@ -144,5 +145,34 @@ public sealed class FrameRateConversionTests : IDisposable
         Assert.Equal("29,97", FrameRateConversion.Fps(FrameRate.P2997));
         CultureInfo.CurrentCulture = new CultureInfo("es-HN"); // Honduras: punto decimal
         Assert.Equal("29.97", FrameRateConversion.Fps(FrameRate.P2997));
+    }
+
+    [Theory]
+    // Un cuadro por campo: 1080i29.97 → 1080p59.94 (bwdif) no repite nada.
+    [InlineData(30000, 1001, ScanType.InterlacedTff, 60000, 1001, ScanType.Progressive)]
+    [InlineData(25, 1, ScanType.InterlacedBff, 50, 1, ScanType.Progressive)]
+    // Dos cuadros tejidos en uno: 1080p59.94 → 1080i29.97 (interlace) no descarta nada.
+    [InlineData(60000, 1001, ScanType.Progressive, 30000, 1001, ScanType.InterlacedTff)]
+    [InlineData(50, 1, ScanType.Progressive, 25, 1, ScanType.InterlacedBff)]
+    public void FieldsToFramesOrFramesToFields_IsNoConversion(int sn, int sd, ScanType sourceScan, int on, int od, ScanType outputScan)
+    {
+        var c = FrameRateConversion.For(new FrameRate(sn, sd), new FrameRate(on, od), sourceScan, outputScan);
+        Assert.True(c.ByFields);
+        Assert.False(c.IsMismatch);
+        Assert.Equal(0, c.DroppedFraction);
+        Assert.Equal(0, c.DuplicatedFraction);
+        Assert.Null(c.Badge());
+    }
+
+    [Theory]
+    [InlineData(30000, 1001, ScanType.Progressive, 60000, 1001, ScanType.Progressive)]   // un progresivo al doble sí repite
+    [InlineData(30000, 1001, null, 60000, 1001, ScanType.Progressive)]                    // barrido desconocido: como siempre
+    [InlineData(60000, 1001, ScanType.Progressive, 25, 1, ScanType.InterlacedTff)]        // 59,94 → 25i no es tejer: descarta
+    [InlineData(60000, 1001, ScanType.InterlacedTff, 30000, 1001, ScanType.InterlacedTff)]
+    public void OtherwiseTheScanChangesNothing(int sn, int sd, ScanType? sourceScan, int on, int od, ScanType outputScan)
+    {
+        var c = FrameRateConversion.For(new FrameRate(sn, sd), new FrameRate(on, od), sourceScan, outputScan);
+        Assert.False(c.ByFields);
+        Assert.True(c.IsMismatch);
     }
 }
