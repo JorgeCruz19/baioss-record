@@ -661,8 +661,8 @@ public class FfmpegArgumentBuilderTests : IDisposable
     [Fact]
     public void BuildLive_ASourceWithGaps_DeinterlacedPerField_OrWithABurntTimecode_IsFilledFirst_AtItsRate()
     {
-        // bwdif pone el segundo campo a medio camino del cuadro siguiente (tras un hueco, lejos) y drawtext cuenta cuadros: esas ramas
-        // reciben un cuadro por periodo de la fuente, como antes.
+        // bwdif pone el segundo campo a medio camino del cuadro siguiente (tras un hueco, lejos): esa rama recibe un cuadro por periodo
+        // de la fuente, como antes. drawtext numera los cuadros que le entran: recibe los de la cadencia que se graba.
         var perField = BuildLiveSparse(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P5994));
         Assert.Contains("[vrec]fps=30000/1001,bwdif=mode=send_field:parity=tff:deint=all,scale=1920:1080", perField);
         Assert.DoesNotContain(",fps=", perField);
@@ -673,8 +673,37 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var timecode = Progressive(VideoCodec.H264x264, FrameRate.P2997);
         timecode.BurnTimecode = true;
         var burnt = BuildLiveSparse(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive), timecode);
-        Assert.Contains("[vrec]fps=60000/1000,scale=1920:1080,drawtext=", burnt);
+        // A la declarada (60) con rate=30, el timecode corría al doble (medido el 2026-10-18 con un grafismo como Offside).
+        Assert.Contains("[vrec]fps=30000/1001,scale=1920:1080,drawtext=timecode='00\\:00\\:00\\:00':rate=30:", burnt);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(burnt, "fps="));
         Assert.Contains("-r 30000/1001", burnt);
+    }
+
+    [Theory]
+    [InlineData(25, 1, "fps=25/1,")]   // 1080i59.94 → 1080p25: drawtext contaba 29.97 cuadros por segundo con rate=25 (1,2×)
+    [InlineData(30000, 1001, "")]      // la misma cadencia: nada que convertir
+    [InlineData(60000, 1001, "")]      // un cuadro por campo: bwdif ya saca 59.94
+    [InlineData(60, 1, "")]            // 59.94 y 60 son la misma (menos de un 0,2 %)
+    public void BuildLive_ABurntTimecode_GetsItsFramesAtTheRateItCounts(int rateN, int rateD, string conversion)
+    {
+        var profile = Progressive(VideoCodec.H264x264, new FrameRate(rateN, rateD));
+        profile.BurnTimecode = true;
+        var chain = string.Join(',', RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile)));
+        int tcRate = (int)Math.Round((double)rateN / rateD, MidpointRounding.AwayFromZero);
+        Assert.Contains($"scale=1920:1080,{conversion}drawtext=timecode='00\\:00\\:00\\:00':rate={tcRate}:", chain);
+    }
+
+    [Fact]
+    public void Build_ABurntTimecode_GetsItsFramesAtTheRecordedRate_AlsoFromASourceWithGaps()
+    {
+        // El camino del archivo único rotulaba con «25» fijo.
+        var source = new FakeCaptureSource("C:/clips/in.mp4") { DeliversSparseVideo = true };
+        source.Emit(Signal1080(new FrameRate(60000, 1000), ScanType.Progressive));
+        var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
+        profile.BurnTimecode = true;
+        var joined = string.Join(' ', new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out").Build());
+        Assert.Contains("[0:v]fps=60000/1000[vfill]", joined);
+        Assert.Contains("scale=1920:1080,fps=30000/1001,drawtext=timecode='00\\:00\\:00\\:00':rate=30:", joined);
     }
 
     [Fact]
