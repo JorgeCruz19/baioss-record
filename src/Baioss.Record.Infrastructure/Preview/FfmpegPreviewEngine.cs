@@ -30,6 +30,7 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
 {
     private readonly IFfmpegLocator _locator;
     private readonly ILogger<FfmpegPreviewEngine> _log;
+    private readonly FfmpegMeterReader _meters = new();
 
     private Process? _process;
     private CancellationTokenSource? _cts;
@@ -109,9 +110,9 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
         args.Add("pipe:1");
 
         // Salida 2 — medición de loudness/true-peak de la señal en vivo (FTPK por stderr),
-        // descartada al dispositivo nulo. Alimenta los medidores VU de forma continua.
+        // descartada al dispositivo nulo. Alimenta los medidores VU de forma continua. Con más de 2 canales, uno por canal.
         args.Add("-map"); args.Add("0:a:0?");
-        args.Add("-af"); args.Add("ebur128=peak=true");
+        args.Add("-af"); args.Add(FfmpegArgumentBuilder.MeterFilter(source.AudioChannelCount));
         args.Add("-f"); args.Add("null");
         args.Add("NUL");
         return args;
@@ -119,9 +120,10 @@ public sealed class FfmpegPreviewEngine : IPreviewEngine, IChannelPreviewSource
 
     private void OnStderr(string line)
     {
-        // Líneas de ebur128: "… FTPK: -16.6 -16.9 dBFS …" (un valor por canal: 1 mono, 2 estéreo, N multicanal).
-        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks)
+        // Líneas de ebur128: "… FTPK: -16.6 -16.9 dBFS …" (un valor por canal: 1 mono, 2 estéreo) o, multicanal, una por canal.
+        if (_meters.TryRead(line, out var peaks))
         {
+            if (peaks is null) return;
             AudioPeaksUpdated?.Invoke(this, peaks);
             double peak = peaks.Max();
             AudioLevelsUpdated?.Invoke(this, new AudioLevels(peak, peak, peak > -1));

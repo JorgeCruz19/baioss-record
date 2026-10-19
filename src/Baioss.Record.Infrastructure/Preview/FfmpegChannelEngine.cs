@@ -30,6 +30,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private readonly IFfmpegLocator _locator;
     private readonly ILogger _log;
     private readonly FfmpegProgressParser _parser = new();
+    private readonly FfmpegMeterReader _meters = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     // Colchón de preview (ver PreviewPacer): los frames del sumidero con el mando se entregan a través de él; sin colchón
@@ -1086,6 +1087,15 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
 
     private void OnLog(object? sender, string line)
     {
+        // Niveles de audio de los medidores (ebur128): un true-peak por canal capturado (2 estéreo; 8/16 con audio embebido
+        // multicanal, un medidor por canal y una línea de cada uno cada 100 ms). Son las líneas más frecuentes: van primero.
+        // Los consumidores reparten por pares.
+        if (_meters.TryRead(line, out var peaks))
+        {
+            if (peaks is not null) AudioPeaksUpdated?.Invoke(this, peaks);
+            return;
+        }
+
         // El dispositivo tiró frames porque este proceso no los recogía a tiempo: pérdida segura en la grabación.
         if (FfmpegLogLines.IsInputOverrun(line)) { CountInputOverrun(); return; }
 
@@ -1158,11 +1168,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         }
 
         // Alarmas de análisis: negro/congelado/silencio. Cada marca de FFmpeg → transición de alarma.
-        if (FfmpegDetectParser.Parse(line) is { } d) { RaiseAlarm(d.Type, d.Active); return; }
-
-        // Niveles de audio del filtro ebur128 ("… FTPK: -16.6 -16.9 dBFS …"): un true-peak por canal capturado
-        // (2 estéreo; 8/16 con audio embebido multicanal). Los consumidores reparten por pares.
-        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks) AudioPeaksUpdated?.Invoke(this, peaks);
+        if (FfmpegDetectParser.Parse(line) is { } d) RaiseAlarm(d.Type, d.Active);
     }
 
     /// <summary>Cuenta un frame tirado por el dispositivo y, como mucho una vez por <see cref="InputOverrunNoticeInterval"/>,

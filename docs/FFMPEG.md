@@ -79,7 +79,9 @@ de ffmpeg-stable-autobuild, archivo `ffmpeg-8.0-ae69ef0-win64-nonfree.7z` (109 8
 x264/x265, svt-av1, dav1d, zimg, freetype/harfbuzz) y, como ella, es *nonfree*: la descarga el cliente, no se
 redistribuye. Es la última release de ese proyecto a 2026-10-16, pero está hecho para publicar otra cuando cambian la
 versión de FFmpeg o las herramientas, y una compilada después del 2026-06-09 traería el SDK 13.1 y pediría ≥ 610: de ahí
-el «exactamente».
+el «exactamente». Su `ebur128` con más de 2 canales da el pico del canal 1 en todos (arreglado en 8.0.1); desde el
+2026-10-19 la app mide cada canal con su propio `ebur128` y los medidores de una DeckLink de 8 o 16 canales marcan cada uno
+el suyo también con ella (ver «Medidores por par» en «Audio embebido multicanal»).
 
 **La del 2026-03-12 también sirve** (era la recomendada antes): release
 [`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
@@ -180,8 +182,10 @@ Cómo funciona ahora (`AudioSelection`, parámetros de la entrada):
   presente solo en el canal 5 aparecía en el canal izquierdo). Con 2 canales de fuente la tubería es la de siempre.
 
 ```
-[0:a:0]asplit=2[m0][r1];[m0]ebur128=peak=true,pan=stereo|c0=c4|c1=c5,silencedetect=…[amout];[r1]pan=stereo|c0=c4|c1=c5[arec1]
--map [amout] -f null -             (medidores: ebur128 mide los 8 canales; silencedetect vigila el par que se graba)
+[0:a:0]asplit=10[m1]…[m8][ms][r1];[m1]pan=mono|c0=c0,ebur128@ch1of8=peak=true,anullsink;…;
+  [m8]pan=mono|c0=c7,ebur128@ch8of8=peak=true,anullsink;[ms]pan=stereo|c0=c4|c1=c5,silencedetect=…[amout];
+  [r1]pan=stereo|c0=c4|c1=c5[arec1]
+-map [amout] -f null -             (medidores: un ebur128 por canal; silencedetect vigila el par que se graba)
 -map [vmain] -map [arec1] -c:v …  (grabación, sin -ac)
 ```
 
@@ -233,10 +237,21 @@ tonos: `Multichannel` + MP4/AAC → cuatro pistas estéreo con nombre, cada cana
 ≤ −34 dB (incluido el canal 4, el que AAC 7.1 destrozaba); `Multichannel` + MKV/PCM → una pista `pcm_s24le` de 8 canales
 con los ocho tonos intactos.
 
-**Medidores por par (fase 4).** Con una fuente de más de 2 canales, `ebur128=peak=true` va ANTES de cualquier `pan`,
-sobre el flujo completo: su línea `FTPK:` trae un true-peak POR CANAL (probado con 8 y 16 canales, también con las
-distribuciones sin nombre `8c`/`16c` que da el demuxer decklink), así que un solo filtro alimenta un medidor por canal.
-`FfmpegMeterParser` los parsea todos (antes solo dos) y trata `-inf` —silencio digital, que .NET no parsea— como el suelo
+**Medidores por par (fase 4).** Con una fuente de más de 2 canales, cada canal capturado tiene su propio `ebur128=peak=true`
+MONO (`pan=mono|c0=cN` en una rama del `asplit`, antes de elegir nada) con un nombre de instancia que dice qué canal mide:
+FFmpeg lo pone al principio de cada línea (`[ebur128@ch3of16 @ …] … FTPK:  -9.0 dBFS`) y `FfmpegMeterReader` junta las de
+cada bloque de 100 ms (la del último canal cierra la ronda) en un true-peak por canal. Hasta el 2026-10-19 era UN `ebur128`
+con todos los canales, cuya línea `FTPK:` trae un valor por canal, pero **FFmpeg 8.0 escribe ahí el pico del canal 1 en
+todos** (medido con `aevalsrc`: −30 dB en el canal 1 y −18 dB en el 2 daban «−30,0» ×8; con la DeckLink, «−26,5» ×16 con
+sonido solo en 1-2). Es un fallo de FFmpeg del commit `3b26b78` (junio de 2025): la búsqueda del pico en C leía siempre la
+muestra del canal 0, y la de AVX solo se usa con 2 canales. Lo arregló `1eb2cbd` (2025-11-18), que está en 8.0.1 y en las
+compilaciones del 2026-03-12 y de junio; el 8.0 recomendado para Maxwell/Pascal no lo lleva. Con un canal por instancia se
+mide bien con cualquier FFmpeg y al mismo coste: 16 instancias mono ≈ un `ebur128` de 16 canales, unos 2,4 s de CPU por
+minuto de audio (~4 % de un núcleo), medido con los dos FFmpeg. Lo comprueba `AudioMeterChannelTests` (2, 8 y 16 canales a
+niveles distintos, en preview y grabando; `BAIOSS_FFMPEG_ALT` repite la prueba con otro FFmpeg). Con 1-2 canales sigue siendo
+un solo `ebur128` con lo que llegue (un dispositivo mono da un valor y la UI lo pinta en L y R): la 8.0 mide bien ese
+estéreo con AVX, pero en una CPU sin AVX (por debajo de los requisitos; también una máquina virtual que lo oculte) daría el
+canal 1 en los dos medidores. `FfmpegMeterParser` trata `-inf` —silencio digital, que .NET no parsea— como el suelo
 de −60 dBFS; antes esa línea se descartaba y los medidores se quedaban congelados en el último nivel. `silencedetect` va
 DESPUÉS del `pan` al primer par elegido: la alarma de silencio habla de lo que se graba, no del resto del SDI.
 `ChannelStatus.Audio` (API) lleva N medidores en el orden de la fuente y `SignalInfo.AudioSelectedPairs` dice qué pares

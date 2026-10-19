@@ -146,8 +146,9 @@ public sealed class FfmpegArgumentBuilder
         // 2) Entrada (cada ICaptureSource aporta sus flags de protocolo).
         args.AddRange(source.BuildInputArguments());
 
-        // 2b) Audio multicanal: si la fuente entrega más de un estéreo, los canales se ELIGEN con pan (ver AudioRoutingFilter).
-        string? audioFilter = AudioRoutingFilter(source, profile);
+        // 2b) Audio multicanal: si la fuente entrega más de un estéreo, los canales se ELIGEN con pan (ver FirstAudioRoute).
+        var audioRoute = FirstAudioRoute(source, profile);
+        string? audioFilter = audioRoute?.Pan;
 
         // 3) Filtros: si hay proxy, burn-in, un tamaño elegido (escalado), salida entrelazada o una fuente con huecos (que este
         //    camino rellena a la entrada, a su cadencia: ver SparseVideoFill para el de los canales en vivo).
@@ -213,7 +214,7 @@ public sealed class FfmpegArgumentBuilder
             // Salida directa a un único archivo.
             OutputFilePath = Path.Combine(_outputDirectory, SingleFileName(recExt));
             // Medición de loudness/true-peak para los medidores VU (se emite por stderr), tras elegir los canales.
-            args.Add("-af"); args.Add(audioFilter is null ? "ebur128=peak=true" : $"{audioFilter},ebur128=peak=true");
+            args.Add("-af"); args.Add(audioRoute is null ? "ebur128=peak=true" : $"{audioRoute.Pan},{TrackMeters(audioRoute)}");
             args.AddRange(RobustMovFlags(profile.Container));
             args.Add("-f"); args.Add(recMux);
             args.Add("-y"); args.Add(OutputFilePath);
@@ -265,12 +266,11 @@ public sealed class FfmpegArgumentBuilder
         string audioMap = $"{source.AudioInputIndex}:a:0?";
         // Audio multicanal (DeckLink con 8/16 canales, NDI multicanal): los canales a grabar se ELIGEN con pan dentro
         // del grafo (un flujo por pista según el modo del perfil) y se reparten con asplit a medidores y grabación.
-        // Los medidores miden TODOS los canales capturados (ebur128 da un true-peak por canal) y el detector de
-        // silencio vigila el primer par elegido. Con 2 canales, la tubería de siempre.
+        // Los medidores miden TODOS los canales capturados, cada uno con su ebur128 (ver AudioGraph), y el detector de
+        // silencio vigila el primer par elegido. Con 2 canales, la tubería de siempre: un ebur128 con lo que llegue (un
+        // dispositivo mono da un valor, que la UI pinta en L y R).
         var routes = hasAudio ? AudioRoutes(source, profile) : null;
-        string meterChain = routes is null
-            ? (_analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true")
-            : MeterChain(source, _analyze);
+        string meterChain = _analyze ? $"{SilenceDetect},ebur128=peak=true" : "ebur128=peak=true";
 
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(FfmpegCodecMap.HwAccelInput(profile.HwAccel));
@@ -359,7 +359,7 @@ public sealed class FfmpegArgumentBuilder
             // medidores van DENTRO del grafo: un stream que sale de filter_complex no admite un -af aparte.
             filter.Append(';');
             filter.Append(AudioGraph(string.Create(CultureInfo.InvariantCulture, $"[{source.AudioInputIndex}:a:0]"),
-                recording ? routes : null, meterChain, "arec"));
+                source.AudioChannelCount, _analyze ? $"{MeterPan(source)},{SilenceDetect}" : null, recording ? routes : null, "arec"));
         }
 
         args.Add("-filter_complex"); args.Add(filter.ToString());
@@ -826,7 +826,7 @@ public sealed class FfmpegArgumentBuilder
         if (routes is not null)
         {
             filter.Append(';');
-            filter.Append(AudioGraph("[0:a]", recording ? routes : null, "ebur128=peak=true", "aslate"));
+            filter.Append(AudioGraph("[0:a]", _source!.AudioChannelCount, silence: null, recording ? routes : null, "aslate"));
         }
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
@@ -1189,10 +1189,10 @@ public sealed class FfmpegArgumentBuilder
         args.AddRange(source.BuildInputArguments());
         args.Add("-vn");
         args.Add("-map"); args.Add("0:a?");
-        string? audioFilter = AudioRoutingFilter(source, profile);
-        args.AddRange(AudioEncoderArgs(profile, channelCount: audioFilter is null));
+        var audioRoute = FirstAudioRoute(source, profile);
+        args.AddRange(AudioEncoderArgs(profile, channelCount: audioRoute is null));
         // Selección de canales (si la fuente trae más de 2) + niveles para los medidores VU.
-        args.Add("-af"); args.Add(audioFilter is null ? "ebur128=peak=true" : $"{audioFilter},ebur128=peak=true");
+        args.Add("-af"); args.Add(audioRoute is null ? "ebur128=peak=true" : $"{audioRoute.Pan},{TrackMeters(audioRoute)}");
         args.Add("-f"); args.Add(recMux);
         args.Add("-y"); args.Add(OutputFilePath);
         return args;
@@ -1314,20 +1314,12 @@ public sealed class FfmpegArgumentBuilder
     };
 
     /// <summary>Primer flujo de audio (para las rutas de un solo stream: <see cref="Build"/> y solo-audio), o null.</summary>
-    internal static string? AudioRoutingFilter(ICaptureSource source, RecordingProfile profile)
-        => AudioRoutes(source, profile)?[0].Pan;
+    internal static AudioRoute? FirstAudioRoute(ICaptureSource source, RecordingProfile profile)
+        => AudioRoutes(source, profile)?[0];
 
     /// <summary>El primer par elegido de una fuente multicanal, en estéreo: lo que vigila el detector de silencio.</summary>
     private static string MeterPan(ICaptureSource source)
         => PanFilter(AudioLayout.Stereo, AudioSelection.FromParameters(source.Definition.Parameters).ChannelIndexes(source.AudioChannelCount));
-
-    /// <summary>
-    /// Cadena de medida de una fuente multicanal: <c>ebur128</c> ANTES de elegir nada, sobre todos los canales capturados
-    /// (un true-peak por canal → un medidor por par en la UI/API) y, si se analiza la señal, el detector de silencio
-    /// DESPUÉS del pan al primer par elegido: la alarma habla de lo que se graba, no del resto del SDI.
-    /// </summary>
-    private static string MeterChain(ICaptureSource source, bool analyze)
-        => analyze ? $"ebur128=peak=true,{MeterPan(source)},{SilenceDetect}" : "ebur128=peak=true";
 
     /// <summary>
     /// Pan de una sola pista PCM con todos los canales elegidos, en una distribución SIN NOMBRE («8c», «16c»): así ningún
@@ -1349,21 +1341,61 @@ public sealed class FfmpegArgumentBuilder
     }
 
     /// <summary>
-    /// Grafo de audio a partir de <paramref name="input"/> («[0:a:0]» o «[1:a]»): reparte con asplit a los medidores
-    /// (<paramref name="meterChain"/>, sobre todos los canales capturados → [amout]) y a una rama por pista
-    /// (<paramref name="label"/>1…N). Sin pistas (solo preview) va todo a los medidores.
+    /// Grafo de audio de una fuente multicanal a partir de <paramref name="input"/> («[0:a:0]» o «[1:a:0]»): un asplit reparte a un
+    /// medidor por cada uno de los <paramref name="channels"/> canales capturados, al detector de silencio si lo hay
+    /// (<paramref name="silence"/>, una cadena que sale por [amout]) y a una rama por pista (<paramref name="label"/>1…N; solo con
+    /// grabación). Sin detector, el medidor del último canal sale por [amout] (alguna salida tiene que llegar a un -map) y los demás
+    /// acaban en anullsink.
+    /// <para>Cada canal tiene su ebur128 MONO (<see cref="ChannelMeter"/>) y no uno con todos: con más de 2 canales, FFmpeg 8.0 calcula
+    /// el true-peak SOLO con el canal 1 y lo escribe en todos (el 8.0 estable de tools/: los 16 medidores de una DeckLink con el nivel
+    /// del canal 1, medido el 2026-10-19). Viene del commit 3b26b78 de FFmpeg: la búsqueda del pico en C leía siempre la muestra del
+    /// canal 0, y la de AVX solo se usa con 2 canales. Se arregló en 8.0.1 (1eb2cbd). Un canal por instancia mide bien con cualquier
+    /// FFmpeg y cuesta lo mismo: 16 instancias mono ≈ una de 16 canales, ~4 % de un núcleo (medido con los dos FFmpeg).</para>
     /// </summary>
-    private static string AudioGraph(string input, IReadOnlyList<AudioRoute>? routes, string meterChain, string label)
+    private static string AudioGraph(string input, int channels, string? silence, IReadOnlyList<AudioRoute>? routes, string label)
     {
-        if (routes is null || routes.Count == 0)
-            return string.Create(CultureInfo.InvariantCulture, $"{input}{meterChain}[amout]");
-        var sb = new StringBuilder();
-        sb.Append(input).Append(CultureInfo.InvariantCulture, $"asplit={routes.Count + 1}[m0]");
-        for (int i = 1; i <= routes.Count; i++) sb.Append(CultureInfo.InvariantCulture, $"[r{i}]");
-        sb.Append(CultureInfo.InvariantCulture, $";[m0]{meterChain}[amout]");
-        for (int i = 1; i <= routes.Count; i++) sb.Append(CultureInfo.InvariantCulture, $";[r{i}]{routes[i - 1].Pan}[{label}{i}]");
+        int tracks = routes?.Count ?? 0;
+        var sb = new StringBuilder(input).Append(CultureInfo.InvariantCulture, $"asplit={channels + (silence is null ? 0 : 1) + tracks}");
+        for (int c = 1; c <= channels; c++) sb.Append(CultureInfo.InvariantCulture, $"[m{c}]");
+        if (silence is not null) sb.Append("[ms]");
+        for (int i = 1; i <= tracks; i++) sb.Append(CultureInfo.InvariantCulture, $"[r{i}]");
+        for (int c = 1; c <= channels; c++)
+            sb.Append(CultureInfo.InvariantCulture, $";[m{c}]{ChannelMeter(c, channels)}{(silence is null && c == channels ? "[amout]" : ",anullsink")}");
+        if (silence is not null) sb.Append(CultureInfo.InvariantCulture, $";[ms]{silence}[amout]");
+        for (int i = 1; i <= tracks; i++) sb.Append(CultureInfo.InvariantCulture, $";[r{i}]{routes![i - 1].Pan}[{label}{i}]");
         return sb.ToString();
     }
+
+    /// <summary>Medidor del canal <paramref name="channel"/> (1-based) de los <paramref name="count"/> medidos: ese canal solo, con su ebur128.</summary>
+    private static string ChannelMeter(int channel, int count)
+        => string.Create(CultureInfo.InvariantCulture, $"pan=mono|c0=c{channel - 1},{FfmpegMeterParser.ChannelMeter(channel, count)}");
+
+    /// <summary>
+    /// Medidores para el <c>-af</c> de una salida que solo mide (la del motor de preview de archivos): con 1-2 canales un ebur128 con
+    /// lo que llegue; con más, uno por canal (ver <see cref="AudioGraph"/>) y la salida del grafo es la del último.
+    /// </summary>
+    public static string MeterFilter(int channels)
+    {
+        if (channels <= 2) return "ebur128=peak=true";
+        var sb = new StringBuilder(string.Create(CultureInfo.InvariantCulture, $"asplit={channels}"));
+        for (int c = 1; c <= channels; c++) sb.Append(CultureInfo.InvariantCulture, $"[m{c}]");
+        for (int c = 1; c <= channels; c++)
+            sb.Append(CultureInfo.InvariantCulture, $";[m{c}]{ChannelMeter(c, channels)}{(c == channels ? "" : ",anullsink")}");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Medidores DENTRO de la cadena que se graba (el <c>-af</c> de <see cref="Build"/>, tras el pan de la pista), que dejan pasar el
+    /// audio tal cual: con 1-2 canales, un ebur128; con más (5.1, 7.1, una pista multicanal), un ebur128 por cada uno de los DOS
+    /// primeros —los L/R que enseña ese motor— en ramas aparte (ver <see cref="AudioGraph"/>), y el audio sigue por [rec].
+    /// </summary>
+    private static string TrackMeters(AudioRoute route)
+        => RouteChannels(route) <= 2
+            ? "ebur128=peak=true"
+            : $"asplit=3[rec][m1][m2];[m1]{ChannelMeter(1, 2)},anullsink;[m2]{ChannelMeter(2, 2)},anullsink;[rec]anull";
+
+    /// <summary>Canales del flujo que produce el pan de una pista: los de su distribución o, en una pista multicanal, los elegidos.</summary>
+    private static int RouteChannels(AudioRoute route) => route.Layout is { } layout ? LayoutChannels(layout) : route.Channels.Count;
 
     private static IReadOnlyList<string> RouteLabels(IReadOnlyList<AudioRoute> routes, string label)
         => Enumerable.Range(1, routes.Count).Select(i => string.Create(CultureInfo.InvariantCulture, $"[{label}{i}]")).ToList();
