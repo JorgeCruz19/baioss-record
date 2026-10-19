@@ -115,9 +115,12 @@ public sealed class RecordingFailureDetector
         else _linesSinceComplaint++;
     }
 
+    // Los medidores de un canal cada uno llevan nombre propio («ebur128@ch3of16», ver FfmpegMeterParser.ChannelMeter), no «Parsed_…».
     private static bool IsNoise(string line)
         => line.Contains("frame=", StringComparison.Ordinal) ||
-           ContextName(line) is { } c && (c.StartsWith("Parsed_", StringComparison.Ordinal) || c is "blackdetect" or "freezedetect" or "silencedetect");
+           ContextName(line) is { } c && (c.StartsWith("Parsed_", StringComparison.Ordinal) ||
+                                          c.StartsWith(FfmpegMeterParser.ChannelMeterPrefix, StringComparison.Ordinal) ||
+                                          c is "blackdetect" or "freezedetect" or "silencedetect");
 
     // Qué dicen las quejas de los muxers, los filtros de flujo y los codificadores de FFmpeg («only 48khz is implemented», «av1 only
     // supported in MP4 and AVIF», «Unsupported audio codec…», «bitrate 1000 is not allowed in mp2»). Palabras enteras.

@@ -17,6 +17,9 @@ internal sealed class FakeCaptureSource : ICaptureSource
     /// <summary>Canales de audio que «entrega» la fuente (2 por defecto; 8/16 para probar la selección multicanal).</summary>
     public int AudioChannelCount { get; set; } = 2;
 
+    /// <summary>Entrada de FFmpeg de la que sale el audio (0 junto al vídeo; 1 en una entrada aparte, como NDI).</summary>
+    public int AudioInputIndex { get; set; }
+
     /// <summary>Veces que el motor pidió bajar los canales (la fuente falsa nunca puede).</summary>
     public int ReduceRequests { get; private set; }
     public bool TryReduceAudioChannels() { ReduceRequests++; return false; }

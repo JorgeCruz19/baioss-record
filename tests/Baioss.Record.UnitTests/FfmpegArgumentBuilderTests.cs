@@ -1378,8 +1378,9 @@ public class FfmpegArgumentBuilderTests : IDisposable
     {
         var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: "2");
 
-        // El par 3-4 (0-based c2/c3) va por pan a la grabación, dentro del grafo; los medidores miden los 8 canales.
-        Assert.Contains("[0:a:0]asplit=2[m0][r1];[m0]ebur128=peak=true[amout];[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
+        // El par 3-4 (0-based c2/c3) va por pan a la grabación, dentro del grafo; los medidores miden los 8 canales, uno cada uno.
+        Assert.Contains("[0:a:0]asplit=9[m1][m2][m3][m4][m5][m6][m7][m8][r1];", joined);
+        Assert.Contains(";[m8]pan=mono|c0=c7,ebur128@ch8of8=peak=true[amout];[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
         Assert.Contains("-map [amout] -f null -", joined);
         Assert.Contains("-map [vmain] -map [arec1]", joined);
         Assert.DoesNotContain("-ac ", joined);       // el nº de canales lo fija pan: -ac volvería a mezclar
@@ -1401,7 +1402,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
 
-        Assert.Contains("[0:a:0]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined); // medidores: todos los canales
+        Assert.Contains("[0:a:0]asplit=10[m1][m2][m3][m4][m5][m6][m7][m8][r1][r2];", joined); // medidores: todos los canales
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c4|c1=c5[arec2]", joined);
         Assert.Contains("-map [vmain] -map [arec1] -map [arec2]", joined);
         Assert.Contains("-metadata:s:a:0 title=Canales 1-2", joined);
@@ -1463,7 +1464,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
 
-        Assert.Contains("[0:a:0]asplit=5[m0][r1][r2][r3][r4]", joined);
+        Assert.Contains("[0:a:0]asplit=12[m1][m2][m3][m4][m5][m6][m7][m8][r1][r2][r3][r4];", joined);
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1];[r2]pan=stereo|c0=c2|c1=c3[arec2];[r3]pan=stereo|c0=c4|c1=c5[arec3];[r4]pan=stereo|c0=c6|c1=c7[arec4]", joined);
         Assert.Contains("-map [vmain] -map [arec1] -map [arec2] -map [arec3] -map [arec4]", joined);
         Assert.DoesNotContain("pan=7.1", joined);
@@ -1512,7 +1513,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "1,3");
 
-        Assert.Contains("[0:a:0]asplit=2[m0][r1]", joined);
+        Assert.Contains("[0:a:0]asplit=9[m1][m2][m3][m4][m5][m6][m7][m8][r1];", joined);
         Assert.Contains("[r1]pan=4c|c0=c0|c1=c1|c2=c4|c3=c5[arec1]", joined);
         Assert.DoesNotContain("[arec2]", joined);
     }
@@ -1565,7 +1566,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         // 1-2, en silencio, mientras los medidores marcaban los ocho pares como grabados: el operador lo vio en el archivo.
         var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 16, pairs: "all");
 
-        Assert.Contains("[0:a:0]asplit=9[m0][r1][r2][r3][r4][r5][r6][r7][r8];[m0]ebur128=peak=true[amout]", joined);
+        Assert.Contains("[0:a:0]asplit=24" + string.Concat(Enumerable.Range(1, 16).Select(c => $"[m{c}]")) + "[r1][r2][r3][r4][r5][r6][r7][r8];", joined);
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[arec1]", joined);
         Assert.Contains("[r8]pan=stereo|c0=c14|c1=c15[arec8]", joined);
         Assert.Contains("-map [vmain] -map [arec1] -map [arec2] -map [arec3] -map [arec4] -map [arec5] -map [arec6] -map [arec7] -map [arec8]", joined);
@@ -1589,7 +1590,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         var joined = BuildLiveMultichannel(profile, recording: true, channels: 8, pairs: "all");
 
-        Assert.Contains("[0:a:0]asplit=2[m0][r1]", joined);
+        Assert.Contains("[0:a:0]asplit=9[m1][m2][m3][m4][m5][m6][m7][m8][r1];", joined);
         Assert.Contains("[r1]pan=5.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5[arec1]", joined);
         Assert.DoesNotContain("[arec2]", joined);
     }
@@ -1700,7 +1701,8 @@ public class FfmpegArgumentBuilderTests : IDisposable
             .WithPreviewSink("tcp://127.0.0.1:9001").BuildSlate(recording: true, 640, 360));
 
         Assert.Contains("anullsrc=channel_layout=8c", joined);                        // silencio con los canales de la fuente
-        Assert.Contains("[0:a]asplit=3[m0][r1][r2];[m0]ebur128=peak=true[amout]", joined);
+        Assert.Contains("[0:a]asplit=10[m1][m2][m3][m4][m5][m6][m7][m8][r1][r2];", joined); // un medidor por canal, como en vivo
+        Assert.Contains("[m8]pan=mono|c0=c7,ebur128@ch8of8=peak=true[amout];[r1]", joined);
         Assert.Contains("[r1]pan=stereo|c0=c0|c1=c1[aslate1];[r2]pan=stereo|c0=c4|c1=c5[aslate2]", joined);
         Assert.Contains("-map [vrec] -map [aslate1] -map [aslate2]", joined);          // mismas pistas que en vivo
         Assert.Contains("-metadata:s:a:1 title=Canales 5-6 -metadata:s:a:1 handler_name=Canales 5-6", joined);
@@ -1734,12 +1736,13 @@ public class FfmpegArgumentBuilderTests : IDisposable
     {
         var joined = BuildLiveMultichannel(SoftwareMp4(), recording: false, channels: 8, pairs: "2", analyze: true);
 
-        // ebur128 ANTES del pan (un true-peak por cada uno de los 8 canales → un medidor por par) y silencedetect
-        // DESPUÉS (vigila el par que se graba, no el resto del SDI).
-        Assert.Contains("[0:a:0]ebur128=peak=true,pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout]", joined);
+        // Un medidor por cada uno de los 8 canales (→ un medidor por par en la UI) y, en su propia rama, silencedetect tras el pan
+        // al par que se graba (vigila lo que se graba, no el resto del SDI).
+        Assert.Contains("[0:a:0]asplit=9[m1][m2][m3][m4][m5][m6][m7][m8][ms];[m1]pan=mono|c0=c0,ebur128@ch1of8=peak=true,anullsink;", joined);
+        Assert.Contains(";[m8]pan=mono|c0=c7,ebur128@ch8of8=peak=true,anullsink;[ms]pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout]", joined);
         Assert.Contains("-map [amout] -f null -", joined);
         Assert.DoesNotContain("-af ", joined);      // un stream que sale del grafo no admite -af aparte
-        Assert.DoesNotContain("asplit", joined);    // sin grabación no hay que repartir
+        Assert.DoesNotContain("[r1]", joined);      // sin grabación no hay pistas
     }
 
     [Fact]
@@ -1747,14 +1750,61 @@ public class FfmpegArgumentBuilderTests : IDisposable
     {
         var joined = BuildLiveMultichannel(SoftwareMp4(), recording: true, channels: 8, pairs: "2", analyze: true);
 
-        Assert.Contains("[m0]ebur128=peak=true,pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout]", joined);
-        Assert.Contains("[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
+        Assert.Contains("[0:a:0]asplit=10[m1][m2][m3][m4][m5][m6][m7][m8][ms][r1];", joined);
+        Assert.Contains(";[ms]pan=stereo|c0=c2|c1=c3,silencedetect=n=-50dB:d=2[amout];[r1]pan=stereo|c0=c2|c1=c3[arec1]", joined);
     }
 
     [Fact]
     public void BuildLive_PreviewOnly_EightChannels_WithoutAnalysis_MetersTheRawStream()
-        // Sin análisis no hace falta elegir nada para medir: ebur128 sobre los 8 canales y a null.
-        => Assert.Contains("[0:a:0]ebur128=peak=true[amout]", BuildLiveMultichannel(SoftwareMp4(), recording: false, channels: 8, pairs: "2"));
+    {
+        // Sin análisis no hace falta elegir nada: un medidor por canal, y el último sale a null.
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording: false, channels: 8, pairs: "2");
+
+        Assert.Contains("[0:a:0]asplit=8[m1][m2][m3][m4][m5][m6][m7][m8];", joined);
+        Assert.Contains(";[m7]pan=mono|c0=c6,ebur128@ch7of8=peak=true,anullsink;[m8]pan=mono|c0=c7,ebur128@ch8of8=peak=true[amout] ", joined);
+    }
+
+    [Theory]
+    [InlineData(8, false)]
+    [InlineData(16, false)]
+    [InlineData(16, true)]
+    public void BuildLive_Multichannel_EachChannelHasItsOwnMeter(int channels, bool recording)
+    {
+        // FFmpeg 8.0 escribe el true-peak del canal 1 en todos los canales de un ebur128 de más de 2 (medido el 2026-10-19): cada
+        // canal va solo a su ebur128, con un nombre que dice cuál es.
+        var joined = BuildLiveMultichannel(SoftwareMp4(), recording, channels, pairs: "all", analyze: true);
+
+        for (int c = 1; c <= channels; c++)
+            Assert.Contains($"[m{c}]pan=mono|c0=c{c - 1},ebur128@ch{c}of{channels}=peak=true,", joined);
+        Assert.Equal(channels, joined.Split("ebur128@ch").Length - 1);
+        Assert.DoesNotContain("ebur128=peak", joined);          // ningún ebur128 con todos los canales
+    }
+
+    [Fact]
+    public void BuildLive_NdiAudio_MetersTheSecondInput()
+    {
+        // NDI sirve el audio por una entrada aparte (1:a): los medidores salen de ahí.
+        var source = MultichannelSource(8, pairs: null);
+        source.AudioInputIndex = 1;
+        var joined = string.Join(' ', new FfmpegArgumentBuilder()
+            .From(source).Using(SoftwareMp4()).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001").WithSignalAnalysis(false).BuildLive(recording: false, 640, 360));
+
+        Assert.Contains("[1:a:0]asplit=8[m1]", joined);
+    }
+
+    [Fact]
+    public void MeterFilter_UpToTwoChannels_IsOneEbur128WithWhateverArrives()
+    {
+        Assert.Equal("ebur128=peak=true", FfmpegArgumentBuilder.MeterFilter(2));
+        Assert.Equal("ebur128=peak=true", FfmpegArgumentBuilder.MeterFilter(1));
+    }
+
+    [Fact]
+    public void MeterFilter_MoreChannels_OneMeterPerChannel_TheLastOneIsTheOutput()
+        => Assert.Equal("asplit=3[m1][m2][m3];[m1]pan=mono|c0=c0,ebur128@ch1of3=peak=true,anullsink;" +
+                        "[m2]pan=mono|c0=c1,ebur128@ch2of3=peak=true,anullsink;[m3]pan=mono|c0=c2,ebur128@ch3of3=peak=true",
+            FfmpegArgumentBuilder.MeterFilter(3));
 
     [Theory]
     [InlineData(AudioLayout.Mono, "pan=mono|c0=0.5*c2+0.5*c3")]
@@ -1780,6 +1830,23 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
         Assert.Contains("-af pan=stereo|c0=c4|c1=c5,ebur128=peak=true", joined);
         Assert.DoesNotContain("-ac ", joined);
+    }
+
+    [Fact]
+    public void Build_Legacy_Surround51_MetersLeftAndRightOneEach_AndRecordsTheTrackUntouched()
+    {
+        // Una pista 5.1 tras el pan: un ebur128 con sus 6 canales daría con FFmpeg 8.0 el pico de L también en R. Ese motor enseña L/R:
+        // un medidor para cada uno, en ramas aparte; la pista sigue tal cual por [rec].
+        var profile = SoftwareMp4();
+        profile.AudioLayout = AudioLayout.Surround51;
+        var builder = new FfmpegArgumentBuilder()
+            .From(MultichannelSource(8, pairs: "all")).Using(profile).ForChannel("TST").ToDirectory("C:/out");
+
+        var args = builder.Build().ToList();
+
+        Assert.Equal("pan=5.1|c0=c0|c1=c1|c2=c2|c3=c3|c4=c4|c5=c5,asplit=3[rec][m1][m2];" +
+                     "[m1]pan=mono|c0=c0,ebur128@ch1of2=peak=true,anullsink;[m2]pan=mono|c0=c1,ebur128@ch2of2=peak=true,anullsink;" +
+                     "[rec]anull", args[args.IndexOf("-af") + 1]);
     }
 
     // --- Contenedores que no guardan la reordenación del códec (AVI; MXF con H.264): el vídeo a la hora del audio ---

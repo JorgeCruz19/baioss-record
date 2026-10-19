@@ -160,6 +160,22 @@ public class RecordingFailureDetectorTests
     }
 
     [Fact]
+    public void TheMetersOfEachChannel_DoNotPushTheComplaintOutOfReach()
+    {
+        // Con audio multicanal cada canal tiene su medidor con nombre propio (no «Parsed_…»): 16 líneas cada 100 ms que, desde
+        // otro hilo, pueden caer entre la queja y el fallo.
+        var detector = new RecordingFailureDetector(Profile(VideoCodec.H264x264, ContainerFormat.Mp4, AudioCodec.Aac));
+        var meters = Enumerable.Range(1, 16).Select(c =>
+            $"[ebur128@ch{c}of16 @ 000001b9f17e9680] t: 0.0999792  TARGET:-23 LUFS    M:-120.7 S:-120.7     I: -70.0 LUFS       LRA:   0.0 LU  FTPK:  -3.0 dBFS  TPK:  -3.0 dBFS");
+
+        FeedAll(detector, new[] { "[libx264 @ 0000026ce6063c00] width not divisible by 2 (1279x720)" }
+            .Concat(meters)
+            .Append("[vost#1:0/libx264 @ 0000026ce6063840] [enc:libx264 @ 0000026ce5e82dc0] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height."));
+
+        Assert.Equal("width not divisible by 2 (1279x720)", detector.VideoEncoderFailure);
+    }
+
+    [Fact]
     public void AnotherEncoderThatCannotOpen_IsNotTheVideoOne()
     {
         // El de audio (MP2 con un bitrate que no admite): degradar el de vídeo no lo arreglaría.

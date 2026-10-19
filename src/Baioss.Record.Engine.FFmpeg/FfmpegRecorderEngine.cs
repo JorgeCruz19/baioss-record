@@ -18,6 +18,7 @@ public sealed class FfmpegRecorderEngine : IRecorderEngine
     private readonly IFfmpegLocator _locator;
     private readonly ILogger<FfmpegRecorderEngine> _log;
     private readonly FfmpegProgressParser _parser = new();
+    private readonly FfmpegMeterReader _meters = new();
 
     private FfmpegProcessSupervisor? _supervisor;
     private RecordingState _state = RecordingState.Idle;
@@ -110,10 +111,11 @@ public sealed class FfmpegRecorderEngine : IRecorderEngine
     private void OnLog(object? sender, string line)
     {
         // Niveles de audio del filtro ebur128: "… FTPK: -16.6 dBFS …" (1 valor mono, 2 estéreo). Este motor (ruta de
-        // un solo stream) mide tras el pan, así que siempre llegan como mucho dos valores: L/R.
-        if (FfmpegMeterParser.ParseTruePeaks(line) is { } peaks)
+        // un solo stream) mide tras el pan, así que siempre llegan como mucho dos valores: L/R (con una pista de más de 2
+        // canales, sus dos primeros, cada uno con su medidor: ver FfmpegArgumentBuilder.TrackMeters).
+        if (_meters.TryRead(line, out var peaks))
         {
-            AudioLevelsUpdated?.Invoke(this, (peaks[0], peaks.Length > 1 ? peaks[1] : peaks[0]));
+            if (peaks is not null) AudioLevelsUpdated?.Invoke(this, (peaks[0], peaks.Length > 1 ? peaks[1] : peaks[0]));
             return;
         }
 

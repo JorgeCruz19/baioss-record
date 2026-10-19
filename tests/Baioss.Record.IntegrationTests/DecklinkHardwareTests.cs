@@ -98,6 +98,8 @@ public sealed class DecklinkHardwareTests
         public long RelayDrops;
         public readonly List<(double At, long Count)> RelayDropLog = new();
         public IReadOnlyList<double>? LastPeaks;
+        /// <summary>Cada ronda de medidores (un true-peak por canal) con el instante en que llegó.</summary>
+        public readonly List<(double At, double[] Peaks)> PeakLog = new();
 
         /// <summary>Descartes del relé entre dos instantes: los de un Grabar/Detener en curso son del proceso de preview que
         /// entra o del que sale (la aplicación solo alarma mientras graba, igual que esto).</summary>
@@ -143,7 +145,11 @@ public sealed class DecklinkHardwareTests
             engine.RecordingInterrupted += (_, i) => { lock (rig.Interruptions) rig.Interruptions.Add(i); };
             engine.SegmentClosed += (_, s) => { lock (rig.Segments) rig.Segments.Add(s); };
             engine.InputOverrun += (_, n) => Interlocked.Add(ref rig.Overruns, n);
-            engine.AudioPeaksUpdated += (_, p) => rig.LastPeaks = p;
+            engine.AudioPeaksUpdated += (_, p) =>
+            {
+                rig.LastPeaks = p;
+                lock (rig.PeakLog) rig.PeakLog.Add((clock.Elapsed.TotalSeconds, p.ToArray()));
+            };
             await source.OpenAsync();
             await engine.StartPreviewAsync(source, baseProfile, key);
             return rig;
@@ -741,11 +747,45 @@ public sealed class DecklinkHardwareTests
                 Assert.True(rig.LastPeaks![0] > -50, $"Sin nivel en el canal 1 ({rig.LastPeaks[0]:0.0} dBFS).");
                 Assert.Equal(0, rig.Receiver.Restarts);
                 Assert.Equal(0, Interlocked.Read(ref rig.RelayDrops));
+                // Después de medir la cadencia: la toma de la señal carga el relé.
+                await AssertSilentSourceChannels_ShowSilenceAsync(rig, 16);
             }
             await Task.Delay(1500);
             Assert.True(FfmpegProcessCount() <= before, "Quedaron procesos FFmpeg vivos tras cerrar el canal.");
         }
         finally { Dump("registro", log); Cleanup(dir); }
+    }
+
+    /// <summary>
+    /// Cada medidor, SU canal: un canal que la señal trae en silencio marca silencio. Con FFmpeg 8.0 y un ebur128 con los 16 canales,
+    /// los 16 medidores marcaban el nivel del canal 1 (el 2026-10-19, «−26,5» ×16 con sonido solo en 1-2). Lo que lleva cada canal se
+    /// mide en la propia señal: una toma del relé lee unos segundos los canales tal cual llegan, y todo canal en silencio digital en
+    /// ella tiene que marcar el suelo en cada ronda de medidores de esos segundos. Con sonido solo se informa (el true-peak del medidor
+    /// frente al pico de muestra de la toma): la tele cambia de nivel a cada momento.
+    /// </summary>
+    private async Task AssertSilentSourceChannels_ShowSilenceAsync(Rig rig, int channels)
+    {
+        using var tap = await SourceTap.StartAsync(rig, 6, "-map", "0:a:0", "-c:a", "pcm_f32le", "-f", "f32le", "pipe:1");
+        double from = rig.Clock.Elapsed.TotalSeconds;
+        var (raw, _) = await tap.CompleteAsync();
+        double to = rig.Clock.Elapsed.TotalSeconds;
+        var source = Deinterleave(raw, channels);
+        Assert.True(source[0].Length >= 48_000 * 4, $"La toma trajo {source[0].Length / 48_000.0:0.0} s de audio.");
+        double[] sourcePeak = source.Select(ch => ch.Max(MathF.Abs) is var m and > 0 ? 20 * Math.Log10(m) : double.NegativeInfinity).ToArray();
+        List<double[]> rounds;
+        lock (rig.PeakLog) rounds = rig.PeakLog.Where(p => p.At >= from + 0.5 && p.At <= to - 0.5).Select(p => p.Peaks).ToList();
+        Assert.True(rounds.Count >= 20, $"Solo {rounds.Count} rondas de medidores en {to - from:0.0} s.");
+        Assert.All(rounds, r => Assert.Equal(channels, r.Length));
+        double[] meterMax = Enumerable.Range(0, channels).Select(c => rounds.Max(r => r[c])).ToArray();
+        string Db(double v) => double.IsNegativeInfinity(v) ? "-inf" : v.ToString("0.0", CultureInfo.InvariantCulture);
+        _out.WriteLine($"Señal (pico de muestra, {source[0].Length / 48_000.0:0.0} s): {string.Join(" ", sourcePeak.Select(Db))}");
+        _out.WriteLine($"Medidores (true-peak máximo, {rounds.Count} rondas): {string.Join(" ", meterMax.Select(Db))}");
+
+        var silent = Enumerable.Range(0, channels).Where(c => double.IsNegativeInfinity(sourcePeak[c])).ToList();
+        if (silent.Count == 0) _out.WriteLine("Ningún canal en silencio en la señal: no hay nada que comprobar.");
+        foreach (int c in silent)
+            Assert.True(meterMax[c] <= FfmpegMeterParser.FloorDb,
+                $"El canal {c + 1} llega en silencio y su medidor marca hasta {meterMax[c]:0.0} dBFS (medidores: {string.Join(" ", meterMax.Select(Db))}).");
     }
 
     /// <summary>Grabar ~15 s con cada preset de fábrica relevante para una señal 1080i59.94 y comprobar el archivo.</summary>
