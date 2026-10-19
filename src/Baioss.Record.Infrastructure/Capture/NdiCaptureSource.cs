@@ -65,6 +65,9 @@ public sealed class NdiCaptureSource : ICaptureSource
     /// <see cref="ICaptureSource.DeliversSparseVideo"/> y <see cref="NdiReceiver"/>).</summary>
     public bool DeliversSparseVideo => true;
 
+    /// <summary>La del receptor (<see cref="NdiReceiver.FormatVersion"/>): sube con cada formato nuevo que sirve.</summary>
+    public int VideoFormatVersion => _receiver?.FormatVersion ?? 0;
+
     public async Task OpenAsync(CancellationToken ct = default)
     {
         var name = Definition.Uri ?? Definition.Name
