@@ -275,6 +275,10 @@ public sealed class DecklinkCaptureSource : ICaptureSource
     /// cola y se le cierra el socket (ver <see cref="ICaptureSource.NewestConsumerEndInput"/>). En captura directa, null: la «q».</summary>
     public Func<bool>? NewestConsumerEndInput => _reservation is { } reservation ? reservation.EndInput : null;
 
+    /// <summary>Qué frame del relé fue el primero del proceso del último <see cref="BuildInputArguments"/> (ver
+    /// <see cref="ICaptureSource.NewestConsumerFirstVideoFrame"/>). En captura directa, null.</summary>
+    public Func<long>? NewestConsumerFirstVideoFrame => _reservation is { KnowsFirstVideoFrame: true } reservation ? () => reservation.FirstVideoFrame : null;
+
     /// <summary>El relé en crudo no entrega pre-roll: nada que saltarse.</summary>
     public int PreviewFramesToSkip => _reservation?.VideoFrames ?? 0;
 

@@ -131,6 +131,36 @@ public class RawStreamRelayTests
     }
 
     [Fact]
+    public async Task Reservation_KnowsTheStreamNumberOfItsFirstVideoFrame()
+    {
+        // Con él y los frames que saca su proceso, el motor sabe qué frame de la fuente enseña cada preview (el relevo).
+        var bytes = await File.ReadAllBytesAsync(Fixture);
+        var units = await UnitsAsync(bytes);
+        int firstSync = units.FindIndex(u => u.Kind == NutUnitKind.Syncpoint);
+        int secondSync = units.FindIndex(firstSync + 1, u => u.Kind == NutUnitKind.Syncpoint);
+        int cut = units[secondSync].Offset;
+        int videoBeforeCut = units.Take(secondSync).Count(u => u.Video);
+
+        await using var relay = new RawStreamRelay("t", NullLogger.Instance);
+        relay.Start();
+        using var source = await ConnectAsync(relay.SourcePort);
+        await source.GetStream().WriteAsync(bytes.AsMemory(0, cut));
+        await WaitUntilAsync(() => relay.ForwardedBytes >= cut, "el relé reparta la primera parte");
+
+        var reservation = relay.ReserveConsumer();
+        Assert.True(reservation.KnowsFirstVideoFrame);
+        Assert.Equal(-1, reservation.FirstVideoFrame); // aún no le llegó ninguno
+        using var consumer = await ConnectAsync(relay.ConsumerPort);
+        await WaitUntilAsync(() => relay.ConsumerCount == 1, "el consumidor reclame la reserva");
+        await source.GetStream().WriteAsync(bytes.AsMemory(cut));
+        source.Close();
+        await ReadToEndAsync(consumer.GetStream());
+
+        // Arrancó en el 2.º punto de sincronía: su primer frame es el siguiente a los repartidos antes de él.
+        Assert.Equal(videoBeforeCut + 1, reservation.FirstVideoFrame);
+    }
+
+    [Fact]
     public async Task ExpiredReservation_IsDropped_AndCountsAsLive()
     {
         var bytes = await File.ReadAllBytesAsync(Fixture);

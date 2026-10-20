@@ -68,6 +68,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private PreviewSink? _sink;
     private int _sinkGeneration;
     private volatile int _activeSink;
+    // Relevo (ver Admit y PreviewTakeover): qué frame de la fuente enseñó el último frame entregado al preview y cuándo, bajo
+    // su candado (los lectores de los sumideros viejo y nuevo deciden a la vez).
+    private readonly object _takeoverLock = new();
+    private double? _lastShownPosition;
+    private long _lastShownTicks;
     // Sumideros vivos (el actual y los que esperan su relevo): cuando uno toma el mando, los más viejos que aún no habían
     // pintado quedan relevados (su HandoffAsync retira su proceso sin esperar más).
     private readonly List<PreviewSink> _liveSinks = new();
@@ -659,9 +664,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         double sourceFps = source.CurrentSignal.FrameRate is { Value: > 0 } rate ? rate.Value : _parser.NominalRate;
         var sink = new PreviewSink(++_sinkGeneration)
         {
-            // Solo hay que esperar a que el proceso nuevo vaya al día si su entrada trae pre-roll (relé de red); con el
-            // relé en crudo de DeckLink arranca en el directo y toma el relevo con su primer frame: un Detener de ~1 s en
-            // vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da (medido en producción).
+            // Solo hay que esperar a que el proceso nuevo vaya al día de forma sostenida si su entrada trae pre-roll (relé de
+            // red); con el relé en crudo de DeckLink arranca en el directo y toma el relevo en cuanto su preview alcanza al del
+            // viejo (ver Admit: unas décimas), en vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da
+            // (medido en producción).
             SettleBeforeTakeover = overlap && source.DeliversPreroll,
         };
         lock (_liveSinks) _liveSinks.Add(sink);
@@ -722,6 +728,9 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // siguiente proceso que se construya; con Grabar y Detener seguidos, un relevo se juzgaba con la del siguiente). Y, por lo
         // mismo, cómo cerrarle la entrada a ESTE proceso cuando se retire (ver EndInput en el supervisor, más abajo).
         sink.IsLive = source.NewestConsumerLiveCheck;
+        // Y qué frame de la fuente fue el primero de ESTE proceso: con él, el relevo espera a que su preview alcance al del viejo
+        // (ver Admit). La carta de ajuste no lee la fuente: la reserva vigente sería la del proceso anterior.
+        sink.FirstSourceFrame = slate ? null : source.NewestConsumerFirstVideoFrame;
         var endInput = source.NewestConsumerEndInput;
         // Cadencia del PREVIEW de este proceso: la de la fuente o, si desentrelaza un cuadro por campo, el doble. Con ella se
         // juzga el relevo y entrega el colchón (0 = paso directo), que se vuelve a fijar en cada proceso: la señal puede
@@ -729,6 +738,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // cuenta los frames del preview, se vuelve a contar en frames de la fuente. Antes de arrancar: aún no llega nada.
         double previewFps = sourceFps * builder.PreviewFramesPerSourceFrame;
         sink.NominalIntervalMs = 1000.0 / previewFps;
+        sink.PreviewFramesPerSourceFrame = builder.PreviewFramesPerSourceFrame;
         Pacer.Configure(TimeSpan.FromMilliseconds(Math.Max(0, source.PreviewBufferMs)), previewFps);
         _parser.FramesPerSourceFrame = builder.PreviewFramesPerSourceFrame;
         // Una fuente que solo trae sus cuadros reales (NDI con marcas): el preview pinta los que llegan, a su ritmo (la vista los
@@ -923,6 +933,50 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         /// tasa nominal desconocida). Generoso: el proceso viejo sigue pintando el directo mientras tanto.</summary>
         public TimeSpan SettleTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+        /// <summary>Relé: número en el flujo del primer frame que recibió el proceso de este sumidero (−1 mientras ninguno), para
+        /// saber qué frame de la fuente enseña cada uno de los suyos (ver <see cref="ICaptureSource.NewestConsumerFirstVideoFrame"/>).
+        /// null: la fuente no lo sabe y el relevo se hace como siempre.</summary>
+        public Func<long>? FirstSourceFrame { get; set; }
+        /// <summary>Frames de preview por frame de la fuente: 2 si el preview desentrelaza uno por campo.</summary>
+        public double PreviewFramesPerSourceFrame { get; set; } = 1;
+        /// <summary>Tope de la espera a que el proceso nuevo alcance al viejo: pasado, toma el mando igual. Lo normal son 10–60 ms
+        /// desde su primer frame; uno que va más despacio que el directo (un preset que la CPU no codifica a tiempo real) no lo
+        /// alcanza nunca, y esperarle con los dos procesos en marcha solo le quita CPU (con 2 s, un ProRes 1080p59.94 que va justo
+        /// en la DeckLink acabó con descartes del relé).</summary>
+        public static readonly TimeSpan CatchUpTimeout = TimeSpan.FromMilliseconds(500);
+        /// <summary>Sin frames del sumidero con el mando durante esto, el viejo ya no pinta (se retiró, murió, la fuente se fue):
+        /// el nuevo toma el mando sin esperar a alcanzarlo.</summary>
+        public TimeSpan OldStallLimit => TimeSpan.FromMilliseconds(Math.Max(250, 6 * NominalIntervalMs));
+
+        private int _connections;
+        private long _framesThisConnection;
+        private long _firstFrameTicks;
+
+        /// <summary>Su proceso conectó: el primero, o un relanzamiento del supervisor sobre este mismo sumidero.</summary>
+        public void OnConnected()
+        {
+            _connections++;
+            _framesThisConnection = 0;
+        }
+
+        /// <summary>
+        /// Qué frame de la fuente enseña el frame que se acaba de leer: el primero que recibió su proceso más los que lleva sacados
+        /// (medios frames con un preview por campo; el preview va en passthrough: uno por frame de la entrada). Los dos procesos de
+        /// un relevo pierden igual su primer frame al unirse al flujo a mitad (el demuxer NUT de FFmpeg descarta el primer punto de
+        /// sincronía), así que entre ellos la comparación es exacta sin contarlo. null si la fuente no lo sabe, o si el proceso se
+        /// relanzó (el consumidor del relé ya es otro).
+        /// </summary>
+        public double? NextFramePosition(long nowTicks)
+        {
+            if (_firstFrameTicks == 0) _firstFrameTicks = nowTicks;
+            long index = _framesThisConnection++;
+            if (_connections != 1 || FirstSourceFrame?.Invoke() is not { } first || first < 0) return null;
+            return first + index / PreviewFramesPerSourceFrame;
+        }
+
+        /// <summary>Cuánto lleva este sumidero recibiendo frames (desde el primero).</summary>
+        public TimeSpan ReceivingFor(long nowTicks) => _firstFrameTicks == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(_firstFrameTicks, nowTicks);
+
         private readonly Queue<long> _arrivals = new();
         private long _firstArrival;
         private long _liveSince;
@@ -980,6 +1034,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             {
                 using var client = await sink.Listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 await using var stream = client.GetStream();
+                sink.OnConnected();
                 await ReadFramesAsync(sink, stream, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
@@ -1009,20 +1064,68 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                     if (n == 0) return; // el proceso cerró la conexión (reinicio) → volver a aceptar
                     read += n;
                 }
-                // Relevo: el sumidero más nuevo toma el mando en cuanto su proceso lee en directo y a cadencia real (o con su
-                // primer frame si no hay relevo); hasta entonces sus frames se descartan (se leen igual: FFmpeg no debe
-                // bloquearse), y los de un sumidero ya relevado también.
-                if (sink.Generation != _activeSink)
-                {
-                    if (sink.Generation < _activeSink || !sink.ReadyToTakeOver(Stopwatch.GetTimestamp())) continue;
-                    _activeSink = sink.Generation;
-                    SupersedeOlderSinks(sink.Generation);
-                }
-                sink.MarkTookOver();
+                // Relevo: el sumidero más nuevo toma el mando cuando su preview alcanza al del viejo (ver Admit); hasta entonces
+                // sus frames se descartan (se leen igual: FFmpeg no debe bloquearse), y los de un sumidero ya relevado también.
+                long now = Stopwatch.GetTimestamp();
+                if (!Admit(sink, sink.NextFramePosition(now), now)) continue;
                 handedOver = true;
                 pacer.Enqueue(buffer);
             }
             finally { if (!handedOver) pacer.Discard(buffer); }
+        }
+    }
+
+    /// <summary>
+    /// ¿Se enseña este frame del sumidero? El que tiene el mando, siempre; uno relevado, nunca; uno más nuevo toma el mando:
+    /// <list type="bullet">
+    ///   <item>con una entrada con pre-roll (relé de red), cuando su proceso lee en directo de forma sostenida y a cadencia real
+    ///   (<see cref="PreviewSink.ReadyToTakeOver"/>);</item>
+    ///   <item>si no, en cuanto su preview alcanza al del viejo: con un frame de la fuente posterior al último que se vio (con el
+    ///   mismo, toma el mando sin repetirlo). El proceso nuevo empieza en el frame que pasaba al conectar, pero tarda 0,1–0,3 s en
+    ///   sacarlo y luego digiere de golpe lo que esperaba en su socket: con el mando en su primer frame, el preview saltaba 4–10
+    ///   frames atrás y volvía a pasar por ellos (ver <see cref="PreviewTakeover"/>). Sin saber qué frame enseña cada uno (la
+    ///   fuente no lo dice, la carta de ajuste), con el viejo parado, o si el nuevo no lo alcanza en
+    ///   <see cref="PreviewSink.CatchUpTimeout"/>, con el frame que llega, como antes.</item>
+    /// </list>
+    /// </summary>
+    private bool Admit(PreviewSink sink, double? position, long now)
+    {
+        lock (_takeoverLock)
+        {
+            if (sink.Generation != _activeSink)
+            {
+                if (sink.Generation < _activeSink) return false;
+                bool show = true;
+                if (sink.SettleBeforeTakeover)
+                {
+                    if (!sink.ReadyToTakeOver(now)) return false;
+                }
+                else
+                {
+                    bool oldPainting = _lastShownTicks != 0 && Stopwatch.GetElapsedTime(_lastShownTicks, now) < sink.OldStallLimit;
+                    var waited = sink.ReceivingFor(now);
+                    var verdict = PreviewTakeover.Decide(position, _lastShownPosition, oldPainting, waited >= PreviewSink.CatchUpTimeout);
+                    if (verdict == PreviewTakeover.Verdict.NotYet) return false;
+                    show = verdict == PreviewTakeover.Verdict.TakeOver;
+                    if (position is { } p && _lastShownPosition is { } last && oldPainting)
+                    {
+                        if (p >= last)
+                            _log.LogDebug("Canal {Key}: el preview pasa al proceso nuevo a los {Ms:0} ms de su primer frame, al alcanzar al viejo (frame {Position} de la fuente).",
+                                _channelKey, waited.TotalMilliseconds, p);
+                        else
+                            _log.LogInformation("Canal {Key}: el proceso nuevo no alcanzó al viejo en {Timeout:0.0} s (iba {Behind:0} frames por detrás); toma el preview igualmente.",
+                                _channelKey, PreviewSink.CatchUpTimeout.TotalSeconds, last - p);
+                    }
+                }
+                _activeSink = sink.Generation;
+                SupersedeOlderSinks(sink.Generation);
+                sink.MarkTookOver();
+                if (!show) return false; // el mismo frame de la fuente que se acaba de ver: no se repite
+            }
+            sink.MarkTookOver();
+            _lastShownPosition = position;
+            _lastShownTicks = now;
+            return true;
         }
     }
 
