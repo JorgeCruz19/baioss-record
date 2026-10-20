@@ -11,9 +11,10 @@ namespace Baioss.Record.App.Preview;
 /// si el interop nativo no está disponible, cae a <see cref="WriteableBitmap"/> (CPU) para que el
 /// preview funcione siempre. El consumidor llama a <see cref="Push"/> en el hilo de UI.
 ///
-/// <para>La ruta GPU se RECUPERA sola ante un reset del dispositivo (cargador/MUX/TDR). Si, pese a ello,
-/// no vuelve dentro de <see cref="FallbackAfterMs"/>, esta superficie cambia a CPU de forma definitiva
-/// (que siempre funciona) y avisa con <see cref="ImageSourceChanged"/> para que la vista re-enlace.</para>
+/// <para>La ruta GPU se RECUPERA sola cuando el compositor de WPF pierde y recupera su front buffer (al arrancar, al
+/// bloquear la sesión) y ante un reset del dispositivo (cargador/MUX/TDR). Si, pese a ello, no vuelve a presentar
+/// dentro de <see cref="FallbackAfterMs"/>, esta superficie cambia a CPU de forma definitiva (que siempre funciona) y
+/// avisa con <see cref="ImageSourceChanged"/> para que la vista re-enlace.</para>
 /// </summary>
 public sealed class PreviewSurface : IDisposable
 {
@@ -56,7 +57,8 @@ public sealed class PreviewSurface : IDisposable
         {
             if (_d3d.Update(frame)) { _lostSince = 0; return; }   // GPU sana o ya recuperada
 
-            // GPU perdida AHORA. Si no se recupera dentro de la gracia, cae a CPU (que siempre funciona).
+            // La GPU no presenta AHORA (sin front buffer, o dispositivo perdido). Si no se recupera dentro de la gracia, cae a
+            // CPU (que siempre funciona).
             long now = Environment.TickCount64;
             if (_lostSince == 0) _lostSince = now;
             else if (now - _lostSince >= FallbackAfterMs) FallBackToCpu(frame);
