@@ -4,8 +4,10 @@ using Baioss.Record.Application.Capture;
 namespace Baioss.Record.Engine.FFmpeg;
 
 /// <summary>Lo que FFmpeg contó de UNA entrada al abrirla: el valor del <c>-i</c> («Input #0, mpegts, from '…'»), el
-/// vídeo si lo describió con tamaño y tasa, y si trae alguna pista de audio.</summary>
-public sealed record FfmpegInputDescription(string Url, DetectedVideoMode? Video, bool HasAudio);
+/// vídeo si lo describió con tamaño y tasa, si trae audio que copiar (su PRIMERA pista de audio, descrita: ver
+/// <see cref="FfmpegLogLines.IsDescribedAudioStream"/>) y si esa primera pista estaba anunciada pero SIN describir (sin datos:
+/// el receptor de red no la copia).</summary>
+public sealed record FfmpegInputDescription(string Url, DetectedVideoMode? Video, bool HasAudio, bool UndescribedAudio = false);
 
 /// <summary>
 /// Lee, línea a línea, el volcado que FFmpeg escribe en stderr al abrir una entrada:
@@ -18,12 +20,16 @@ public sealed record FfmpegInputDescription(string Url, DetectedVideoMode? Video
 /// y devuelve la descripción cuando el volcado TERMINA («Stream mapping:» u «Output #», que es cuando ya se han listado
 /// todas las pistas); solo la primera vez por apertura: al relanzar el proceso hay que llamar a <see cref="Reset"/>.
 /// Con esto una fuente de red sabe que el emisor ya está conectado, el formato real del vídeo y si hay audio (el
-/// pipeline necesita saberlo ANTES de construirse: un mapeo de audio sin pista abortaría FFmpeg).
+/// pipeline necesita saberlo ANTES de construirse: un mapeo de audio sin pista abortaría FFmpeg). Del audio cuenta solo la
+/// PRIMERA pista, y solo si FFmpeg la describió: es la única que copian los receptores (ver
+/// <c>NetworkStreamReceiver.AudioMapArguments</c>), y una pista que la PMT anuncia pero que no trae paquetes
+/// («Audio: aac ([15][0][0][0] / 0x000F), 0 channels») no llega al relé.
 /// </summary>
 public sealed class FfmpegInputDump
 {
     private string? _url;
     private DetectedVideoMode? _video;
+    private bool _audioSeen;
     private bool _hasAudio;
     private bool _done;
 
@@ -34,23 +40,27 @@ public sealed class FfmpegInputDump
         if (line.StartsWith("Input #", StringComparison.Ordinal))
         {
             var url = FfmpegLogLines.InputUrl(line);
-            if (url is not null) { _url = url; _video = null; _hasAudio = false; }
+            if (url is not null) { _url = url; _video = null; _audioSeen = false; _hasAudio = false; }
             return null;
         }
         if (_url is null) return null;
         if (line.StartsWith("Stream mapping:", StringComparison.Ordinal) || line.StartsWith("Output #", StringComparison.Ordinal))
         {
             _done = true;
-            return new FfmpegInputDescription(_url, _video, _hasAudio);
+            return new FfmpegInputDescription(_url, _video, _hasAudio, UndescribedAudio: _audioSeen && !_hasAudio);
         }
         if (line.Contains(": Video: ", StringComparison.Ordinal)) { _video ??= FfmpegLogLines.TryParseVideoStream(line); return null; }
-        if (line.Contains(": Audio: ", StringComparison.Ordinal)) { _hasAudio = true; return null; }
+        if (line.Contains(": Audio: ", StringComparison.Ordinal))
+        {
+            if (!_audioSeen) { _audioSeen = true; _hasAudio = FfmpegLogLines.IsDescribedAudioStream(line); }
+            return null;
+        }
         return null;
     }
 
     /// <summary>Olvida el volcado anterior (el proceso se relanzó y abrirá la entrada otra vez).</summary>
     public void Reset()
     {
-        _url = null; _video = null; _hasAudio = false; _done = false;
+        _url = null; _video = null; _audioSeen = false; _hasAudio = false; _done = false;
     }
 }

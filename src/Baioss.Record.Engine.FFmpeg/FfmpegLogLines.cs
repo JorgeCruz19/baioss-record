@@ -15,6 +15,8 @@ namespace Baioss.Record.Engine.FFmpeg;
 ///   entradas generadas (lavfi) de la carta de ajuste.</item>
 ///   <item>«  Stream #0:0: Video: h264 (Main), yuv420p(progressive), 1920x1080 [SAR 1:1 DAR 16:9], 25 fps, …» — el
 ///   formato real del vídeo, para fuentes que no lo saben hasta conectar (red, DirectShow).</item>
+///   <item>«  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo, fltp, 96 kb/s» — si FFmpeg describió la pista de audio (y puede
+///   copiarla) o la entrada la anuncia sin datos («Audio: aac, 0 channels»).</item>
 /// </list>
 /// </summary>
 public static partial class FfmpegLogLines
@@ -68,6 +70,20 @@ public static partial class FfmpegLogLines
         return new DetectedVideoMode(res, VideoModes.RateFromDisplay(fps), interlaced, bottomFirst);
     }
 
+    /// <summary>
+    /// True si la línea «Stream #N:M: Audio: …» describe una pista que FFmpeg puede COPIAR: con frecuencia de muestreo, canales y
+    /// formato de muestra, lo mismo que exige su especificador de pista «u» (usable; <c>stream_specifier_match</c> en FFmpeg 8.0).
+    /// Una pista que la PMT de un MPEG-TS anuncia pero que no trae paquetes acaba el análisis sin nada de eso
+    /// («Audio: aac ([15][0][0][0] / 0x000F), 0 channels»), y copiarla tumba al muxer («sample rate not set»).
+    /// </summary>
+    public static bool IsDescribedAudioStream(string line)
+    {
+        int at = line.IndexOf(": Audio: ", StringComparison.Ordinal);
+        if (at < 0) return false;
+        string codec = line[(at + ": Audio: ".Length)..];
+        return AudioRateRegex().IsMatch(codec) && !NoChannelsRegex().IsMatch(codec) && SampleFormatRegex().IsMatch(codec);
+    }
+
     // "Input #0, mpegts, from 'srt://127.0.0.1:9710':"
     [GeneratedRegex(@"^Input #\d+, [^,]+, from '(?<url>[^']*)'")]
     private static partial Regex InputOpenedRegex();
@@ -81,4 +97,16 @@ public static partial class FfmpegLogLines
 
     [GeneratedRegex(@"(?<r>\d+(?:\.\d+)?) tbr")]
     private static partial Regex TbrRegex();
+
+    // ", 48000 Hz," — FFmpeg solo la escribe si no es 0.
+    [GeneratedRegex(@", [1-9]\d* Hz(?=,|$)")]
+    private static partial Regex AudioRateRegex();
+
+    // ", 0 channels" — la disposición de una pista de la que no se sabe cuántos canales trae.
+    [GeneratedRegex(@"(?:^|, )0 channels(?=,|$)")]
+    private static partial Regex NoChannelsRegex();
+
+    // ", fltp," / ", s16," / ", s32 (24 bit)," — el formato de muestra, detrás de la disposición; sin él no se escribe.
+    [GeneratedRegex(@", (?:u8|s16|s32|s64|flt|dbl)p?(?=,| \(|$)")]
+    private static partial Regex SampleFormatRegex();
 }

@@ -225,8 +225,10 @@ También puedes **pegar una URL** de otro programa y pulsar **Rellenar**. El pro
 OBS): si una URL abre en ffplay, abre aquí, aunque la contraseña lleve caracteres como `#`. Revisa después que el campo
 **Contraseña** muestra la contraseña completa. Mientras no llega el emisor, el canal marca
 **SIN SEÑAL** («Esperando al emisor» o «Conectando…») y el botón Grabar queda desactivado; en cuanto conecta pasa a
-SEÑAL OK y se ve el formato real. Si el emisor se va a mitad de una grabación, el programa cierra la pieza y sigue en una
-nueva cuando vuelve. Si el emisor está en otro equipo, abre el puerto en el cortafuegos de Windows (UDP para SRT, TCP
+SEÑAL OK y se ve el formato real. Si el emisor anuncia una pista de audio pero no manda audio, la entrada tarda unos 12 s
+en pasar a SEÑAL OK y se ve y graba sin audio (el registro lo indica); cuando el emisor ya mande audio, vuelve a asignar
+la fuente al canal (o reinicia el emisor) para recibirlo. Si el emisor se va a mitad de una grabación, el programa cierra
+la pieza y sigue en una nueva cuando vuelve. Si el emisor está en otro equipo, abre el puerto en el cortafuegos de Windows (UDP para SRT, TCP
 para RTMP).
 
 > **Sobre el audio embebido:** la tarjeta no puede saber cuántos canales trae la señal; se le pide un número y entrega

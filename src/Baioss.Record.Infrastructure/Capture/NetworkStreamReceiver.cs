@@ -158,7 +158,7 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     ///   siempre (7 s si falta alguna pista, 5 MB) un GOP de 8–10 s —el de x264 y OBS por defecto: 250 frames— daba SEÑAL OK a
     ///   los 6,8 s SIN resolución («unspecified size»), y a 15–20 Mb/s los 5 MB se acaban en 2–3 s. Medido: GOP 8 s, 8,2 s; GOP
     ///   10 s, 10,2 s; los dos con el formato entero. Lo que nunca llega a describirse (una pista de audio en la PMT que no trae
-    ///   paquetes) espera el tope entero.</item>
+    ///   paquetes) espera el tope entero, y el receptor la deja fuera (ver <see cref="AudioMapArguments"/>).</item>
     ///   <item><c>-f mpegts</c>: <c>-scan_all_pmts</c> es una opción del demuxer MPEG-TS y el CLI ABORTA si una opción de entrada
     ///   no la usa nadie. Lo que viaja por SRT es MPEG-TS (y el relé y el proceso del canal solo entienden eso).</item>
     /// </list>
@@ -205,9 +205,41 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
         return args;
     }
 
+    /// <summary>Pistas de audio de la entrada que cubren los mapeos negativos de <see cref="AudioMapArguments"/>: 16, ocho pares
+    /// estéreo o dieciséis mono, lo más que lleva un codificador de contribución.</summary>
+    public const int AudioTracksCovered = 16;
+
     /// <summary>
-    /// La línea de comandos completa del receptor: entrada del protocolo → el primer vídeo y, si lo hay, el primer audio
-    /// (<c>-map 0:a:0?</c>: un flujo solo-vídeo no aborta) → copia sin recodificar a MPEG-TS por TCP al relé, con cada
+    /// Qué audio copia el receptor: la PRIMERA pista de audio de la entrada, y solo si FFmpeg la describió (frecuencia, canales y
+    /// formato de muestra). Una pista que la PMT de una SRT anuncia pero que nunca trae paquetes acaba el análisis sin parámetros
+    /// («Could not find codec parameters for stream 1 (Audio: aac …, 0 channels)»); con <c>-map 0:a:0?</c> el receptor la copiaba,
+    /// el muxer no podía escribir la cabecera («sample rate not set» → «Could not write header») y FFmpeg moría justo después de
+    /// volcar la entrada, con la fuente ya en SEÑAL OK y con audio: el supervisor lo relanzaba, la señal parpadeaba y el canal
+    /// nunca recibía vídeo (medido el 2026-10-20 con un emisor SRT local con <c>-bsf:a noise=drop=1</c>: volcado a los 14,4 s,
+    /// salida -22 y ni un byte al relé, con cualquier análisis).
+    /// <list type="bullet">
+    ///   <item><c>-map 0:a:u:?</c>: las pistas de audio USABLES (el especificador «u» de FFmpeg: con frecuencia, canales y formato),
+    ///   o ninguna sin abortar (<c>?</c>). En FFmpeg 8.0 la «u» cierra el especificador: no admite índice detrás (<c>0:a:u:0?</c> =
+    ///   «Trailing garbage after stream specifier: 0?») ni el <c>?</c> pegado (<c>0:a:u?</c>), de ahí los dos puntos.</item>
+    ///   <item><c>-map -0:a:1</c> … <c>-0:a:15</c>: quitan las demás pistas de audio de la entrada (un mapeo negativo que no casa con
+    ///   nada no falla). Así un flujo con varias pistas sigue llevando al relé solo la primera, como siempre (el relé y el proceso
+    ///   del canal cuentan con un único audio, el PID 0x101), y si la primera está muda no se cuela la segunda.</item>
+    /// </list>
+    /// La fuente lo sabe por el volcado (<see cref="FfmpegInputDump"/>: con audio solo si la primera pista está descrita), da
+    /// SEÑAL OK sin audio y el canal pinta y graba el vídeo. Con un flujo normal (sin pistas mudas) se copia exactamente lo mismo
+    /// que antes. Lo que no cambia: el análisis espera a la pista muda hasta su tope (<see cref="SrtAnalysisArguments"/>), así que
+    /// ese emisor da SEÑAL OK unos 12 s después de que FFmpeg vea su primer fotograma clave, y si su audio empezara a llegar
+    /// después, esa conexión sigue sin él (antes, a cambio, no funcionaba nunca).
+    /// </summary>
+    public static readonly IReadOnlyList<string> AudioMapArguments = new[] { "-map", "0:a:u:?" }
+        .Concat(Enumerable.Range(1, AudioTracksCovered - 1)
+            .SelectMany(track => new[] { "-map", "-0:a:" + track.ToString(CultureInfo.InvariantCulture) }))
+        .ToArray();
+
+    /// <summary>
+    /// La línea de comandos completa del receptor: entrada del protocolo → el primer vídeo y, si FFmpeg lo describió, el
+    /// primer audio (<see cref="AudioMapArguments"/>: un flujo solo-vídeo, o con una pista de audio sin datos, no aborta) →
+    /// copia sin recodificar a MPEG-TS por TCP al relé, con cada
     /// paquete volcado al instante (<c>-flush_packets 1</c>: latencia mínima en el preview). Cada trama de audio sale EN
     /// CUANTO LLEGA, porque con un emisor que trae el audio con otro reloj (visto en servidores RTMP reales: 3,4 h y 3056 s
     /// «por delante») el relé lo realinea por ORDEN DE LLEGADA, y lo que el muxer retrasa se convierte en desfase de labios:
@@ -229,9 +261,11 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     {
         var args = new List<string> { "-hide_banner", "-progress", "pipe:1", "-stats_period", "1" };
         args.AddRange(InputArgumentsFor(input));
+        args.AddRange(new[] { "-map", "0:v:0" });
+        args.AddRange(AudioMapArguments);
         args.AddRange(new[]
         {
-            "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+            "-c", "copy",
             // Marcas de tiempo TAL CUAL (sin re-basar ni «corregir»): con una entrada mpegts (SRT) y el audio con otro
             // reloj, FFmpeg aplicaba su corrección de discontinuidades por PAQUETE, alternando el desplazamiento entre
             // vídeo y audio con un aviso por paquete; el relé realinea el audio en un solo sitio, para SRT y RTMP igual.
@@ -265,7 +299,9 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
         _connected = true;
         _lastErrorLine = null;
         _log.LogInformation("Entrada de red {Url}: emisor conectado ({Format}{Audio}).", _input.Url,
-            description.Video?.Label ?? "formato sin describir", description.HasAudio ? ", con audio" : ", sin audio");
+            description.Video?.Label ?? "formato sin describir",
+            description.HasAudio ? ", con audio"
+            : description.UndescribedAudio ? ", sin audio: anuncia una pista de audio que no trae datos y no se copia" : ", sin audio");
         PeerConnected?.Invoke(this, description);
     }
 
