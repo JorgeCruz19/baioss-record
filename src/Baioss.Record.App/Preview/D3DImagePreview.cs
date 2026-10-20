@@ -15,13 +15,16 @@ namespace Baioss.Record.App.Preview;
 /// frames BGRA llegan por CPU (una textura staging) y se copian a la textura compartida en
 /// VRAM; WPF lee esa textura directamente (sin copia de vuelta a CPU).
 ///
-/// <para>Resistente a la PÉRDIDA DE DISPOSITIVO: al conmutar la energía/MUX del portátil (cargador),
-/// un TDR o el bloqueo de sesión, el GPU se resetea y tanto el compositor de WPF como NUESTROS
-/// dispositivos D3D quedan inválidos → el preview se iría a negro permanentemente. Aquí, cuando el
-/// front buffer de WPF vuelve (evento <see cref="D3DImage.IsFrontBufferAvailableChanged"/>) —o cuando
-/// una subida de frame falla— se RECONSTRUYEN los recursos nativos y se re-asigna el back buffer,
-/// conservando el mismo <see cref="D3DImage"/> (sin tocar el binding). Si aun así no se recupera, el
-/// llamador (<c>PreviewSurface</c>) cae a CPU.</para>
+/// <para>Resistente a la PÉRDIDA DEL FRONT BUFFER y del DISPOSITIVO. El compositor de WPF rehace su dispositivo al
+/// arrancar (en este equipo, siempre: el front buffer de todas las <see cref="D3DImage"/> cae y vuelve unos 30 ms
+/// después), al bloquear la sesión y en un reset del GPU (energía/MUX del portátil, TDR). Mientras no hay front buffer
+/// no se presenta nada, pero se CONSERVA el back buffer: soltándolo, la <see cref="D3DImage"/> no se enteraba de que el
+/// front buffer volvía y el preview se quedaba en negro para siempre mientras seguía recibiendo cuadros (al arrancar
+/// con dos canales, casi siempre el primero, hasta reasignar su entrada; medido el 2026-10-19). Cuando vuelve (evento
+/// <see cref="D3DImage.IsFrontBufferAvailableChanged"/>) se le vuelve a dar el back buffer, como pide WPF; solo si NUESTROS
+/// dispositivos también se perdieron (o cuando una subida de frame falla) se RECONSTRUYEN los recursos nativos,
+/// conservando el mismo <see cref="D3DImage"/> (sin tocar el binding). Si aun así no se recupera, o si el front buffer
+/// no vuelve, el llamador (<c>PreviewSurface</c>) cae a CPU.</para>
 /// </summary>
 internal sealed class D3DImagePreview : IDisposable
 {
@@ -44,8 +47,8 @@ internal sealed class D3DImagePreview : IDisposable
         _gpu = gpu;
 
         Image = new D3DImage();
-        // Recuperación ante pérdida de dispositivo: cuando el front buffer del compositor de WPF vuelve,
-        // reconstruimos NUESTROS dispositivos (también se perdieron en el reset del GPU) y re-armamos.
+        // Cuando el front buffer del compositor de WPF vuelve, se le vuelve a dar el back buffer (y, si NUESTROS
+        // dispositivos también se perdieron en un reset del GPU, se reconstruyen).
         Image.IsFrontBufferAvailableChanged += OnFrontBufferAvailableChanged;
         SetBackBuffer(gpu);
     }
@@ -58,12 +61,14 @@ internal sealed class D3DImagePreview : IDisposable
     }
 
     /// <summary>
-    /// Sube un frame BGRA a la textura compartida y lo presenta. Devuelve <c>false</c> si el dispositivo
-    /// GPU está perdido AHORA (para que el llamador pueda caer a CPU si no se recupera). Hilo de UI.
+    /// Sube un frame BGRA a la textura compartida y lo presenta. Devuelve <c>false</c> si AHORA no se puede presentar
+    /// —sin front buffer, o con el dispositivo GPU perdido— para que el llamador caiga a CPU si no se recupera. Hilo de UI.
     /// </summary>
     public bool Update(PreviewFrame frame)
     {
         if (_disposed) return true;
+        // Sin front buffer no se sube ni se reconstruye nada: lo re-arma OnFrontBufferAvailableChanged cuando vuelve.
+        if (!Image.IsFrontBufferAvailable) return false;
         if (_gpu is null) { TryRebuild(); if (_gpu is null) return false; }
 
         var gpu = _gpu;
@@ -90,33 +95,24 @@ internal sealed class D3DImagePreview : IDisposable
         // front buffer → consultamos el estado del dispositivo y, si se perdió, reconstruimos.
         if (gpu.IsLost()) { LoseGpu("estado de dispositivo perdido"); return false; }
 
-        if (Image.IsFrontBufferAvailable)
-        {
-            Image.Lock();
-            try { Image.AddDirtyRect(_rect); }
-            finally { Image.Unlock(); }
-        }
+        Image.Lock();
+        try { Image.AddDirtyRect(_rect); }
+        finally { Image.Unlock(); }
         return true;
     }
 
     private void OnFrontBufferAvailableChanged(object? sender, DependencyPropertyChangedEventArgs e)
     {
         if (_disposed) return;
-        if (Image.IsFrontBufferAvailable)
-        {
-            // El GPU volvió: NUESTROS dispositivos también se perdieron en el reset → reconstruir y re-armar.
-            DropGpu();
-            _nextRebuildTick = 0;     // permite un intento inmediato
-            TryRebuild();
-        }
-        else
-        {
-            // Fuera de servicio: suelta el back buffer y los recursos nativos mientras dure el corte.
-            Image.Lock();
-            try { Image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero); }
-            finally { Image.Unlock(); }
-            DropGpu();
-        }
+        // Fuera de servicio: no se presenta (ver Update), pero el back buffer y los recursos se CONSERVAN. Soltar el back
+        // buffer aquí dejaba a la D3DImage sin enterarse de que el front buffer volvía: negro para siempre.
+        if (!Image.IsFrontBufferAvailable) return;
+        // Volvió. Lo normal (al arrancar, al bloquear la sesión) es que NUESTROS dispositivos sigan sanos: basta con volver a
+        // darle el back buffer, como pide WPF. Si también se perdieron en un reset del GPU, se reconstruyen y re-arman.
+        if (_gpu is { } gpu && !gpu.IsLost()) { SetBackBuffer(gpu); return; }
+        DropGpu();
+        _nextRebuildTick = 0;     // permite un intento inmediato
+        TryRebuild();
     }
 
     private void TryRebuild()
