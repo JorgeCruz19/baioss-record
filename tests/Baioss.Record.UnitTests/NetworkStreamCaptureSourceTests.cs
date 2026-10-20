@@ -119,7 +119,13 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.Contains("0:a:0?", args);                   // el audio es opcional: un flujo solo-vídeo no aborta
         Assert.Equal("mpegts", args[args.IndexOf("-f") + 1]);
         Assert.Equal("1", args[args.IndexOf("-flush_packets") + 1]);
-        Assert.Equal("50000", args[args.IndexOf("-max_interleave_delta") + 1]); // sin retener el audio 10 s cuando trae otro reloj
+        // Cada trama de audio sale en cuanto llega (el relé realinea por llegada un audio con otro reloj): sin retenerla para
+        // entrelazarla por DTS y sola en su PES, no agrupada con las siguientes (~0,27 s tarde en el servidor RTMP real).
+        Assert.Equal("1", args[args.IndexOf("-max_interleave_delta") + 1]);
+        Assert.Equal("0", args[args.IndexOf("-pes_payload_size") + 1]);
+        Assert.Equal("0", args[args.IndexOf("-muxdelay") + 1]); // también las tramas pequeñas (silencio) van solas
+        Assert.True(args.IndexOf("-pes_payload_size") > args.IndexOf("-i") && args.IndexOf("-muxdelay") > args.IndexOf("-i"),
+            "opciones de la salida: después de la entrada");
         Assert.Contains("-copyts", args); // marcas tal cual: el relé es el único que realinea relojes (SRT y RTMP igual)
         Assert.Equal("tcp://127.0.0.1:45000?tcp_nodelay=1", args[^1]);
         Assert.DoesNotContain("-c:v", args);

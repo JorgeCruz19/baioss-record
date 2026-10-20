@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
@@ -12,6 +13,7 @@ using Baioss.Record.Engine.FFmpeg;
 using Baioss.Record.Infrastructure.Capture;
 using Baioss.Record.Infrastructure.Preview;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Baioss.Record.IntegrationTests;
 
@@ -26,6 +28,8 @@ namespace Baioss.Record.IntegrationTests;
 public sealed class NetworkInputTests
 {
     private static readonly TimeSpan Lock = TimeSpan.FromSeconds(30);
+    private readonly ITestOutputHelper _out;
+    public NetworkInputTests(ITestOutputHelper output) => _out = output;
 
     private static bool Available => TestAssets.FfmpegDir is not null;
 
@@ -35,7 +39,11 @@ public sealed class NetworkInputTests
     {
         private readonly Process _process;
 
-        public Sender(string ffmpegDir, string url, string format, int seconds, string? passphrase = null, bool listen = false, double audioOffsetSeconds = 0)
+        /// <param name="syncMarks">En vez de barras y tono, un destello blanco de un cuadro y un pitido de 40 ms A LA VEZ cada 2 s (ver
+        /// <see cref="FlashToBeepAsync"/>), con las dos entradas a ritmo real y el audio enviado en cuanto sale del codificador, como un
+        /// codificador en directo: así lo grabado dice si el audio quedó donde estaba respecto al vídeo.</param>
+        public Sender(string ffmpegDir, string url, string format, int seconds, string? passphrase = null, bool listen = false, double audioOffsetSeconds = 0,
+            bool syncMarks = false)
         {
             var psi = new ProcessStartInfo
             {
@@ -43,17 +51,33 @@ public sealed class NetworkInputTests
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
             };
-            var args = new List<string>
-            {
-                "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error",
-                "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
-            };
+            var args = new List<string> { "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error" };
+            if (syncMarks)
+                args.AddRange(new[]
+                {
+                    "-re", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='lt(mod(t,2),0.04)'",
+                    "-re", "-f", "lavfi", "-i", "aevalsrc='if(lt(mod(t,2),0.04),0.8*sin(2*PI*1000*t),0)':s=48000",
+                    "-ac", "2",
+                });
+            else
+                args.AddRange(new[]
+                {
+                    "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+                });
             args.AddRange(new[]
             {
-                "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "25",
                 "-c:a", "aac", "-b:a", "96k",
             });
+            // Cada trama de audio sale en cuanto la da el codificador: ni retenida para entrelazarla por DTS ni agrupada con otras en un
+            // PES (lo que el muxer MPEG-TS hace por defecto: 8 tramas a 135 kb/s, hasta 350 ms de silencio), que la haría llegar tarde
+            // respecto al vídeo. Como el receptor (ver NetworkStreamReceiver.ArgumentsFor).
+            if (syncMarks)
+            {
+                args.Add("-max_interleave_delta"); args.Add("1");
+                if (format == "mpegts") args.AddRange(new[] { "-pes_payload_size", "0", "-muxdelay", "0" });
+            }
             // -t compara las marcas de tiempo con la duración: con el audio desplazado 100 s lo descartaría entero; ese emisor
             // se para matándolo (Dispose), como un emisor real que no termina solo.
             if (audioOffsetSeconds == 0) { args.Add("-t"); args.Add(seconds.ToString()); }
@@ -63,7 +87,7 @@ public sealed class NetworkInputTests
             if (audioOffsetSeconds != 0)
             {
                 args.Add("-bsf:a"); args.Add($"setts=ts=TS+{audioOffsetSeconds.ToString(CultureInfo.InvariantCulture)}/TB");
-                args.Add("-max_interleave_delta"); args.Add("100000");
+                if (!syncMarks) { args.Add("-max_interleave_delta"); args.Add("100000"); }
             } // 0 = esperar a todas las pistas: NUNCA escribiría el audio
             if (passphrase is not null) { args.Add("-passphrase"); args.Add(passphrase); }
             args.Add("-f"); args.Add(format);
@@ -159,6 +183,34 @@ public sealed class NetworkInputTests
             if (parts[0] == "video") video = start; else if (parts[0] == "audio") audio = start;
         }
         return (video, audio);
+    }
+
+    /// <summary>
+    /// Cuánto va el pitido respecto al destello en lo grabado (mediana de los pares, en segundos; positivo = el audio suena después
+    /// de la imagen) y cuántos pares hubo. Los destellos, por el brillo medio de cada cuadro (signalstats); los pitidos, por el final
+    /// de cada silencio (silencedetect). Los dos salen del emisor a la vez (ver <see cref="Sender"/> con syncMarks).
+    /// </summary>
+    private static async Task<(double Offset, int Pairs)> FlashToBeepAsync(string ffmpeg, string file)
+    {
+        var (_, video) = await RecordedFileCheck.RunWithLogAsync(ffmpeg, "-hide_banner", "-nostats", "-i", file, "-map", "0:v:0",
+            "-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-");
+        // metadata=print escribe, por cuadro, «frame:N pts:P pts_time:T» y después «lavfi.signalstats.YAVG=V».
+        var flashes = new List<double>();
+        double? at = null;
+        foreach (var line in video.Split('\n'))
+        {
+            if (Regex.Match(line, @"pts_time:([\d.]+)") is { Success: true } time) { at = double.Parse(time.Groups[1].Value, CultureInfo.InvariantCulture); continue; }
+            if (Regex.Match(line, @"lavfi\.signalstats\.YAVG=([\d.]+)") is { Success: true } y && at is { } t
+                && double.Parse(y.Groups[1].Value, CultureInfo.InvariantCulture) > 128)
+                flashes.Add(t);
+        }
+        var (_, audio) = await RecordedFileCheck.RunWithLogAsync(ffmpeg, "-hide_banner", "-nostats", "-i", file, "-map", "0:a:0",
+            "-af", "silencedetect=noise=-30dB:d=0.1", "-f", "null", "-");
+        var beeps = Regex.Matches(audio, @"silence_end: ([\d.]+)").Select(m => double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)).ToList();
+        var offsets = flashes
+            .Select(f => beeps.Select(b => b - f).Where(d => Math.Abs(d) < 0.9).OrderBy(Math.Abs).Cast<double?>().FirstOrDefault())
+            .OfType<double>().OrderBy(d => d).ToList();
+        return (offsets.Count == 0 ? double.NaN : offsets[offsets.Count / 2], offsets.Count);
     }
 
     private static async Task<string> RecordAndVerifyAsync(FfmpegChannelEngine engine, FfmpegLocator locator, RecordingProfile profile, TimeSpan duration)
@@ -380,6 +432,46 @@ public sealed class NetworkInputTests
             var (video, audio) = await ProbeStartTimesAsync(locator.FfprobePath, file);
             Assert.NotNull(audio); // hay pista de audio con datos
             Assert.True(Math.Abs(audio!.Value - video) < 0.5, $"El audio debía empezar junto al vídeo; vídeo {video:0.000} s, audio {audio:0.000} s.");
+        }
+        finally { Cleanup(outputRoot); }
+    }
+
+    /// <summary>
+    /// La SINCRONÍA, no solo el arranque: un emisor RTMP manda un destello y un pitido a la vez cada 2 s y lo grabado debe tenerlos
+    /// juntos. Con relojes coherentes mandan las marcas de tiempo; con el audio en otro reloj (100 s «por delante», como el servidor
+    /// RTMP real con 3056 s), el relé lo realinea por ORDEN DE LLEGADA, así que importa cuándo le llega cada trama: el receptor
+    /// juntaba varias tramas AAC en cada PES del MPEG-TS (lo que hace el muxer por defecto: 8 a 135 kb/s, hasta 350 ms de silencio)
+    /// y retenía el audio 50 ms para entrelazarlo, y el relé, que mide por el primer PTS de cada PES, colocaba el audio tarde: 0,27 s
+    /// en el servidor real (medido el 2026-10-19) y 0,47 s con este emisor (ver <see cref="NetworkStreamReceiver.ArgumentsFor"/>).
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(100)]
+    public async Task RtmpWithSeparateOrCoherentClocks_TheRecordingKeepsTheAudioInSyncWithTheVideo(double audioOffsetSeconds)
+    {
+        Skip.IfNot(Available, "FFmpeg no disponible en tools/.");
+        var outputRoot = OutputRoot("rtmp-sync");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            int port = FreeTcpPort();
+            await using var source = await OpenAsync(locator, new NetworkInput { Protocol = NetworkProtocol.Rtmp, Role = NetworkRole.Listen, Port = port, Path = "live/test" });
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            await engine.StartPreviewAsync(source, Profile(), "NET");
+            await Task.Delay(1500);
+
+            using var sender = new Sender(TestAssets.FfmpegDir!, $"rtmp://127.0.0.1:{port}/live/test", "flv", 60, audioOffsetSeconds: audioOffsetSeconds, syncMarks: true);
+            await WaitForAsync(() => source.CurrentSignal.State == SignalState.Locked, Lock, "La fuente no bloqueó al publicar el emisor RTMP.");
+            await Task.Delay(TimeSpan.FromSeconds(5)); // con relojes distintos, pasado el asentamiento del relé (2,5–4 s)
+            var file = await RecordAndVerifyAsync(engine, locator, Profile(), TimeSpan.FromSeconds(9));
+
+            var (offset, pairs) = await FlashToBeepAsync(locator.FfmpegPath, file);
+            _out.WriteLine($"Relojes {(audioOffsetSeconds == 0 ? "coherentes" : $"distintos (audio +{audioOffsetSeconds} s)")}: el pitido suena {offset * 1000:+0;-0} ms respecto al destello ({pairs} pares).");
+            Assert.True(pairs >= 4, $"Se esperaban al menos 4 pares destello-pitido en lo grabado; hay {pairs}.");
+            // Con relojes coherentes, 0 ms. Con relojes distintos el relé alinea por llegada, y la llegada no es exacta: el emisor
+            // entrega cada trama de audio ~65 ms después de su vídeo (el codificador AAC necesita la trama siguiente, y su muxer la
+            // retiene hasta que llega otra) y el receptor otras dos tramas (~42 ms): +117 ms medidos. Antes, +467 ms.
+            Assert.True(Math.Abs(offset) <= 0.15, $"El pitido suena {offset * 1000:+0;-0} ms respecto al destello ({pairs} pares).");
         }
         finally { Cleanup(outputRoot); }
     }
