@@ -109,6 +109,43 @@ llegada). `NetworkInputTests` lo mide en lo grabado con un destello y un pitido 
 audio en otro reloj, +117 ms (antes, +467 ms), de los que ~65 ms son del propio emisor (el codificador AAC entrega cada trama
 después de tener la siguiente).
 
+**SEÑAL OK de una SRT en cuanto se describe (2026-10-20).** Una fuente de red pasa a SEÑAL OK cuando su receptor vuelca la
+descripción de la entrada («Input #0 …» y sus pistas, ver `FfmpegInputDump`), y FFmpeg la vuelca al acabar su análisis. Con
+MPEG-TS ese análisis no acababa nunca antes de tiempo: el CLI de FFmpeg pone `scan_all_pmts=1` en toda entrada que no lo diga, y
+con eso el TS cuenta como formato sin cabecera (podría aparecer otra pista) hasta agotar `analyzeduration` (5 s de flujo; 7 s si
+alguna pista sigue sin describir) o `probesize` (5 MB). La SRT real (HEVC 1080p29.97 + AAC, GOP 2 s) daba SEÑAL OK a los ~6,2 s
+y a los ~7,1 s tras cada corte; y con un GOP de 8–10 s (250 frames, lo de x264 y OBS por defecto) el primer fotograma clave
+llegaba después del tope y la señal salía SIN resolución («unspecified size»), igual que a 15–20 Mb/s con GOP de más de 2–3 s,
+porque los 5 MB se acababan antes. El receptor SRT abre ahora la entrada con `-f mpegts -scan_all_pmts 0 -analyzeduration
+12000000 -probesize 64000000` (`NetworkStreamReceiver.SrtAnalysisArguments`): el análisis acaba en cuanto cada pista está
+descrita —el primer fotograma clave, 20 frames con marca de tiempo y una trama de audio decodificada— y 12 s y 64 MB quedan como
+tope para lo que no se deja describir antes. `-f mpegts` porque `-scan_all_pmts` es del demuxer MPEG-TS y el CLI aborta ante una
+opción de entrada que nadie usa. RTMP no cambia: la cabecera FLV anuncia sus pistas y FFmpeg acaba en cuanto las describe
+(0,2–1,9 s con el servidor real). Medido con el receptor solo y un emisor SRT local que entra justo detrás de un fotograma clave
+(el peor momento, salvo donde se dice):
+
+| Emisor | Antes | Ahora |
+|--------|-------|-------|
+| HEVC 1080p29.97 + AAC, GOP 2 s | 5,7 s | 2,5 s |
+| el mismo, con el fotograma clave al conectar | 5,6 s | 1,3 s |
+| HEVC, GOP 4 s / 8 s / 10 s | 5,7 s / 6,8 s y 6,9 s **sin resolución** | 4,4 s / 8,2 s / 10,2 s |
+| H.264 1080i TFF, GOP 2 s · MPEG-2 1080i, GOP 0,5 s | 4,2 s · 2,8 s | 2,8 s · 1,0 s, los dos con su «top first» |
+| H.264 1080p a 20 Mb/s, GOP 4 s | 2,9 s **sin resolución** | 4,7 s |
+| HEVC GOP 2 s con el audio 3 s tarde · solo vídeo | 6,7 s · 6,8 s | 3,7 s (con el audio descrito) · 2,5 s |
+
+Con el canal entero (`NetworkInputTests.SrtListen_LocksAsSoonAsTheStreamIsDescribed_AlsoAfterACut`, 640×360, igual en la primera
+conexión y al volver el emisor tras un corte): GOP 2 s, SEÑAL OK a los 2,2–2,3 s y el primer cuadro de preview a los 2,8–2,9 s
+(con los argumentos de antes, 5,3–5,4 s y 5,4–5,5 s); GOP 8 s, 8,0 s con el formato (antes, 7,2 s sin él). El proceso del canal
+sigue con sus 2 s de análisis (`ConsumerArgumentsFor`): en la primera conexión el relé aún no tiene sus 2,5 s de pre-roll, pero
+ese primer proceso recibe también el audio que el receptor leyó antes del fotograma clave y su análisis se completa al momento;
+sin audio espera 2 s de vídeo en directo (solo vídeo: SEÑAL OK a los 2,3 s y preview a los 4,4 s). Con la SRT real
+(`LiveNetworkSourceTests`, 2026-10-20 10:10, todo en verde): SEÑAL OK a los 1,9 s con el formato entero (antes, ~6,2 s); tras
+matar el receptor, otra vez a los 2,9 s con el segundo de espera del supervisor incluido (antes, ~7,1 s); tras un hipo de 6 s
+—el servidor corta—, 2,2 s después de perder la señal. Lo que se pierde en un corte no cambia (2,9 s; antes, ~2,6 s): lo marcan
+la reconexión y el siguiente fotograma clave, no el análisis, cuyos paquetes el receptor entrega igualmente. Lo que no se deja describir
+nunca no mejora: una pista de audio que figura en la PMT pero no trae paquetes deja el audio sin parámetros, y FFmpeg no puede
+escribir la cabecera de la copia («sample rate not set»): el receptor falla y se relanza, ahora a los 12 s y antes a los 7.
+
 **DeckLink: dispositivo persistente con relé en crudo.** La tarjeta es exclusiva y reabrirla cuesta 0,3–1 s sin frames
 (más con autodetección; con el conector bidireccional de la Duo 2, la resincronización del receptor SDI), así que con la
 captura directa cada Grabar/Detener congelaba el preview y grababa unas décimas de negro al principio. Desde 2026-09-27

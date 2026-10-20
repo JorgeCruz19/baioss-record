@@ -42,8 +42,14 @@ public sealed class NetworkInputTests
         /// <param name="syncMarks">En vez de barras y tono, un destello blanco de un cuadro y un pitido de 40 ms A LA VEZ cada 2 s (ver
         /// <see cref="FlashToBeepAsync"/>), con las dos entradas a ritmo real y el audio enviado en cuanto sale del codificador, como un
         /// codificador en directo: así lo grabado dice si el audio quedó donde estaba respecto al vídeo.</param>
+        /// <param name="firstKeyframeLost">El emisor se come su primer fotograma clave (y con él los parámetros del vídeo): el
+        /// receptor recibe frames que no puede describir hasta el siguiente clave, un GOP después, como al entrar a un directo justo
+        /// detrás de uno. GOP fijo de <paramref name="gopFrames"/> (sin claves de más por cambio de escena).</param>
+        /// <param name="audioLateSeconds">El audio está en la PMT desde el principio, pero sus primeros paquetes no llegan hasta pasados
+        /// estos segundos.</param>
         public Sender(string ffmpegDir, string url, string format, int seconds, string? passphrase = null, bool listen = false, double audioOffsetSeconds = 0,
-            bool syncMarks = false)
+            bool syncMarks = false, string videoCodec = "libx264", int gopFrames = 25, bool firstKeyframeLost = false, double audioLateSeconds = 0,
+            bool withAudio = true)
         {
             var psi = new ProcessStartInfo
             {
@@ -60,16 +66,17 @@ public sealed class NetworkInputTests
                     "-ac", "2",
                 });
             else
-                args.AddRange(new[]
-                {
-                    "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
-                    "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-                });
-            args.AddRange(new[]
             {
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "25",
-                "-c:a", "aac", "-b:a", "96k",
-            });
+                args.AddRange(new[] { "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25" });
+                if (withAudio) args.AddRange(new[] { "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000" });
+            }
+            args.AddRange(new[] { "-c:v", videoCodec, "-preset", "ultrafast", "-tune", "zerolatency", "-g", gopFrames.ToString(CultureInfo.InvariantCulture) });
+            if (videoCodec == "libx265") args.AddRange(new[] { "-x265-params", firstKeyframeLost ? "log-level=error:scenecut=0" : "log-level=error" });
+            else if (firstKeyframeLost) args.AddRange(new[] { "-sc_threshold", "0" });
+            // El primer paquete de vídeo (n = 0) es el fotograma clave con los parámetros (SPS/PPS, y VPS en HEVC).
+            if (firstKeyframeLost) { args.Add("-bsf:v"); args.Add("noise=drop=not(n)"); }
+            args.AddRange(withAudio ? new[] { "-c:a", "aac", "-b:a", "96k" } : new[] { "-an" });
+            if (audioLateSeconds > 0) { args.Add("-bsf:a"); args.Add($"noise=drop=lt(pts*tb\\,{audioLateSeconds.ToString(CultureInfo.InvariantCulture)})"); }
             // Cada trama de audio sale en cuanto la da el codificador: ni retenida para entrelazarla por DTS ni agrupada con otras en un
             // PES (lo que el muxer MPEG-TS hace por defecto: 8 tramas a 135 kb/s, hasta 350 ms de silencio), que la haría llegar tarde
             // respecto al vídeo. Como el receptor (ver NetworkStreamReceiver.ArgumentsFor).
@@ -472,6 +479,92 @@ public sealed class NetworkInputTests
             // entrega cada trama de audio ~65 ms después de su vídeo (el codificador AAC necesita la trama siguiente, y su muxer la
             // retiene hasta que llega otra) y el receptor otras dos tramas (~42 ms): +117 ms medidos. Antes, +467 ms.
             Assert.True(Math.Abs(offset) <= 0.15, $"El pitido suena {offset * 1000:+0;-0} ms respecto al destello ({pairs} pares).");
+        }
+        finally { Cleanup(outputRoot); }
+    }
+
+    // --- Cuánto tarda SEÑAL OK ---
+
+    /// <summary>El audio del emisor de <see cref="SrtListen_LocksAsSoonAsTheStreamIsDescribed_AlsoAfterACut"/>.</summary>
+    public enum SenderAudio { Normal, ThreeSecondsLate, None }
+
+    /// <summary>Instantes (reloj de la prueba) de SEÑAL OK y del primer cuadro de preview posterior, por conexión del emisor.</summary>
+    private sealed class LockMarks(Stopwatch clock)
+    {
+        private readonly object _sync = new();
+        private double? _locked, _frame;
+        public double Now => clock.Elapsed.TotalSeconds;
+        public void Signal(SignalState state) { lock (_sync) if (state == SignalState.Locked) _locked ??= clock.Elapsed.TotalSeconds; }
+        public void Frame() { lock (_sync) if (_locked is not null) _frame ??= clock.Elapsed.TotalSeconds; }
+        public double? Locked { get { lock (_sync) return _locked; } }
+        public double? FirstFrame { get { lock (_sync) return _frame; } }
+        public void Reset() { lock (_sync) { _locked = null; _frame = null; } }
+    }
+
+    /// <summary>
+    /// SEÑAL OK de una SRT en cuanto el receptor conoce el flujo entero —y otra vez igual de rápido cuando el emisor vuelve tras un
+    /// corte—, con el formato completo. El emisor pierde su primer fotograma clave, como al entrar a un directo justo detrás de uno: el
+    /// peor momento, hay que esperar un GOP entero al siguiente. Con el análisis por defecto de FFmpeg, un MPEG-TS lo agotaba siempre
+    /// (ver <see cref="NetworkStreamReceiver.SrtAnalysisArguments"/>); medido el 2026-10-20 con HEVC 1080p: GOP 2 s, 5,7 s; GOP 8 s,
+    /// 6,8 s y SIN resolución; audio 3 s tarde, 6,7 s; solo vídeo, 6,8 s. La SRT real del usuario (HEVC, GOP 2 s): ~6,2 s, y ~7,1 s
+    /// tras cada corte. Esta prueba con los argumentos de antes: GOP 2 s, 5,3–5,4 s; GOP 8 s, 7,2 s sin formato; ahora 2,2–2,35 s y 8,0 s.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("libx265", 2, SenderAudio.Normal)]
+    [InlineData("libx264", 2, SenderAudio.Normal)]
+    [InlineData("libx265", 8, SenderAudio.Normal)]
+    [InlineData("libx265", 2, SenderAudio.ThreeSecondsLate)]
+    [InlineData("libx265", 2, SenderAudio.None)]
+    public async Task SrtListen_LocksAsSoonAsTheStreamIsDescribed_AlsoAfterACut(string codec, int gopSeconds, SenderAudio audio)
+    {
+        Skip.IfNot(Available, "FFmpeg no disponible en tools/.");
+        var outputRoot = OutputRoot("srt-lock-time");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            int port = FreeUdpPort();
+            var marks = new LockMarks(Stopwatch.StartNew());
+            await using var source = await OpenAsync(locator, new NetworkInput { Protocol = NetworkProtocol.Srt, Role = NetworkRole.Listen, Port = port });
+            source.SignalChanged += (_, s) => marks.Signal(s.State);
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            engine.FrameReady += (_, _) => marks.Frame();
+            await engine.StartPreviewAsync(source, Profile(), "NET");
+            await Task.Delay(1500); // el receptor ya escucha
+
+            // Lo que hay que esperar sí o sí: el siguiente fotograma clave y, si llega tarde, el audio (está en la PMT: hay que describirlo).
+            double wait = Math.Max(gopSeconds, audio == SenderAudio.ThreeSecondsLate ? 3 : 0);
+            for (int connection = 1; connection <= 2; connection++)
+            {
+                marks.Reset();
+                double startedAt = marks.Now;
+                using var sender = new Sender(TestAssets.FfmpegDir!, $"srt://127.0.0.1:{port}?mode=caller&latency=120000", "mpegts", gopSeconds + 6,
+                    videoCodec: codec, gopFrames: gopSeconds * 25, firstKeyframeLost: true,
+                    audioLateSeconds: audio == SenderAudio.ThreeSecondsLate ? 3 : 0, withAudio: audio != SenderAudio.None);
+                await WaitForAsync(() => marks.Locked is not null, Lock, $"Conexión {connection}: la fuente no dio SEÑAL OK.");
+                var signal = source.CurrentSignal;
+                double locked = marks.Locked!.Value - startedAt;
+                _out.WriteLine($"{codec}, GOP {gopSeconds} s, audio {audio}, conexión {connection}: SEÑAL OK a los {locked:0.00} s ({signal.FormatLabel}" +
+                               $"{(signal.HasAudio ? ", con audio" : ", sin audio")}).");
+
+                Assert.Equal("640×360 · 25p", signal.FormatLabel); // el formato entero: un análisis cortado deja el vídeo sin tamaño
+                Assert.Equal(new Resolution(640, 360), signal.Resolution);
+                Assert.Equal(new FrameRate(25, 1), signal.FrameRate);
+                Assert.Equal(audio != SenderAudio.None, signal.HasAudio);
+                Assert.True(locked >= wait - 0.5,
+                    $"SEÑAL OK a los {locked:0.00} s: el emisor debía hacer esperar al receptor {wait} s (¿no perdió su primer fotograma clave?).");
+                Assert.True(locked <= wait + 2.0, $"Conexión {connection}: SEÑAL OK a los {locked:0.00} s; con todo descrito a los {wait} s debía llegar en ≤ {wait + 2:0} s.");
+
+                // Y el canal pinta: con audio, el primer proceso recibe también el audio que el receptor leyó antes del fotograma clave y
+                // su análisis (2 s) se completa al momento; sin audio espera 2 s de vídeo en directo.
+                await WaitForAsync(() => marks.FirstFrame is not null, Lock, $"Conexión {connection}: SEÑAL OK sin cuadros de preview.");
+                _out.WriteLine($"  primer cuadro de preview a los {marks.FirstFrame!.Value - startedAt:0.00} s.");
+
+                if (connection == 2) break;
+                // El corte: el emisor termina su flujo; la fuente vuelve a SIN SEÑAL y el receptor, relanzado, escucha otra vez.
+                await WaitForAsync(() => sender.HasExited, Lock, "El emisor no terminó su flujo.");
+                await WaitForAsync(() => source.CurrentSignal.State == SignalState.NoSignal, Lock, "La fuente no marcó SIN SEÑAL al irse el emisor.");
+                await Task.Delay(1000);
+            }
         }
         finally { Cleanup(outputRoot); }
     }

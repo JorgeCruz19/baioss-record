@@ -45,7 +45,8 @@ public sealed class LiveNetworkSourceTests
     private static string? Env(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } v ? v : null;
     private static double Number(string name, double fallback) => Env(name) is { } v ? double.Parse(v, CultureInfo.InvariantCulture) : fallback;
 
-    /// <summary>Lo que se observa tras un hipo o un corte antes de Detener: lo que tarda la reconexión SRT (~7 s) y la pieza nueva.</summary>
+    /// <summary>Lo que se observa tras un hipo o un corte antes de Detener: lo que tarda la reconexión SRT (1 s de espera del supervisor
+    /// y el análisis del receptor, hasta un GOP; ~7 s antes del 2026-10-20) y la pieza nueva.</summary>
     private const double CutObservationSeconds = 20;
 
     [SkippableFact]
