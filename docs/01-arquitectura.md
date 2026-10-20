@@ -138,7 +138,11 @@ conexión y al volver el emisor tras un corte): GOP 2 s, SEÑAL OK a los 2,2–2
 (con los argumentos de antes, 5,3–5,4 s y 5,4–5,5 s); GOP 8 s, 8,0 s con el formato (antes, 7,2 s sin él). El proceso del canal
 sigue con sus 2 s de análisis (`ConsumerArgumentsFor`): en la primera conexión el relé aún no tiene sus 2,5 s de pre-roll, pero
 ese primer proceso recibe también el audio que el receptor leyó antes del fotograma clave y su análisis se completa al momento;
-sin audio espera 2 s de vídeo en directo (solo vídeo: SEÑAL OK a los 2,3 s y preview a los 4,4 s). Lo que no se deja describir
+sin audio espera 2 s de vídeo en directo (solo vídeo: SEÑAL OK a los 2,3 s y preview a los 4,4 s). Con la SRT real
+(`LiveNetworkSourceTests`, 2026-10-20 10:10, todo en verde): SEÑAL OK a los 1,9 s con el formato entero (antes, ~6,2 s); tras
+matar el receptor, otra vez a los 2,9 s con el segundo de espera del supervisor incluido (antes, ~7,1 s); tras un hipo de 6 s
+—el servidor corta—, 2,2 s después de perder la señal. Lo que se pierde en un corte no cambia (2,9 s; antes, ~2,6 s): lo marcan
+la reconexión y el siguiente fotograma clave, no el análisis, cuyos paquetes el receptor entrega igualmente. Lo que no se deja describir
 nunca no mejora: una pista de audio que figura en la PMT pero no trae paquetes deja el audio sin parámetros, y FFmpeg no puede
 escribir la cabecera de la copia («sample rate not set»): el receptor falla y se relanza, ahora a los 12 s y antes a los 7.
 
