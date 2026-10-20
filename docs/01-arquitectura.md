@@ -89,10 +89,25 @@ Con una entrada de red, en cambio, un `NetworkStreamReceiver` permanente mantien
 el MPEG-TS a un `NetworkStreamRelay` loopback que lo reparte a varios consumidores con una ventana de pre-roll desde un
 fotograma clave: el emisor nunca ve un corte y la grabación empieza unos segundos antes del botón. Sobre ese relé el
 motor (`FfmpegChannelEngine`) hace el **relevo**: arranca el proceso nuevo mientras el viejo sigue pintando, el preview
-del nuevo se salta el pre-roll (que la grabación sí conserva), y solo le cede la imagen cuando el relé confirma que ya
-lee en directo (`RelayReservation.IsLive`, sostenido 1 s) y sus frames llegan a la cadencia real; entonces retira el
-viejo (si grababa, finaliza su archivo). Resultado: ni congelación ni avance rápido al Grabar/Detener
-(`NetworkPreviewContinuityTests` lo mide con el motor real y un emisor RTMP local).
+del nuevo se salta el pre-roll (que la grabación sí conserva), y solo le cede la imagen cuando su preview alcanza al del
+viejo: el relé numera los frames que reparte y cada reserva sabe el número del primero de su pre-roll, así que el motor sabe
+qué frame de la fuente enseña cada uno (ver «Relevo sin salto atrás»); entonces retira el viejo (si grababa, finaliza su
+archivo). Resultado: ni congelación ni avance rápido al Grabar/Detener (`NetworkPreviewContinuityTests` lo mide con el motor
+real y un emisor RTMP local; `PreviewHandoverTests`, frame a frame).
+
+**Audio con otro reloj (relé de red).** Algunos servidores RTMP marcan el audio con un reloj distinto del vídeo (vistos: 3,4 h y
+3056 s «por delante», y el desfase cambia en cada conexión). `TsAudioClockAligner` lo detecta por el primer par (más de 10 s),
+retiene el flujo 2,5 s y mide, por ORDEN DE LLEGADA, cuánto va cada PES de audio por delante del último vídeo llegado; resta la
+mediana y luego un servo lento sigue la deriva. Esa premisa (el audio que llega tras un vídeo es de ese vídeo) exige que el
+receptor entregue cada trama de audio en cuanto la recibe: con sus opciones por defecto, el muxer MPEG-TS de FFmpeg junta
+tramas AAC en un PES hasta ~2,9 KB o media `muxdelay` (8 tramas a 135 kb/s, y hasta 350 ms de silencio), lo suelta al llenarse
+con el PTS de la primera, y el intercalado por DTS lo retenía 50 ms más; el relé veía el audio menos adelantado de lo que iba y
+lo colocaba tarde: 0,27 s con el servidor RTMP real y 0,47 s con el emisor de las pruebas (medido el 2026-10-19). El receptor
+lleva ahora `-pes_payload_size 0 -muxdelay 0 -max_interleave_delta 1`: una trama por PES, que sale cuando llega la siguiente
+(queda ~1 trama de espera en cada cola, ~42 ms con AAC a 48 kHz; en el servidor real, el relé mide 21 ms menos que el orden de
+llegada). `NetworkInputTests` lo mide en lo grabado con un destello y un pitido a la vez: con relojes coherentes, 0 ms; con el
+audio en otro reloj, +117 ms (antes, +467 ms), de los que ~65 ms son del propio emisor (el codificador AAC entrega cada trama
+después de tener la siguiente).
 
 **DeckLink: dispositivo persistente con relé en crudo.** La tarjeta es exclusiva y reabrirla cuesta 0,3–1 s sin frames
 (más con autodetección; con el conector bidireccional de la Duo 2, la resincronización del receptor SDI), así que con la
@@ -139,14 +154,24 @@ socket. Ahora el viejo sigue pintando hasta que el nuevo enseña un frame de la 
 mismo, toma el mando sin repetirlo): el relé dice qué frame del flujo fue el primero de cada consumidor
 (`RelayReservation.FirstVideoFrame`, por `ICaptureSource.NewestConsumerFirstVideoFrame`) y el motor cuenta los frames que saca
 cada proceso. Los dos pierden igual el primero al unirse a mitad del flujo, así que entre ellos la comparación es exacta. Sin
-saber qué frame enseña cada uno (carta de ajuste, relé de red), con el viejo parado (250 ms sin frames) o si el nuevo no lo
-alcanza en 0,5 s, el relevo se hace como antes, con el frame que llega (`PreviewTakeover`). El tope es corto a propósito: un
+saber qué frame enseña cada uno (carta de ajuste), con el viejo parado (250 ms sin frames) o si el nuevo no lo alcanza en
+0,5 s, el relevo se hace como antes, con el frame que llega (`PreviewTakeover`). El tope es corto a propósito: un
 proceso que graba un preset que la CPU no codifica a tiempo real no alcanza nunca al viejo, y esperarle con los dos en marcha
 solo le quita CPU (con 2 s, un ProRes 422 HQ 1080p59.94 que va justo en la DeckLink acabó con descartes del relé).
 `PreviewHandoverTests` lo mide con una DeckLink sintética que lleva el número de cada frame en la imagen (ocho franjas, una por
 bit) y el relé como reloj del directo: antes, 4–10 frames repetidos por cambio; ahora ninguno en 12 cambios con x264 y NVENC, el
 preview a 1–2 frames del directo como siempre y el cambio 7–57 ms después del primer frame del proceso nuevo (0–90 ms en la
 DeckLink con TV en directo).
+
+**El mismo relevo con el relé de red (2026-10-20).** Antes, con una entrada de red, el motor esperaba a que el proceso nuevo
+fuera al día un segundo seguido y a cadencia real: con una fuente regular (la SRT real) Detener tardaba 1,7–2 s, y con una RTMP
+real que llega a ráfagas (8–18 frames juntos y luego hasta 0,9 s sin nada, por el servidor) cada ráfaga reiniciaba la cuenta o
+rompía la cadencia y Detener tardaba 2–6 s, con la grabación siguiendo mientras tanto. Ahora el relé de red numera los frames de
+vídeo que reparte y cada reserva da el número del primero de su pre-roll; el preview se salta exactamente esos frames, así que el
+primero que enseña es el siguiente, y el relevo es el de arriba. Con una fuente a ráfagas, «el viejo parado» no son 250 ms sin
+frames, sino lo que la fuente suele callar entre ráfagas (1,5 veces el hueco mayor reciente, hasta 2 s). Sin número (un proceso
+relanzado), sigue esperando a que vaya al día. `PreviewHandoverTests` lo mide también con un emisor RTMP local con las franjas:
+ningún frame repetido en 6 cambios, el preview a 15–16 frames del directo como antes (la decodificación) y Detener en 0,8 s.
 
 **Alarma «Frames perdidos» (2026-10).** El contador `drop_frames` del progreso de FFmpeg no sirve tal cual: (1) cuenta
 también los frames que FFmpeg tira A PROPÓSITO cuando el preset fija una cadencia menor que la de la fuente (`-r`: de 30 a
@@ -165,12 +190,13 @@ registro y el panel la enseña en ámbar (CADENCIA). Pruebas: `SaturationDetecto
 integración `FrameDropAlarmTests` (30→25 sin alarma y archivo a 25; 1080p60→x265 con alarma; contadores reales con la
 conversión incluida, donde la regla antigua saltaba).
 
-**Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando: con una
-entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; hasta 10 s de `SettleTimeout` o 15 s de
-`HandoffTimeout` si la máquina va saturada y el proceso nuevo no llega a «al día»), porque su entrada trae pre-roll
-(`ICaptureSource.DeliversPreroll`); con el relé en crudo de DeckLink no hay pre-roll y el relevo se hace en cuanto el preview
-del proceso nuevo alcanza al del viejo, unas décimas después de su primer frame (ver «Relevo sin salto atrás»; Detener
-≈ 0,3–0,6 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales grabando, Detener tardaba 15 s).
+**Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando, en cuanto el
+preview del proceso nuevo alcanza al del viejo (ver «Relevo sin salto atrás»): con el relé en crudo de DeckLink, unas décimas
+después de su primer frame (Detener ≈ 0,3–0,6 s; antes esperaba un «al día sostenido» y en producción, con 4 canales
+grabando, tardaba 15 s); con una entrada de red, cuando el proceso nuevo ha digerido su pre-roll (Detener ≈ 0,8 s con un
+emisor RTMP local; antes, 1 s de directo confirmado + 0,5 s de cadencia: 1,7–2 s, y 2–6 s con una RTMP a ráfagas). Sin
+saber qué frame enseña cada uno, una entrada con pre-roll (`ICaptureSource.DeliversPreroll`) espera aún al «al día
+sostenido» (hasta 10 s de `SettleTimeout` o 15 s de `HandoffTimeout` si la máquina va saturada).
 Luego le cierra la ENTRADA al grabador: con un relé (DeckLink, red) el relé le escribe lo
 que ya tenía en cola y le cierra su socket (`RelayReservation.EndInput`, tomada para ese proceso al construirlo:
 `ICaptureSource.NewestConsumerEndInput`), y con NDI el receptor le cierra sus dos entradas; FFmpeg termina solo (EOF) con todo
@@ -225,7 +251,10 @@ manteniendo el último frame en un hueco, corrigiendo la deriva con un frame rep
 fuera de una banda muerta (mitad y doble del objetivo) y acotando la cola (descarta lo más viejo) ante una ráfaga mayor
 que el colchón. Está por encima de los sumideros de proceso, así que un relevo no lo vacía; y no toca la grabación.
 Medido con el servidor real del usuario (paradas de hasta 1,8 s): de 27 fps con huecos a 29–30 frames por segundo
-exactos con 2 s de colchón (`NetworkPreviewCushionTests`: banco con proxy a ráfagas y sonda contra una URL real).
+exactos con 2 s de colchón (`NetworkPreviewCushionTests`: banco con proxy a ráfagas y sonda contra una URL real). Con la RTMP
+de pruebas del 2026-10-20 (ráfagas de 8–18 frames y huecos de hasta 0,9 s), 40 s por valor: sin colchón 27,9 fps con 33
+paradas de más de 0,5 s y segundos de 2 a 47 frames; con 1000 ms, 29,2 fps y un hueco de 0,34 s; con 1500 ms, 30,0 fps (hueco
+máximo 45 ms) pero 23 frames descartados por ráfagas mayores que el colchón; con 2000 ms, igual de fluido y 1 descartado.
 
 ## Procesos en ejecución (background services)
 
