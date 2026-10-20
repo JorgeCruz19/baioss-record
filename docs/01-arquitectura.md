@@ -100,7 +100,8 @@ captura directa cada Grabar/Detener congelaba el preview y grababa unas décimas
 (`Capture:DecklinkRelay`, activado por defecto) un `RawCaptureReceiver` permanente abre la tarjeta una sola vez
 (`-f decklink … -c copy -f nut`) y empuja la señal EN CRUDO (el vídeo tal cual lo entrega la tarjeta y el PCM, con sus
 marcas de tiempo, en un contenedor NUT) a un `RawStreamRelay` loopback; el proceso del canal la lee de ahí
-(`-f nut -i tcp://127.0.0.1:…`) y el motor aplica el mismo relevo que con las entradas de red. Diferencias con el relé
+(`-f nut -i tcp://127.0.0.1:…`) y el motor aplica el relevo de las entradas de red (sin pre-roll: el nuevo toma el preview en
+cuanto alcanza al viejo, ver «Relevo sin salto atrás» más abajo). Diferencias con el relé
 de red: el flujo son 100–250 MB/s por canal, así que se trocea con `NutStreamReader` en unidades enteras (paquetes y
 frames) que se reparten por referencia desde un pool (un frame de 4 MB no se copia por consumidor ni se reserva en el
 heap grande); un consumidor nuevo recibe primero las cabeceras del flujo y arranca en el siguiente punto de sincronía
@@ -130,6 +131,23 @@ presente, reconstruye la fuente viva en vez de grabar barras. Si un relé tiene 
 abasto, el canal lo sabe (`ICaptureSource.InputDataDropped`): alarma «Frames perdidos» y un error en el registro.
 (Auditoría de estabilidad 2026-09, `docs/AUDITORIA-ESTABILIDAD-2026-09.md`.)
 
+**Relevo sin salto atrás (2026-10-19).** Con el mando en el primer frame del proceso nuevo, el preview de una DeckLink saltaba
+atrás en cada Grabar y Detener y volvía a pasar por los mismos frames: 4–5 con x264 y 8–10 al Grabar con NVENC, que abre la GPU
+(«es como que retrocede y vuelve al mismo frame»). El proceso nuevo empieza en el frame que pasaba al conectarse al relé, pero
+tarda 0,1–0,3 s en sacarlo mientras el viejo sigue enseñando frames más nuevos, y luego digiere de golpe lo que esperaba en su
+socket. Ahora el viejo sigue pintando hasta que el nuevo enseña un frame de la fuente posterior al último que se vio (con el
+mismo, toma el mando sin repetirlo): el relé dice qué frame del flujo fue el primero de cada consumidor
+(`RelayReservation.FirstVideoFrame`, por `ICaptureSource.NewestConsumerFirstVideoFrame`) y el motor cuenta los frames que saca
+cada proceso. Los dos pierden igual el primero al unirse a mitad del flujo, así que entre ellos la comparación es exacta. Sin
+saber qué frame enseña cada uno (carta de ajuste, relé de red), con el viejo parado (250 ms sin frames) o si el nuevo no lo
+alcanza en 0,5 s, el relevo se hace como antes, con el frame que llega (`PreviewTakeover`). El tope es corto a propósito: un
+proceso que graba un preset que la CPU no codifica a tiempo real no alcanza nunca al viejo, y esperarle con los dos en marcha
+solo le quita CPU (con 2 s, un ProRes 422 HQ 1080p59.94 que va justo en la DeckLink acabó con descartes del relé).
+`PreviewHandoverTests` lo mide con una DeckLink sintética que lleva el número de cada frame en la imagen (ocho franjas, una por
+bit) y el relé como reloj del directo: antes, 4–10 frames repetidos por cambio; ahora ninguno en 12 cambios con x264 y NVENC, el
+preview a 1–2 frames del directo como siempre y el cambio 7–57 ms después del primer frame del proceso nuevo (0–90 ms en la
+DeckLink con TV en directo).
+
 **Alarma «Frames perdidos» (2026-10).** El contador `drop_frames` del progreso de FFmpeg no sirve tal cual: (1) cuenta
 también los frames que FFmpeg tira A PROPÓSITO cuando el preset fija una cadencia menor que la de la fuente (`-r`: de 30 a
 25 fps, 5 por segundo con la CPU sobrada); (2) FFmpeg ≥ 6.1 lo informa solo de la PRIMERA salida de vídeo —en el canal, el
@@ -150,9 +168,10 @@ conversión incluida, donde la regla antigua saltaba).
 **Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando: con una
 entrada de red, 1 s de directo confirmado + 0,5 s de cadencia (≈ 2–2,7 s; hasta 10 s de `SettleTimeout` o 15 s de
 `HandoffTimeout` si la máquina va saturada y el proceso nuevo no llega a «al día»), porque su entrada trae pre-roll
-(`ICaptureSource.DeliversPreroll`); con el relé en crudo de DeckLink no hay pre-roll y el relevo se hace con el primer
-frame del proceso nuevo (≈ 0,5–1 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales
-grabando, Detener tardaba 15 s). Luego le cierra la ENTRADA al grabador: con un relé (DeckLink, red) el relé le escribe lo
+(`ICaptureSource.DeliversPreroll`); con el relé en crudo de DeckLink no hay pre-roll y el relevo se hace en cuanto el preview
+del proceso nuevo alcanza al del viejo, unas décimas después de su primer frame (ver «Relevo sin salto atrás»; Detener
+≈ 0,3–0,6 s; antes esperaba el mismo «al día sostenido» y en producción, con 4 canales grabando, Detener tardaba 15 s).
+Luego le cierra la ENTRADA al grabador: con un relé (DeckLink, red) el relé le escribe lo
 que ya tenía en cola y le cierra su socket (`RelayReservation.EndInput`, tomada para ese proceso al construirlo:
 `ICaptureSource.NewestConsumerEndInput`), y con NDI el receptor le cierra sus dos entradas; FFmpeg termina solo (EOF) con todo
 lo que le llegó. Las fuentes que el proceso abre él mismo (DirectShow, DeckLink sin relé, archivo), la carta de ajuste y un

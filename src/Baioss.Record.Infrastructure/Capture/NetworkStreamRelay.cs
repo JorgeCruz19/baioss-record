@@ -556,13 +556,26 @@ public sealed class RelayReservation
 {
     private readonly Func<bool> _isLive;
     private readonly Func<bool>? _endInput;
+    private readonly Func<long>? _firstVideoFrame;
 
-    internal RelayReservation(int videoFrames, Func<bool> isLive, Func<bool>? endInput = null)
+    internal RelayReservation(int videoFrames, Func<bool> isLive, Func<bool>? endInput = null, Func<long>? firstVideoFrame = null)
     {
         VideoFrames = videoFrames;
         _isLive = isLive;
         _endInput = endInput;
+        _firstVideoFrame = firstVideoFrame;
     }
+
+    /// <summary>¿Sabe el relé qué frame del flujo fue el primero de este consumidor? (El relé en crudo sí; el de red, que
+    /// reparte MPEG-TS por fragmentos, no.)</summary>
+    public bool KnowsFirstVideoFrame => _firstVideoFrame is not null;
+
+    /// <summary>
+    /// Número en el flujo del relé (frames de vídeo repartidos desde que arrancó, el primero es el 1) del primer frame de vídeo
+    /// que recibió este consumidor; −1 mientras no ha recibido ninguno o si el relé no lo sabe. Con él y los frames que su proceso
+    /// lleva sacados, el motor sabe qué frame de la fuente enseña cada preview y releva el viejo cuando el nuevo lo alcanza.
+    /// </summary>
+    public long FirstVideoFrame => _firstVideoFrame?.Invoke() ?? -1;
 
     /// <summary>
     /// Fin de flujo para el proceso de ESTE consumidor: se le escribe lo que ya tenía en cola y después se le cierra el socket,

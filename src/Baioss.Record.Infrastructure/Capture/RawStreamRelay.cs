@@ -25,7 +25,9 @@ namespace Baioss.Record.Infrastructure.Capture;
 ///   <item><b>Consumidores:</b> uno nuevo recibe primero las CABECERAS del flujo (identificación, cabecera principal,
 ///   flujos, info: sin ellas un lector NUT no entiende nada) y arranca en el SIGUIENTE punto de sincronía; desde ahí,
 ///   el flujo en vivo. No hay pre-roll que digerir: con vídeo en crudo cada frame es un fotograma clave y el proceso
-///   nuevo va al día casi al instante (ver <see cref="RelayReservation.IsLive"/>).</item>
+///   nuevo va al día casi al instante (ver <see cref="RelayReservation.IsLive"/>). Casi: lo que llega mientras arranca
+///   (0,1–0,3 s) lo espera en su socket y lo digiere de golpe, así que su primer frame va por detrás del proceso viejo; el
+///   motor lo sabe por el número del primer frame de cada consumidor (<see cref="RelayReservation.FirstVideoFrame"/>).</item>
 ///   <item><b>Contrapresión:</b> un consumidor que no drena (disco atascado) NUNCA frena al origen: su cola se acota en
 ///   bytes (<see cref="ConsumerQueueMaxBytes"/>) y se le descartan unidades ENTERAS (el lector NUT del proceso sigue
 ///   entendiendo el flujo: pierde frames, no la sincronía), con aviso.</item>
@@ -77,7 +79,9 @@ public sealed class RawStreamRelay : IAsyncDisposable
         /// <summary>Se le descartó algo y aún no ha pasado el siguiente punto de sincronía (bajo el candado del relé).</summary>
         public bool Dropping;
         /// <summary>Número en el flujo (<see cref="VideoFramesForwarded"/>) del primer frame de vídeo que se le encoló; −1 si aún
-        /// ninguno. Con él y los escritos se sabe hasta qué frame del flujo le llegó (diagnóstico).</summary>
+        /// ninguno. Con él y los escritos se sabe hasta qué frame del flujo le llegó (diagnóstico), y con los frames que saca su
+        /// proceso, qué frame de la fuente enseña su preview (el relevo: ver <see cref="RelayReservation.FirstVideoFrame"/>). Se
+        /// escribe bajo el candado del relé y se lee sin él (Interlocked).</summary>
         public long FirstVideoFrame = -1;
         /// <summary>Frames de vídeo que se le encolaron (bajo el candado del relé) y que su socket aceptó (su bomba).</summary>
         public long VideoFramesQueued, VideoFramesWritten;
@@ -173,7 +177,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
             var consumer = NewConsumer();
             _reserved.Enqueue((consumer, Stopwatch.GetTimestamp()));
             _log.LogDebug("Relé crudo {Name}: consumidor reservado ({Headers} cabeceras guardadas).", _name, _headers.Count);
-            return new RelayReservation(0, () => consumer.IsLive, () => EndInput(consumer));
+            return new RelayReservation(0, () => consumer.IsLive, () => EndInput(consumer), () => Interlocked.Read(ref consumer.FirstVideoFrame));
         }
     }
 
@@ -369,7 +373,7 @@ public sealed class RawStreamRelay : IAsyncDisposable
         {
             if (unit.IsVideoFrame)
             {
-                if (consumer.FirstVideoFrame < 0) consumer.FirstVideoFrame = VideoFramesForwarded + 1; // esta unidad se cuenta al acabar de repartirla
+                if (consumer.FirstVideoFrame < 0) Interlocked.Exchange(ref consumer.FirstVideoFrame, VideoFramesForwarded + 1); // esta unidad se cuenta al acabar de repartirla
                 consumer.VideoFramesQueued++;
             }
             return true;
