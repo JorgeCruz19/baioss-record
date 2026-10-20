@@ -73,6 +73,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     private readonly object _takeoverLock = new();
     private double? _lastShownPosition;
     private long _lastShownTicks;
+    // El hueco mayor reciente entre dos frames entregados al preview (ms; decae un 1 % por frame, ~3 s de memoria a 30 fps): lo
+    // que la fuente suele callar entre ráfagas, para no dar por parado al proceso viejo en un hueco que es de la fuente.
+    private double _recentGapMs;
+    private const double MaxBurstGapMs = 2000;
     // Sumideros vivos (el actual y los que esperan su relevo): cuando uno toma el mando, los más viejos que aún no habían
     // pintado quedan relevados (su HandoffAsync retira su proceso sin esperar más).
     private readonly List<PreviewSink> _liveSinks = new();
@@ -664,10 +668,10 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         double sourceFps = source.CurrentSignal.FrameRate is { Value: > 0 } rate ? rate.Value : _parser.NominalRate;
         var sink = new PreviewSink(++_sinkGeneration)
         {
-            // Solo hay que esperar a que el proceso nuevo vaya al día de forma sostenida si su entrada trae pre-roll (relé de
-            // red); con el relé en crudo de DeckLink arranca en el directo y toma el relevo en cuanto su preview alcanza al del
-            // viejo (ver Admit: unas décimas), en vez de esperar 10–15 s a un «al día sostenido» que una máquina cargada no da
-            // (medido en producción).
+            // Con relevo, el proceso nuevo toma el mando en cuanto su preview alcanza al del viejo (ver Admit: unas décimas). Si
+            // no se sabe qué frame enseña cada uno y la entrada trae pre-roll, se espera en cambio a que vaya al día de forma
+            // sostenida: un «al día sostenido» que una máquina cargada no da (10–15 s medidos en producción con DeckLink) y que
+            // una RTMP a ráfagas tarda 1,4–5,5 s en dar (medido el 2026-10-19).
             SettleBeforeTakeover = overlap && source.DeliversPreroll,
         };
         lock (_liveSinks) _liveSinks.Add(sink);
@@ -729,8 +733,11 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
         // mismo, cómo cerrarle la entrada a ESTE proceso cuando se retire (ver EndInput en el supervisor, más abajo).
         sink.IsLive = source.NewestConsumerLiveCheck;
         // Y qué frame de la fuente fue el primero de ESTE proceso: con él, el relevo espera a que su preview alcance al del viejo
-        // (ver Admit). La carta de ajuste no lee la fuente: la reserva vigente sería la del proceso anterior.
-        sink.FirstSourceFrame = slate ? null : source.NewestConsumerFirstVideoFrame;
+        // (ver Admit). Con pre-roll, su preview se salta esos frames (select en el preview): el primero que enseña es el siguiente.
+        // La carta de ajuste no lee la fuente: la reserva vigente sería la del proceso anterior.
+        var firstFrame = slate ? null : source.NewestConsumerFirstVideoFrame;
+        int skipped = slate ? 0 : source.PreviewFramesToSkip;
+        sink.FirstSourceFrame = firstFrame is null ? null : () => firstFrame() is var first && first >= 0 ? first + skipped : first;
         var endInput = source.NewestConsumerEndInput;
         // Cadencia del PREVIEW de este proceso: la de la fuente o, si desentrelaza un cuadro por campo, el doble. Con ella se
         // juzga el relevo y entrega el colchón (0 = paso directo), que se vuelve a fijar en cada proceso: la señal puede
@@ -1078,14 +1085,14 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
     /// <summary>
     /// ¿Se enseña este frame del sumidero? El que tiene el mando, siempre; uno relevado, nunca; uno más nuevo toma el mando:
     /// <list type="bullet">
-    ///   <item>con una entrada con pre-roll (relé de red), cuando su proceso lee en directo de forma sostenida y a cadencia real
-    ///   (<see cref="PreviewSink.ReadyToTakeOver"/>);</item>
-    ///   <item>si no, en cuanto su preview alcanza al del viejo: con un frame de la fuente posterior al último que se vio (con el
-    ///   mismo, toma el mando sin repetirlo). El proceso nuevo empieza en el frame que pasaba al conectar, pero tarda 0,1–0,3 s en
-    ///   sacarlo y luego digiere de golpe lo que esperaba en su socket: con el mando en su primer frame, el preview saltaba 4–10
-    ///   frames atrás y volvía a pasar por ellos (ver <see cref="PreviewTakeover"/>). Sin saber qué frame enseña cada uno (la
-    ///   fuente no lo dice, la carta de ajuste), con el viejo parado, o si el nuevo no lo alcanza en
-    ///   <see cref="PreviewSink.CatchUpTimeout"/>, con el frame que llega, como antes.</item>
+    ///   <item>en cuanto su preview alcanza al del viejo: con un frame de la fuente posterior al último que se vio (con el
+    ///   mismo, toma el mando sin repetirlo). El proceso nuevo empieza en el frame que pasaba al conectar (con pre-roll, en el
+    ///   primero tras saltárselo), pero tarda 0,1–0,3 s en sacarlo y luego digiere de golpe lo que esperaba en su socket: con el
+    ///   mando en su primer frame, el preview saltaba 4–10 frames atrás y volvía a pasar por ellos (ver <see cref="PreviewTakeover"/>).
+    ///   Con el viejo parado, o si el nuevo no lo alcanza en <see cref="PreviewSink.CatchUpTimeout"/>, con el frame que llega.</item>
+    ///   <item>sin saber qué frame enseña cada uno (la fuente no lo dice, la carta de ajuste), con una entrada con pre-roll, cuando
+    ///   su proceso lee en directo de forma sostenida y a cadencia real (<see cref="PreviewSink.ReadyToTakeOver"/>); sin pre-roll,
+    ///   con el frame que llega, como antes.</item>
     /// </list>
     /// </summary>
     private bool Admit(PreviewSink sink, double? position, long now)
@@ -1096,13 +1103,16 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
             {
                 if (sink.Generation < _activeSink) return false;
                 bool show = true;
-                if (sink.SettleBeforeTakeover)
+                if (sink.SettleBeforeTakeover && (position is null || _lastShownPosition is null))
                 {
                     if (!sink.ReadyToTakeOver(now)) return false;
                 }
                 else
                 {
-                    bool oldPainting = _lastShownTicks != 0 && Stopwatch.GetElapsedTime(_lastShownTicks, now) < sink.OldStallLimit;
+                    // ¿Sigue pintando el viejo? Con una fuente que llega a ráfagas (una RTMP real: 8–18 frames juntos y luego hasta
+                    // 0,9 s sin nada) un hueco así es suyo, no del viejo: se le espera lo que la fuente suele callar.
+                    var stallLimit = TimeSpan.FromMilliseconds(Math.Max(sink.OldStallLimit.TotalMilliseconds, Math.Min(1.5 * _recentGapMs, MaxBurstGapMs)));
+                    bool oldPainting = _lastShownTicks != 0 && Stopwatch.GetElapsedTime(_lastShownTicks, now) < stallLimit;
                     var waited = sink.ReceivingFor(now);
                     var verdict = PreviewTakeover.Decide(position, _lastShownPosition, oldPainting, waited >= PreviewSink.CatchUpTimeout);
                     if (verdict == PreviewTakeover.Verdict.NotYet) return false;
@@ -1123,6 +1133,7 @@ public sealed class FfmpegChannelEngine : IChannelPreviewSource, IAsyncDisposabl
                 if (!show) return false; // el mismo frame de la fuente que se acaba de ver: no se repite
             }
             sink.MarkTookOver();
+            if (_lastShownTicks != 0) _recentGapMs = Math.Max(Stopwatch.GetElapsedTime(_lastShownTicks, now).TotalMilliseconds, _recentGapMs * 0.99);
             _lastShownPosition = position;
             _lastShownTicks = now;
             return true;

@@ -181,6 +181,10 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     /// en cola y se le cierra el socket (ver <see cref="ICaptureSource.NewestConsumerEndInput"/>).</summary>
     public Func<bool>? NewestConsumerEndInput => _reservation is { } reservation ? reservation.EndInput : null;
 
+    /// <summary>Número en el flujo del relé del primer frame (el del pre-roll) del proceso del último <see cref="BuildInputArguments"/>
+    /// (ver <see cref="ICaptureSource.NewestConsumerFirstVideoFrame"/>): con él el relevo sabe qué frame enseña cada preview.</summary>
+    public Func<long>? NewestConsumerFirstVideoFrame => _reservation is { KnowsFirstVideoFrame: true } reservation ? () => reservation.FirstVideoFrame : null;
+
     /// <summary>Colchón de preview configurado en la fuente (Entradas → Fuentes de red), 0 si no tiene.</summary>
     public int PreviewBufferMs => _input?.PreviewBufferMs ?? 0;
 
@@ -193,6 +197,9 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
 
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico).</summary>
     public string RelayPumpStage { get { lock (_sync) return _receiver?.PumpStage ?? ""; } }
+
+    /// <summary>Frames de vídeo que el relé ha repartido: el número en el flujo del directo (diagnóstico y tests del relevo).</summary>
+    public long RelayVideoFramesForwarded { get { lock (_sync) return _receiver?.VideoFramesForwarded ?? 0; } }
 
     /// <summary>Frames de vídeo del pre-roll reservado en el último <see cref="BuildInputArguments"/>: la grabación los
     /// necesita (empieza antes del botón), el preview no debe mostrarlos.</summary>

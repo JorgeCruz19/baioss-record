@@ -38,6 +38,9 @@ public interface INetworkStreamReceiver : IAsyncDisposable
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico). Ver <see cref="NetworkStreamRelay.PumpStage"/>.</summary>
     string PumpStage => "";
 
+    /// <summary>Frames de vídeo que el relé ha repartido desde el arranque: el número del directo (diagnóstico y tests).</summary>
+    long VideoFramesForwarded => 0;
+
     /// <summary>El relé descartó datos de un proceso del canal que no daba abasto (ver <see cref="NetworkStreamRelay.ConsumerOverflow"/>).</summary>
     event EventHandler<long>? DataDropped { add { } remove { } }
 
@@ -101,6 +104,8 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     public long SourceBytes => _relay.SourceBytes;
 
     public string PumpStage => _relay.PumpStage;
+
+    public long VideoFramesForwarded => _relay.VideoFramesForwarded;
 
     public async Task StartAsync(CancellationToken ct = default)
     {
@@ -174,10 +179,22 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     /// <summary>
     /// La línea de comandos completa del receptor: entrada del protocolo → el primer vídeo y, si lo hay, el primer audio
     /// (<c>-map 0:a:0?</c>: un flujo solo-vídeo no aborta) → copia sin recodificar a MPEG-TS por TCP al relé, con cada
-    /// paquete volcado al instante (<c>-flush_packets 1</c>: latencia mínima en el preview) y SIN retener paquetes para
-    /// entrelazarlos por DTS (<c>-max_interleave_delta</c> de 50 ms en vez de los 10 s por defecto): con un emisor que
-    /// trae el audio con otro reloj (visto en un servidor RTMP real: 3,4 h «por delante»), el muxer retenía el audio 10 s
-    /// detrás del vídeo, y el relé, que alinea por orden de llegada, lo veía 10 s tarde. Con relojes coherentes no cambia nada.
+    /// paquete volcado al instante (<c>-flush_packets 1</c>: latencia mínima en el preview). Cada trama de audio sale EN
+    /// CUANTO LLEGA, porque con un emisor que trae el audio con otro reloj (visto en servidores RTMP reales: 3,4 h y 3056 s
+    /// «por delante») el relé lo realinea por ORDEN DE LLEGADA, y lo que el muxer retrasa se convierte en desfase de labios:
+    /// <list type="bullet">
+    ///   <item>sin retenerla para entrelazarla por DTS (<c>-max_interleave_delta</c> de 1 µs; por defecto son 10 s, que
+    ///   dejaban el audio 10 s tarde, y con 50 ms aún llegaba ~2–3 tramas tarde);</item>
+    ///   <item>sola en su PES: por defecto el muxer junta tramas AAC hasta ~2,9 KB (8 tramas, 170 ms a 135 kb/s) y suelta el
+    ///   PES al llenarlo, con el PTS de la primera; el relé, que mide cada PES por ese PTS, veía el audio menos adelantado de
+    ///   lo que iba y lo colocaba tarde (en el servidor RTMP real, el orden de llegada daba 3056,519 s y el TS del receptor
+    ///   3056,247 s: 0,27 s; con el emisor de las pruebas, a 96 kb/s, el pitido sonaba 0,47 s después del destello).
+    ///   <c>-pes_payload_size 0</c> deja sola cada trama de más de 170 bytes; las menores (un silencio son ~20 bytes) las sigue
+    ///   juntando hasta media <c>-muxdelay</c> (350 ms por defecto), así que también <c>-muxdelay 0</c>: cada trama sale cuando
+    ///   llega la siguiente. Queda una trama de espera en cada cola (~42 ms con AAC a 48 kHz, medido). El PCR, que con
+    ///   <c>-muxdelay 0</c> va pegado al DTS, no lo usa nadie: el relé y los procesos del canal (FFmpeg) se guían por PTS/DTS.</item>
+    /// </list>
+    /// Con relojes coherentes mandan las marcas de tiempo y nada de esto cambia lo grabado.
     /// </summary>
     public static IReadOnlyList<string> ArgumentsFor(NetworkInput input, int sourcePort)
     {
@@ -190,8 +207,8 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
             // reloj, FFmpeg aplicaba su corrección de discontinuidades por PAQUETE, alternando el desplazamiento entre
             // vídeo y audio con un aviso por paquete; el relé realinea el audio en un solo sitio, para SRT y RTMP igual.
             "-copyts",
-            "-max_interleave_delta", "50000",
-            "-f", "mpegts", "-flush_packets", "1",
+            "-max_interleave_delta", "1",
+            "-f", "mpegts", "-flush_packets", "1", "-pes_payload_size", "0", "-muxdelay", "0",
             $"tcp://127.0.0.1:{sourcePort.ToString(CultureInfo.InvariantCulture)}?tcp_nodelay=1",
         });
         return args;

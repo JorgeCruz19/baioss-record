@@ -169,19 +169,19 @@ public interface ICaptureSource : IAsyncDisposable
 
     /// <summary>
     /// True si la entrada de un proceso nuevo empieza con PRE-ROLL (el relé de una entrada de red entrega material anterior
-    /// al momento de conectar, que el proceso digiere más deprisa que el directo): el motor debe esperar a que ese proceso
-    /// vaya al día (<see cref="NewestConsumerIsLive"/>) y a cadencia real antes de cederle el preview, o se vería un avance
-    /// rápido. Una fuente cuyo proceso nuevo arranca ya en el directo (el relé en crudo de DeckLink: siguiente punto de
-    /// sincronía tras conectar) no necesita ese «al día sostenido», que en una máquina cargada puede no cumplirse nunca
-    /// (10–15 s de espera medidos en producción): toma el relevo en cuanto su preview alcanza al del viejo (ver
-    /// <see cref="NewestConsumerFirstVideoFrame"/>), o con su primer frame si la fuente no sabe decirlo.
+    /// al momento de conectar, que el proceso digiere más deprisa que el directo): su preview se salta esos frames
+    /// (<see cref="PreviewFramesToSkip"/>) y no toma el relevo mientras vaya por detrás del viejo. Sabiendo qué frame enseña
+    /// cada uno (<see cref="NewestConsumerFirstVideoFrame"/>), lo toma cuando alcanza al viejo, como el relé en crudo de
+    /// DeckLink; sin saberlo, espera a que el proceso vaya al día de forma sostenida (<see cref="NewestConsumerIsLive"/>) y a
+    /// cadencia real, o se vería un avance rápido. Esa espera con una fuente que llega a ráfagas (una RTMP real) tardaba
+    /// 1,4–5,5 s en cada Detener, y la grabación seguía mientras tanto (medido el 2026-10-19).
     /// </summary>
     bool DeliversPreroll => false;
 
     /// <summary>
     /// Qué frame de la fuente fue el PRIMERO que recibió el proceso construido en el último <see cref="BuildInputArguments"/>
-    /// —ESE, no el más nuevo—: su número en el flujo del relé (−1 mientras no ha recibido ninguno). null si la fuente no lo sabe
-    /// (sin relé, o un relé que reparte el flujo comprimido por fragmentos). Con él y los frames que lleva sacados cada proceso,
+    /// —ESE, no el más nuevo—: su número en el flujo del relé (−1 mientras no ha recibido ninguno; en el relé de red, el primero
+    /// de su pre-roll). null si la fuente no lo sabe (sin relé). Con él, los que su preview se salta y los que lleva sacados cada proceso,
     /// el motor sabe qué frame de la fuente enseña cada preview y cede el preview al proceso nuevo cuando enseña uno posterior
     /// al último que enseñó el viejo: el nuevo empieza en el frame que pasaba al conectar, pero tarda 0,1–0,3 s en sacarlo
     /// (0,3 con NVENC, que abre la GPU) y luego digiere de golpe lo que esperaba en su socket; cederle el preview con su primer
