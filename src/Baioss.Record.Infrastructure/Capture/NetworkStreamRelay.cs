@@ -49,6 +49,9 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
     private readonly object _sync = new();
     private readonly List<PrerollEntry> _preroll = new();
     private long _prerollLength;
+    // Frames de vídeo (PES) repartidos desde que arrancó el relé; el primero es el 1 y la cuenta sigue entre conexiones del
+    // receptor. Con él cada reserva sabe qué número tiene su primer frame (ver ReserveConsumer).
+    private long _videoFrames;
     // Consumidores RESERVADOS (ver ReserveConsumer): ya reciben el flujo en vivo en su cola; el próximo socket que
     // conecte se lleva el más antiguo. Si nadie lo reclama en ReservationTimeout, se descarta.
     private readonly Queue<(Consumer Consumer, long ReservedAt)> _reserved = new();
@@ -147,6 +150,9 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
     /// <summary>Consumidores conectados ahora mismo (diagnóstico y tests).</summary>
     public int ConsumerCount { get { lock (_sync) return _consumers.Count; } }
 
+    /// <summary>Frames de vídeo (PES) repartidos desde el arranque: el número del último, el directo (diagnóstico y tests).</summary>
+    public long VideoFramesForwarded { get { lock (_sync) return _videoFrames; } }
+
     /// <summary>Desfase (s) restado al audio del flujo actual por traer un reloj distinto al del vídeo; 0 si eran coherentes;
     /// null mientras no se ha visto el primer PES de audio y de vídeo (diagnóstico y tests).</summary>
     public double? AudioClockCorrectionSeconds => _aligner.CorrectionSeconds;
@@ -170,9 +176,10 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
     /// instante (desde ya recibe también el flujo en vivo, así no pierde ni duplica nada) y devuelve cuántos frames de
     /// vídeo contiene y si ese consumidor ya va al día. El motor lo llama al construir el proceso: con el número exacto,
     /// el preview de ese proceso se salta el pre-roll (que la grabación sí necesita) en vez de reproducirlo a ×3–×4
-    /// hasta alcanzar el directo; y con <see cref="RelayReservation.IsLive"/> sabe cuándo el proceso nuevo ya lee en
-    /// directo y puede tomar el relevo del viejo sin avance rápido. 0 frames sin flujo (el consumidor reservado
-    /// recibirá lo que llegue).
+    /// hasta alcanzar el directo; con el número en el flujo de su primer frame (<see cref="RelayReservation.FirstVideoFrame"/>,
+    /// fijo desde ya: la instantánea y el directo que sigue son exactamente los suyos), el motor sabe qué frame de la fuente
+    /// enseña cada frame de su preview y le cede el mando cuando alcanza al viejo; y con <see cref="RelayReservation.IsLive"/>
+    /// sabe cuándo ya lee en directo. 0 frames sin flujo (el consumidor reservado recibirá lo que llegue).
     /// </summary>
     public RelayReservation ReserveConsumer()
     {
@@ -181,8 +188,9 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
             var consumer = NewConsumer();
             _reserved.Enqueue((consumer, Stopwatch.GetTimestamp()));
             int frames = _preroll.Sum(p => p.VideoFrames);
-            _log.LogDebug("Relé {Name}: consumidor reservado; pre-roll de {Frames} frames de vídeo ({Bytes} bytes).", _name, frames, _prerollLength);
-            return new RelayReservation(frames, () => consumer.IsLive, () => EndInput(consumer));
+            long first = _videoFrames - frames + 1;
+            _log.LogDebug("Relé {Name}: consumidor reservado; pre-roll de {Frames} frames de vídeo ({Bytes} bytes) desde el frame {First}.", _name, frames, _prerollLength, first);
+            return new RelayReservation(frames, () => consumer.IsLive, () => EndInput(consumer), () => first);
         }
     }
 
@@ -373,6 +381,7 @@ public sealed class NetworkStreamRelay : IAsyncDisposable
                 start = offset; startsWithKeyframe = true; startDts = dts; frames = 0;
             }
             frames++;
+            _videoFrames++;
         }
         if (start < chunk.Length) Append(chunk[start..], startsWithKeyframe, startDts, frames);
 
@@ -566,14 +575,15 @@ public sealed class RelayReservation
         _firstVideoFrame = firstVideoFrame;
     }
 
-    /// <summary>¿Sabe el relé qué frame del flujo fue el primero de este consumidor? (El relé en crudo sí; el de red, que
-    /// reparte MPEG-TS por fragmentos, no.)</summary>
+    /// <summary>¿Sabe el relé qué frame del flujo fue el primero de este consumidor? (Los dos relés lo saben: el de red desde la
+    /// reserva, el en crudo desde que le llega su primer frame.)</summary>
     public bool KnowsFirstVideoFrame => _firstVideoFrame is not null;
 
     /// <summary>
     /// Número en el flujo del relé (frames de vídeo repartidos desde que arrancó, el primero es el 1) del primer frame de vídeo
-    /// que recibió este consumidor; −1 mientras no ha recibido ninguno o si el relé no lo sabe. Con él y los frames que su proceso
-    /// lleva sacados, el motor sabe qué frame de la fuente enseña cada preview y releva el viejo cuando el nuevo lo alcanza.
+    /// que recibió este consumidor —en el relé de red, el primero de su pre-roll—; −1 mientras no ha recibido ninguno o si el relé
+    /// no lo sabe. Con él, los que su preview se salta (<see cref="VideoFrames"/>, en el de red) y los que su proceso lleva sacados,
+    /// el motor sabe qué frame de la fuente enseña cada preview y releva el viejo cuando el nuevo lo alcanza.
     /// </summary>
     public long FirstVideoFrame => _firstVideoFrame?.Invoke() ?? -1;
 

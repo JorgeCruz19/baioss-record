@@ -38,6 +38,9 @@ public interface INetworkStreamReceiver : IAsyncDisposable
     /// <summary>En qué está el bucle del relé que drena al receptor (diagnóstico). Ver <see cref="NetworkStreamRelay.PumpStage"/>.</summary>
     string PumpStage => "";
 
+    /// <summary>Frames de vídeo que el relé ha repartido desde el arranque: el número del directo (diagnóstico y tests).</summary>
+    long VideoFramesForwarded => 0;
+
     /// <summary>El relé descartó datos de un proceso del canal que no daba abasto (ver <see cref="NetworkStreamRelay.ConsumerOverflow"/>).</summary>
     event EventHandler<long>? DataDropped { add { } remove { } }
 
@@ -101,6 +104,8 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     public long SourceBytes => _relay.SourceBytes;
 
     public string PumpStage => _relay.PumpStage;
+
+    public long VideoFramesForwarded => _relay.VideoFramesForwarded;
 
     public async Task StartAsync(CancellationToken ct = default)
     {

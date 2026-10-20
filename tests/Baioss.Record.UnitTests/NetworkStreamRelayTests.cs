@@ -334,6 +334,43 @@ public class NetworkStreamRelayTests
     }
 
     [Fact]
+    public async Task AReservation_KnowsTheStreamNumberOfItsFirstFrame_AndAfterThePrerollComesTheFirstLiveFrame()
+    {
+        // El motor releva el preview por el frame de la fuente que enseña cada proceso: su primer frame (el del pre-roll) más los
+        // que su preview se salta (los del pre-roll) es el siguiente que reparta el relé. La cuenta sigue entre flujos.
+        await using var relay = new NetworkStreamRelay("numeros", NullLogger.Instance) { PrerollWindow = TimeSpan.FromSeconds(2.5) };
+        relay.Start();
+        using (var source = await ConnectAsync(relay.SourcePort))
+        {
+            var stream = VideoStream(0, 196, gop: 60); // la ventana empieza en el keyframe del frame 120 (ver el test de la ventana)
+            await source.GetStream().WriteAsync(stream);
+            await WaitAsync(() => relay.ForwardedBytes >= stream.Length, "el relé no drenó el origen");
+            Assert.Equal(196, relay.VideoFramesForwarded);
+
+            var reservation = relay.ReserveConsumer();
+            Assert.True(reservation.KnowsFirstVideoFrame);
+            Assert.Equal(76, reservation.VideoFrames);      // del frame 120 al 195
+            Assert.Equal(121, reservation.FirstVideoFrame); // el frame 120 es el número 121 del flujo (el primero es el 1)
+            Assert.Equal(relay.VideoFramesForwarded + 1, reservation.FirstVideoFrame + reservation.VideoFrames);
+
+            using var consumer = await ConnectAsync(relay.ConsumerPort);
+            var got = await ReadPacketsAsync(consumer.GetStream(), 1);
+            Assert.Equal(120, Tag(got[0]));                 // y es de verdad lo primero que recibe
+            Assert.Equal(121, reservation.FirstVideoFrame); // fijo: no cambia con lo que llegue después
+        }
+        await WaitAsync(() => !relay.SourceConnected, "el relé no vio cerrarse el origen");
+
+        // Otro flujo (el receptor se relanzó): la ventana empieza de cero y la numeración sigue donde iba.
+        using var again = await ConnectAsync(relay.SourcePort);
+        var next = VideoStream(0, 30, gop: 60);
+        await again.GetStream().WriteAsync(next);
+        await WaitAsync(() => relay.VideoFramesForwarded >= 226, "el relé no repartió el flujo nuevo");
+        var second = relay.ReserveConsumer();
+        Assert.Equal(30, second.VideoFrames);
+        Assert.Equal(197, second.FirstVideoFrame);
+    }
+
+    [Fact]
     public async Task AReservation_IsLive_OnlyWhileItsConsumerHasTakenThePreroll_AndKeepsUpWithTheStream()
     {
         // El motor cede el preview al proceso nuevo cuando este ya lee en directo: conectó, tragó el pre-roll y no tiene
