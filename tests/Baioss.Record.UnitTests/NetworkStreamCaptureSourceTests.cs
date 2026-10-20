@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
@@ -63,6 +64,7 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.Equal(new[]
         {
             "-mode", "listener", "-latency", "250000", "-timeout", "10000000", "-passphrase", "clave-secreta-1",
+            "-f", "mpegts", "-scan_all_pmts", "0", "-analyzeduration", "12000000", "-probesize", "64000000",
             "-i", "srt://0.0.0.0:9000",
         }, args);
         Assert.DoesNotContain("-srt_streamid", args); // el stream id lo presenta el que LLAMA
@@ -75,8 +77,57 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         var input = new NetworkInput { Protocol = NetworkProtocol.Srt, Role = NetworkRole.Connect, Host = "10.0.0.7", Port = 9000, StreamId = "canal1" };
         var args = NetworkStreamReceiver.InputArgumentsFor(input);
 
-        Assert.Equal(new[] { "-mode", "caller", "-latency", "120000", "-timeout", "10000000", "-srt_streamid", "canal1", "-i", "srt://10.0.0.7:9000" }, args);
+        Assert.Equal(new[]
+        {
+            "-mode", "caller", "-latency", "120000", "-timeout", "10000000", "-srt_streamid", "canal1",
+            "-f", "mpegts", "-scan_all_pmts", "0", "-analyzeduration", "12000000", "-probesize", "64000000",
+            "-i", "srt://10.0.0.7:9000",
+        }, args);
         Assert.DoesNotContain("-passphrase", args);
+    }
+
+    /// <summary>
+    /// SEÑAL OK de una SRT en cuanto FFmpeg conoce el flujo, no a los ~6 s: el CLI pone <c>scan_all_pmts=1</c> en toda entrada que no
+    /// lo diga y con eso un MPEG-TS agota SIEMPRE el análisis (5 s de flujo, medido 5,7 s con un GOP de 2 s; con 0, 2,5 s). Y el tope
+    /// tiene que dejar describir un GOP largo: con los de siempre, uno de 8 s daba SEÑAL OK a los 6,8 s sin resolución, y a 20 Mb/s
+    /// los 5 MB de sondeo se acababan antes del primer fotograma clave (ver <see cref="NetworkStreamReceiver.SrtAnalysisArguments"/>).
+    /// </summary>
+    [Theory]
+    [InlineData(NetworkRole.Listen)]
+    [InlineData(NetworkRole.Connect)]
+    public void TheSrtReceiver_EndsItsAnalysisWhenTheStreamIsDescribed_AndWaitsForALongGop(NetworkRole role)
+    {
+        var args = NetworkStreamReceiver.InputArgumentsFor(new NetworkInput { Protocol = NetworkProtocol.Srt, Role = role, Host = "10.0.0.7", Port = 9000 }).ToList();
+        int input = args.IndexOf("-i");
+
+        int scan = args.IndexOf("-scan_all_pmts");
+        Assert.InRange(scan, 0, input - 2); // opción de ENTRADA: detrás de -i sería de la salida
+        Assert.Equal("0", args[scan + 1]);
+        // -scan_all_pmts es del demuxer MPEG-TS: con el formato sin fijar, el CLI abortaría («Option scan_all_pmts not found») ante
+        // cualquier otro formato. Fijarlo a MPEG-TS, que es lo que viaja por SRT, hace que la opción siempre tenga quien la use.
+        int format = args.IndexOf("-f");
+        Assert.InRange(format, 0, input - 2);
+        Assert.Equal("mpegts", args[format + 1]);
+        // Un GOP de 10 s (250 frames a 25 fps: x264 y OBS por defecto) cabe en el análisis, y a 20 Mb/s el sondeo no lo corta antes.
+        long analyze = long.Parse(args[args.IndexOf("-analyzeduration") + 1], CultureInfo.InvariantCulture);
+        long probe = long.Parse(args[args.IndexOf("-probesize") + 1], CultureInfo.InvariantCulture);
+        Assert.InRange(analyze, 11_000_000, 15_000_000); // y no mucho más: lo que nunca se describe espera el tope entero
+        Assert.True(probe >= 20_000_000 / 8 * (analyze / 1_000_000), $"-probesize {probe}: a 20 Mb/s se acabaría antes que el análisis");
+        Assert.True(args.IndexOf("-analyzeduration") < input && args.IndexOf("-probesize") < input);
+    }
+
+    [Theory]
+    [InlineData(NetworkRole.Listen)]
+    [InlineData(NetworkRole.Connect)]
+    public void TheRtmpReceiver_KeepsFfmpegsOwnAnalysis(NetworkRole role)
+    {
+        // FLV anuncia sus pistas en la cabecera y FFmpeg acaba en cuanto las describe (SEÑAL OK en 0,2–1,9 s con el servidor real):
+        // nada que tocar, y -scan_all_pmts con un FLV abortaría el receptor.
+        var args = NetworkStreamReceiver.InputArgumentsFor(new NetworkInput { Protocol = NetworkProtocol.Rtmp, Role = role, Host = "10.0.0.7", Port = 1935, Path = "live/x" });
+        Assert.DoesNotContain("-scan_all_pmts", args);
+        Assert.DoesNotContain("-analyzeduration", args);
+        Assert.DoesNotContain("-probesize", args);
+        Assert.DoesNotContain("-f", args);
     }
 
     [Fact]
@@ -117,7 +168,8 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.Equal("copy", args[copy + 1]);              // sin recodificar: el preset lo aplica el proceso del canal
         Assert.Equal("0:v:0", args[args.IndexOf("-map") + 1]);
         Assert.Contains("0:a:0?", args);                   // el audio es opcional: un flujo solo-vídeo no aborta
-        Assert.Equal("mpegts", args[args.IndexOf("-f") + 1]);
+        Assert.Equal("mpegts", args[args.LastIndexOf("-f") + 1]); // la salida al relé (el primer -f es el de la entrada SRT)
+        Assert.True(args.LastIndexOf("-f") > args.IndexOf("-i"));
         Assert.Equal("1", args[args.IndexOf("-flush_packets") + 1]);
         // Cada trama de audio sale en cuanto llega (el relé realinea por llegada un audio con otro reloj): sin retenerla para
         // entrelazarla por DTS y sola en su PES, no agrupada con las siguientes (~0,27 s tarde en el servidor RTMP real).

@@ -143,10 +143,38 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
     }
 
     /// <summary>
+    /// Análisis de la entrada SRT (opciones de entrada, antes de <c>-i</c>): el receptor vuelca la descripción —y la fuente pasa
+    /// a SEÑAL OK con el formato real— EN CUANTO FFmpeg conoce cada pista, no al agotar un tiempo fijo:
+    /// <list type="bullet">
+    ///   <item><c>-scan_all_pmts 0</c>: el CLI de FFmpeg pone 1 en toda entrada que no lo diga, y con 1 el MPEG-TS cuenta como
+    ///   formato SIN CABECERA durante todo el análisis (podría aparecer otra pista), así que FFmpeg lo agotaba SIEMPRE: 5 s de
+    ///   flujo, o los 5 MB de sondeo si llegaban antes. Con 0, en cuanto cada programa tiene su PMT el demuxer da la cabecera
+    ///   por vista y el análisis acaba al tener todas las pistas descritas: el primer fotograma clave (tamaño, formato de píxel,
+    ///   barrido), 20 frames con marca de tiempo (la cadencia) y una trama de audio decodificada. Medido con un emisor SRT local
+    ///   (HEVC 1080p29.97 + AAC) entrando justo detrás de un fotograma clave, el peor momento: GOP 2 s, 5,7 → 2,5 s; GOP 4 s,
+    ///   5,7 → 4,4 s; con el clave al llegar, 5,6 → 1,3 s; MPEG-2 1080i, 2,8 → 1,0 s, con su «top first»; un audio que empieza
+    ///   3 s tarde, 6,7 → 3,7 s, ya descrito.</item>
+    ///   <item><c>-analyzeduration</c> 12 s y <c>-probesize</c> 64 MB: el TOPE para lo que no se deja describir antes. Con los de
+    ///   siempre (7 s si falta alguna pista, 5 MB) un GOP de 8–10 s —el de x264 y OBS por defecto: 250 frames— daba SEÑAL OK a
+    ///   los 6,8 s SIN resolución («unspecified size»), y a 15–20 Mb/s los 5 MB se acaban en 2–3 s. Medido: GOP 8 s, 8,2 s; GOP
+    ///   10 s, 10,2 s; los dos con el formato entero. Lo que nunca llega a describirse (una pista de audio en la PMT que no trae
+    ///   paquetes) espera el tope entero.</item>
+    ///   <item><c>-f mpegts</c>: <c>-scan_all_pmts</c> es una opción del demuxer MPEG-TS y el CLI ABORTA si una opción de entrada
+    ///   no la usa nadie. Lo que viaja por SRT es MPEG-TS (y el relé y el proceso del canal solo entienden eso).</item>
+    /// </list>
+    /// RTMP no lo necesita: la cabecera FLV anuncia sus pistas y FFmpeg acaba en cuanto las describe (0,2–1,9 s con el servidor real).
+    /// </summary>
+    public static readonly IReadOnlyList<string> SrtAnalysisArguments = new[]
+    {
+        "-f", "mpegts", "-scan_all_pmts", "0", "-analyzeduration", "12000000", "-probesize", "64000000",
+    };
+
+    /// <summary>
     /// Argumentos de ENTRADA para una definición válida. Las opciones van como argumentos APARTE (no en la URL): así
     /// una contraseña con «&amp;» o «=» no rompe nada y no hace falta escapar. Nombres medidos con el FFmpeg empaquetado:
     /// <c>-srt_streamid</c> (el <c>-streamid</c> a secas es una opción del CLI y choca), <c>-timeout</c> en SRT y
-    /// <c>-rw_timeout</c> en RTMP solo acotan la E/S una vez conectados (la espera del emisor es ilimitada).
+    /// <c>-rw_timeout</c> en RTMP solo acotan la E/S una vez conectados (la espera del emisor es ilimitada). SRT lleva además
+    /// su análisis (<see cref="SrtAnalysisArguments"/>).
     /// </summary>
     public static IReadOnlyList<string> InputArgumentsFor(NetworkInput input)
     {
@@ -160,6 +188,7 @@ public sealed class NetworkStreamReceiver : INetworkStreamReceiver
             args.AddRange(new[] { "-timeout", ioTimeoutMicros });
             if (n.Passphrase is not null) args.AddRange(new[] { "-passphrase", n.Passphrase });
             if (n.Role == NetworkRole.Connect && n.StreamId is not null) args.AddRange(new[] { "-srt_streamid", n.StreamId });
+            args.AddRange(SrtAnalysisArguments);
         }
         else if (n.Role == NetworkRole.Listen)
         {

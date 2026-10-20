@@ -207,7 +207,9 @@ public sealed class NetworkStreamCaptureSource : ICaptureSource
     private RelayReservation? _reservation;
 
     /// <summary>Puro y testeable: la entrada TS por TCP loopback. Formato explícito (sin adivinar). Con MPEG-TS, FFmpeg
-    /// AGOTA SIEMPRE el tiempo de análisis (el formato no tiene cabecera: no sabe cuándo ha visto todas las pistas), así
+    /// AGOTA SIEMPRE el tiempo de análisis (con el <c>scan_all_pmts=1</c> que pone el CLI, el formato cuenta como sin cabecera:
+    /// no sabe cuándo ha visto todas las pistas; el receptor SRT se lo quita, ver
+    /// <see cref="NetworkStreamReceiver.SrtAnalysisArguments"/>), así
     /// que son 2 s de FLUJO, que el pre-roll del relé (≥ 2,5 s desde un fotograma clave) cubre al instante: el proceso
     /// nuevo pinta y graba enseguida. Con 5 s consumía el pre-roll y esperaba 2,5 s en vivo: 3 s de preview congelado en
     /// cada Grabar/Detener (medido). El caso «audio con otro reloj» ya no exige más: el relé retiene también el vídeo
