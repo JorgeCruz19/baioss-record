@@ -21,7 +21,8 @@ namespace Baioss.Record.IntegrationTests;
 /// Entradas de red de verdad, en loopback, con el FFmpeg empaquetado: un segundo ffmpeg hace de EMISOR (barras + tono,
 /// H.264/AAC) por SRT o RTMP y el motor del canal recibe, previsualiza y GRABA como con cualquier otra entrada. Cubre
 /// los cuatro modos (SRT escucha/llamada, RTMP servidor/cliente), la señal (sin señal → SEÑAL OK → sin señal), la
-/// contraseña SRT equivocada y la vuelta del emisor tanto en preview como a mitad de una grabación (pieza nueva).
+/// contraseña SRT equivocada, una pista de audio que no trae datos y la vuelta del emisor tanto en preview como a mitad de
+/// una grabación (pieza nueva).
 /// Grabar y Detener reemplazan el proceso del canal: con el receptor permanente el emisor NO se entera (antes cada
 /// Grabar cerraba la conexión y un emisor sin reconexión automática, como estos ffmpeg, no volvía: la grabación salía vacía).
 /// </summary>
@@ -47,9 +48,10 @@ public sealed class NetworkInputTests
         /// detrás de uno. GOP fijo de <paramref name="gopFrames"/> (sin claves de más por cambio de escena).</param>
         /// <param name="audioLateSeconds">El audio está en la PMT desde el principio, pero sus primeros paquetes no llegan hasta pasados
         /// estos segundos.</param>
+        /// <param name="audioNeverSent">El audio está en la PMT, pero no manda NI UN paquete (el codificador lo genera y se tira entero).</param>
         public Sender(string ffmpegDir, string url, string format, int seconds, string? passphrase = null, bool listen = false, double audioOffsetSeconds = 0,
             bool syncMarks = false, string videoCodec = "libx264", int gopFrames = 25, bool firstKeyframeLost = false, double audioLateSeconds = 0,
-            bool withAudio = true)
+            bool withAudio = true, bool audioNeverSent = false)
         {
             var psi = new ProcessStartInfo
             {
@@ -77,6 +79,9 @@ public sealed class NetworkInputTests
             if (firstKeyframeLost) { args.Add("-bsf:v"); args.Add("noise=drop=not(n)"); }
             args.AddRange(withAudio ? new[] { "-c:a", "aac", "-b:a", "96k" } : new[] { "-an" });
             if (audioLateSeconds > 0) { args.Add("-bsf:a"); args.Add($"noise=drop=lt(pts*tb\\,{audioLateSeconds.ToString(CultureInfo.InvariantCulture)})"); }
+            // Sin paquetes de audio, el muxer retendría el vídeo 10 s (-max_interleave_delta por defecto) esperándolos; un codificador
+            // en directo lo manda al momento.
+            if (audioNeverSent) args.AddRange(new[] { "-bsf:a", "noise=drop=1", "-max_interleave_delta", "100000" });
             // Cada trama de audio sale en cuanto la da el codificador: ni retenida para entrelazarla por DTS ni agrupada con otras en un
             // PES (lo que el muxer MPEG-TS hace por defecto: 8 tramas a 135 kb/s, hasta 350 ms de silencio), que la haría llegar tarde
             // respecto al vídeo. Como el receptor (ver NetworkStreamReceiver.ArgumentsFor).
@@ -570,6 +575,63 @@ public sealed class NetworkInputTests
     }
 
     // --- Casos de fallo y recuperación ---
+
+    /// <summary>
+    /// Un emisor SRT cuya PMT anuncia una pista de audio que nunca trae paquetes (visto al medir el arranque de las SRT, 2026-10-20). El
+    /// análisis de FFmpeg acaba con esa pista sin frecuencia ni canales y, al copiarla, el muxer del receptor no podía escribir la
+    /// cabecera («sample rate not set»): el receptor moría justo después de volcar la entrada —la fuente ya en SEÑAL OK y con audio—,
+    /// el supervisor lo relanzaba y la señal parpadeaba sin que el canal pintara nunca. Ahora el receptor copia la primera pista de
+    /// audio solo si FFmpeg la describió (ver <see cref="NetworkStreamReceiver.AudioMapArguments"/>): SEÑAL OK sin audio cuando el
+    /// análisis agota su tope (12 s de vídeo), sin parpadeo, y el canal pinta y graba el vídeo.
+    /// </summary>
+    [SkippableFact]
+    public async Task SrtListen_WithAnAudioTrackThatNeverCarriesData_LocksWithoutAudio_AndPaintsAndRecordsTheVideo()
+    {
+        Skip.IfNot(Available, "FFmpeg no disponible en tools/.");
+        var outputRoot = OutputRoot("srt-mute-audio");
+        try
+        {
+            var locator = new FfmpegLocator(TestAssets.FfmpegDir!);
+            int port = FreeUdpPort();
+            var clock = Stopwatch.StartNew();
+            await using var source = await OpenAsync(locator, new NetworkInput { Protocol = NetworkProtocol.Srt, Role = NetworkRole.Listen, Port = port });
+            // Cada cambio de señal, con su instante: con el fallo, SEÑAL OK duraba milisegundos (el receptor moría justo después) y
+            // mirar CurrentSignal cada 250 ms no llegaba ni a verla.
+            var signals = new List<(double At, SignalInfo Signal)>();
+            source.SignalChanged += (_, s) => { lock (signals) signals.Add((clock.Elapsed.TotalSeconds, s)); };
+            List<(double At, SignalInfo Signal)> Signals() { lock (signals) return signals.ToList(); }
+            int frames = 0;
+            await using var engine = new FfmpegChannelEngine(locator, NullLogger.Instance) { OutputRoot = outputRoot };
+            engine.FrameReady += (_, _) => Interlocked.Increment(ref frames);
+            await engine.StartPreviewAsync(source, Profile(), "NET");
+            await Task.Delay(1500); // el receptor ya escucha
+
+            double startedAt = clock.Elapsed.TotalSeconds;
+            using var sender = new Sender(TestAssets.FfmpegDir!, $"srt://127.0.0.1:{port}?mode=caller&latency=120000", "mpegts", 60, audioNeverSent: true);
+            await WaitForAsync(() => Signals().Any(s => s.Signal.State == SignalState.Locked), Lock, "La fuente no dio SEÑAL OK con la pista de audio muda.");
+            var (at, signal) = Signals().First(s => s.Signal.State == SignalState.Locked);
+            double locked = at - startedAt;
+            _out.WriteLine($"SEÑAL OK a los {locked:0.00} s ({signal.FormatLabel}{(signal.HasAudio ? ", con audio" : ", sin audio")}).");
+            Assert.Equal("640×360 · 25p", signal.FormatLabel);
+            Assert.False(signal.HasAudio); // la pista muda no llega al relé: el canal no debe mapear audio
+            // El análisis espera a la pista muda hasta su tope, 12 s de vídeo (ver NetworkStreamReceiver.SrtAnalysisArguments).
+            Assert.True(locked <= 16, $"SEÑAL OK a los {locked:0.00} s: con el tope del análisis (12 s) debía llegar en ≤ 16 s.");
+
+            await WaitForAsync(() => Volatile.Read(ref frames) >= 3, Lock, "El preview no pintó el vídeo del emisor con la pista de audio muda.");
+            _out.WriteLine($"Primer cuadro de preview a los {clock.Elapsed.TotalSeconds - startedAt:0.00} s.");
+            var file = await RecordAndVerifyAsync(engine, locator, Profile(), TimeSpan.FromSeconds(3));
+            var (video, audio) = await ProbeStartTimesAsync(locator.FfprobePath, file);
+            _out.WriteLine($"Grabado: vídeo desde {video:0.000} s, {(audio is null ? "sin pista de audio" : $"audio desde {audio:0.000} s")}.");
+            Assert.False(double.IsNaN(video), "La grabación no tiene vídeo.");
+
+            // Sin parpadeo: desde SEÑAL OK la fuente no ha vuelto a SIN SEÑAL (el receptor ya no muere al escribir su cabecera).
+            var afterLock = Signals().Where(s => s.At > at).ToList();
+            Assert.True(afterLock.All(s => s.Signal.State == SignalState.Locked),
+                "La señal parpadeó tras SEÑAL OK: " + string.Join(", ", afterLock.Select(s => $"{s.Signal.State} a los {s.At - startedAt:0.00} s")));
+            Assert.Equal(SignalState.Locked, source.CurrentSignal.State);
+        }
+        finally { Cleanup(outputRoot); }
+    }
 
     [SkippableFact]
     public async Task SrtListen_WithTheWrongPassphrase_NeverLocks_AndKeepsListening()

@@ -167,7 +167,7 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         int copy = args.IndexOf("-c");
         Assert.Equal("copy", args[copy + 1]);              // sin recodificar: el preset lo aplica el proceso del canal
         Assert.Equal("0:v:0", args[args.IndexOf("-map") + 1]);
-        Assert.Contains("0:a:0?", args);                   // el audio es opcional: un flujo solo-vídeo no aborta
+        Assert.Contains("0:a:u:?", args);                  // el audio es opcional: un flujo solo-vídeo no aborta
         Assert.Equal("mpegts", args[args.LastIndexOf("-f") + 1]); // la salida al relé (el primer -f es el de la entrada SRT)
         Assert.True(args.LastIndexOf("-f") > args.IndexOf("-i"));
         Assert.Equal("1", args[args.IndexOf("-flush_packets") + 1]);
@@ -182,6 +182,35 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.Equal("tcp://127.0.0.1:45000?tcp_nodelay=1", args[^1]);
         Assert.DoesNotContain("-c:v", args);
         Assert.DoesNotContain("-y", args);
+    }
+
+    /// <summary>
+    /// Una SRT cuya PMT anuncia una pista de audio que nunca trae paquetes (2026-10-20): el análisis la deja sin frecuencia ni canales
+    /// y, copiada con <c>-map 0:a:0?</c>, el muxer del receptor no podía escribir la cabecera («sample rate not set»): FFmpeg moría
+    /// justo después de dar la fuente por conectada y con audio, y la señal parpadeaba sin vídeo. El receptor copia la PRIMERA pista
+    /// de audio solo si FFmpeg la describió (ver <see cref="NetworkStreamReceiver.AudioMapArguments"/>); RTMP, igual.
+    /// </summary>
+    [Theory]
+    [InlineData(NetworkProtocol.Srt)]
+    [InlineData(NetworkProtocol.Rtmp)]
+    public void TheReceiver_CopiesOnlyTheFirstAudioTrack_AndOnlyIfFfmpegCouldDescribeIt(NetworkProtocol protocol)
+    {
+        var input = protocol == NetworkProtocol.Srt
+            ? new NetworkInput { Protocol = NetworkProtocol.Srt, Role = NetworkRole.Listen, Port = 9000 }
+            : new NetworkInput { Protocol = NetworkProtocol.Rtmp, Role = NetworkRole.Listen, Port = 1935, Path = "live/x" };
+        var args = NetworkStreamReceiver.ArgumentsFor(input, 45000).ToList();
+        var maps = args.Select((arg, i) => (arg, i)).Where(a => a.arg == "-map").Select(a => args[a.i + 1]).ToList();
+
+        Assert.True(args.IndexOf("-map") > args.IndexOf("-i"), "los -map son opciones de la salida");
+        Assert.Equal("0:v:0", maps[0]); // primero el vídeo: en la salida, PID 0x100, y el audio 0x101, que es lo que el relé espera
+        // Las pistas de audio USABLES (con frecuencia, canales y formato), o ninguna sin abortar. En FFmpeg 8.0 la «u» cierra el
+        // especificador: «0:a:u:0?» y «0:a:u?» abortan con «Trailing garbage after stream specifier» (medido).
+        Assert.Equal("0:a:u:?", maps[1]);
+        Assert.DoesNotContain("0:a:0?", maps);
+        // …y de ellas solo la primera pista de audio de la entrada: los mapeos negativos quitan las demás (como antes, un flujo con
+        // varias pistas lleva al relé solo una; y si la primera está muda no se cuela la segunda).
+        Assert.Equal(Enumerable.Range(1, NetworkStreamReceiver.AudioTracksCovered - 1).Select(k => $"-0:a:{k}"), maps.Skip(2));
+        Assert.True(NetworkStreamReceiver.AudioTracksCovered >= 16, "ocho pares estéreo o dieciséis pistas mono");
     }
 
     // --- Señal: lo que la fuente publica a partir del receptor ---
@@ -409,6 +438,57 @@ public class NetworkStreamCaptureSourceTests : IDisposable
         Assert.True(d.HasAudio);
     }
 
+    /// <summary>
+    /// El volcado real (2026-10-20) de un emisor SRT cuya PMT anuncia un audio que nunca trae paquetes: FFmpeg lo lista sin frecuencia
+    /// ni canales. El receptor no lo copia (ver <see cref="NetworkStreamReceiver.AudioMapArguments"/>), así que la fuente da SEÑAL OK
+    /// SIN audio: con audio, el proceso del canal lo mapearía de un relé que no lo lleva.
+    /// </summary>
+    [Fact]
+    public void InputDump_AnAudioTrackThatCarriesNoData_IsNotAudio()
+    {
+        var dump = new FfmpegInputDump();
+        Assert.Null(dump.Feed("[in#0/mpegts @ 000002ac50f17140] Could not find codec parameters for stream 1 (Audio: aac ([15][0][0][0] / 0x000F), 0 channels): unspecified sample format"));
+        Assert.Null(dump.Feed("Consider increasing the value for the 'analyzeduration' (12000000) and 'probesize' (64000000) options"));
+        Assert.Null(dump.Feed("Input #0, mpegts, from 'srt://0.0.0.0:9000':"));
+        Assert.Null(dump.Feed("  Duration: N/A, start: 1.400000, bitrate: N/A"));
+        Assert.Null(dump.Feed("  Program 1 "));
+        Assert.Null(dump.Feed("  Stream #0:0[0x100]: Video: h264 (Constrained Baseline) ([27][0][0][0] / 0x001B), yuv420p(progressive), 640x360 [SAR 1:1 DAR 16:9], 25 fps, 25 tbr, 90k tbn"));
+        Assert.Null(dump.Feed("  Stream #0:1[0x101]: Audio: aac ([15][0][0][0] / 0x000F), 0 channels"));
+        Assert.Null(dump.Feed("Parsed 'usable only'")); // FFmpeg 8.0 lo escribe (como error) al leer «-map 0:a:u:?»
+
+        var d = dump.Feed("Stream mapping:");
+        Assert.NotNull(d);
+        Assert.Equal("640×360 · 25p", d!.Video!.Label);
+        Assert.False(d.HasAudio);
+        Assert.True(d.UndescribedAudio); // para el registro: el emisor anuncia audio, pero no llega
+    }
+
+    /// <summary>Del audio cuenta solo la PRIMERA pista, la única que copia el receptor, y solo descrita.</summary>
+    [Theory]
+    [InlineData(false, true, false, true)] // la primera muda: el receptor no copia ninguna (tampoco la segunda)
+    [InlineData(true, false, true, false)] // la segunda muda: se copia la primera, como siempre
+    [InlineData(true, true, true, false)]
+    public void InputDump_OnlyTheFirstAudioTrackCounts(bool firstDescribed, bool secondDescribed, bool hasAudio, bool undescribed)
+    {
+        const string described = "Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp, 96 kb/s";
+        const string mute = "Audio: aac ([15][0][0][0] / 0x000F), 0 channels";
+        var dump = new FfmpegInputDump();
+        dump.Feed("Input #0, mpegts, from 'srt://0.0.0.0:9000':");
+        dump.Feed("  Stream #0:0[0x100]: Video: hevc (Main) ([36][0][0][0] / 0x0024), yuv420p(tv), 640x360, 25 fps, 25 tbr, 90k tbn");
+        dump.Feed($"  Stream #0:1[0x101]: {(firstDescribed ? described : mute)}");
+        dump.Feed($"  Stream #0:2[0x102]: {(secondDescribed ? described : mute)}");
+        var d = dump.Feed("Stream mapping:")!;
+        Assert.Equal(hasAudio, d.HasAudio);
+        Assert.Equal(undescribed, d.UndescribedAudio);
+
+        dump.Reset(); // y al relanzar, una entrada solo-vídeo no arrastra lo de la anterior
+        dump.Feed("Input #0, mpegts, from 'srt://0.0.0.0:9000':");
+        dump.Feed("  Stream #0:0[0x100]: Video: hevc (Main) ([36][0][0][0] / 0x0024), yuv420p(tv), 640x360, 25 fps, 25 tbr, 90k tbn");
+        var videoOnly = dump.Feed("Stream mapping:")!;
+        Assert.False(videoOnly.HasAudio);
+        Assert.False(videoOnly.UndescribedAudio);
+    }
+
     // --- Líneas genéricas del log de FFmpeg ---
 
     [Fact]
@@ -453,6 +533,26 @@ public class NetworkStreamCaptureSourceTests : IDisposable
     [InlineData("  Stream #0:0: Video: h264, yuv420p")] // sin tamaño ni tasa
     [InlineData("frame=   74 fps= 43 q=-0.0 Lsize=N/A time=00:00:03.00")]
     public void OtherLines_AreNotAVideoFormat(string line) => Assert.Null(FfmpegLogLines.TryParseVideoStream(line));
+
+    /// <summary>
+    /// Pista de audio que FFmpeg puede copiar: con frecuencia, canales y formato de muestra, lo que exige su especificador «u» (FFmpeg
+    /// 8.0, <c>stream_specifier_match</c>), con el que el receptor de red elige el audio. Líneas del FFmpeg empaquetado.
+    /// </summary>
+    [Theory]
+    [InlineData("  Stream #0:1[0x101]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, fltp, 96 kb/s, start 1.400000", true)]
+    [InlineData("  Stream #0:1: Audio: aac (LC), 48000 Hz, mono, fltp", true)]
+    [InlineData("  Stream #0:0: Audio: pcm_s16le, 48000 Hz, 2 channels, s16, 1536 kb/s", true)] // DeckLink
+    [InlineData("  Stream #0:1: Audio: pcm_s24le, 48000 Hz, 16 channels, s32 (24 bit), 18432 kb/s", true)]
+    [InlineData("  Stream #0:2[0x102](spa): Audio: ac3 ([129][0][0][0] / 0x0081), 48000 Hz, 5.1(side), fltp, 448 kb/s (default)", true)]
+    [InlineData("  Stream #0:1[0x101]: Audio: mp2 ([3][0][0][0] / 0x0003), 48000 Hz, stereo, s16p, 192 kb/s", true)]
+    [InlineData("  Stream #0:1[0x101]: Audio: aac ([15][0][0][0] / 0x000F), 0 channels", false)] // en la PMT, sin paquetes
+    [InlineData("  Stream #0:1[0x101]: Audio: aac ([15][0][0][0] / 0x000F), 0 channels, start 1.400000", false)]
+    [InlineData("  Stream #0:1[0x101]: Audio: aac (LC) ([15][0][0][0] / 0x000F), 48000 Hz, stereo, 96 kb/s", false)] // sin formato
+    [InlineData("  Stream #0:1[0x101]: Audio: aac ([15][0][0][0] / 0x000F), 48000 Hz, 0 channels, fltp", false)]
+    [InlineData("  Stream #0:0[0x100]: Video: h264 (Main), yuv420p(progressive), 640x360, 25 fps", false)]
+    [InlineData("[in#0/mpegts @ 0000] Could not find codec parameters for stream 1 (Audio: aac ([15][0][0][0] / 0x000F), 0 channels): unspecified sample format", false)]
+    public void AudioStreamLine_IsDescribed_OnlyWithRateChannelsAndSampleFormat(string line, bool described)
+        => Assert.Equal(described, FfmpegLogLines.IsDescribedAudioStream(line));
 
     // --- Supervisor: las dos opciones de las que dependen el receptor y el proceso del canal ---
 

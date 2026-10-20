@@ -143,8 +143,38 @@ sin audio espera 2 s de vídeo en directo (solo vídeo: SEÑAL OK a los 2,3 s y 
 matar el receptor, otra vez a los 2,9 s con el segundo de espera del supervisor incluido (antes, ~7,1 s); tras un hipo de 6 s
 —el servidor corta—, 2,2 s después de perder la señal. Lo que se pierde en un corte no cambia (2,9 s; antes, ~2,6 s): lo marcan
 la reconexión y el siguiente fotograma clave, no el análisis, cuyos paquetes el receptor entrega igualmente. Lo que no se deja describir
-nunca no mejora: una pista de audio que figura en la PMT pero no trae paquetes deja el audio sin parámetros, y FFmpeg no puede
-escribir la cabecera de la copia («sample rate not set»): el receptor falla y se relanza, ahora a los 12 s y antes a los 7.
+nunca espera el tope entero (ver el párrafo siguiente).
+
+**Una pista de audio que no trae datos (2026-10-20).** Si la PMT de una SRT anuncia una pista de audio que nunca manda paquetes,
+el análisis acaba con ella sin parámetros («Could not find codec parameters for stream 1 (Audio: aac …, 0 channels)»). El
+receptor copiaba siempre la primera pista de audio (`-map 0:a:0?`), y sin frecuencia de muestreo no hay cabecera que escribir: el
+muxer fallaba («sample rate not set» → «Could not write header»), FFmpeg moría en el acto tras volcar la entrada —con la fuente
+ya en SEÑAL OK y con audio— y el supervisor lo relanzaba; la señal parpadeaba unos milisegundos cada vez y el canal nunca recibía
+vídeo (a los 7 s con el análisis de antes, a los 12 con el de ahora). El receptor copia ahora la primera pista de audio solo si
+FFmpeg la describió (`NetworkStreamReceiver.AudioMapArguments`): `-map 0:a:u:?` toma las pistas de audio usables (el
+especificador «u» de FFmpeg: con frecuencia, canales y formato de muestra; en FFmpeg 8.0 cierra el especificador y no admite
+índice: `0:a:u:0?` aborta con «Trailing garbage after stream specifier») y los mapeos negativos `-map -0:a:1` … `-0:a:15` quitan
+las demás pistas de audio de la entrada, así que al relé sigue llegando como mucho la primera, como siempre (el relé y el proceso
+del canal cuentan con un único audio, el PID 0x101). `FfmpegInputDump` aplica la misma regla
+(`FfmpegLogLines.IsDescribedAudioStream`): la fuente da SEÑAL OK sin audio, el canal pinta y graba el vídeo y el registro dice
+que el emisor anuncia una pista de audio sin datos. Todo en el mismo proceso: relanzar el receptor mapeando solo el vídeo
+obligaría a un segundo análisis que volvería a esperar a la pista muda hasta el tope, porque el análisis espera a todas las
+pistas de la PMT, mapeadas o no (medido: con `-map 0:v:0` solo, el volcado llega igual a los 14,4 s). Medido con el receptor
+solo, FFmpeg 8.0 y un emisor SRT local 640×360 que entra justo detrás de un fotograma clave (GOP 2 s):
+
+| Emisor | Antes | Ahora |
+|--------|-------|-------|
+| HEVC o H.264 con su pista de audio sin paquetes | volcado a los 14,4 s y FFmpeg muere (−22) sin entregar nada | 14,4 s, solo vídeo |
+| dos pistas de audio, la primera sin paquetes | 12,6 s y muere | 12,6 s, solo vídeo |
+| audio normal · 3 s tarde · solo vídeo · dos pistas · la segunda sin paquetes | 2,6 · 3,9 · 2,6 · 2,7 · 12,6 s | igual, y lo mismo en el relé (el vídeo y la primera pista de audio) |
+
+Con el canal entero (`NetworkInputTests.SrtListen_WithAnAudioTrackThatNeverCarriesData_LocksWithoutAudio_AndPaintsAndRecordsTheVideo`,
+H.264 640×360 con el fotograma clave al conectar, FFmpeg 8.0): SEÑAL OK sin audio a los 12,0 s, el primer cuadro de preview a
+los 12,3 s (el receptor suelta de golpe los 12 s que retuvo en el análisis, así que el relé ya tiene su pre-roll y el análisis de
+2 s del proceso del canal se completa al momento) y la grabación con el vídeo y sin pista de audio; con el receptor de antes,
+SEÑAL OK con audio a los 12,0 s, y el receptor muere en ese mismo instante (en el banco, el fallo de la cabecera llega en el
+mismo milisegundo que el volcado). Lo que no cambia: un emisor así da SEÑAL OK al agotar el análisis, 12 s después de su primer
+fotograma clave, y si su audio empezara a llegar más tarde, esa conexión sigue sin él.
 
 **DeckLink: dispositivo persistente con relé en crudo.** La tarjeta es exclusiva y reabrirla cuesta 0,3–1 s sin frames
 (más con autodetección; con el conector bidireccional de la Duo 2, la resincronización del receptor SDI), así que con la
