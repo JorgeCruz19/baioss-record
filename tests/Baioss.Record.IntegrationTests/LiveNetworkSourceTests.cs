@@ -26,7 +26,8 @@ namespace Baioss.Record.IntegrationTests;
 ///   el colchón de preview de BAIOSS_LIVE_NET_CUSHION_MS (0 = sin colchón, como viene una fuente nueva);</item>
 ///   <item>BAIOSS_LIVE_NET_CYCLES (2) Grabar/Detener de BAIOSS_LIVE_NET_SECONDS (15) s con cada preset de BAIOSS_LIVE_NET_PRESETS
 ///   («H.264 NVENC · FullHD 1080p29.97|H.264 Broadcast · FullHD 1080p29.97»): el relevo de proceso no congela ni acelera el preview
-///   más de lo que ya lo hace la propia fuente (una RTMP que llega a ráfagas tiene huecos y ráfagas sin que nadie grabe); cada archivo
+///   más de lo que ya lo hace la propia fuente en toda la pasada, fuera de los relevos y los cortes (una RTMP que llega a ráfagas
+///   tiene huecos y ráfagas sin que nadie grabe, y no los enseña todos en unos segundos; ver <see cref="Judging"/>); cada archivo
 ///   se relee entero (<see cref="RecordedFileCheck"/>), lleva el pre-roll de la red delante y empieza con el audio y el vídeo juntos;
 ///   sin alarmas de frames perdidos, archivos sin verificar ni grabaciones interrumpidas;</item>
 ///   <item>un hipo de la red a mitad de grabación (el receptor congelado BAIOSS_LIVE_NET_STALL_SECONDS, 6 s, como un enlace que se
@@ -87,12 +88,28 @@ public sealed class LiveNetworkSourceTests
 
     private enum Cut { None, Stall, Kill }
 
-    /// <summary>El preview de la fuente sin grabar: su hueco mayor y su ráfaga mayor por cuarto de segundo. Un relevo se juzga contra
-    /// esto: lo que la fuente ya hace sola no es culpa del relevo.</summary>
+    /// <summary>Lo que el preview de la fuente hace solo: su hueco mayor y su ráfaga mayor por cuarto de segundo. Un relevo se juzga
+    /// contra esto: lo que la fuente ya hace sola no es culpa del relevo.</summary>
     private sealed record Baseline(double Gap, int Burst)
     {
         public double GapLimit => Math.Max(0.5, Gap + 0.25);
         public int BurstLimit => Math.Max(19, Burst + 2);
+    }
+
+    /// <summary>Un relevo medido (de 1 s antes a 5 s después de Grabar o Detener), para juzgarlo al final de la pasada.</summary>
+    private sealed record TransitionMeasure(string Recording, string What, double At, double Gap, int Burst);
+
+    /// <summary>
+    /// Los relevos se juzgan al FINAL, contra lo que el preview hizo en toda la pasada fuera de ellos y de los cortes (minutos de
+    /// fuente, grabando y sin grabar): una RTMP que llega a ráfagas no enseña lo peor que hace en 15 s. Medido el 2026-10-20 con la
+    /// RTMP real: unos 15 s de referencia daban como mucho 19, 22 o 33 cuadros por 250 ms y huecos de 0,7–1,1 s según la pasada, y
+    /// con la referencia corta los relevos de una pasada salían «acelerados» (25–26) frente a otra en la que la misma fuente daba 33.
+    /// </summary>
+    private sealed class Judging
+    {
+        public List<TransitionMeasure> Transitions { get; } = new();
+        /// <summary>Lo que no cuenta para la referencia: cada relevo y cada hipo o corte con su observación.</summary>
+        public List<(double From, double To)> Excluded { get; } = new();
     }
 
     private static async Task ExerciseAsync(Run run, NetworkInput input, Plan plan, FfmpegLocator locator, TimeSpan queue)
@@ -123,29 +140,45 @@ public sealed class LiveNetworkSourceTests
         await Task.Delay(15000);
         double p1 = run.Now, cpu1 = RecordedFileCheck.FfmpegCpuSeconds(cpuSince);
         var (baseGap, baseBurst) = run.Around(p0, p0, p1);
-        var baseline = new Baseline(baseGap, baseBurst);
+        var steady = new Baseline(baseGap, baseBurst); // solo para describir los cortes; los relevos se juzgan al final
         run.Add($"### {run.Label} · {signal.FormatLabel} · audio {signal.AudioChannels} c · SEÑAL OK a los {lockedAt:0.0} s");
-        run.Add($"- Preview en régimen: {run.PreviewSummary(p0, p1)} · receptor + preview {(cpu1 - cpu0) / (p1 - p0):0.00} núcleos" +
-                $" · en los relevos se admite un hueco de {baseline.GapLimit:0.00} s y {baseline.BurstLimit} cuadros por 250 ms");
+        run.Add($"- Preview en régimen: {run.PreviewSummary(p0, p1)} · receptor + preview {(cpu1 - cpu0) / (p1 - p0):0.00} núcleos");
 
         await using var channel = new StandaloneChannelEngine("NET", source, first, engine, log: new Logger<StandaloneChannelEngine>(loggers));
         var extras = new List<double>(); // pre-roll + cola tras Detener de cada grabación sin cortes: lo que se espera de más
+        var judging = new Judging();
         foreach (var preset in plan.Presets)
         {
             channel.Profile = preset.ToProfile(); // como al aplicar un preset en el panel
             for (int i = 1; i <= plan.Cycles; i++)
-                await RecordAsync(run, channel, engine, source, locator, preset, $"{preset.Name} #{i}", plan, signal, baseline, Cut.None, extras);
+                await RecordAsync(run, channel, engine, source, locator, preset, $"{preset.Name} #{i}", plan, signal, steady, judging, Cut.None, extras);
         }
         channel.Profile = first;
         if (plan.Cuts.Contains("stall", StringComparison.OrdinalIgnoreCase))
-            await RecordAsync(run, channel, engine, source, locator, plan.Presets[0], $"hipo de {plan.StallSeconds:0} s", plan, signal, baseline, Cut.Stall, extras);
+            await RecordAsync(run, channel, engine, source, locator, plan.Presets[0], $"hipo de {plan.StallSeconds:0} s", plan, signal, steady, judging, Cut.Stall, extras);
         if (plan.Cuts.Contains("kill", StringComparison.OrdinalIgnoreCase))
-            await RecordAsync(run, channel, engine, source, locator, plan.Presets[0], "corte", plan, signal, baseline, Cut.Kill, extras);
+            await RecordAsync(run, channel, engine, source, locator, plan.Presets[0], "corte", plan, signal, steady, judging, Cut.Kill, extras);
+
+        // Los relevos, contra la referencia de toda la pasada.
+        double end = run.Now;
+        var (wholeGap, wholeBurst, seconds) = run.BaselineExcluding(p0, end, judging.Excluded);
+        var reference = new Baseline(wholeGap, wholeBurst);
+        run.Add(string.Create(CultureInfo.InvariantCulture,
+            $"- Referencia de toda la pasada ({seconds:0} s de preview fuera de los relevos y los cortes): hueco máx {wholeGap:0.000} s, " +
+            $"ráfaga máx {wholeBurst} por 250 ms · en un relevo se admite un hueco de {reference.GapLimit:0.00} s y {reference.BurstLimit} cuadros por 250 ms"));
+        int judged = 0;
+        foreach (var t in judging.Transitions)
+        {
+            if (!(t.Gap <= reference.GapLimit)) { run.Add($"  ✗ {t.Recording}: preview congelado {t.Gap:0.00} s al {t.What}"); run.Problem($"{t.Recording}: preview congelado {t.Gap:0.00} s al {t.What}"); judged++; }
+            if (t.Burst > reference.BurstLimit) { run.Add($"  ✗ {t.Recording}: preview acelerado al {t.What} ({t.Burst} cuadros en 250 ms)"); run.Problem($"{t.Recording}: preview acelerado al {t.What} ({t.Burst} cuadros en 250 ms)"); judged++; }
+        }
+        if (judged == 0) run.Add($"  · ningún relevo ({judging.Transitions.Count}) congela ni acelera el preview más que la fuente sola");
     }
 
     /// <summary>Una grabación de Grabar a Detener (con un hipo o un corte de la red por medio, si se pide) y lo que dejó.</summary>
     private static async Task RecordAsync(Run run, StandaloneChannelEngine channel, FfmpegChannelEngine engine, NetworkStreamCaptureSource source,
-        FfmpegLocator locator, EncodingPreset preset, string name, Plan plan, SignalInfo signal, Baseline baseline, Cut cut, List<double> extras)
+        FfmpegLocator locator, EncodingPreset preset, string name, Plan plan, SignalInfo signal, Baseline steady, Judging judging, Cut cut,
+        List<double> extras)
     {
         var profile = channel.Profile;
         var problems = new List<string>();
@@ -191,7 +224,8 @@ public sealed class LiveNetworkSourceTests
                 // Se observa un rato largo y se analiza DESPUÉS: tras un hipo, el receptor puede soltar lo atrasado de golpe y luego
                 // perder la conexión igualmente (SRT), así que «ya volvió» solo se sabe mirando hacia atrás.
                 await HoldAsync(CutObservationSeconds);
-                cutText = " · " + run.DescribeCut(cut == Cut.Stall ? "hipo" : "corte", at, released, run.Now, tStart, baseline.GapLimit);
+                judging.Excluded.Add((at - 0.5, run.Now + 0.5)); // el hueco y la ráfaga de un corte son del corte, no de la fuente
+                cutText = " · " + run.DescribeCut(cut == Cut.Stall ? "hipo" : "corte", at, released, run.Now, tStart, steady.GapLimit);
                 if (!run.PreviewFlowingAt(run.Now)) problems.Add($"el preview no volvió en {CutObservationSeconds:0} s");
                 if (engine.State != RecordingState.Recording) problems.Add($"la grabación no siguió en {CutObservationSeconds:0} s ({engine.State})");
             }
@@ -209,8 +243,8 @@ public sealed class LiveNetworkSourceTests
         string Transition(string what, double t, double wait)
         {
             var (gap, burst) = run.AroundTransition(t);
-            if (!(gap <= baseline.GapLimit)) problems.Add($"preview congelado {gap:0.00} s al {what}");
-            if (burst > baseline.BurstLimit) problems.Add($"preview acelerado al {what} ({burst} cuadros en 250 ms)");
+            judging.Transitions.Add(new TransitionMeasure(name, what, t, gap, burst)); // se juzga al final, con la referencia de toda la pasada
+            judging.Excluded.Add((t - 1, t + 5));
             return string.Create(CultureInfo.InvariantCulture, $"{what} {wait:0.00}/{gap:0.000}/{burst}");
         }
         string transitions = $"relevos (espera s/hueco máx s/ráfaga máx por 250 ms): {Transition("Grabar", tStart, started - tStart)} · {Transition("Detener", tStop, stopped - tStop)}";
@@ -391,6 +425,31 @@ public sealed class LiveNetworkSourceTests
         /// <summary>Alrededor de un cambio de proceso (de 1 s antes a 5 s después): el hueco mayor sin cuadros (también hasta el final de
         /// la ventana) y el cuarto de segundo con más cuadros.</summary>
         public (double Gap, int Burst) AroundTransition(double t) => Around(t - 1, t, t + 5);
+
+        /// <summary>
+        /// Lo que el preview hizo de <paramref name="from"/> a <paramref name="to"/> FUERA de las ventanas <paramref name="excluded"/>
+        /// (relevos, hipos, cortes): el hueco mayor entre dos cuadros seguidos que no toca ninguna ventana, el cuarto de segundo con más
+        /// cuadros de los que caen enteros fuera de ellas, y cuántos segundos de preview cuentan.
+        /// </summary>
+        public (double Gap, int Burst, double Seconds) BaselineExcluding(double from, double to, IReadOnlyList<(double From, double To)> excluded)
+        {
+            double[] f; lock (_frames) f = _frames.Where(x => x >= from && x <= to).ToArray();
+            bool Touches(double a, double b) => excluded.Any(w => a < w.To && b > w.From);
+            double gap = 0;
+            for (int i = 1; i < f.Length; i++)
+                if (!Touches(f[i - 1], f[i])) gap = Math.Max(gap, f[i] - f[i - 1]);
+            int burst = 0, bins = 0, next = 0;
+            for (double t = from; t + 0.25 <= to; t += 0.25)
+            {
+                while (next < f.Length && f[next] < t) next++;
+                if (Touches(t, t + 0.25)) continue;
+                int count = 0;
+                for (int k = next; k < f.Length && f[k] < t + 0.25; k++) count++;
+                burst = Math.Max(burst, count);
+                bins++;
+            }
+            return (gap, burst, bins * 0.25);
+        }
 
         /// <summary>De <paramref name="from"/> a <paramref name="to"/>: el hueco mayor sin cuadros (contando los bordes) y el cuarto de
         /// segundo con más cuadros desde <paramref name="burstFrom"/>.</summary>
