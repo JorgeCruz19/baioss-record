@@ -362,6 +362,8 @@ public sealed class FfmpegArgumentBuilder
                 source.AudioChannelCount, _analyze ? $"{MeterPan(source)},{SilenceDetect}" : null, recording ? routes : null, "arec"));
         }
 
+        // Hilos del grafo (ver FilterThreads), por la señal y, grabando, por el codificador y el tamaño que se codifica.
+        args.AddRange(FilterThreadsArgs(source.CurrentSignal.Resolution, recording ? profile : null, recFrame));
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
         // Salida A — preview BGRA por TCP (lo lee la app y lo sube a la textura/bitmap). Cada frame decodificado, una vez
@@ -578,6 +580,49 @@ public sealed class FfmpegArgumentBuilder
         return string.Create(CultureInfo.InvariantCulture,
             $"scale={previewWidth}:ih,bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all:threads=1");
     }
+
+    /// <summary>Hilos del grafo de filtros de un canal cuyos cuadros no pasan de 1080 (ver <see cref="FilterThreads"/>).</summary>
+    internal const int FewFilterThreads = 2;
+
+    /// <summary>Hilos del grafo de filtros de un canal que escala una señal de hasta 1080 a un preset mayor (4K) y lo codifica la GPU
+    /// (ver <see cref="FilterThreads"/>).</summary>
+    internal const int UpscaleFilterThreads = 4;
+
+    /// <summary>
+    /// Hilos del grafo de filtros del proceso de un canal (<c>-filter_complex_threads</c>), o null para dejar los de FFmpeg. FFmpeg le da
+    /// al grafo tantos como CPU lógicas (12 en un Core i7-8700): bwdif y blackdetect trocean cada cuadro entre todos, y cada scale
+    /// —también los que FFmpeg inserta para cada format=— abre además su propio grupo de otros tantos (un canal DeckLink sin grabar tenía
+    /// 58 hilos). A ritmo de tiempo real, despertarlos a todos en cada cuadro para trozos tan pequeños costaba más que el trabajo. Medido
+    /// el 2026-10-20 con FilterThreadsCostTests (la línea de este builder y un 1080i59.94 real de la DeckLink a ritmo real), núcleos del
+    /// proceso con 12 hilos → con 2, todos a tiempo real: solo preview 0,68 → 0,34; NVENC 1080p59.94 (bwdif por campo) 2,22 → 0,81, y dos
+    /// canales así 5,62 → 2,93; x264 1080p59.94 8,59 → 7,19; x264 1080i 3,14 → 2,69; XDCAM 1,40 → 0,73; ProRes 422 HQ 1080i igual. El
+    /// grafo de un 1080p59.94 con bwdif por campo aguanta con 2 hilos 2,5 veces el tiempo real (1,6 con 1). Con la CPU llena (dos canales
+    /// x264 1080p59.94, o ProRes 422 HQ 1080p59.94 con una imagen muy detallada) 2 hilos rinden lo mismo que 12 o algo más: el grafo no
+    /// se queda sin su parte. Escalar un 1080 a 4K para NVENC, QuickSync o AMF lleva 4: con 2 el grafo de NVENC 4K59.94 aguanta 1,65
+    /// veces y con 1 no llega (0,80×); con 4, 2,3 veces y 2,71 núcleos (4,61 con 12). Una señal mayor que 1080 (el preview y las
+    /// conversiones de cuadros de 8 Mpx) y codificar por CPU más de 1080 no se midieron a ritmo real con una imagen real: siguen con los
+    /// hilos de FFmpeg, como siempre.
+    /// </summary>
+    /// <param name="signal">Tamaño de la señal (o de la carta de ajuste), si se conoce.</param>
+    /// <param name="recording">Perfil con el que se graba; null si el proceso no graba.</param>
+    /// <param name="recordFrame">Tamaño que se codifica (el del preset o el de la señal), si se conoce.</param>
+    internal static int? FilterThreads(Resolution? signal, RecordingProfile? recording, Resolution? recordFrame)
+    {
+        static bool Above1080(Resolution? f) => f is { Width: > 0, Height: > 0 } r && (long)r.Width * r.Height > 1920L * 1080;
+        if (Above1080(signal)) return null;
+        if (recording is { AudioOnly: false } p && Above1080(recordFrame))
+            return IsHardwareEncoder(p.VideoCodec) ? UpscaleFilterThreads : null;
+        return FewFilterThreads;
+    }
+
+    /// <summary>Codifica la GPU (NVENC) o el hardware de vídeo integrado (QuickSync, AMF): la CPU queda para el grafo.</summary>
+    private static bool IsHardwareEncoder(VideoCodec codec) =>
+        FfmpegCodecMap.IsGpuEncoder(codec) || codec is VideoCodec.H264Qsv or VideoCodec.HevcQsv or VideoCodec.H264Amf;
+
+    private static IEnumerable<string> FilterThreadsArgs(Resolution? signal, RecordingProfile? recording, Resolution? recordFrame) =>
+        FilterThreads(signal, recording, recordFrame) is { } n
+            ? new[] { "-filter_complex_threads", n.ToString(CultureInfo.InvariantCulture) }
+            : Array.Empty<string>();
 
     /// <summary>
     /// Paquetes de la cola de escritura para cubrir <paramref name="time"/> en una salida con estos flujos: FFmpeg la mide en
@@ -828,6 +873,8 @@ public sealed class FfmpegArgumentBuilder
             filter.Append(';');
             filter.Append(AudioGraph("[0:a]", _source!.AudioChannelCount, silence: null, recording ? routes : null, "aslate"));
         }
+        // Hilos del grafo (ver FilterThreads): las barras salen al tamaño de la grabación y el preview las reduce desde ahí.
+        args.AddRange(FilterThreadsArgs(res, recording ? profile : null, res));
         args.Add("-filter_complex"); args.Add(filter.ToString());
 
         // Salida A — preview de las barras (cada frame una vez, como en el pipeline en vivo).

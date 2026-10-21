@@ -257,6 +257,52 @@ registro y el panel la enseña en ámbar (CADENCIA). Pruebas: `SaturationDetecto
 integración `FrameDropAlarmTests` (30→25 sin alarma y archivo a 25; 1080p60→x265 con alarma; contadores reales con la
 conversión incluida, donde la regla antigua saltaba).
 
+**Hilos del grafo de filtros (2026-10-20).** FFmpeg da al grafo de cada proceso (`-filter_complex`) tantos hilos como CPU
+lógicas —12 en el Core i7-8700 de pruebas—: bwdif y blackdetect trocean cada cuadro entre todos, y cada `scale` (también los
+que FFmpeg inserta para cada `format=`) abre su propio grupo de otros tantos; un canal DeckLink sin grabar tenía 58 hilos. A
+ritmo de tiempo real, despertar a doce hilos en cada cuadro para trozos tan pequeños costaba más que el trabajo. El motor pide
+ahora 2 (`FfmpegArgumentBuilder.FilterThreads`, en `BuildLive` y `BuildSlate`) y 4 para escalar una señal de hasta 1080 a un
+preset 4K que codifica NVENC, QuickSync o AMF. Con una señal mayor que 1080 (también las barras de la carta de ajuste de un preset
+4K) o codificando por CPU más de 1080 deja los de FFmpeg, como siempre: esos casos no se midieron a ritmo real con una imagen
+real. Medido con `FilterThreadsCostTests` (opcional: `BAIOSS_FILTER_THREADS=1`): la línea de comandos del motor con 10 s de un
+informativo en directo de la DeckLink (1080i59.94 TFF en uyvy422 y 16 canales de audio, en un NUT como el del relé) servidos a
+ritmo real con `-re`; núcleos del proceso del canal de los segundos 15 a 45, mediana de dos pasadas en orden alterno (la CPU
+cargada se calienta y cada medida seguida cuesta algo más):
+
+| Canal (desde la DeckLink 1080i59.94) | 12 hilos (antes) | 4 hilos | 2 hilos |
+|---|---|---|---|
+| Solo preview (el canal sin grabar) | 0,68 | 0,41 | **0,34** |
+| NVENC 1080p59.94 (bwdif por campo) | 2,22 | 1,08 | **0,81** |
+| Dos canales NVENC 1080p59.94 a la vez | 5,62 | 4,29 | **2,93** |
+| NVENC 4K59.94 (bwdif por campo y escala a 3840×2160) | 4,61 | **2,71** | 1,98 |
+| x264 1080p59.94 (bwdif por campo) | 8,59 | 8,23 | **7,19** |
+| x264 1080i59.94 MP4 | 3,14 | 2,73 | **2,69** |
+| XDCAM HD422 1080i59.94 | 1,40 | 1,20 | **0,73** |
+| ProRes 422 HQ 1080i59.94 | 8,06 | 7,79 | **7,82** |
+| NDI como el grafismo de Offside (NVENC 1080p60) | 0,32 | 0,25 | **0,26** |
+
+En negrita, lo que pide ahora el motor. Todos van a tiempo real con 12, 4 y 2 hilos (velocidad 0,998–1,005; el NDI, 1,01–1,02,
+porque su progreso avanza a saltos). Lo que más ahorra es lo que no codifica la CPU: el preview, el desentrelazado, la escala y
+las conversiones; un codificador pesado se lleva casi todo y ahí apenas cambia (ProRes). El margen se midió aparte, con el grafo
+solo y a toda velocidad: el de un 1080p59.94 con bwdif por campo aguanta 2,5 veces el tiempo real con 2 hilos (1,6 con 1 y 3,4
+con 12); el del 4K, 1,65 veces con 2, 2,3 con 4 y 2,4 con 12, y con 1 hilo no llega (0,80× grabando). De ahí los 4 hilos para
+escalar a 4K. Con 1 hilo el preview costaría 0,27 y dos canales 2,32, pero un canal NVENC 1080p59.94 0,90 y con menos margen; con
+3, más que con 2 en todos.
+
+Con la CPU llena, pocos hilos tampoco frenan al grafo, aunque compita con un codificador que la ocupa entera: dos canales x264
+1080p59.94 con bwdif por campo a la vez van a 0,595× con 2 hilos y a 0,554–0,589× con 12, y ProRes 422 HQ 1080p59.94 (abajo), a
+0,62× y 0,60×. `FactoryPresetRecordingTests` no sirve para afinar esto: su velocidad sale de un tiempo de medios que FFmpeg da a
+escalones de un segundo, en unos 7 s de cada fila, y una misma fila con la misma línea de comandos da 0,91× en una pasada y 1,09× en
+otra. Con los presets justos de tiempo real (50 filas, desde su formato y desde el 1080i59.94 sintético) dio 19 filas a tiempo real
+antes del cambio y 28 con él (25 y 29 con dos versiones intermedias de la regla); las filas que cambiaron lo hicieron en los dos
+sentidos. La que más pareció empeorar, x264 1080p59.94 desde el 1080i sintético (0,93× con 2 hilos en dos pasadas, 1,04–1,07× con
+12 en tres), va a 1,000× con 2 y con 12 en el banco con esa misma fuente generada en el proceso (4,35 núcleos frente a 5,5).
+
+ProRes 422 HQ 1080p59.94 desde ese 1080i no llega a tiempo real con ningún número de hilos (0,60–0,62×, 10,5 núcleos): con un
+informativo lleno de grafismo (≈ 333 Mbps en ProRes HQ 1080i, frente a los 66 de la TV «blanda» con la que se midió prores_aw) el
+codificador necesita más núcleos de los que tiene el i7-8700. La fila de la DeckLink del 2026-10-19 pasó con una imagen más
+sencilla (213 Mbps a 59.94p).
+
 **Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando, en cuanto el
 preview del proceso nuevo alcanza al del viejo (ver «Relevo sin salto atrás»): con el relé en crudo de DeckLink, unas décimas
 después de su primer frame (Detener ≈ 0,3–0,6 s; antes esperaba un «al día sostenido» y en producción, con 4 canales

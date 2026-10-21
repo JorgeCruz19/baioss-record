@@ -503,6 +503,12 @@ remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
 | HEVC · FullHD 1080p59.94 (x265) | 0,58–0,71× | 0,52× |
 | H.264 NVENC · 4K UHD 2160p59.94 | 1,04× | 0,94×: desentrelazar y escalar a 4K van por la CPU (5,5 núcleos) |
 
+- 2026-10-20, con el grafo de filtros en 2 hilos (4 al escalar a 4K para la GPU; ver «Hilos del grafo de filtros» en
+  [01-arquitectura](01-arquitectura.md)): el H.264 NVENC 4K59.94 desde la DeckLink llega (1,06× con 3,8 núcleos; antes del
+  cambio, ese mismo día, 1,06× con 5,1) y medido a ritmo real con un volcado de la tarjeta va a 1,000× con 2,7 núcleos (4,6 con el
+  grafo en 12 hilos). Ojo con la velocidad de este barrido: sale del tiempo de medios que FFmpeg da a escalones de un segundo, en
+  unos 7 s de cada fila, y una misma fila con la misma línea de comandos dio 0,91× en una pasada y 1,09× en otra; los presets que
+  van justos dieron 19 de 50 filas a tiempo real antes del cambio y 28 después. Para márgenes pequeños, `FilterThreadsCostTests`.
 - Por debajo del tiempo real el vídeo se queda corto: de 10 s grabados, entre 2,3 y 8,6 s. x264 y x265 ya van con
   `-preset veryfast`; los que pide un 4K o un 1080p59.94 por CPU necesitan más núcleos o el gemelo NVENC (el HEVC NVENC 4K59.94
   llega desde la DeckLink, 1,03×). Una DeckLink Duo 2 no entrega 4K: grabarla en 4K es escalar el HD.

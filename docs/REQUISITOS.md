@@ -79,7 +79,12 @@ codifica la grabación. Lo que pesa:
   añade ≈ 1,3–1,7 núcleos lógicos por canal en 1080p29.97 y ≈ 2,4–3,1 en 1080p59.94 (un cuadro por campo), sobre ≈ 0,8 de
   captura y preview. x264 «veryfast» en 1080i con contenido real cuesta ≈ 4. Dos canales NVENC 1080p59.94 con sus
   previews dejan ese i7-8700 entre el 75 y el 99 % (9–12 de 12 núcleos lógicos): es su techo. Para más canales, presets
-  1080p29.97/25 o entrelazados.
+  1080p29.97/25 o entrelazados. Esas cifras son de antes del 2026-10-20, con el grafo de filtros de cada canal repartido en un
+  hilo por CPU; desde entonces va en 2 (4 al escalar a 4K para la GPU; las señales 4K y el 4K codificado por CPU siguen igual)
+  y el proceso de un canal, en el mismo equipo y con un informativo real a ritmo real, cuesta ≈ 0,34 núcleos sin grabar (antes
+  ≈ 0,68), ≈ 0,8 grabando NVENC 1080p59.94 (antes ≈ 2,2), ≈ 2,9 dos canales así a la vez (antes ≈ 5,6) y ≈ 7,2 grabando x264
+  1080p59.94 (antes ≈ 8,6). Son los procesos de los canales, sin el receptor de la tarjeta ni la aplicación
+  (`FilterThreadsCostTests`; ver «Hilos del grafo de filtros» en [01-arquitectura](01-arquitectura.md)).
 - **Entradas de red (SRT/RTMP) y NDI:** la decodificación es por CPU. H.264 1080p ≈ 0,3–0,5 núcleos; HEVC 1080p ≈ 1;
   4K HEVC ≈ 2–3 (para 4K conviene NVENC para grabar y pocos canales). **Medido:** un núcleo decodifica H.264 1080p a
   143–215 fps, 5–7 veces el tiempo real.
