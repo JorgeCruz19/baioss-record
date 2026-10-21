@@ -136,7 +136,8 @@ public enum AudioTrackMode
     Single = 0,
     /// <summary>Una pista ESTÉREO por cada par elegido: programa, internacional, idiomas… separados y sin mezclar.</summary>
     PairsAsTracks = 1,
-    /// <summary>Una sola pista con TODOS los canales elegidos (hasta 16). Pensado para PCM en MXF/MKV; con AAC (MP4/MOV/TS), máximo 8 (7.1).</summary>
+    /// <summary>Una sola pista con TODOS los canales elegidos (hasta 16). Pensado para PCM en MXF, MKV o MOV; con un códec con pérdida
+    /// (AAC en MP4/TS, Opus, MP2, MP3) el motor guarda una pista estéreo por par (<c>FfmpegArgumentBuilder.AudioRoutes</c>).</summary>
     Multichannel = 2,
 }
 

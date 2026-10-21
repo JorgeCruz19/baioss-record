@@ -252,8 +252,9 @@ public class RecordingProfileValidatorTests : IDisposable
     /// Lo que hizo el motor real (FfmpegChannelEngine, el argv del producto) el 2026-10-18 con FFmpeg 8.0 y con el incluido al
     /// grabar 4 s de un tono con cada códec de audio en cada contenedor, con vídeo y en solo audio, y releer el archivo:
     /// Refused = el muxer no escribe la cabecera y no queda audio; Unreadable = se escribe sin error y no se decodifica (AAC en
-    /// WAV). El resto se relee entero; PCM en MP4, MOV y TS, como AAC. FDK-AAC en AVI y WAV lo graba 8.0, pero el incluido lo
-    /// rechaza. Además, MXF en solo audio no graba con ningún códec: necesita vídeo (<see cref="AudioOnlyMxf_NeedsAVideoTrack"/>).
+    /// WAV). El resto se relee entero; PCM en MP4 y TS, como AAC, y en MOV tal cual (2026-10-21). FDK-AAC en AVI y WAV lo graba
+    /// 8.0, pero el incluido lo rechaza. Además, MXF en solo audio no graba con ningún códec: necesita vídeo
+    /// (<see cref="AudioOnlyMxf_NeedsAVideoTrack"/>).
     /// </summary>
     private static AudioOutcome MeasuredAudio(AudioCodec audio, ContainerFormat container) => (audio, container) switch
     {
@@ -378,14 +379,33 @@ public class RecordingProfileValidatorTests : IDisposable
 
     [Theory]
     [InlineData(ContainerFormat.Mp4)]
-    [InlineData(ContainerFormat.Mov)]
     [InlineData(ContainerFormat.Ts)]
-    public void PcmInMp4MovOrTs_Passes_BecauseTheEngineRecordsItAsAac(ContainerFormat container)
+    public void PcmInMp4OrTs_Passes_BecauseTheEngineRecordsItAsAac(ContainerFormat container)
     {
-        // PCM s24le no cabe en estos tres (el TS lo guardaría como datos privados), pero el motor lo graba como AAC. Si dejara de
-        // promoverlo, esta prueba avisa: el validador tendría que rechazarlo.
+        // Ningún editor lee el PCM s24le en estos dos (MP4 lo lleva como «ipcm», que casi ninguno lee; el TS lo guardaría como
+        // datos privados), pero el motor lo graba como AAC. Si dejara de promoverlo, esta prueba avisa: el validador tendría que
+        // rechazarlo.
         Assert.Equal("aac", FfmpegCodecMap.EffectiveAudioEncoder(AudioCodec.Pcm, container));
         Assert.Empty(RecordingProfileValidator.Validate(WithAudio(AudioCodec.Pcm, container, audioOnly: false)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PcmInMov_Passes_AndStaysPcm(bool audioOnly)
+    {
+        // MOV lleva el PCM de 24 bits como audio QuickTime («in24»; «lpcm» por encima de 65535 Hz y, desde FFmpeg 2026-05, con más
+        // de 2 canales) y FFmpeg lo relee bit a bit (medido el 2026-10-21): los presets ProRes y DNx en MOV graban el PCM que dicen.
+        Assert.Equal("pcm_s24le", FfmpegCodecMap.EffectiveAudioEncoder(AudioCodec.Pcm, ContainerFormat.Mov));
+        Assert.Empty(RecordingProfileValidator.Validate(WithAudio(AudioCodec.Pcm, ContainerFormat.Mov, audioOnly)));
+    }
+
+    [Fact]
+    public void OpusInMov_SuggestsAacOrPcm()
+    {
+        var error = Assert.Single(RecordingProfileValidator.Validate(WithAudio(AudioCodec.Opus, ContainerFormat.Mov, audioOnly: false)));
+        Assert.Equal("El audio Opus no se puede grabar en Mov: FFmpeg no admite esa combinación y la grabación no arrancaría. " +
+                     "En Mov, elige el audio Aac o Pcm.", error);
     }
 
     [Fact]
@@ -403,9 +423,9 @@ public class RecordingProfileValidatorTests : IDisposable
     private static readonly int[] MeasuredRates =
         { 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 47952, 48000, 64000, 88200, 96000, 176400, 192000, 384000 };
 
-    /// <summary>El codificador que pone el motor: el PCM de MP4, MOV y TS es AAC (<see cref="PcmInMp4MovOrTs_Passes_BecauseTheEngineRecordsItAsAac"/>).</summary>
+    /// <summary>El codificador que pone el motor: el PCM de MP4 y TS es AAC (<see cref="PcmInMp4OrTs_Passes_BecauseTheEngineRecordsItAsAac"/>).</summary>
     private static AudioCodec Encoded(AudioCodec audio, ContainerFormat container) =>
-        audio is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? AudioCodec.Aac : audio;
+        audio is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Ts ? AudioCodec.Aac : audio;
 
     /// <summary>Si el codificador abre esa frecuencia: las que declara FFmpeg («Supported sample rates»); con otra, «Specified sample
     /// rate N is not supported by the X encoder». El PCM, cualquiera.</summary>
@@ -543,7 +563,7 @@ public class RecordingProfileValidatorTests : IDisposable
     [Fact]
     public void AnAudioTheContainerDoesNotCarry_GetsNoRateMessage()
     {
-        // Opus no va en MOV a ninguna frecuencia: el mensaje propone otro audio (AAC, que sí graba a 44,1 kHz).
+        // Opus no va en MOV a ninguna frecuencia: el mensaje propone otro audio (AAC o PCM, que sí graban a 44,1 kHz).
         var error = Assert.Single(RecordingProfileValidator.Validate(WithAudioAt(AudioCodec.Opus, ContainerFormat.Mov, false, 44100)));
         Assert.StartsWith("El audio Opus no se puede grabar en Mov: ", error);
     }
@@ -561,6 +581,8 @@ public class RecordingProfileValidatorTests : IDisposable
     [InlineData(ContainerFormat.Mkv, false)]
     [InlineData(ContainerFormat.Avi, false)]
     [InlineData(ContainerFormat.Wav, true)]
+    [InlineData(ContainerFormat.Mov, false)] // «in24» hasta 65535 Hz, «lpcm» por encima: de 10 Hz a 768 kHz bit a bit (2026-10-21)
+    [InlineData(ContainerFormat.Mov, true)]
     public void Pcm_RecordsAtAnyRate_OutsideMxfAndTheContainersWhereItIsAac(ContainerFormat container, bool audioOnly)
     {
         foreach (int rate in new[] { 7350, 8000, 44100, 47952, 48048, 96000, 176400, 192000, 352800, 384000, 768000 })

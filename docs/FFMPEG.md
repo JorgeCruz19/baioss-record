@@ -81,7 +81,11 @@ redistribuye. Es la última release de ese proyecto a 2026-10-16, pero está hec
 versión de FFmpeg o las herramientas, y una compilada después del 2026-06-09 traería el SDK 13.1 y pediría ≥ 610: de ahí
 el «exactamente». Su `ebur128` con más de 2 canales da el pico del canal 1 en todos (arreglado en 8.0.1); desde el
 2026-10-19 la app mide cada canal con su propio `ebur128` y los medidores de una DeckLink de 8 o 16 canales marcan cada uno
-el suyo también con ella (ver «Medidores por par» en «Audio embebido multicanal»).
+el suyo también con ella (ver «Medidores por par» en «Audio embebido multicanal»). Y en MOV escribe una pista PCM de más de
+2 canales (5.1, 7.1 o los 16 de *Multichannel*) con la descripción de sonido v1 (`in24`), que la especificación QuickTime no
+admite para más de 2 canales: FFmpeg la relee bit a bit, pero un editor estricto podría no abrirla. Las compilaciones desde
+el 2026-05-19 (commit 9e71ea2d60), la de junio incluida, escriben la v2 (`lpcm`); las pistas mono y estéreo cumplen con
+todas. El modo de pistas no cambia por eso: ver «PCM en MOV» en [08-presets.md](08-presets.md).
 
 **La del 2026-03-12 también sirve** (era la recomendada antes): release
 [`2026-03-12-13-56-afcde65-c6e5733`](https://github.com/AnimMouse/ffmpeg-autobuild/releases/tag/2026-03-12-13-56-afcde65-c6e5733)
@@ -219,7 +223,8 @@ medido con el FFmpeg empaquetado; `FfmpegArgumentBuilder.AudioRoutes`):
   AAC o FDK-AAC codifica el canal 4 como **LFE** (banda limitada): un tono de 1,2 kHz en ese canal salía a **−89 dB**
   (los demás, a −9 dB). FDK-AAC con «quad» rematriza a 5.0 y pierde canales; «octagonal» en AAC también los mezcla. Y
   MP2/MP3, que solo admiten estéreo, **no fallan**: FFmpeg inserta un remuestreo y MEZCLA los ocho canales en el
-  estéreo en silencio. (MP4/MOV/TS promueven PCM a AAC, así que ahí «multicanal» es siempre una pista por par.)
+  estéreo en silencio. (MP4 y TS promueven PCM a AAC, así que ahí «multicanal» es siempre una pista por par; MOV lleva el
+  PCM tal cual desde el 2026-10-21, ver [08-presets.md](08-presets.md).)
 - **Varias pistas en un contenedor de un solo flujo de audio (WAV, MP3) → una sola**: con dos `-map` de audio el muxer
   aborta («wav muxer does not support more than one stream of type audio») y no se grabaría nada. Si es PCM (WAV), todos
   los canales elegidos van en una pista multicanal; si tiene pérdida (MP3), el primer par.

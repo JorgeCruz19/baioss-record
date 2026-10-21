@@ -286,6 +286,8 @@ public sealed class ContainerCodecTests : IDisposable
         { AudioCodec.Pcm, ContainerFormat.Avi, true },
         { AudioCodec.Aac, ContainerFormat.Mov, false },
         { AudioCodec.Aac, ContainerFormat.Mov, true },
+        { AudioCodec.Pcm, ContainerFormat.Mov, false },
+        { AudioCodec.Pcm, ContainerFormat.Mov, true },
         { AudioCodec.Pcm, ContainerFormat.Wav, true },
         { AudioCodec.Mp3, ContainerFormat.Mp3Audio, true },
     };
@@ -613,10 +615,10 @@ public sealed class ContainerCodecTests : IDisposable
             double seconds = await DecodedAudioSecondsAsync(locator.FfmpegPath, file!);
             _output.WriteLine($"{audio} a {rate} Hz y {kbps} kb/s en {container}{(audioOnly ? " (solo audio)" : "")}: {Path.GetFileName(file)} " +
                               $"({new FileInfo(file!).Length} B), audio «{probed}» a {probedRate} Hz, {seconds:0.00} s decodificados");
-            // PCM en MP4, MOV y TS es AAC; Opus decodifica siempre a 48 kHz y así lo declara el archivo.
+            // PCM en MP4 y TS es AAC; Opus decodifica siempre a 48 kHz y así lo declara el archivo.
             Assert.Equal(audio switch
             {
-                AudioCodec.Pcm => container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? "aac" : "pcm_s24le",
+                AudioCodec.Pcm => container is ContainerFormat.Mp4 or ContainerFormat.Ts ? "aac" : "pcm_s24le",
                 AudioCodec.Aac or AudioCodec.FdkAac => "aac",
                 AudioCodec.Opus => "opus",
                 AudioCodec.Mp3 => "mp3",
@@ -687,8 +689,8 @@ public sealed class ContainerCodecTests : IDisposable
         AudioLayout = AudioLayout.Stereo, AudioBitrate = Bitrate.FromKbps(kbps), AudioSampleRate = rate,
     };
 
-    /// <summary>Lo que ffprobe dice del audio propuesto (en esos contenedores el PCM sigue siendo PCM: solo MP4, MOV y TS lo
-    /// pasan a AAC).</summary>
+    /// <summary>Lo que ffprobe dice del audio propuesto (en esos contenedores el PCM sigue siendo PCM: solo MP4 y TS lo pasan a
+    /// AAC).</summary>
     private static string ExpectedAudioCodecName(AudioCodec audio) => audio switch
     {
         AudioCodec.Pcm => "pcm_s24le",

@@ -81,8 +81,8 @@ Abre el preset que use el canal (**✎ Editar**, o **＋ Nuevo** a partir de uno
 | Modo | Qué produce | Cuándo usarlo | Formatos |
 |---|---|---|---|
 | **Single** | Una sola pista con lo elegido. Con un par → estéreo. Con *Todos los pares* y un preset **5.1 / 7.1** → los primeros 6 u 8 canales forman esa pista. Con varios pares y un preset **estéreo** (lo que trae todo preset de fábrica) → **una pista estéreo por par**, igual que *PairsAsTracks*: una pista estéreo no puede llevar más de un par, y lo elegido en la entrada no se tira. | Lo de siempre: un estéreo. O un 5.1 embebido en los canales 1-6. | Todos |
-| **PairsAsTracks** | **Una pista estéreo por cada par** grabado, cada una con su nombre («Canales 1-2», «Canales 3-4»…; MXF y TS no guardan nombres). Nada se mezcla. | Programa + internacional + idiomas, cada uno en su pista, listo para el editor. Necesita *Todos los pares*. | Todos. Con AAC (MP4/MOV/TS) cada pista suma bitrate; con PCM (MXF/MKV) no pierde nada. |
-| **Multichannel** | **Todos los canales en una sola pista** multicanal, sin compresión. | Conservar el SDI entero para postproducción. Necesita *Todos los pares*. | **Solo con PCM: MXF, MKV, AVI o WAV**, hasta 16 canales. Con un códec con pérdida (AAC en MP4/MOV/TS, Opus, MP2, MP3) el programa guarda **una pista estéreo por par**, igual que *PairsAsTracks* (ver la nota de abajo). |
+| **PairsAsTracks** | **Una pista estéreo por cada par** grabado, cada una con su nombre («Canales 1-2», «Canales 3-4»…; MXF y TS no guardan nombres). Nada se mezcla. | Programa + internacional + idiomas, cada uno en su pista, listo para el editor. Necesita *Todos los pares*. | Todos. Con AAC cada pista suma bitrate; con PCM (MXF/MKV/MOV) no pierde nada. |
+| **Multichannel** | **Todos los canales en una sola pista** multicanal, sin compresión. | Conservar el SDI entero para postproducción. Necesita *Todos los pares*. | **Solo con PCM: MXF, MKV, MOV, AVI o WAV**, hasta 16 canales. Con un códec con pérdida (AAC, Opus, MP2, MP3; en MP4 y TS el PCM se graba como AAC) el programa guarda **una pista estéreo por par**, igual que *PairsAsTracks* (ver la nota de abajo). |
 
 > **Por qué *Multichannel* no hace una pista 7.1 en MP4.** Los códecs con pérdida tratan el **canal 4** de una pista
 > 5.1/7.1 como el canal de graves (LFE) y le quitan todo lo que no sea grave: si por ese canal viene, por ejemplo, el
@@ -92,8 +92,13 @@ Abre el preset que use el canal (**✎ Editar**, o **＋ Nuevo** a partir de uno
 
 Recomendaciones prácticas:
 
-- Para **conservar todo sin pérdida**, usa un preset con contenedor **MXF** o **MKV** (audio PCM). En MP4/MOV/TS el
-  programa pasa el audio a AAC.
+- Para **conservar todo sin pérdida**, usa un preset con audio PCM en **MXF**, **MKV** o **MOV** (los presets ProRes y DNx
+  en MOV ya lo llevan). En MP4 y TS el programa pasa el audio a AAC.
+- **MOV con más de 2 canales en una pista** (5.1, 7.1 o *Multichannel*) y el FFmpeg 8.0 que se recomienda para las NVIDIA
+  Maxwell, Pascal y Volta: la pista sale con una descripción de audio antigua (v1) que la norma QuickTime no admite para
+  más de 2 canales. FFmpeg y el programa la leen bien; si tu editor no la abre, usa MXF o MKV, o *PairsAsTracks* (pistas
+  estéreo, que cumplen la norma con cualquier FFmpeg). Las compilaciones de FFmpeg desde el 2026-05-19, como la de junio,
+  ya la escriben como pide la norma.
 - En un preset de **solo audio** a **WAV** solo cabe una pista: con *PairsAsTracks* el programa guarda todos los canales
   elegidos en una pista WAV multicanal. A **MP3** (una pista y solo estéreo) va el primer par elegido.
 - Si tu SDI trae un **5.1 de verdad** en los canales 1-6, usa *Single* con un preset 5.1 (ahí el canal 4 sí es el LFE).
@@ -145,8 +150,8 @@ marca roja en los que se graban, las pistas que irán al archivo y la leyenda «
 nombres: las pistas van en ese orden). Con el preset estéreo en *Single* (el valor de fábrica) sale lo mismo: una pista
 por par.
 
-**Conservar todo el audio del SDI para postproducción.** Entradas → *Todos los pares*. Preset MXF o MKV con
-*Pistas de audio* = **Multichannel**: una pista PCM con los 8 o 16 canales.
+**Conservar todo el audio del SDI para postproducción.** Entradas → *Todos los pares*. Preset MXF, MKV o MOV con audio
+PCM y *Pistas de audio* = **Multichannel**: una pista PCM con los 8 o 16 canales.
 
 **Un 5.1 embebido en los canales 1-6.** Entradas → *Todos los pares*. Preset con *Canales* = **5.1** y *Pistas de
 audio* = **Single**: los canales 1-6 forman la pista 5.1 (L, R, C, LFE, Ls, Rs, en ese orden).
@@ -168,7 +173,7 @@ Aplicar. No hay *Audio de la tarjeta*: los canales los pone la fuente.
 - **Cambiaste el par y la grabación sigue igual.** Es lo esperado: la grabación en curso no cambia. El nuevo par se
   aplica al reconectar la entrada (Aplicar) y entra en la siguiente grabación.
 - **Elegiste *Multichannel* y el MP4 trae varias pistas estéreo en vez de una multicanal.** Es lo esperado con AAC (ver la
-  nota del punto 4). Para una sola pista con los 8 o 16 canales usa MXF o MKV (PCM).
+  nota del punto 4). Para una sola pista con los 8 o 16 canales usa MXF, MKV o MOV con audio PCM.
 - **Elegiste *Todos los pares* y el archivo trae una sola pista estéreo.** Hasta el 22/09/2026 pasaba con el preset en
   *Single* (el valor de fábrica): se guardaba solo el par 1-2 aunque los medidores marcaran todos los pares como grabados.
   Ahora *Single* con estéreo y varios pares guarda una pista por par, y la cabecera de la franja de audio dice cuántas
