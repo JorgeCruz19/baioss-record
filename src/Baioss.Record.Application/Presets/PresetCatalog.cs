@@ -235,7 +235,12 @@ public static class PresetCatalog
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.DnxHrHqx; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("DNxHR 444 · 1080p25 10-bit", PresetCategory.DnxHd, "4:4:4 10-bit (grading/masterización): 1920×1080p25, intra, MOV, PCM.", p =>
+        // En el i7-8700 a 3,2 GHz (2026-10-20), un canal solo: 1,00× con 2,9 núcleos con grafismo plano y, con un programa de TV,
+        // 0,96–1,00× con la CPU entera (10,1–10,5 núcleos), sin sitio para la aplicación ni otro canal; el dnxhd de 10 bits no tiene
+        // las funciones SIMD del de 8. ProRes 4444 1080p25 llega con 6,2–7,9 núcleos.
+        Make("DNxHR 444 · 1080p25 10-bit", PresetCategory.DnxHd, "4:4:4 10-bit (grading/masterización): 1920×1080p25, intra, MOV, PCM. "
+             + "Codifica la CPU y lo que pide depende de la imagen: con un programa de TV ocupa los 6 núcleos y va al límite del "
+             + "tiempo real; para grabar en vivo, ProRes 4444 · 1080p25.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.DnxHr444; p.AudioCodec = AudioCodec.Pcm; }),
 
@@ -279,11 +284,15 @@ public static class PresetCatalog
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv444p10le; p.EncoderProfile = EncoderProfile.ProRes4444Xq; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("ProRes 422 HQ · 4K 2160p25", PresetCategory.ProRes, "3840×2160p25 4:2:2 10-bit, MOV, audio PCM.", p =>
+        // Escalando el HD de una DeckLink, en el i7-8700 a 3,2 GHz (2026-10-20): 1,00× con la imagen sintética del barrido o con
+        // grafismo plano, sin margen, y 0,73–0,77× con un programa de TV (ver DetailedImageCpuNote). ProRes no tiene codificador por GPU.
+        Make("ProRes 422 HQ · 4K 2160p25", PresetCategory.ProRes, "3840×2160p25 4:2:2 10-bit, MOV, audio PCM. "
+             + "Codifica la CPU y pide muchos núcleos: con 6, aun escalando una señal HD, solo llega con grafismo sencillo.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 3840; p.Height = 2160;
           p.FrameRateNum = 25; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("ProRes 422 HQ · 1080p59.94", PresetCategory.ProRes, "1920×1080p59.94 (60000/1001) 4:2:2 10-bit, MOV, PCM.", p =>
+        Make("ProRes 422 HQ · 1080p59.94", PresetCategory.ProRes, "1920×1080p59.94 (60000/1001) 4:2:2 10-bit, MOV, PCM. "
+             + DetailedImageCpuNote + " Para grabar en vivo, ProRes 422 HQ · 1080i59.94.", p =>
         { p.Container = ContainerFormat.Mov; p.VideoCodec = VideoCodec.ProRes; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.ProResHq; p.AudioCodec = AudioCodec.Pcm; }),
 
@@ -371,7 +380,8 @@ public static class PresetCatalog
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p; p.EncoderProfile = EncoderProfile.DnxHrHq;
           p.AudioCodec = AudioCodec.Pcm; }),
 
-        Make("MXF OP1A · DNxHR HQX 1080p59.94 10-bit", PresetCategory.Mxf, "DNxHR HQX 4:2:2 10-bit · 1920×1080p59.94 (60000/1001) · MXF OP1A · PCM.", p =>
+        Make("MXF OP1A · DNxHR HQX 1080p59.94 10-bit", PresetCategory.Mxf, "DNxHR HQX 4:2:2 10-bit · 1920×1080p59.94 (60000/1001) · MXF OP1A · PCM. "
+             + DetailedImageCpuNote + " Para grabar en vivo, su versión de 8 bits (DNxHR HQ).", p =>
         { p.Container = ContainerFormat.Mxf; p.VideoCodec = VideoCodec.DnxHr; p.Width = 1920; p.Height = 1080;
           p.FrameRateNum = 60000; p.FrameRateDen = 1001; p.GopSize = 1; p.PixelFormat = PixelFormat.Yuv422p10le; p.EncoderProfile = EncoderProfile.DnxHrHqx;
           p.AudioCodec = AudioCodec.Pcm; }),
@@ -478,6 +488,19 @@ public static class PresetCatalog
     // 2160p50 al 72 % del tiempo real y a 2160p59.94 al 42 %; x265 4K de 10 bits al 16–19 %; x265 1080p59.94 al 52 %). Todos tienen un
     // gemelo NVENC que llega desde su formato (el MKV, en MP4).
     private const string HeavyCpuNote = "Codifica la CPU y pide muchos núcleos: con 6 no llega a tiempo real; para grabar en vivo, su gemelo NVENC.";
+
+    // Cola de la descripción de los intra por CPU que llegan a tiempo real o no según la imagen, sin GPU que los releve. prores_aw
+    // codifica cada slice con el cuantificador más fino del perfil y, mientras pase de su presupuesto, lo vuelve a codificar con otro
+    // más grueso; el dnxhd de 10 bits (HQX, 444) no tiene las funciones SIMD del de 8. Medido el 2026-10-20 en el i7-8700 (a 3,2 GHz,
+    // sin turbo) con la línea del motor y nueve imágenes de 10 s (ocho de las DeckLink, 1080i59.94, y la sintética del barrido de
+    // fábrica) servidas a ritmo real, un canal solo: ProRes 422 HQ 1080p59.94 llega con la sintética y con grafismo plano (139–209
+    // Mbps) y no con un programa —platós, exteriores, un informativo con grafismo: 533–649 Mbps, 0,66–0,94× con el grafo en 2 hilos
+    // y 0,58–0,86× con los de FFmpeg—; DNxHR HQX 1080p59.94, 1,00× con imagen sencilla, 0,85× con una cabecera gráfica y 0,71–0,77×
+    // con un programa. Sus alternativas llegan con todas: ProRes 422 HQ 1080i59.94 (la mitad de cuadros, sin desentrelazar) y el
+    // DNxHR HQ de 8 bits. Detalle en docs/08-presets.md («Imagen detallada», en ProRes).
+    private const string DetailedImageCpuNote =
+        "Codifica la CPU y lo que pide depende de la imagen: con 6 núcleos llega con grafismo sencillo, pero no con un programa de "
+        + "TV (platós, exteriores, rótulos).";
 
     /// <param name="name">Nombre visible del preset.</param>
     /// <param name="category">Familia del preset (panel izquierdo del gestor).</param>

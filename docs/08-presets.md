@@ -152,6 +152,17 @@ ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
   (MOV)» → «DNxHD 185 · 1080i25 (MOV)», «DNxHR HQ · 1080i59.94 (MOV)» → «DNxHD 220 · 1080i59.94 (MOV)» y «MXF OP1A · DNxHR
   HQ 1080i59.94» → «MXF OP1A · DNxHD 220 1080i59.94». Conservan el GUID del nombre anterior (`Make(..., formerName:)`), así
   que un favorito sigue en su sitio, y la misma clase de bitrate que DNxHR HQ (CID 1243, 917 504 bytes por cuadro).
+- **Tiempo real** (medido el 2026-10-20 con las nueve imágenes de «Imagen detallada», en ProRes, más abajo; i7-8700 a 3,2
+  GHz): en 8 bits el `dnxhd` de FFmpeg va holgado con cualquier imagen. DNxHD 220 1080i59.94 (MOV y MXF), 2,7–3,9× a toda
+  velocidad, y dos canales a la vez con el informativo caben en 3,7 núcleos; DNxHR HQ 1080p59.94 (MOV y MXF), 1,5–2,3×, pero
+  dos a la vez con el informativo ya no (0,97×). En 10 bits (HQX y 444) sus funciones son las de C, sin la versión SIMD que
+  tiene en 8, y lo que pide depende de la imagen: **DNxHR HQX 1080p59.94** llega con la imagen sintética o con grafismo plano
+  (1,00× con 4–4,8 núcleos; a toda velocidad, 1,3–1,6×) y no con un programa de TV (0,71–0,77×, con 2 hilos en el grafo o
+  con los de FFmpeg) ni con la cabecera gráfica (0,85×; ProRes 1080p59.94 llega con ella); **DNxHR 444 1080p25** llega con
+  grafismo plano (1,00× con 2,9 núcleos; 2,0–2,2× a toda velocidad) y con un programa se come la CPU entera y se queda en el
+  filo (0,96–1,00× con 10,1–10,5 núcleos), sin sitio para la aplicación ni para otro canal. Sus descripciones lo avisan y
+  remiten al DNxHR HQ de 8 bits y a ProRes 4444 1080p25 (1,00× con 6,2–7,9 núcleos). DNxHR HQX 1080p25: 1,5–1,6× con un
+  programa.
 
 ```text
 # DNxHD 220 · 1080i59.94 (MOV), grabando de una DeckLink
@@ -160,12 +171,14 @@ ffmpeg ... -filter_complex "[0:v]split=2[vrec][vprev];[vrec]scale=1920:1080:inte
   -c:a aac -ar 48000 -b:a 256000 -ac 2 -r 30000/1001 -field_order tt ... -f mov -y <salida>
 ```
 
-### ProRes: prores_aw, en tiempo real
+### ProRes: prores_aw
 
 `VideoCodec.ProRes` graba con **prores_aw** (antes prores_ks). En el PC de referencia (Core i7-8700, 6 núcleos/12 hilos)
 prores_ks no llega a tiempo real: con los 12 hilos codifica 1080i29.97 HQ a 0,8–1,2× y Proxy/LT aún más despacio, así que
 todos los presets ProRes perdían cuadros en vivo (prueba con DeckLink: 149–302 cuadros perdidos en 15 s). prores_aw hace lo
-mismo a 5–6×. Medido con 240 cuadros reales de TV en directo (DeckLink, 1080i29.97, `-flags +ildct`, 12 hilos):
+mismo a 5–6× con una imagen sencilla; con la de un programa de TV cuesta varias veces más, y 1080p59.94 y 4K ya no llegan
+(ver «Imagen detallada», más abajo). Medido con 240 cuadros de TV en directo de imagen sencilla (DeckLink, 1080i29.97,
+`-flags +ildct`, 12 hilos):
 
 | Perfil | prores_aw | prores_ks | prores_aw: Mbps · PSNR | prores_ks: Mbps · PSNR |
 |--------|-----------|-----------|------------------------|------------------------|
@@ -177,10 +190,10 @@ mismo a 5–6×. Medido con 240 cuadros reales de TV en directo (DeckLink, 1080i
 | 4444 XQ | 93 fps (3,1×) | 22 fps (0,72×) | 97,3 · 70,5 dB | 105,6 · 75,4 dB |
 
 (SSIM ≥ 0,9992 en todos salvo Proxy: 0,9950 prores_aw, 0,9910 prores_ks. Los Mbps quedan lejos de los nominales de Apple
-—HQ 1080i29.97 ≈ 220— porque ProRes es VBR y la señal de TV es blanda.) El proceso de grabación completo (filtros +
-preview + codificación) sobre el mismo clip, en núcleos a tiempo real: 422 HQ 1080i29.97 ≈ 2,9 (3,2× de margen); 422 HQ
-1080p59.94 desde 1080i (`bwdif`, un cuadro por campo) ≈ 5 (1,7×); 4444 XQ 1080p25 ≈ 3,4 (2,5×). prores_ks HQ, solo el
-codificador: ≈ 9.
+—HQ 1080i29.97 ≈ 220— porque ProRes es VBR y ese clip era sencillo: con un programa de TV, prores_aw da 330–340 Mbps en HQ
+1080i29.97.) El proceso de grabación completo (filtros + preview + codificación) sobre el mismo clip, en núcleos a tiempo
+real: 422 HQ 1080i29.97 ≈ 2,9 (3,2× de margen); 422 HQ 1080p59.94 desde 1080i (`bwdif`, un cuadro por campo) ≈ 5 (1,7×);
+4444 XQ 1080p25 ≈ 3,4 (2,5×). prores_ks HQ, solo el codificador: ≈ 9.
 
 - **Perfiles:** prores_aw admite los seis con su fourcc (`apco`/`apcs`/`apcn`/`apch`/`ap4h`/`ap4x`) y la DCT entrelazada
   (`-flags +ildct`). Codifica en BFF los cuadros marcados BFF y en TFF el resto, y el MOV toma el orden de la marca del
@@ -201,9 +214,48 @@ codificador: ≈ 9.
   Avid (este PC no los tiene). prores_aw es el que FFmpeg registra también con el nombre genérico `prores`.
 - **Descartado:** prores_ks con cuantificador fijo (`-qscale:v`) también es rápido (6,7× en HQ), pero un cuantificador fijo
   ignora la tasa del perfil (un Proxy dejaría de pesar como un Proxy) y el tamaño dependería solo del contenido.
-- **Límite: 4K.** «ProRes 422 HQ · 4K 2160p25» no llega a tiempo real en el i7-8700 ni con prores_aw: desde una señal 1080i
-  (desentrelazar + escalar a 4K) va a 0,73×, y solo codificar 4K HQ a 25 cuadros pide unos 6 núcleos, los seis físicos de
-  esa CPU. Hace falta un procesador con más núcleos (y la Duo 2, 3G-SDI, no recibe 4K para probarlo con una fuente real).
+- **Imagen detallada (medido el 2026-10-20).** prores_aw no tiene más tope que el cuantificador del perfil: codifica cada
+  slice con el más fino y, mientras pase de su presupuesto (en HQ, 1350 bits por macrobloque ± 12,5 %: ≈ 11 Mbit por cuadro
+  1080, ≈ 330 Mbps a 29.97 y ≈ 660 a 59.94), lo vuelve a codificar con el siguiente, hasta el 6 en HQ (`proresenc_anatoliy.c`
+  de FFmpeg 8.0). Una imagen sencilla cabe a la primera; la de un programa de TV —cámaras, rótulos— se codifica varias veces
+  por slice y acaba en el presupuesto. Medido con `FilterThreadsCostTests` (la línea del motor, preview y medidores incluidos,
+  servida a ritmo real desde un volcado como el del relé; núcleos y velocidad de 15 a 45 s; «a toda velocidad», sin `-re`, da
+  el margen) con 10 s de nueve imágenes —ocho de las DeckLink, grabadas el 2026-10-19, y la sintética del barrido de
+  fábrica—, un canal solo, en el i7-8700 a 3,2 GHz (sin turbo), con el grafo de filtros en 2 hilos como en main desde
+  0071e7e; la última columna, con los de FFmpeg, como antes. Dos pasadas de una misma fila difieren hasta un 9 %:
+
+  | Imagen (1080i59.94) | 422 HQ 1080p59.94 | A ritmo real | A toda velocidad | Hilos de FFmpeg, a ritmo real |
+  |---------------------|-------------------|--------------|------------------|-------------------------------|
+  | Sintética del barrido (testsrc2) | 139 Mbps | 1,00× · 4,0 núcleos | 1,48× | 1,00× · 4,8–4,9 núcleos |
+  | Anuncio animado de colores planos | 209 Mbps | 1,00× · 4,9 | 1,39× | 1,00× · 5,7–6,4 |
+  | Cabecera gráfica (Canal 5) | 471 Mbps | 1,00× · 8,8 | 1,04× | 1,00–1,01× · 10,1–10,4 |
+  | Entrevista en exteriores, con rótulo | 533 Mbps | 0,91–0,94× · 10,6–10,8 | 0,90× | 0,81–0,86× |
+  | Producto en plató, con rótulos | 580 Mbps | 0,75× · 10,7 | 0,74× | 0,66–0,70× |
+  | Anuncio en exteriores | 636 Mbps | 0,76× · 10,3 | 0,78× | 0,72–0,74× |
+  | Plató (Canal 5) | 641 Mbps | 0,78× · 10,6 | 0,78× | 0,72–0,75× |
+  | Plató con cantantes | 646 Mbps | 0,79–0,81× · 10,6–10,7 | 0,77× | 0,71–0,74× |
+  | Informativo con grafismo y rótulos | 649 Mbps | 0,66× · 10,5 | 0,64× | 0,58–0,63× |
+
+  Lo que no da tiempo a codificar lo descarta el relé y salta la alarma «Frames perdidos»: el archivo pierde cuadros. Con un
+  programa de TV, en este equipo (lo que sigue, con los hilos de FFmpeg salvo donde se dice: aquí manda el codificador y los
+  2 hilos del grafo cambian poco, un 3–7 % en el 1080p59.94):
+  - **422 HQ 1080p59.94 no llega** (haría falta de 1,1 a 1,5 veces esta CPU); su descripción lo avisa y remite al
+    1080i59.94. El barrido de fábrica lo da por bueno porque graba su imagen sintética (0,92–1,05× según la pasada), y la fila
+    de `DecklinkHardwareTests` pasa o no según lo que emita la cadena: el 2026-10-19 pasó con el anuncio de colores planos;
+    con un partido perdió 181–194 unidades.
+  - **422 HQ 1080i59.94** —la misma señal sin desentrelazar: la mitad de cuadros— llega con todas: 1,00× con 4,7–7,9 núcleos
+    y, a toda velocidad, 1,18× con el informativo, 1,49× con el plató con cantantes y 2,1–2,4× con las imágenes sencillas.
+    **Dos canales a la vez**, solo con imagen sencilla (1,00×, 8 núcleos entre los dos): con el informativo van a 0,58× y con
+    el plató a 0,81×, también con el grafo de filtros en 2 hilos. Dos DNxHD 220 1080i59.94 con el informativo caben en 3,7
+    núcleos (ver DNxHD, arriba).
+  - **422 HQ 4K25**, escalando el HD de la tarjeta, no llega: 0,73–0,77× con un programa, y con la imagen sintética o el
+    grafismo plano 1,00× (6,5–7 núcleos) sin margen: a toda velocidad, 1,00–1,22×. Una señal 4K de verdad tendría más detalle
+    que el HD escalado (la Duo 2, 3G-SDI, no la recibe). Su descripción lo avisa; ProRes no tiene codificador por GPU.
+  - **Los ProRes a 25 cuadros llegan todos:** 4444 y 4444 XQ 1080p25, 1,00× con 6,2–7,9 núcleos, con poco margen
+    (1,04–1,16× a toda velocidad); 422 HQ 1080p25 (también «Archive · ProRes 422 1080p»), 1,30–1,45×; 422, LT y Proxy
+    1080p25, 1,8–2,6×.
+
+  prores_aw codifica varios cuadros a la vez, uno por hilo: con más núcleos debería rendir en proporción (no medido aquí).
 
 ```text
 # ProRes 422 HQ · 1080i59.94
@@ -463,8 +515,9 @@ Con una DeckLink de verdad, [`DecklinkHardwareTests`](../tests/Baioss.Record.Int
 (opcional: `BAIOSS_DECKLINK="DeckLink Duo (2)"`) graba 15 s por preset con el mismo cableado que la aplicación y comprueba
 el archivo: continuidad, cadencia, cuadros entrelazados TFF **en el códec** (no solo en el contenedor) y que el relé no
 descarta nada mientras graba, es decir, que el equipo da abasto en tiempo real. Para ProRes/DNxHD cubre ProRes 422 HQ
-1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, 422 HQ 1080p59.94, DNxHD 220 1080i59.94 (MOV y MXF OP1A) y un canal con el
-perfil DNxHR 1080i antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). Último resultado
+1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, 422 HQ 1080p59.94 (en este equipo solo pasa si la cadena emite una imagen
+sencilla: ver «Imagen detallada», en ProRes), DNxHD 220 1080i59.94 (MOV y MXF OP1A) y un canal con el perfil DNxHR 1080i
+antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). Último resultado
 (2026-10-19, Core i7-8700, FFmpeg 8.0, TV en directo en Duo (1) y Duo (2), Duo (3) sin señal; main con los entrelazados por
 campos, el Detener por fin de entrada y un medidor por canal): 44 de 45 (la grabación larga, omitida), sin un cuadro descartado.
 Los ocho entrelazados graban TFF en el códec a 29,97. TwoInputs, dos canales a la vez: 3 de 3, con relevos de 0,4–0,8 s y el
@@ -492,7 +545,10 @@ para los 26 entrelazados, un 1080p al doble de su cadencia como el de un emisor 
 Último resultado (2026-10-19, Core i7-8700 de 6 núcleos y 12 hilos, Quadro P400, FFmpeg 8.0): 201 de 214 filas. Los 94 graban
 el códec, el perfil, el píxel, el tamaño, la cadencia, el barrido y el audio que dicen, y se leen enteros; los 26 entrelazados,
 también desde el 1080p al doble. Lo que no llega a tiempo real son seis presets que codifica la CPU, cuya descripción lo avisa y
-remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
+remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink. Y la imagen sintética del barrido es fácil para los intra
+por CPU: cuatro que aquí pasan no llegan con la de un programa de TV (medido aparte el 2026-10-20, a ritmo real con volcados de
+las DeckLink —platós, exteriores, un informativo con grafismo—; ver «Imagen detallada» en ProRes), y su descripción también lo
+avisa. En sus filas, la velocidad del barrido es la de cuatro pasadas de ese día (CPU a 3,2 GHz, con un ±7 % de ruido):
 
 | Preset | Desde su formato | Desde la DeckLink (1080i59.94) |
 |---|---|---|
@@ -502,6 +558,10 @@ remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
 | HEVC · 4K UHD 2160p59.94 10-bit (x265) | 0,15–0,17× | 0,16× |
 | MKV · HEVC 4K 10-bit (x265) | 0,17–0,18× | 0,19× |
 | HEVC · FullHD 1080p59.94 (x265) | 0,58–0,71× | 0,52× |
+| ProRes 422 HQ · 1080p59.94 (prores_aw) | 0,92–1,03× | 1,01–1,05×; con un programa de TV, **0,66–0,94×** |
+| ProRes 422 HQ · 4K 2160p25 (prores_aw) | 0,90–1,07× | 0,93–1,20×; con un programa, **0,73–0,77×** |
+| MXF OP1A · DNxHR HQX 1080p59.94 10-bit | 0,94–1,02× | 1,02–1,07×; con un programa, **0,71–0,77×** |
+| DNxHR 444 · 1080p25 10-bit | ≥ 0,97× (el 2026-10-19) | ≥ 0,97×; con un programa, **0,96–1,00×** con la CPU entera |
 | H.264 NVENC · 4K UHD 2160p59.94 | 1,04× | 0,94×: desentrelazar y escalar a 4K van por la CPU (5,5 núcleos) |
 
 - 2026-10-20, con el grafo de filtros en 2 hilos (4 al escalar a 4K para la GPU; ver «Hilos del grafo de filtros» en
@@ -520,8 +580,8 @@ remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
 - Por debajo del tiempo real el vídeo se queda corto: de 10 s grabados, entre 2,3 y 8,6 s. x264 y x265 ya van con
   `-preset veryfast`; los que pide un 4K o un 1080p59.94 por CPU necesitan más núcleos o el gemelo NVENC (el HEVC NVENC 4K59.94
   llega desde la DeckLink, 1,03×). Una DeckLink Duo 2 no entrega 4K: grabarla en 4K es escalar el HD.
-- Los que más CPU piden y llegan: ProRes 422 HQ 4K25 (8,1–8,7 núcleos, 1,02–1,04×), Archive HEVC 1080p (7,7), HEVC 1080p25
-  (7,4) y H.264 Broadcast 1080p59.94 (6,6 desde la DeckLink, 1,02×).
+- Los que más CPU piden y llegan: ProRes 422 HQ 4K25 (8,1–8,7 núcleos, 1,02–1,04×; con un programa de TV no llega, ver la
+  tabla), Archive HEVC 1080p (7,7), HEVC 1080p25 (7,4) y H.264 Broadcast 1080p59.94 (6,6 desde la DeckLink, 1,02×).
 - Lo que encontró en el motor (el croma y los campos de los entrelazados, el orden de campos, el tejido de un progresivo al
   doble, el perfil intra de otra familia, la degradación según el píxel y el GOP 1 de NVENC) está arreglado y descrito arriba.
 
