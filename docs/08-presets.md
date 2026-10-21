@@ -482,9 +482,10 @@ omite el peine y el nivel de audio (lo anota en la salida).
 motor unificado, con la cola de escritura y el fMP4 de la aplicación— desde una fuente en vivo, y relee lo grabado entero
 (`RecordedFileCheck`, el mismo que usa el barrido de combinaciones): el códec, el perfil, el píxel, el tamaño, la cadencia, el
 barrido (`idet` en la imagen y en el croma, y la marca de los cuadros decodificados) y el audio; que se decodifica entero sin
-errores y con el audio tan largo como el vídeo; y que va en tiempo real (el proceso al 97 % o más, sin la alarma de frames
-perdidos y sin degradar el codificador). Tres fuentes: la del formato del propio preset, la de las DeckLink de este equipo
-(1080i59.94 TFF en uyvy422) y, para los 26 entrelazados, un 1080p al doble de su cadencia como el de un emisor NDI, que se teje.
+errores y con el audio tan largo como el vídeo; y que va en tiempo real (el proceso al 97 % o más del segundo 3 al Detener,
+contado con los bloques de progreso de FFmpeg y su instante de llegada; sin la alarma de frames perdidos y sin degradar el
+codificador). Tres fuentes: la del formato del propio preset, la de las DeckLink de este equipo (1080i59.94 TFF en uyvy422) y,
+para los 26 entrelazados, un 1080p al doble de su cadencia como el de un emisor NDI, que se teje.
 `BAIOSS_PRESET_ONLY` («NVENC», «1080i59.94|ProRes») y `BAIOSS_PRESET_FEEDS` («DeckLink,Own») repiten unas filas;
 `BAIOSS_PRESET_REPORT` deja una fila por preset en un TSV y `BAIOSS_PRESET_KEEP` conserva lo grabado.
 
@@ -506,9 +507,16 @@ remite a su gemelo NVENC, y el H.264 NVENC 4K59.94 desde la DeckLink:
 - 2026-10-20, con el grafo de filtros en 2 hilos (4 al escalar a 4K para la GPU; ver «Hilos del grafo de filtros» en
   [01-arquitectura](01-arquitectura.md)): el H.264 NVENC 4K59.94 desde la DeckLink llega (1,06× con 3,8 núcleos; antes del
   cambio, ese mismo día, 1,06× con 5,1) y medido a ritmo real con un volcado de la tarjeta va a 1,000× con 2,7 núcleos (4,6 con el
-  grafo en 12 hilos). Ojo con la velocidad de este barrido: sale del tiempo de medios que FFmpeg da a escalones de un segundo, en
-  unos 7 s de cada fila, y una misma fila con la misma línea de comandos dio 0,91× en una pasada y 1,09× en otra; los presets que
-  van justos dieron 19 de 50 filas a tiempo real antes del cambio y 28 después. Para márgenes pequeños, `FilterThreadsCostTests`.
+  grafo en 12 hilos). Hasta ese día la velocidad de este barrido salía del tiempo de medios que FFmpeg da a escalones de un
+  segundo, en unos 7 s de cada fila: una misma fila con la misma línea de comandos dio 0,91× en una pasada y 1,09× en otra, y los
+  presets que van justos dieron 19 de 50 filas a tiempo real antes del cambio y 28 después.
+- Desde entonces cuenta los bloques de progreso con su instante de llegada, del segundo 3 al Detener. Dos pasadas de esas 50 filas
+  (los presets 1080p59.94, 1080p60, 4K, Archive y HEVC 1080p25, desde su formato y desde la DeckLink) en main 0071e7e dieron el
+  mismo veredicto en 49: las 37 que llegan, a 1,044–1,065× (±0,4 %; entre pasadas, mediana 0,3 % y como mucho 2 %), porque el
+  `-re` de FFmpeg 8.0 lee los primeros ~10 s de la fuente al 1,05× y un canal holgado va a ese ritmo; las 12 de los seis presets
+  de la tabla, a 0,14–0,70×. El H.264 NVENC 4K59.94 desde la DeckLink, 1,051× y 1,049×. La que cambió, Archive · HEVC 1080p CRF20
+  desde la DeckLink (x265 con bwdif, 7,2–7,7 núcleos), va al límite de la CPU: 0,958× y 1,018× en las pasadas, 1,00–1,04× en otras
+  cuatro y 0,98–1,02× ya a ritmo de 1,00× (de 15 a 30 s); su propio ritmo cambia de una vez a otra, y eso con la imagen sintética.
 - Por debajo del tiempo real el vídeo se queda corto: de 10 s grabados, entre 2,3 y 8,6 s. x264 y x265 ya van con
   `-preset veryfast`; los que pide un 4K o un 1080p59.94 por CPU necesitan más núcleos o el gemelo NVENC (el HEVC NVENC 4K59.94
   llega desde la DeckLink, 1,03×). Una DeckLink Duo 2 no entrega 4K: grabarla en 4K es escalar el HD.
