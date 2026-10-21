@@ -1,10 +1,9 @@
 # Requisitos de hardware y software
 
 Qué necesita un equipo para que Baioss Record grabe sin sobresaltos, por escenario de uso (número de canales, formato,
-entradas SDI/NDI/red) y con lo que cuestan las funciones de 2026: entradas SRT/RTMP, colchón de preview, clips en
-caliente y finalización de cada pieza. Los números marcados como **medidos** salen de pruebas sobre los dos equipos del
-final del documento (los de DeckLink, i7-8700 y Quadro P400, del equipo de pruebas DeckLink); los demás son estimaciones
-prudentes.
+entradas SDI/NDI/red) y con lo que cuestan las funciones de 2026: entradas SRT/RTMP, colchón de preview y relevo sin
+corte al Grabar/Detener. Los números marcados como **medidos** salen de pruebas sobre los dos equipos del final del
+documento (los de DeckLink, i7-8700 y Quadro P400, del equipo de pruebas DeckLink); los demás son estimaciones prudentes.
 
 ## Resumen rápido
 
@@ -13,7 +12,7 @@ prudentes.
 | CPU | 4 núcleos / 8 hilos (Intel Core i5 de 10.ª gen., Ryzen 5) | 8 núcleos físicos (Core i7 / Ryzen 7) | 12–16 núcleos (Core i9 / Ryzen 9 o Xeon) |
 | GPU | NVIDIA con NVENC: Turing o posterior (GTX 1650 o superior) con driver ≥ 610, o Pascal/Maxwell (GTX 10xx, Quadro P) con la compilación de FFmpeg para driver 58x (ver Software); si no, QuickSync o CPU (x264) | NVIDIA RTX (Turing o posterior), driver ≥ 610 | RTX Ampere/Ada o RTX A-series/Quadro RTX (sesiones NVENC sin límite) |
 | RAM | 8 GB | 16 GB | 32 GB |
-| Disco de grabación | SSD del sistema + disco duro CMR 7200 rpm dedicado (o SSD SATA) | SSD del sistema + disco duro CMR 7200 rpm dedicado (SSD si los ProRes/DNx suman más de ≈ 45 MB/s, o con segmentos cortos) | NVMe ≥ 2 TB o RAID de discos CMR, dedicado |
+| Disco de grabación | SSD del sistema + disco duro CMR 7200 rpm dedicado (o SSD SATA) | SSD del sistema + disco duro CMR 7200 rpm dedicado (SSD si los ProRes/DNx suman más de ≈ 45 MB/s) | NVMe ≥ 2 TB o RAID de discos CMR, dedicado |
 | Red | 1 GbE | 1 GbE (2,5 GbE con varias fuentes NDI) | 10 GbE con NDI a full bandwidth |
 | Sistema | Windows 10 21H2 / 11 x64 | Windows 11 x64, SAI | Windows 11 x64, SAI |
 
@@ -59,11 +58,13 @@ prudentes.
   2026-10 la grabación lleva una cola de escritura (`Recording:WriteQueueSeconds`, 10 s; necesita FFmpeg 6 o
   posterior) que absorbe esa espera sin congelar nada, pero el ajuste correcto sigue siendo «Apagar el disco duro tras:
   Nunca» (`powercfg /change disk-timeout-ac 0`).
-- **Actualizaciones de Windows:** horas activas cubriendo el horario de grabación (un reinicio automático a mitad de
-  una programada cierra las piezas en curso; con fMP4 no se pierde material, pero sí la continuidad).
+- **Actualizaciones de Windows:** horas activas cubriendo el horario de grabación: un reinicio automático a mitad de
+  una programada la corta, y la pieza MP4/MOV en curso puede quedarse sin índice, como con un corte de luz (ver SAI/UPS).
 - **Reloj:** sincronizado por NTP si se usa segmentación por reloj o programación (las piezas se cortan a la hora).
-- **SAI/UPS** siempre que se grabe algo irrepetible. Desde 2026-09 el MP4 se escribe fragmentado y un corte de luz
-  pierde como mucho un segundo, pero el sistema y los discos siguen sin protección.
+- **SAI/UPS** siempre que se grabe algo irrepetible. Los MP4/MOV se escriben con el índice (`moov`) al final, al cerrar
+  cada pieza, y un corte de luz deja ilegible la que se estaba escribiendo: hasta un segmento entero o, sin segmentación,
+  toda la grabación (el vídeo sigue dentro, pero solo se recupera con herramientas externas). Una caída del proceso de
+  grabación, que el SAI no evita, cuesta lo mismo; los segmentos cortos acotan la pérdida.
 
 ## Hardware por función
 
@@ -90,11 +91,7 @@ codifica la grabación. Lo que pesa:
   143–215 fps, 5–7 veces el tiempo real.
 - **Relevo sin corte** (Grabar/Detener en entradas de red): durante 2–3 s conviven dos procesos del canal, es decir,
   una decodificación extra transitoria.
-- **Clips y finalización:** copia sin recodificar; **medido** ≈ 3 s de un núcleo por GB, a prioridad baja. Nunca la GPU.
 - **Preview:** render Direct3D 11 (cualquier GPU DirectX 11) con reserva por CPU si la GPU no está.
-
-**Medido en el equipo de referencia (4 núcleos / 8 hilos):** cuatro canales 720p25 codificando por CPU con segmentación
-de 5 s, finalización de cada segmento y un clip cada 4 s durante dos minutos, sin frames perdidos ni fallos.
 
 ### GPU
 
@@ -106,7 +103,7 @@ de 5 s, finalización de cada segmento y un clip cada 4 s durante dos minutos, s
   real desde una DeckLink 1080i59.94, 4K incluido, y dos canales a la vez no pierden nada (con la del 2026-03-12 ocupaban
   el 20–57 % de su codificador y unos 70 MB de memoria de vídeo por sesión 1080p). Límites de Pascal que la aplicación
   ya respeta: sin B-frames en HEVC y sin AV1, y 8 sesiones por equipo.
-- El clip en caliente, la finalización, el colchón de preview y el relé de red **no usan la GPU**.
+- El colchón de preview y el relé de red **no usan la GPU**.
 - Sin NVIDIA, la aplicación usa Intel Quick Sync (QSV) o AMD AMF si los presets lo piden, y si no, x264 por CPU.
 
 ### RAM
@@ -119,27 +116,16 @@ de 5 s, finalización de cada segmento y un clip cada 4 s durante dos minutos, s
 ### Disco de grabación
 
 Lo que más decide la estabilidad con varios canales. La configuración normal de un grabador es la de siempre: **SSD para
-el sistema y un disco duro dedicado a las grabaciones.** Las cifras de disco duro de esta sección son estimaciones (el
-equipo de referencia solo tiene NVMe); las de SSD, medidas.
+el sistema y un disco duro dedicado a las grabaciones.** Las cifras de disco duro de esta sección son estimaciones (los
+dos equipos del final del documento solo tienen SSD).
 
-Tres cargas se suman sobre el disco de grabación:
-
-1. **Escritura continua:** la suma de bitrates. 8 Mbps = 1 MB/s por canal (3,6 GB/h); 20 Mbps = 9 GB/h; 50 Mbps = 22,5
-   GB/h; ProRes 422 HQ con un programa de TV, 340 Mbps = 42,5 MB/s (≈ 150 GB/h) en 1080i59.94 y 650 Mbps = 81 MB/s
-   (≈ 290 GB/h) en 1080p59.94. Grabar es escritura secuencial, lo que un disco duro hace bien: uno de 7200 rpm sostiene
-   150–250 MB/s en las pistas exteriores y 80–120 MB/s en las interiores, de sobra para 8 canales H.264/HEVC a 50 Mbps
-   (50 MB/s en total), pero no para varios ProRes/DNx (ver «ProRes y DNx», más abajo).
-2. **Finalización de cada pieza (MP4/MOV):** al cerrarse un segmento se reescribe como MP4 normal: **medido** lee y
-   escribe 1,7 veces el tamaño de la pieza cada uno (3,4× en total), una pieza a la vez en toda la aplicación. Va con
-   prioridad de CPU baja, pero no de disco: en SSD no se nota (5–10 s por un segmento de 30 min a 8 Mbps, 1,8 GB); en
-   un disco duro ocupa el cabezal 40–60 s por ese mismo segmento mientras los canales siguen escribiendo, y la caché de
-   escritura de Windows absorbe el bache. Con 4 canales y corte a la hora son 3–4 minutos de fondo cada media hora;
-   con segmentos de pocos minutos y varios canales la contención es casi continua. Por encima de
-   `Recording:FaststartMaxGB` (4 GB) la pieza queda fragmentada, reproducible pero sin duración en el Explorador: con
-   bitrates altos y segmentos largos, subir el tope (más E/S) o acortar los segmentos.
-3. **Clips en caliente:** copian el tramo pedido (≈ 2–3× el tamaño del clip en lecturas y escrituras) leyendo el final
-   del archivo en curso, que suele seguir en la caché; un clip de 10 minutos a 8 Mbps (600 MB) tarda 2–3 s en NVMe.
-   No preocupan en disco duro. MXF no admite clips en caliente (sin índice hasta cerrarse).
+Lo que la grabación pide al disco es la **escritura continua**, la suma de bitrates: 8 Mbps = 1 MB/s por canal
+(3,6 GB/h); 20 Mbps = 9 GB/h; 50 Mbps = 22,5 GB/h; ProRes 422 HQ con un programa de TV, 340 Mbps = 42,5 MB/s
+(≈ 150 GB/h) en 1080i59.94 y 650 Mbps = 81 MB/s (≈ 290 GB/h) en 1080p59.94. Grabar es escritura secuencial, lo que un
+disco duro hace bien: uno de 7200 rpm sostiene 150–250 MB/s en las pistas exteriores y 80–120 MB/s en las interiores,
+de sobra para 8 canales H.264/HEVC a 50 Mbps (50 MB/s en total), pero no para varios ProRes/DNx (ver «ProRes y DNx», más
+abajo). Cerrar una pieza apenas añade nada: FFmpeg escribe su índice al final (el `moov` de los MP4/MOV), sin copiarla
+ni reescribirla, así que la duración de los segmentos no cambia la carga del disco.
 
 **ProRes y DNx** (MOV o MXF) son otra escala: salvo los ligeros, con un programa de TV escriben de 180 a más de 900
 Mbps por canal, de 4 a 18 veces un H.264 de 50 Mbps, y hay que calcular con esa imagen, no con la de una prueba con
@@ -179,20 +165,21 @@ HQ 1080i59.94, ≈ 10 h de DNxHD 220 y ≈ 3,4 h de ProRes 422 HQ 1080p59.94.
 Recomendaciones:
 
 - **Configuración normal: SSD para el sistema y un disco duro CMR de 7200 rpm, interno (SATA) y dedicado a las
-  grabaciones.** Sirve hasta 4 canales H.264/HEVC de hasta 50 Mbps con segmentos de 30 min o más, o un canal ProRes/DNx
-  de hasta ≈ 45 MB/s (ProRes 422 HQ 1080i59.94, DNxHD 220, los de 25 cuadros salvo el 4444 XQ). Calcular con la cifra de
-  las pistas interiores y dejar la mitad libre para finalizaciones y lecturas.
+  grabaciones.** Sirve hasta 4 canales H.264/HEVC de hasta 50 Mbps, o un canal ProRes/DNx de hasta ≈ 45 MB/s
+  (ProRes 422 HQ 1080i59.94, DNxHD 220, los de 25 cuadros salvo el 4444 XQ). Calcular con la cifra de las pistas
+  interiores y dejar la mitad libre para lecturas (copias, reproducción) y baches.
 - **SSD o NVMe para las grabaciones** cuando los ProRes/DNx sumen más de ≈ 45 MB/s (dos canales de los de la tabla, o
-  uno de 1080p59.94, 4444 XQ o 4K), con segmentos cortos (menos de 15 min) con varios canales, o con reproducción, copia o
-  edición intensa desde el mismo disco mientras se graba. Para 8 canales, NVMe o un RAID de discos CMR. Con ProRes/DNx,
-  un SSD que sostenga la escritura (TLC): uno QLC, una vez llena su caché, escribe como un disco duro.
+  uno de 1080p59.94, 4444 XQ o 4K), o con reproducción, copia o edición intensa desde el mismo disco mientras se graba.
+  Para 8 canales, NVMe o un RAID de discos CMR. Con ProRes/DNx, un SSD que sostenga la escritura (TLC): uno QLC, una vez
+  llena su caché, escribe como un disco duro.
 - **CMR, nunca SMR:** los discos «shingled» (muchos de sobremesa y de archivo de 2–8 TB) se hunden con escritura
   sostenida. Clase vigilancia o empresarial: WD Purple / Red Plus / Ultrastar, Seagate SkyHawk / IronWolf / Exos.
 - **Ni USB ni ahorro de energía:** las carcasas USB se duermen o se desconectan; el apagado de discos del plan de
   energía y la optimización de unidades de Windows (desfragmentado semanal) no deben coincidir con la grabación.
 - **Disco del sistema separado** del de grabación: el registro, la base de datos y Windows no compiten con el vídeo.
-- **Espacio libre:** el 10 % del volumen y nunca menos de una pieza entera más 256 MB (lo que necesita la finalización
-  para escribir la copia) más el clip más largo. La aplicación avisa al 80/90/95 % y puede parar por emergencia.
+- **Espacio libre:** el 10 % del volumen. La aplicación avisa al 80/90/95 % y, cuando quedan 2 GB por canal que graba
+  en él o 3 minutos al ritmo de escritura, detiene esas grabaciones de forma ordenada para que cada pieza se cierre con
+  su índice.
 - Sin copias de seguridad ni sincronizaciones (OneDrive, historial de archivos) sobre la carpeta de grabación mientras
   se graba: el incidente de 2026-09-06 lo investigó como causa de latencias de disco.
 
@@ -221,8 +208,8 @@ Recomendaciones:
 |---|---|---|---|---|---|
 | 1 canal SRT/RTMP 1080p, MP4 8–12 Mbps | Core i5 / Ryzen 5 (4 núcleos) | GTX 1650 o x264 | 8 GB | Disco duro CMR dedicado o SSD SATA | Colchón de preview si el servidor va a ráfagas |
 | 2 canales SDI 1080i/p, MP4 NVENC 20 Mbps | Core i5 / Ryzen 5; 6 núcleos / 12 hilos si la señal es 1080i y el preset 1080p50/59.94 | GTX 1650 Ti (o Pascal con FFmpeg 8.0 estable) | 16 GB | Disco duro CMR 7200 rpm dedicado | CPU y GPU del equipo de referencia; con 1080i el desentrelazado va por CPU (medido en el equipo DeckLink) |
-| 4 canales mixtos (SDI + NDI + SRT), MP4 NVENC | Core i7 / Ryzen 7 (8 núcleos) | RTX 3060 o superior | 16–32 GB | Disco duro CMR 7200 rpm dedicado; SSD si los segmentos son cortos | 2,5 GbE si hay varias NDI |
-| 8 canales 1080p50, MP4/MXF 50 Mbps | Core i9 / Ryzen 9 / Xeon (12–16 núcleos) | RTX 4070 o RTX A4000 | 32 GB | NVMe ≥ 2 TB o RAID de discos CMR | 50 MB/s de escritura continua más finalizaciones; 10 GbE con NDI |
+| 4 canales mixtos (SDI + NDI + SRT), MP4 NVENC | Core i7 / Ryzen 7 (8 núcleos) | RTX 3060 o superior | 16–32 GB | Disco duro CMR 7200 rpm dedicado | 2,5 GbE si hay varias NDI |
+| 8 canales 1080p50, MP4/MXF 50 Mbps | Core i9 / Ryzen 9 / Xeon (12–16 núcleos) | RTX 4070 o RTX A4000 | 32 GB | NVMe ≥ 2 TB o RAID de discos CMR | 50 MB/s de escritura continua; 10 GbE con NDI |
 | 24/7 con programación y retención | Como el escenario correspondiente | — | +8 GB | Un 20 % de margen de espacio | SAI, NTP, horas activas de Windows, optimización de unidades fuera del horario, disco de sistema aparte |
 
 ## Equipo de referencia (donde se ha medido lo demás marcado como medido)
@@ -231,9 +218,6 @@ Recomendaciones:
 - NVIDIA GeForce GTX 1650 Ti (4 GB, driver 610.62) e Intel UHD Graphics.
 - SSD NVMe Micron 2210 de 512 GB, sistema y grabaciones en el mismo disco (no es lo recomendado); sin disco duro, así
   que las cifras de disco duro son estimadas.
-- Resultados: batería de estrés completa en verde (4 canales + clips + finalización, 20 ciclos de Grabar/Detener, 5
-  caídas provocadas, RTMP a ráfagas con caídas del emisor); API a 265 peticiones/s con 20 clientes y p99 ≤ 55 ms
-  mientras grababa y sacaba clips; finalización de 683 MB en 1,9 s; clip de 30 s en 0,6 s.
 
 ## Equipo de pruebas DeckLink (medido el 2026-10-15/16)
 
