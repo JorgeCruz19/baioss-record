@@ -203,6 +203,17 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.DoesNotContain("pcm_s24le", joined);
     }
 
+    [Fact]
+    public void Build_PcmInMov_StaysPcm()
+    {
+        // MOV lleva el PCM de 24 bits como audio QuickTime («in24»; «lpcm» por encima de 65535 Hz) y FFmpeg lo relee bit a bit
+        // (medido el 2026-10-21): los presets ProRes y DNx en MOV graban el PCM que dicen, no AAC.
+        var (joined, _) = Build(ProResMov(EncoderProfile.ProResHq));
+
+        Assert.Contains("-c:a pcm_s24le -ar 48000 -ac 2", joined); // sin -b:a: el PCM no lleva bitrate
+        Assert.DoesNotContain("-c:a aac -ar", joined);             // el AAC del proxy («-c:a aac -b:a 128k») es aparte
+    }
+
     // --- Familias ProRes / DNxHR (edición) ---
 
     [Fact]
@@ -1529,12 +1540,15 @@ public class FfmpegArgumentBuilderTests : IDisposable
         }
     }
 
-    [Fact]
-    public void BuildLive_Multichannel_Pcm_KeepsAllChosenChannelsInOneTrack()
+    [Theory]
+    [InlineData(ContainerFormat.Mxf)]
+    [InlineData(ContainerFormat.Mov)]
+    public void BuildLive_Multichannel_Pcm_KeepsAllChosenChannelsInOneTrack(ContainerFormat container)
     {
-        // PCM de verdad solo queda en MXF/MKV (en MP4/MOV/TS la app lo promueve a AAC): ahí cualquier recuento vale.
+        // El PCM queda PCM en MXF, MKV, MOV, AVI y WAV (en MP4 y TS la app lo promueve a AAC): ahí cualquier recuento vale. En MOV,
+        // una pista de 16 canales se relee bit a bit (medido el 2026-10-21).
         var profile = DnxhrMov(EncoderProfile.DnxHrHq);
-        profile.Container = ContainerFormat.Mxf;
+        profile.Container = container;
         profile.AudioTracks = AudioTrackMode.Multichannel;
 
         var joined = BuildLiveMultichannel(profile, recording: true, channels: 16, pairs: "all");

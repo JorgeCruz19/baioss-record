@@ -219,7 +219,8 @@ medido con el FFmpeg empaquetado; `FfmpegArgumentBuilder.AudioRoutes`):
   AAC o FDK-AAC codifica el canal 4 como **LFE** (banda limitada): un tono de 1,2 kHz en ese canal salía a **−89 dB**
   (los demás, a −9 dB). FDK-AAC con «quad» rematriza a 5.0 y pierde canales; «octagonal» en AAC también los mezcla. Y
   MP2/MP3, que solo admiten estéreo, **no fallan**: FFmpeg inserta un remuestreo y MEZCLA los ocho canales en el
-  estéreo en silencio. (MP4/MOV/TS promueven PCM a AAC, así que ahí «multicanal» es siempre una pista por par.)
+  estéreo en silencio. (MP4 y TS promueven PCM a AAC, así que ahí «multicanal» es siempre una pista por par; MOV lleva el
+  PCM tal cual desde el 2026-10-21, ver [08-presets.md](08-presets.md).)
 - **Varias pistas en un contenedor de un solo flujo de audio (WAV, MP3) → una sola**: con dos `-map` de audio el muxer
   aborta («wav muxer does not support more than one stream of type audio») y no se grabaría nada. Si es PCM (WAV), todos
   los canales elegidos van en una pista multicanal; si tiene pérdida (MP3), el primer par.

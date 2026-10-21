@@ -1552,6 +1552,8 @@ public sealed class DecklinkHardwareTests
     [InlineData(AudioTrackMode.PairsAsTracks, ContainerFormat.Mp4, AudioCodec.Aac, 8, 2)]
     [InlineData(AudioTrackMode.Multichannel, ContainerFormat.Mkv, AudioCodec.Pcm, 1, 16)]
     [InlineData(AudioTrackMode.Multichannel, ContainerFormat.Mxf, AudioCodec.Pcm, 1, 16)]
+    [InlineData(AudioTrackMode.Multichannel, ContainerFormat.Mov, AudioCodec.Pcm, 1, 16)]
+    [InlineData(AudioTrackMode.PairsAsTracks, ContainerFormat.Mov, AudioCodec.Pcm, 8, 2)]
     public async Task SixteenEmbeddedChannels_AreRecordedAsTheTrackModeSays(AudioTrackMode mode, ContainerFormat container, AudioCodec audio, int tracks, int channelsPerTrack)
     {
         Skip.If(Device is null || TestAssets.FfmpegDir is null, "Sin DeckLink configurada (BAIOSS_DECKLINK).");

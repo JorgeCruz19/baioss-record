@@ -82,8 +82,8 @@ Open the preset the channel uses (**✎ Edit**, or **＋ New** starting from an 
 | Mode | What it produces | When to use it | Formats |
 |---|---|---|---|
 | **Single** | A single track with the selection. With one pair → stereo. With several pairs and a **stereo** preset (what every factory preset carries) → **one stereo track per pair**, just like *PairsAsTracks*: a stereo track cannot carry more than one pair, and what was chosen in the input is not thrown away. With *All pairs* and a **5.1 / 7.1** preset → the first 6 or 8 channels form that track. | The usual: one stereo. Or a 5.1 embedded in channels 1-6. | All |
-| **PairsAsTracks** | **One stereo track per recorded pair**, each with its name ("Channels 1-2", "Channels 3-4"…; MXF and TS do not store names). Nothing is mixed. | Programme + international + languages, each in its own track, ready for the editor. Needs *All pairs*. | All. With AAC (MP4/MOV/TS) each track adds bitrate; with PCM (MXF/MKV) nothing is lost. |
-| **Multichannel** | **Every channel in a single** uncompressed multichannel **track**. | Preserving the whole SDI for post-production. Needs *All pairs*. | **PCM only: MXF, MKV, AVI or WAV**, up to 16 channels. With a lossy codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores **one stereo track per pair**, just like *PairsAsTracks* (see the note below). |
+| **PairsAsTracks** | **One stereo track per recorded pair**, each with its name ("Channels 1-2", "Channels 3-4"…; MXF and TS do not store names). Nothing is mixed. | Programme + international + languages, each in its own track, ready for the editor. Needs *All pairs*. | All. With AAC each track adds bitrate; with PCM (MXF/MKV/MOV) nothing is lost. |
+| **Multichannel** | **Every channel in a single** uncompressed multichannel **track**. | Preserving the whole SDI for post-production. Needs *All pairs*. | **PCM only: MXF, MKV, MOV, AVI or WAV**, up to 16 channels. With a lossy codec (AAC, Opus, MP2, MP3; in MP4 and TS PCM is recorded as AAC) the program stores **one stereo track per pair**, just like *PairsAsTracks* (see the note below). |
 
 > **Why *Multichannel* does not make a 7.1 track in MP4.** Lossy codecs treat **channel 4** of a 5.1/7.1 track as the
 > bass channel (LFE) and strip everything that is not bass: if that channel carries, say, the right side of the
@@ -93,8 +93,8 @@ Open the preset the channel uses (**✎ Edit**, or **＋ New** starting from an 
 
 Practical recommendations:
 
-- To **keep everything lossless**, use a preset with an **MXF** or **MKV** container (PCM audio). In MP4/MOV/TS the
-  program converts the audio to AAC.
+- To **keep everything lossless**, use a preset with PCM audio in **MXF**, **MKV** or **MOV** (the ProRes and DNx presets
+  in MOV already have it). In MP4 and TS the program converts the audio to AAC.
 - An **audio-only** preset to **WAV** only holds one track: with *PairsAsTracks* the program stores every chosen
   channel in one multichannel WAV track. To **MP3** (one track, stereo only) goes the first chosen pair.
 - If your SDI carries a **real 5.1** on channels 1-6, use *Single* with a 5.1 preset (there channel 4 really is the
@@ -146,8 +146,8 @@ panel: "Pair 3-4 of 8 · PCM".
 the names: the tracks come in that order). With a stereo preset left on *Single* (the factory value) the result is the
 same: one track per pair.
 
-**Preserving all the SDI audio for post-production.** Inputs → *All pairs*. MXF or MKV preset with *Audio tracks* =
-**Multichannel**: one PCM track with the 8 or 16 channels.
+**Preserving all the SDI audio for post-production.** Inputs → *All pairs*. MXF, MKV or MOV preset with PCM audio and
+*Audio tracks* = **Multichannel**: one PCM track with the 8 or 16 channels.
 
 **A 5.1 embedded in channels 1-6.** Inputs → *All pairs*. Preset with *Channels* = **5.1** and *Audio tracks* =
 **Single**: channels 1-6 form the 5.1 track (L, R, C, LFE, Ls, Rs, in that order).
@@ -169,7 +169,8 @@ Apply. There is no *Card audio*: the channels come from the source.
 - **You changed the pair and the recording stays the same.** That is expected: the recording in progress does not
   change. The new pair is applied when the input reconnects (Apply) and takes effect in the next recording.
 - **You chose *Multichannel* and the MP4 has several stereo tracks instead of one multichannel track.** That is
-  expected with AAC (see the note in section 4). For a single track with the 8 or 16 channels use MXF or MKV (PCM).
+  expected with AAC (see the note in section 4). For a single track with the 8 or 16 channels use MXF, MKV or MOV with PCM
+  audio.
 - **You chose *All pairs* and the file has a single stereo track.** Until 2026-09-22 this happened with the preset on
   *Single* (the factory value): only pair 1-2 was saved even though the meters marked every pair as recorded. Now
   *Single* with stereo and several pairs saves one track per pair, and the header of the audio strip says how many

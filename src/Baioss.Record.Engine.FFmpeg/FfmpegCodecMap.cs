@@ -48,11 +48,15 @@ public static class FfmpegCodecMap
     };
 
     /// <summary>
-    /// Encoder de audio compatible con el contenedor. MP4/MOV/TS no admiten PCM s24le
-    /// de forma estándar, así que se promueve a AAC automáticamente.
+    /// Encoder de audio compatible con el contenedor. El PCM se graba como AAC en MP4 y TS, donde no hay un PCM que lean los
+    /// editores: en MP4, FFmpeg 8.0 lo escribe como «ipcm» (ISO/IEC 23003-5), que casi ninguno lee, y en TS haría falta SMPTE
+    /// 302M. En MOV va tal cual, como audio QuickTime: «in24» (descripción de sonido v1 con «enda», little-endian), o «lpcm» v2
+    /// por encima de 65535 Hz y, desde FFmpeg 2026-05, con más de 2 canales. FFmpeg lo relee bit a bit con 1 a 16 canales, varias
+    /// pistas, fMP4, el remux del Detener, segmentos, un corte del proceso y de 10 Hz a 768 kHz (medido el 2026-10-21 con FFmpeg
+    /// 8.0 y el incluido, ver docs/08-presets.md).
     /// </summary>
     public static string EffectiveAudioEncoder(AudioCodec codec, ContainerFormat container) =>
-        codec == AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts
+        codec == AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Ts
             ? "aac"
             : AudioEncoder(codec);
 

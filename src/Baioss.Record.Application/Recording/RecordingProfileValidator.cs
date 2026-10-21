@@ -170,8 +170,9 @@ public static class RecordingProfileValidator
     /// <summary>
     /// Medido el 2026-10-18 con el motor real (<c>FfmpegChannelEngine</c>, el argv del producto) y FFmpeg 8.0 y el incluido
     /// (git-2026-06-14): 4 s de un tono con cada códec de audio en cada contenedor, con vídeo y en solo audio, releídos con
-    /// ffprobe y decodificados enteros. Lo que no está aquí se relee bien: MP4, MKV y TS llevan todos. PCM en MP4, MOV y TS
-    /// tampoco falla porque el motor lo graba como AAC (<c>FfmpegCodecMap.EffectiveAudioEncoder</c>); en PS no lo promueve.
+    /// ffprobe y decodificados enteros. Lo que no está aquí se relee bien: MP4, MKV y TS llevan todos. PCM en MP4 y TS tampoco
+    /// falla porque el motor lo graba como AAC (<c>FfmpegCodecMap.EffectiveAudioEncoder</c>); en MOV va tal cual (QuickTime
+    /// «in24»/«lpcm», releído bit a bit, medido el 2026-10-21) y en PS no lo promueve.
     /// </summary>
     private static Misfit AudioMisfitOf(AudioCodec codec, ContainerFormat container) => (codec, container) switch
     {
@@ -193,14 +194,15 @@ public static class RecordingProfileValidator
     };
 
     /// <summary>Audio que se le propone a cada contenedor en el mensaje: el que lleva con su identificador estándar. No todo el
-    /// que acepta: AAC en AVI o MP2 en MOV se leen, pero no son lo que nadie espera, y PCM en MOV se grabaría como AAC.</summary>
+    /// que acepta: AAC en AVI o MP2 en MOV se leen, pero no son lo que nadie espera.</summary>
     private static AudioCodec[] SuggestedAudio(ContainerFormat container) => container switch
     {
         ContainerFormat.Mxf or ContainerFormat.Wav => new[] { AudioCodec.Pcm },
         ContainerFormat.ProgramStream => new[] { AudioCodec.Mp2, AudioCodec.Mp3 },
         ContainerFormat.Mp3Audio => new[] { AudioCodec.Mp3 },
         ContainerFormat.Avi => new[] { AudioCodec.Pcm, AudioCodec.Mp3, AudioCodec.Mp2 },
-        _ => new[] { AudioCodec.Aac }, // MOV; MP4, MKV y TS no rechazan ningún audio
+        ContainerFormat.Mov => new[] { AudioCodec.Aac, AudioCodec.Pcm },
+        _ => new[] { AudioCodec.Aac }, // MP4, MKV y TS no rechazan ningún audio
     };
 
     /// <summary>
@@ -256,15 +258,15 @@ public static class RecordingProfileValidator
         ? new[] { 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 }
         : new[] { 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384 };
 
-    /// <summary>El audio que codifica de verdad el motor: el PCM, en MP4, MOV y TS, como AAC
+    /// <summary>El audio que codifica de verdad el motor: el PCM, en MP4 y TS, como AAC
     /// (<c>FfmpegCodecMap.EffectiveAudioEncoder</c>; una prueba lo ata).</summary>
     private static AudioCodec Encoded(AudioCodec codec, ContainerFormat container) =>
-        codec is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Mov or ContainerFormat.Ts ? AudioCodec.Aac : codec;
+        codec is AudioCodec.Pcm && container is ContainerFormat.Mp4 or ContainerFormat.Ts ? AudioCodec.Aac : codec;
 
     /// <summary>
     /// El mensaje si el audio no se puede grabar a la frecuencia del perfil, o null: el codificador no la abre (Opus a 44,1 kHz o
     /// MP3 a 96 kHz, en cualquier contenedor), el contenedor no la lleva (MXF fuera de 48 kHz, MP3 en MP4 por debajo de 16 kHz, el
-    /// PCM de MP4, MOV y TS, que es AAC, fuera de las de AAC) o MP2 no admite ese bitrate a esa frecuencia. El editor no enseña la
+    /// PCM de MP4 y TS, que es AAC, fuera de las de AAC) o MP2 no admite ese bitrate a esa frecuencia. El editor no enseña la
     /// frecuencia (siempre 48 kHz), pero llega otra con un preset importado o editado a mano, o con el perfil guardado de un canal.
     /// </summary>
     private static string? SampleRateProblem(RecordingProfile p)

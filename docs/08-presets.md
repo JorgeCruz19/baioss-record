@@ -157,7 +157,7 @@ ffmpeg ... -filter_complex "[0:v]scale=3840:2160[mainout]" ... \
 # DNxHD 220 · 1080i59.94 (MOV), grabando de una DeckLink
 ffmpeg ... -filter_complex "[0:v]split=2[vrec][vprev];[vrec]scale=1920:1080:interl=1,setfield=mode=tff,format=yuv422p[vmain];..." \
   -map [vmain] -map 0:a:0? -c:v dnxhd -profile:v dnxhd -b:v 220000000 -flags +ildct -pix_fmt yuv422p \
-  -c:a aac -ar 48000 -b:a 256000 -ac 2 -r 30000/1001 -field_order tt ... -f mov -y <salida>
+  -c:a pcm_s24le -ar 48000 -ac 2 -r 30000/1001 -field_order tt ... -f mov -y <salida>
 ```
 
 ### ProRes: prores_aw, en tiempo real
@@ -354,7 +354,7 @@ Los dos FFmpeg dan lo mismo salvo FDK-AAC en AVI y WAV (¹).
 
 | Audio | AVI | MXF | MP4 | MOV | MKV | TS | PS | WAV | MP3 |
 |---|---|---|---|---|---|---|---|---|---|
-| **PCM** (24 bits) | ✓ | ✓ (con vídeo) | ✓ (como AAC) | ✓ (como AAC) | ✓ | ✓ (como AAC) | rechaza | ✓ | rechaza |
+| **PCM** (24 bits) | ✓ | ✓ (con vídeo) | ✓ (como AAC) | ✓ (²) | ✓ | ✓ (como AAC) | rechaza | ✓ | rechaza |
 | **AAC** | ✓ | rechaza | ✓ | ✓ | ✓ | ✓ | rechaza | ilegible | rechaza |
 | **FDK-AAC** | rechaza (¹) | rechaza | ✓ | ✓ | ✓ | ✓ | rechaza | rechaza (¹) | rechaza |
 | **Opus** | rechaza | rechaza | ✓ | rechaza | ✓ | ✓ | rechaza | rechaza | rechaza |
@@ -363,14 +363,31 @@ Los dos FFmpeg dan lo mismo salvo FDK-AAC en AVI y WAV (¹).
 
 - El muxer MXF solo lleva PCM (pasa el audio por `pcm_rechunk`) y necesita una pista de vídeo, la primera: en **Solo audio**
   no graba con ningún códec. El de PS solo admite MP1/MP2/MP3, AC-3, DTS y PCM de 16 bits; el MP3, solo MP3.
-- PCM en MP4, MOV y TS se graba como AAC (`FfmpegCodecMap.EffectiveAudioEncoder`); en PS el motor no lo promueve.
+- PCM en MP4 y TS se graba como AAC (`FfmpegCodecMap.EffectiveAudioEncoder`): en MP4 FFmpeg 8.0 lo escribiría como `ipcm`
+  (ISO/IEC 23003-5), que casi ningún editor lee, y en TS haría falta SMPTE 302M. En PS el motor no lo promueve.
+- (²) **PCM en MOV va tal cual** desde el 2026-10-21. Antes también pasaba a AAC (una regla del primer día, sin medida
+  detrás), y los presets ProRes y DNx en MOV, que dicen «MOV, PCM», grababan AAC. Medido ese día con FFmpeg 8.0 y con el
+  incluido: el muxer escribe el audio QuickTime `in24` (descripción de sonido v1 con `enda`, little-endian, y `chan` con la
+  distribución), o `lpcm` v2 por encima de 65535 Hz. Con más de 2 canales en una pista el incluido escribe `lpcm` v2, como
+  pide la especificación QuickTime (commit de FFmpeg 9e71ea2d60, 2026-05-19), y 8.0 sigue con `in24` v1, que FFmpeg relee
+  igual. ffprobe lo ve como `pcm_s24le (in24)` de 24 bits, con el nombre de cada pista. Las muestras de 24 bits salen
+  idénticas a las de la fuente con ProRes 422 HQ y en solo audio: estéreo, mono, 5.1, 7.1, una pista de 16 canales y 8
+  pistas estéreo, en MOV estándar, en fMP4 y en fMP4 con el remux del Detener, en segmentos y de 10 Hz a 768 kHz. Matando
+  el proceso a los 6 s (fMP4), lo que queda es idéntico a la fuente salvo el último fragmento a medias, como con AAC. Ocupa
+  2,3 Mb/s por par (18,4 con 16 canales), poco al lado del vídeo de estos presets. Lo cubren `FfmpegArgumentBuilderTests`,
+  `RecordingProfileValidatorTests` y, con el FFmpeg real, `ContainerCodecTests` (PCM en MOV, con vídeo y en solo audio) y
+  `DecklinkHardwareTests` (los 16 canales de la tarjeta en una pista y en 8 pares).
+- En **segmentos fMP4** el MOV fragmentado no lleva lista de edición: si el primer paquete de audio de un segmento empieza
+  después del corte del vídeo, FFmpeg lo pone en 0 y alarga su duración, y queda adelantado lo que sobresale. Con AAC son
+  ≤ 21 ms (paquetes de 1024 muestras); con PCM, hasta un paquete de los que llegan (≤ 33–40 ms desde una DeckLink). En MOV
+  estándar (`Recording:FragmentedMp4 = false`, lo que lleva la app) la lista de edición deja el audio en su sitio.
 - AAC en WAV: el WAV no delimita los paquetes y el del codificador nativo sale sin error, pero no se decodifica.
 - (¹) El FDK-AAC del incluido sale en ADTS y los muxers RIFF (AVI, WAV) no lo aceptan («ADTS is only supported with codec tag
   0x1610»); FFmpeg 8.0 sí lo graba. Se rechaza en los dos: un preset no puede grabar en un equipo y en otro no.
 - Sin la regla, con vídeo el muxer no escribe la cabecera, el motor lo toma por un codificador de vídeo que no abre y el canal
   se queda «Grabando» con un archivo de 0 B y sin alarma; en solo audio relanza piezas de 0 B. El mensaje propone el audio que
-  el contenedor lleva con su identificador estándar: PCM en MXF y WAV; MP2 o MP3 en PS; PCM, MP3 o MP2 en AVI; AAC en MOV;
-  MP3 en MP3.
+  el contenedor lleva con su identificador estándar: PCM en MXF y WAV; MP2 o MP3 en PS; PCM, MP3 o MP2 en AVI; AAC o PCM en
+  MOV; MP3 en MP3.
 
 **Frecuencia de muestreo.** El editor no la enseña (los presets graban a 48 kHz), pero un preset importado o editado a mano
 (`AudioSampleRate` en el JSON), o el perfil guardado de un canal, puede traer otra, y el motor la pasa tal cual (`-ar`).
@@ -379,7 +396,7 @@ lleva, con vídeo y en solo audio, de 7350 a 384000 Hz (y 47952 y 768000 con PCM
 
 | Audio (codificador) | Frecuencias que graba (Hz) |
 |---|---|
-| **PCM** (`pcm_s24le`) | cualquiera (medido de 10 a 768000), salvo en MXF (solo 48000) y en MP4, MOV y TS (es AAC: las de AAC) |
+| **PCM** (`pcm_s24le`) | cualquiera (medido de 10 a 768000), salvo en MXF (solo 48000) y en MP4 y TS (es AAC: las de AAC) |
 | **AAC** (`aac`) | 7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 |
 | **FDK-AAC** (`libfdk_aac`) | las de AAC menos 7350 |
 | **Opus** (`libopus`) | 8000, 12000, 16000, 24000, 48000 (el archivo declara 48000: Opus siempre decodifica a 48 kHz) |

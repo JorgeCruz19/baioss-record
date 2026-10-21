@@ -274,9 +274,9 @@ how the pairs chosen on the input (see section 3) are stored:
 - **Single:** one track with the selection (the pair in stereo, or 5.1/7.1 with the first channels). This is the usual behaviour.
 - **PairsAsTracks:** one stereo track per chosen pair, each with its name ("Channels 3-4"; MXF and TS do not store
   track names), so the programme, the international sound or each language stay in separate tracks without mixing.
-- **Multichannel:** all chosen channels in a single **PCM** track (MXF, MKV, AVI, WAV; up to 16 fit). With a lossy
-  codec (AAC in MP4/MOV/TS, Opus, MP2, MP3) the program stores one stereo track per pair instead, because a lossy
-  5.1/7.1 track treats channel 4 as the bass channel (LFE) and strips it.
+- **Multichannel:** all chosen channels in a single **PCM** track (MXF, MKV, MOV, AVI, WAV; up to 16 fit). With a lossy
+  codec (AAC, Opus, MP2, MP3; in MP4 and TS PCM is recorded as AAC) the program stores one stereo track per pair
+  instead, because a lossy 5.1/7.1 track treats channel 4 as the bass channel (LFE) and strips it.
 
 **PairsAsTracks** and **Multichannel** need **All pairs** on the input. There is a separate guide with typical setups
 and how to read the per-pair meters: `MULTICHANNEL-AUDIO-MANUAL.md`.
