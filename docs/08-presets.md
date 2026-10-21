@@ -240,9 +240,10 @@ real: 422 HQ 1080i29.97 ≈ 2,9 (3,2× de margen); 422 HQ 1080p59.94 desde 1080i
   programa de TV, en este equipo (lo que sigue, con los hilos de FFmpeg salvo donde se dice: aquí manda el codificador y los
   2 hilos del grafo cambian poco, un 3–7 % en el 1080p59.94):
   - **422 HQ 1080p59.94 no llega** (haría falta de 1,1 a 1,5 veces esta CPU); su descripción lo avisa y remite al
-    1080i59.94. El barrido de fábrica lo da por bueno porque graba su imagen sintética (0,92–1,05× según la pasada), y la fila
-    de `DecklinkHardwareTests` pasa o no según lo que emita la cadena: el 2026-10-19 pasó con el anuncio de colores planos;
-    con un partido perdió 181–194 unidades.
+    1080i59.94. El barrido de fábrica lo da por bueno porque graba su imagen sintética (0,92–1,05× según la pasada). En
+    `DecklinkHardwareTests` pasaba o no según lo que emitiera la cadena (el 2026-10-19 pasó con el anuncio de colores planos;
+    con un partido perdió 181–194 unidades): desde el 2026-10-21 el intra al doble de cadencia de esa prueba es DNxHR HQ
+    1080p59.94, que llega con cualquier imagen (ver «Verificación»).
   - **422 HQ 1080i59.94** —la misma señal sin desentrelazar: la mitad de cuadros— llega con todas: 1,00× con 4,7–7,9 núcleos
     y, a toda velocidad, 1,18× con el informativo, 1,49× con el plató con cantantes y 2,1–2,4× con las imágenes sencillas.
     **Dos canales a la vez**, solo con imagen sencilla (1,00×, 8 núcleos entre los dos): con el informativo van a 0,58× y con
@@ -533,12 +534,19 @@ DNxHR)**, AVI, MKV, WAV/AAC/MP3, Proxy, Archive e IPTV/RTMP/SRT; todos producen 
 Con una DeckLink de verdad, [`DecklinkHardwareTests`](../tests/Baioss.Record.IntegrationTests/DecklinkHardwareTests.cs)
 (opcional: `BAIOSS_DECKLINK="DeckLink Duo (2)"`) graba 15 s por preset con el mismo cableado que la aplicación y comprueba
 el archivo: continuidad, cadencia, cuadros entrelazados TFF **en el códec** (no solo en el contenedor) y que el relé no
-descarta nada mientras graba, es decir, que el equipo da abasto en tiempo real. Para ProRes/DNxHD cubre ProRes 422 HQ
-1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, 422 HQ 1080p59.94 (en este equipo solo pasa si la cadena emite una imagen
-sencilla: ver «Imagen detallada», en ProRes), DNxHD 220 1080i59.94 (MOV y MXF OP1A) y un canal con el perfil DNxHR 1080i
-antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). Último resultado
+descarta nada mientras graba, es decir, que el equipo da abasto en tiempo real. Para ProRes/DNx cubre ProRes 422 HQ
+1080i59.94, 422 Proxy 1080p25, 4444 XQ 1080p25, DNxHD 220 1080i59.94 (MOV y MXF OP1A), DNxHR HQ 1080p59.94 (MOV) y un canal
+con el perfil DNxHR 1080i antiguo (`Recording_WithALegacyInterlacedDnxHrProfile_RecordsInterlacedDnxhd`). El intra progresivo
+al doble de cadencia (`bwdif` con un cuadro por campo) es DNxHR HQ 1080p59.94 desde el 2026-10-21; hasta entonces lo era ProRes
+422 HQ 1080p59.94, que en este equipo solo llega con imagen sencilla (0,66–0,94× con un programa de TV; ver «Imagen detallada»,
+en ProRes), y su fila pasaba o fallaba según lo que emitiera la cadena. El `dnxhd` de 8 bits va a toda velocidad a 1,5–2,3×,
+1,47× con la imagen que más le cuesta, el plató con cantantes (ver «Tiempo real», en DNxHD y DNxHR). El 2026-10-21, en Duo
+(2) con un concurso en plató de Canal 5, la fila de DNxHR pasó 3 de 3 sin un descarte y con la CPU como mucho al 45–61 % (sus
+15 s más cargados); entre una y otra, ProRes 422 HQ 1080p59.94 por el mismo relé en vivo (`FilterThreadsCostTests` con
+`BAIOSS_FT_DEVICE`) llenó la CPU y el relé descartó 749, 394 y 145 unidades. Último resultado de la pasada completa
 (2026-10-19, Core i7-8700, FFmpeg 8.0, TV en directo en Duo (1) y Duo (2), Duo (3) sin señal; main con los entrelazados por
-campos, el Detener por fin de entrada y un medidor por canal): 44 de 45 (la grabación larga, omitida), sin un cuadro descartado.
+campos, el Detener por fin de entrada y un medidor por canal, y todavía la fila de ProRes, que ese día pasó con un anuncio de
+colores planos): 44 de 45 (la grabación larga, omitida), sin un cuadro descartado.
 Los ocho entrelazados graban TFF en el códec a 29,97. TwoInputs, dos canales a la vez: 3 de 3, con relevos de 0,4–0,8 s y el
 archivo cerrado 0,17–0,48 s después, por fin de entrada. Matar el proceso de grabación deja la pieza fMP4 legible y la MP4
 estándar sin índice pero avisada, y los 16 medidores marcan cada uno su canal. Aparte, en f8410d3, con idet cuadro a cuadro en la
