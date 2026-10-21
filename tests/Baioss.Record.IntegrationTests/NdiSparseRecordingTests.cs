@@ -77,8 +77,8 @@ public sealed class NdiSparseRecordingTests
         public int SlotsPerMark { get; }
         /// <summary>Segundos entre dos marcas.</summary>
         public double MarkPeriod => SlotsPerMark * (double)_rateD / _rateN;
-        /// <summary>Lo más tarde que salió un periodo respecto a su hora (el emisor duerme con el temporizador de Windows).</summary>
-        public double MaxLateMs { get; private set; }
+        /// <summary>Su ritmo (duerme hasta cada periodo) y sus parones, en su reloj.</summary>
+        public NdiSenderPace Pace { get; } = new(paced: true);
         /// <summary>Sin vídeo ni audio mientras sea true: la fuente calla, como un emisor colgado, pero sigue en la red.</summary>
         public bool Paused { get => _paused; set => _paused = value; }
         public void Resize(int width, int height) => _size = (width << 16) | height;
@@ -91,15 +91,14 @@ public sealed class NdiSparseRecordingTests
             var samples = new float[2 * 4096];
             byte[] frame = Array.Empty<byte>(), gray = Array.Empty<byte>();
             int width = 0, height = 0, stride = 0;
-            var clock = Stopwatch.StartNew();
             long n = 0, sent = 0;
             try
             {
                 while (!_stop)
                 {
-                    double due = n / fps, wait = due - clock.Elapsed.TotalSeconds;
+                    double due = n / fps, wait = due - Pace.Now;
                     if (wait > 0) Thread.Sleep(TimeSpan.FromSeconds(wait));
-                    MaxLateMs = Math.Max(MaxLateMs, (clock.Elapsed.TotalSeconds - due) * 1000);
+                    Pace.Period(due, (n + 1) / fps);
                     bool paused = _paused;
                     if (!paused && n % _sendEvery == 0)
                     {
@@ -123,7 +122,7 @@ public sealed class NdiSparseRecordingTests
                             frame_format_type = _kind == SenderKind.Graphics ? default : NDIlib.frame_format_type_e.frame_format_type_interleaved,
                             timecode = NDIlib.send_timecode_synthesize, p_data = video, line_stride_in_bytes = stride, p_metadata = IntPtr.Zero,
                         };
-                        NDIlib.send_send_video_v2(_send, ref vf);
+                        using (Pace.Call("NDIlib_send_send_video_v2")) NDIlib.send_send_video_v2(_send, ref vf);
                     }
                     long target = (long)Math.Round((n + 1) * 48000.0 / fps);
                     if (_withAudio && !paused)
@@ -143,7 +142,7 @@ public sealed class NdiSparseRecordingTests
                             sample_rate = 48000, no_channels = 2, no_samples = count, timecode = NDIlib.send_timecode_synthesize,
                             p_data = audio, channel_stride_in_bytes = count * 4, p_metadata = IntPtr.Zero,
                         };
-                        NDIlib.send_send_audio_v2(_send, ref af);
+                        using (Pace.Call("NDIlib_send_send_audio_v2")) NDIlib.send_send_audio_v2(_send, ref af);
                     }
                     sent = target; // callada, el reloj del audio sigue corriendo
                     n++;
@@ -189,6 +188,7 @@ public sealed class NdiSparseRecordingTests
         {
             _stop = true;
             _thread.Join(TimeSpan.FromSeconds(5));
+            Pace.Stop();
             NDIlib.send_destroy(_send);
         }
     }
@@ -268,6 +268,7 @@ public sealed class NdiSparseRecordingTests
         var rec = new Recorded { OutputRoot = Path.Combine(Path.GetTempPath(), $"baioss-ndi-barrido-{Guid.NewGuid():N}") };
         var loggers = new DecklinkRelayContinuityTests.CaptureLogger(l => { lock (rec.Log) rec.Log.Add((rec.Now, l)); });
         var source = new NdiCaptureSource(new InputSource { Name = name!, Type = InputType.Ndi, Uri = name }, loggers.CreateLogger("Ndi"));
+        double recordFrom = 0, recordTo = 0; // en el reloj del emisor
         try
         {
             source.SignalChanged += (_, s) => { lock (rec.Signals) rec.Signals.Add((rec.Now, s.State, s.FormatLabel)); };
@@ -286,8 +287,10 @@ public sealed class NdiSparseRecordingTests
                 await engine.StartPreviewAsync(source, profile, "NDI");
                 await RecordingRecoveryWakeTests.WaitUntilAsync(() => Volatile.Read(ref previews) > 5, TimeSpan.FromSeconds(20), "preview de la fuente NDI");
                 await Task.Delay(1500);
+                await sender.Pace.WaitOnTimeAsync(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(10));
 
                 rec.RecordStart = rec.Now;
+                recordFrom = sender.Pace.Now;
                 await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_barrido");
                 var recording = Stopwatch.StartNew();
                 var midway = during?.Invoke(rec) ?? Task.CompletedTask;
@@ -304,6 +307,7 @@ public sealed class NdiSparseRecordingTests
                 var stop = Stopwatch.StartNew();
                 await engine.StopRecordingAsync();
                 rec.StopSeconds = stop.Elapsed.TotalSeconds;
+                recordTo = sender.Pace.Now;
                 await Task.Delay(1500); // verificación en segundo plano
             }
         }
@@ -315,16 +319,17 @@ public sealed class NdiSparseRecordingTests
         }
         finally { await source.DisposeAsync(); }
         rec.Files = MediaFiles(rec.OutputRoot);
-        _out.WriteLine($"Fuente «{rec.FormatLabel}» (emisor hasta {sender.MaxLateMs:0} ms tarde) · grabado {rec.RecordedFor:0.00} s · " +
+        _out.WriteLine($"Fuente «{rec.FormatLabel}» (emisor {sender.Pace.Summary()}) · grabado {rec.RecordedFor:0.00} s · " +
                        $"Detener {rec.StopSeconds:0.00} s · FPS OUT {rec.FpsOut:0.00} · {rec.Files.Count} archivo(s)");
         _out.WriteLine("  FPS OUT: " + string.Join(" ", rec.FpsOutSamples.Select(s => s.Fps.ToString("0.0", CultureInfo.InvariantCulture))));
         lock (rec.Log) foreach (var (at, line) in rec.Log.Where(l => l.Line.Contains("fin de flujo", StringComparison.Ordinal))) _out.WriteLine($"  {at,7:0.00} s {line}");
-        // Un emisor que se queda parado (equipo cargado: medido una vez, 2,5 s) manda luego de golpe los periodos atrasados, y sus
-        // marcas ya no están a un segundo: la medida no vale, ni para bien ni para mal.
-        if (sender.MaxLateMs > 250)
+        // Un emisor que se para manda luego de golpe los periodos atrasados, y hasta ponerse al día sus marcas no están a un segundo:
+        // si pasa mientras graba, lo grabado no se puede medir. Antes del Grabar (descubrimiento, apertura, preview) da igual.
+        try { sender.Pace.SkipIfStalledWhileRecording(recordFrom - 1, recordTo); }
+        catch
         {
             rec.Dispose();
-            Skip.If(true, $"El emisor de la prueba llegó a ir {sender.MaxLateMs:0} ms tarde (equipo cargado): sus marcas no valen para medir; repite la prueba.");
+            throw;
         }
         return rec;
     }

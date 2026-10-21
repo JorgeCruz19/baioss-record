@@ -49,6 +49,9 @@ public sealed class NdiSyntheticSourceTests
             _thread.Start();
         }
 
+        /// <summary>Su ritmo lo marca el SDK (clock_video): una llamada que no vuelve a tiempo es un parón.</summary>
+        public NdiSenderPace Pace { get; } = new(paced: false);
+
         private void Run(Layout layout, bool withAudio)
         {
             bool interlaced = layout is not Layout.Progressive;
@@ -102,7 +105,7 @@ public sealed class NdiSyntheticSourceTests
                             sample_rate = 48000, no_channels = 2, no_samples = count, timecode = NDIlib.send_timecode_synthesize,
                             p_data = audio, channel_stride_in_bytes = count * 4, p_metadata = IntPtr.Zero,
                         };
-                        NDIlib.send_send_audio_v2(_send, ref af);
+                        using (Pace.Call("NDIlib_send_send_audio_v2")) NDIlib.send_send_audio_v2(_send, ref af);
                         sent = target;
                     }
                     n++;
@@ -123,13 +126,14 @@ public sealed class NdiSyntheticSourceTests
                 picture_aspect_ratio = 16f / 9f, frame_format_type = type,
                 timecode = NDIlib.send_timecode_synthesize, p_data = data, line_stride_in_bytes = lineStride, p_metadata = IntPtr.Zero,
             };
-            NDIlib.send_send_video_v2(_send, ref vf);
+            using (Pace.Call("NDIlib_send_send_video_v2")) NDIlib.send_send_video_v2(_send, ref vf);
         }
 
         public void Dispose()
         {
             _stop = true;
             _thread.Join(TimeSpan.FromSeconds(5));
+            Pace.Stop();
             NDIlib.send_destroy(_send);
         }
     }
@@ -164,8 +168,8 @@ public sealed class NdiSyntheticSourceTests
 
         /// <summary>Periodos entre dos marcas de sincronía (un segundo de la fuente, redondeado).</summary>
         public int SlotsPerMark { get; }
-        /// <summary>Lo más tarde que salió un periodo respecto a su hora (el emisor duerme con el temporizador de Windows).</summary>
-        public double MaxLateMs { get; private set; }
+        /// <summary>Su ritmo (duerme hasta cada periodo) y sus parones, en su reloj.</summary>
+        public NdiSenderPace Pace { get; } = new(paced: true);
 
         private void Run(int rateN, int rateD, int sendEvery, bool withAudio, bool graphics)
         {
@@ -187,15 +191,14 @@ public sealed class NdiSyntheticSourceTests
             IntPtr audio = Marshal.AllocHGlobal(2 * 4 * 4096);
             var samples = new float[2 * 4096];
             double fps = (double)rateN / rateD;
-            var clock = Stopwatch.StartNew();
             long n = 0, sent = 0;
             try
             {
                 while (!_stop)
                 {
-                    double due = n / fps, wait = due - clock.Elapsed.TotalSeconds;
+                    double due = n / fps, wait = due - Pace.Now;
                     if (wait > 0) Thread.Sleep(TimeSpan.FromSeconds(wait));
-                    MaxLateMs = Math.Max(MaxLateMs, (clock.Elapsed.TotalSeconds - due) * 1000);
+                    Pace.Period(due, (n + 1) / fps);
                     if (n % sendEvery == 0)
                     {
                         if (n % SlotsPerMark == 0) Buffer.BlockCopy(white, 0, frame, 0, frame.Length);
@@ -218,7 +221,7 @@ public sealed class NdiSyntheticSourceTests
                             frame_format_type = graphics ? default : NDIlib.frame_format_type_e.frame_format_type_progressive,
                             timecode = NDIlib.send_timecode_synthesize, p_data = video, line_stride_in_bytes = stride, p_metadata = IntPtr.Zero,
                         };
-                        NDIlib.send_send_video_v2(_send, ref vf);
+                        using (Pace.Call("NDIlib_send_send_video_v2")) NDIlib.send_send_video_v2(_send, ref vf);
                     }
                     if (withAudio)
                     {
@@ -238,7 +241,7 @@ public sealed class NdiSyntheticSourceTests
                             sample_rate = 48000, no_channels = 2, no_samples = count, timecode = NDIlib.send_timecode_synthesize,
                             p_data = audio, channel_stride_in_bytes = count * 4, p_metadata = IntPtr.Zero,
                         };
-                        NDIlib.send_send_audio_v2(_send, ref af);
+                        using (Pace.Call("NDIlib_send_send_audio_v2")) NDIlib.send_send_audio_v2(_send, ref af);
                         sent = target;
                     }
                     n++;
@@ -255,6 +258,7 @@ public sealed class NdiSyntheticSourceTests
         {
             _stop = true;
             _thread.Join(TimeSpan.FromSeconds(5));
+            Pace.Stop();
             NDIlib.send_destroy(_send);
         }
     }
@@ -314,18 +318,19 @@ public sealed class NdiSyntheticSourceTests
             await engine.StartPreviewAsync(source, profile, "NDI");
             await RecordingRecoveryWakeTests.WaitUntilAsync(() => { lock (previewAt) return previewAt.Count > 15; }, TimeSpan.FromSeconds(20), "preview de la fuente NDI");
             await Task.Delay(1000);
-            double p0 = clock.Elapsed.TotalSeconds;
-            await Task.Delay(3000);
-            double p1 = clock.Elapsed.TotalSeconds;
+            var (p0, p1) = await OnTimeWindowAsync(sender.Pace, clock);
             double previewFps;
             lock (previewAt) previewFps = previewAt.Count(t => t >= p0 && t < p1) / (p1 - p0);
             double fpsOut = engine.Stats.OutputFps;
 
+            await sender.Pace.WaitOnTimeAsync(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(10));
+            double recordFrom = sender.Pace.Now;
             var recording = Stopwatch.StartNew();
             await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_ritmo");
             await Task.Delay(8000);
             await engine.StopRecordingAsync();
             double recordedFor = recording.Elapsed.TotalSeconds;
+            sender.Pace.SkipIfStalledWhileRecording(recordFrom - 1, sender.Pace.Now);
             var file = engine.LastOutputFile;
             Assert.True(file is not null && File.Exists(file) && new FileInfo(file).Length > 0, $"Sin archivo: {file}");
             var (vDur, vPackets, aDur, hasAudioTrack, vStart, aStart) = await ProbeStartsAsync(locator.FfprobePath, file!);
@@ -344,7 +349,7 @@ public sealed class NdiSyntheticSourceTests
                                  .Where(o => !double.IsNaN(o)).ToList();
             string I(double d) => d.ToString("0.000", CultureInfo.InvariantCulture);
             _out.WriteLine($"{declared:0.##} declarados{(graphics ? " (BGRA con alfa, «interleaved»)" : "")}, 1 de cada {sendEvery} enviado, " +
-                           $"{(withAudio ? "con" : "sin")} audio (emisor hasta {sender.MaxLateMs:0} ms tarde): «{source.CurrentSignal.FormatLabel}» · " +
+                           $"{(withAudio ? "con" : "sin")} audio (emisor {sender.Pace.Summary()}): «{source.CurrentSignal.FormatLabel}» · " +
                            $"preview {previewFps:0.00} fps, FPS OUT {fpsOut:0.00} · grabado {recordedFor:0.00} s → vídeo {I(vDur)} s desde {I(vStart)} ({vPackets} cuadros), " +
                            $"audio {I(aDur)} s desde {I(aStart)}, pico {maxVolume:0.0} dBFS");
             _out.WriteLine($"  marcas de vídeo: {string.Join(" ", flashes.Select(I))}");
@@ -404,7 +409,10 @@ public sealed class NdiSyntheticSourceTests
             "-map", "[v]", "-f", "null", "-", "-map", "[a]", "-f", "null", "-");
         var flashes = new List<double>();
         var beeps = new List<double>();
-        bool bright = false, loud = false;
+        // Una marca que ya estaba en marcha al empezar el archivo no se puede fechar: solo cuentan las que empiezan tras un cuadro
+        // oscuro o un bloque en silencio. Un grafismo deja su cuadro blanco 250 ms de cada segundo, y un Grabar que caía dentro
+        // contaba el primer cuadro del archivo como destello (primera separación de 0,83 s en vez de 1).
+        bool bright = true, loud = true;
         double audioAt = double.NaN;
         static double After(string line, string key, char end)
         {
@@ -486,19 +494,20 @@ public sealed class NdiSyntheticSourceTests
                 "preview de la fuente NDI (sin audio, FFmpeg no arrancaba)");
 
             await Task.Delay(1000);
-            double t0 = clock.Elapsed.TotalSeconds;
-            await Task.Delay(3000);
-            double t1 = clock.Elapsed.TotalSeconds;
+            var (t0, t1) = await OnTimeWindowAsync(sender.Pace, clock);
             List<(double At, int Max, int Bars)> window;
             lock (frames) window = frames.Where(f => f.At >= t0 && f.At < t1).ToList();
             double previewFps = window.Count / (t1 - t0);
             int clean = window.Count(f => InterlacedPreviewTests.Clean((f.Max, f.Bars)));
 
+            await sender.Pace.WaitOnTimeAsync(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(10));
+            double recordFrom = sender.Pace.Now;
             await engine.StartRecordingAsync(Guid.NewGuid(), profile, baseName: "ndi_syn");
             await Task.Delay(5000);
             var stop = Stopwatch.StartNew();
             await engine.StopRecordingAsync();
             stop.Stop();
+            sender.Pace.SkipIfStalledWhileRecording(recordFrom - 1, sender.Pace.Now);
             var file = engine.LastOutputFile;
             Assert.True(file is not null && File.Exists(file) && new FileInfo(file).Length > 0, $"Sin archivo: {file}");
             var (vDur, vPackets, aDur, hasAudioTrack) = await ProbeAsync(locator.FfprobePath, file!);
@@ -509,7 +518,7 @@ public sealed class NdiSyntheticSourceTests
                 previewPipeline = log.LastOrDefault(l => l.Contains("Pipeline canal NDI (preview)", StringComparison.Ordinal)) ?? "";
                 recordPipeline = log.LastOrDefault(l => l.Contains("Pipeline canal NDI (grabación+preview)", StringComparison.Ordinal)) ?? "";
             }
-            _out.WriteLine($"{layout} {(withAudio ? "con" : "sin")} audio: señal «{signal.FormatLabel}» · preview {previewFps:0.00} fps, " +
+            _out.WriteLine($"{layout} {(withAudio ? "con" : "sin")} audio (emisor {sender.Pace.Summary()}): señal «{signal.FormatLabel}» · preview {previewFps:0.00} fps, " +
                            $"limpios {clean} de {window.Count} · FPS OUT {engine.Stats.OutputFps:0.00} · archivo {vDur:0.00} s, {vPackets} cuadros, audio {aDur:0.00} s, " +
                            $"pico {maxVolume:0.0} dBFS · Detener {stop.Elapsed.TotalSeconds:0.00} s");
 
@@ -535,6 +544,30 @@ public sealed class NdiSyntheticSourceTests
             await source.DisposeAsync();
             try { if (Directory.Exists(outputRoot)) Directory.Delete(outputRoot, true); } catch { /* best effort */ }
         }
+    }
+
+    /// <summary>
+    /// Una ventana de 3 s (en <paramref name="clock"/>) en que el emisor fue a su hora, para contar lo que pinta el preview: antes
+    /// espera a que lleve un segundo a su hora y, si se para dentro de la ventana, la cuenta no vale y se mide otra, hasta tres veces;
+    /// sin ninguna, la prueba se omite diciendo dónde se paró. Un emisor parado ~2,5 s dejaba el preview en ~8,7 cuadros/s y la
+    /// prueba fallaba (2026-10-21).
+    /// </summary>
+    private async Task<(double From, double To)> OnTimeWindowAsync(NdiSenderPace pace, Stopwatch clock)
+    {
+        var stalls = new List<NdiSenderPace.Stall>();
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            await pace.WaitOnTimeAsync(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(10));
+            double from = clock.Elapsed.TotalSeconds, paceFrom = pace.Now;
+            await Task.Delay(3000);
+            double to = clock.Elapsed.TotalSeconds;
+            var spoiled = pace.Between(paceFrom, pace.Now);
+            if (spoiled.Count == 0) return (from, to);
+            stalls.AddRange(spoiled);
+            _out.WriteLine($"  El emisor se paró en la ventana del preview ({string.Join("; ", spoiled)}): se mide otra.");
+        }
+        Skip.If(true, $"El emisor de la prueba se paró en las tres ventanas del preview: {string.Join("; ", stalls)}.");
+        return default;
     }
 
     private static async Task<string> RunAsync(string exe, bool stderr, params string[] args)
