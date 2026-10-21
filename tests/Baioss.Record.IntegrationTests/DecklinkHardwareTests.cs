@@ -894,9 +894,12 @@ public sealed class DecklinkHardwareTests
     [InlineData("ProRes 422 HQ · 1080i59.94", "prores", "prores_aw", false)]
     [InlineData("ProRes 422 Proxy · 1080p25", "prores", "prores_aw", false)]   // con prores_ks, el más lento (0,76×)
     [InlineData("ProRes 4444 XQ · 1080p25", "prores", "prores_aw", false)]     // el más pesado en 1080 (4:4:4)
-    [InlineData("ProRes 422 HQ · 1080p59.94", "prores", "prores_aw", false)]   // un cuadro por campo: el doble de cuadros
     [InlineData("DNxHD 220 · 1080i59.94 (MOV)", "dnxhd", "dnxhd", false)]
     [InlineData("MXF OP1A · DNxHD 220 1080i59.94", "dnxhd", null, false)]
+    // El intra al doble de cadencia (un cuadro por campo: el doble de cuadros). Era ProRes 422 HQ · 1080p59.94, que en este equipo
+    // solo llega con imagen sencilla (0,66–0,94× con un programa de TV): pasaba o fallaba según lo que emitiera la cadena. El dnxhd
+    // de 8 bits va a 1,5–2,3× a toda velocidad con cualquier imagen (docs/08-presets.md, «Imagen detallada» y «Tiempo real» de DNx).
+    [InlineData("DNxHR HQ · 1080p59.94 (MOV)", "dnxhd", "dnxhd", false)]
     public Task Recording_WithFactoryPreset_IsContinuousAndPlayable(string presetName, string codec, string? encoder, bool? expectFallback)
         => RecordAndVerifyAsync(presetName, Preset(presetName).ToProfile(), codec, encoder, expectFallback);
 
@@ -939,9 +942,9 @@ public sealed class DecklinkHardwareTests
                 int recordedHeight = profile.TargetResolution?.Height ?? sourceHeight;
                 // Preset progresivo con señal entrelazada: cuánto peine tiene la propia señal ahora, en los segundos de justo antes de
                 // Grabar (ver más abajo). No a la vez que la grabación: la toma suma carga, y los presets más pesados ya van al límite
-                // de este equipo con imagen compleja (ProRes 422 HQ 1080p59.94 perdió 181–194 unidades con un partido, con la toma a
-                // la vez y sin ella; con las barras, ninguna). Salvo en un archivo más bajo que la señal (720p), donde idet no lo puede
-                // medir.
+                // de este equipo con imagen compleja (ProRes 422 HQ 1080p59.94, que ya no es una fila porque con un programa de TV no
+                // llega, perdió 181–194 unidades con un partido, con la toma a la vez y sin ella; con las barras, ninguna). Salvo en un
+                // archivo más bajo que la señal (720p), donde idet no lo puede medir.
                 IdetCounts? sourceComb = null;
                 if (profile.ScanType is ScanType.Progressive && sourceInterlaced && recordedHeight >= sourceHeight)
                 {
