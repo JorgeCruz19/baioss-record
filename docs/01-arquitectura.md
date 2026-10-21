@@ -303,6 +303,16 @@ informativo lleno de grafismo (≈ 333 Mbps en ProRes HQ 1080i, frente a los 66 
 codificador necesita más núcleos de los que tiene el i7-8700. La fila de la DeckLink del 2026-10-19 pasó con una imagen más
 sencilla (213 Mbps a 59.94p).
 
+Lo único que necesita ir más rápido que el tiempo real es el relevo del preview (ver «Relevo sin salto atrás»): el proceso nuevo
+tiene que alcanzar al viejo en 0,5 s. Medido con `PreviewHandoverTests` (DeckLink sintética con x264 1080i y NVENC 1080p29.97,
+tres rondas alternando versiones, 2026-10-21), con otro canal grabando x264 1080p60 a ritmo real: con 2 hilos, 0 relevos de 72
+volvieron atrás y 0 de 6 pruebas fallaron; antes, 1 relevo y 2 pruebas; con 4 hilos al grabar, 1 y 1. Con la CPU llena del todo
+(un x264 a toda velocidad en todos los núcleos), al Grabar con NVENC el proceso nuevo con 2 hilos no alcanzó al viejo en ninguno de
+12 relevos y el preview volvió unos 9 frames atrás (≈ 0,3 s; lo grabado, entero), frente a 5 de 12 antes y 2 de 12 con 4 hilos al
+grabar; al Detener, con 2 hilos no volvió atrás ninguno de 36 (antes, 5). Con la máquina libre, las dos versiones pasaron 12 de
+12 pruebas. Se quedan 2 hilos: con una carga normal son lo mejor, y 4 al grabar costarían hasta 0,7 núcleos más por canal (dos canales
+NVENC 1080p59.94, 2,93 → 4,29) para mejorar solo el preview de un equipo que ya no da abasto.
+
 **Cuánto tarda Detener (y dónde mirar).** Con relevo, Detener espera a que el preview nuevo tome el mando, en cuanto el
 preview del proceso nuevo alcanza al del viejo (ver «Relevo sin salto atrás»): con el relé en crudo de DeckLink, unas décimas
 después de su primer frame (Detener ≈ 0,3–0,6 s; antes esperaba un «al día sostenido» y en producción, con 4 canales
