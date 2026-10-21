@@ -604,6 +604,96 @@ public class FfmpegArgumentBuilderTests : IDisposable
         }
     }
 
+    // --- Hilos del grafo de filtros: unos pocos, no uno por CPU ---
+
+    /// <summary>Los hilos que la línea pide al grafo de filtros (<c>-filter_complex_threads</c>, una vez y delante del grafo), o null si
+    /// los deja en los de FFmpeg.</summary>
+    private static int? FilterThreadsOf(IReadOnlyList<string> args)
+    {
+        var list = args.ToList();
+        int at = list.IndexOf("-filter_complex_threads");
+        if (at < 0) return null;
+        Assert.Single(list, a => a == "-filter_complex_threads");
+        Assert.True(at < list.IndexOf("-filter_complex"), "la opción va delante del grafo");
+        return int.Parse(list[at + 1], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static FfmpegArgumentBuilder BuilderFor(SignalInfo signal, RecordingProfile profile)
+    {
+        var source = new FakeCaptureSource("C:/clips/in.mp4");
+        source.Emit(signal);
+        return new FfmpegArgumentBuilder().From(source).Using(profile).ForChannel("TST").ToDirectory("C:/out")
+            .WithPreviewSink("tcp://127.0.0.1:9001");
+    }
+
+    [Fact]
+    public void BuildLive_AndSlate_UpTo1080_SplitTheFilterGraphIntoFewThreads_NotOnePerCpu()
+    {
+        // FFmpeg da al grafo tantos hilos como CPU lógicas, y repartir cada cuadro de un 1080 o de un preview entre todos costaba más
+        // que el trabajo: preview, medidores, bwdif por campo y la conversión al formato del codificador van con unos pocos, codifique la
+        // GPU o la CPU (con x264 y la CPU llena, 2 hilos rendían lo mismo que 12).
+        var signal = Signal1080(FrameRate.P2997, ScanType.InterlacedTff);
+        var proRes = ProResMov(EncoderProfile.ProResHq);
+        proRes.TargetResolution = new Resolution(1920, 1080);
+        foreach (var profile in new[]
+                 {
+                     Progressive(VideoCodec.H264Nvenc, FrameRate.P5994), Progressive(VideoCodec.H264x264, FrameRate.P5994),
+                     Interlaced(VideoCodec.H264x264, new Resolution(1920, 1080), FrameRate.P2997),
+                     Interlaced(VideoCodec.Mpeg2Video, new Resolution(1920, 1080), FrameRate.P2997), proRes,
+                 })
+        {
+            var builder = BuilderFor(signal, profile);
+            Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FilterThreadsOf(builder.BuildLive(recording: false, 640, 360)));
+            Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FilterThreadsOf(builder.BuildLive(recording: true, 640, 360)));
+            Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FilterThreadsOf(builder.BuildSlate(recording: true, 640, 360)));
+        }
+    }
+
+    [Fact]
+    public void BuildLive_AndSlate_Above1080_UpscalingForTheGpuTakes4Threads_TheRestKeepFfmpegs()
+    {
+        // Un preset 4K escala cada cuadro de la señal a 3840×2160 en el grafo: para NVENC, con 4 hilos (con 2 iba justo). Codificado por la
+        // CPU, o con cuadros de 8 Mpx desde la propia señal o desde las barras de la carta de ajuste, con los de FFmpeg, como siempre.
+        var nvenc = Progressive(VideoCodec.H264Nvenc, FrameRate.P5994);
+        nvenc.TargetResolution = new Resolution(3840, 2160);
+        var builder = BuilderFor(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), nvenc);
+        Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FilterThreadsOf(builder.BuildLive(recording: false, 640, 360)));
+        Assert.Equal(FfmpegArgumentBuilder.UpscaleFilterThreads, FilterThreadsOf(builder.BuildLive(recording: true, 640, 360)));
+        Assert.Null(FilterThreadsOf(builder.BuildSlate(recording: true, 640, 360)));
+
+        var proRes4K = ProResMov(EncoderProfile.ProResHq);
+        proRes4K.TargetResolution = new Resolution(3840, 2160);
+        Assert.Null(FilterThreadsOf(BuilderFor(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), proRes4K).BuildLive(recording: true, 640, 360)));
+
+        var native = Progressive(VideoCodec.H264Nvenc, FrameRate.P5994);
+        native.TargetResolution = null;
+        var fromUhd = BuilderFor(Signal(3840, 2160, FrameRate.P5994, ScanType.Progressive), native);
+        Assert.Null(FilterThreadsOf(fromUhd.BuildLive(recording: false, 640, 360)));
+        Assert.Null(FilterThreadsOf(fromUhd.BuildLive(recording: true, 640, 360)));
+    }
+
+    [Theory]
+    [InlineData(VideoCodec.H264Nvenc, 1920, 1080, FfmpegArgumentBuilder.FewFilterThreads)]
+    [InlineData(VideoCodec.H264Qsv, 1280, 720, FfmpegArgumentBuilder.FewFilterThreads)]
+    [InlineData(VideoCodec.H264x264, 1920, 1080, FfmpegArgumentBuilder.FewFilterThreads)]
+    [InlineData(VideoCodec.H265x265, 1280, 720, FfmpegArgumentBuilder.FewFilterThreads)]
+    [InlineData(VideoCodec.DnxHr, 1920, 1080, FfmpegArgumentBuilder.FewFilterThreads)]
+    [InlineData(VideoCodec.HevcNvenc, 3840, 2160, FfmpegArgumentBuilder.UpscaleFilterThreads)]
+    [InlineData(VideoCodec.HevcQsv, 3840, 2160, FfmpegArgumentBuilder.UpscaleFilterThreads)]
+    [InlineData(VideoCodec.H264Amf, 2560, 1440, FfmpegArgumentBuilder.UpscaleFilterThreads)]
+    [InlineData(VideoCodec.DnxHr, 3840, 2160, null)]
+    [InlineData(VideoCodec.H264x264, 3840, 2160, null)]
+    [InlineData(VideoCodec.H264Nvenc, 0, 0, FfmpegArgumentBuilder.FewFilterThreads)] // tamaño desconocido
+    public void FilterThreads_DependOnTheLargestFrameAndWhoEncodesIt(VideoCodec codec, int width, int height, int? expected)
+    {
+        var profile = new RecordingProfile { Name = "t", VideoCodec = codec };
+        var hd = new Resolution(1920, 1080);
+        Assert.Equal(expected, FfmpegArgumentBuilder.FilterThreads(hd, profile, new Resolution(width, height)));
+        Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FfmpegArgumentBuilder.FilterThreads(hd, recording: null, hd));
+        Assert.Equal(FfmpegArgumentBuilder.FewFilterThreads, FfmpegArgumentBuilder.FilterThreads(null, recording: null, null));
+        Assert.Null(FfmpegArgumentBuilder.FilterThreads(new Resolution(3840, 2160), recording: null, null));
+    }
+
     [Fact]
     public void BuildLive_Recording_Nvenc_ConvertsRecordBranchToEncoderFormat()
     {
