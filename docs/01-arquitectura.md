@@ -291,12 +291,15 @@ escalar a 4K. Con 1 hilo el preview costaría 0,27 y dos canales 2,32, pero un c
 
 Con la CPU llena, pocos hilos tampoco frenan al grafo, aunque compita con un codificador que la ocupa entera: dos canales x264
 1080p59.94 con bwdif por campo a la vez van a 0,595× con 2 hilos y a 0,554–0,589× con 12, y ProRes 422 HQ 1080p59.94 (abajo), a
-0,62× y 0,60×. `FactoryPresetRecordingTests` no sirve para afinar esto: su velocidad sale de un tiempo de medios que FFmpeg da a
-escalones de un segundo, en unos 7 s de cada fila, y una misma fila con la misma línea de comandos da 0,91× en una pasada y 1,09× en
-otra. Con los presets justos de tiempo real (50 filas, desde su formato y desde el 1080i59.94 sintético) dio 19 filas a tiempo real
-antes del cambio y 28 con él (25 y 29 con dos versiones intermedias de la regla); las filas que cambiaron lo hicieron en los dos
+0,62× y 0,60×. `FactoryPresetRecordingTests` no servía para afinar esto: su velocidad salía de un tiempo de medios que FFmpeg da a
+escalones de un segundo, en unos 7 s de cada fila, y una misma fila con la misma línea de comandos daba 0,91× en una pasada y 1,09×
+en otra. Con los presets justos de tiempo real (50 filas, desde su formato y desde el 1080i59.94 sintético) dio 19 filas a tiempo
+real antes del cambio y 28 con él (25 y 29 con dos versiones intermedias de la regla); las filas que cambiaron lo hicieron en los dos
 sentidos. La que más pareció empeorar, x264 1080p59.94 desde el 1080i sintético (0,93× con 2 hilos en dos pasadas, 1,04–1,07× con
-12 en tres), va a 1,000× con 2 y con 12 en el banco con esa misma fuente generada en el proceso (4,35 núcleos frente a 5,5).
+12 en tres), va a 1,000× con 2 y con 12 en el banco con esa misma fuente generada en el proceso (4,35 núcleos frente a 5,5). Desde
+entonces el barrido cuenta los bloques de progreso con su instante de llegada (±0,4 %; ver «Los 94 presets grabando en vivo» en
+[08-presets](08-presets.md)): con 2 hilos, esas 50 filas dieron el mismo veredicto en dos pasadas salvo una que va al límite de la
+CPU, y esa fila de x264, 1,045× y 1,049×.
 
 ProRes 422 HQ 1080p59.94 desde ese 1080i no llega a tiempo real con ningún número de hilos (0,60–0,62×, 10,5 núcleos): con un
 informativo lleno de grafismo (≈ 333 Mbps en ProRes HQ 1080i, frente a los 66 de la TV «blanda» con la que se midió prores_aw) el

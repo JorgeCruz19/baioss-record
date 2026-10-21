@@ -20,7 +20,8 @@ namespace Baioss.Record.IntegrationTests;
 /// lo grabado releído entero (<see cref="RecordedFileCheck"/>):
 /// <list type="bullet">
 ///   <item>el códec, el perfil (ProRes, DNxHD/HR), el formato de píxel, el tamaño, la cadencia, el barrido y el audio del preset;</item>
-///   <item>en tiempo real: el proceso va al día, sin la alarma de frames perdidos y sin degradar el codificador;</item>
+///   <item>en tiempo real: el proceso va al día (al 97 % o más, con los bloques de progreso de FFmpeg: <see cref="SteadySpeed"/>), sin
+///   la alarma de frames perdidos y sin degradar el codificador;</item>
 ///   <item>legible: se decodifica entero sin errores, con los cuadros que tocan y el audio tan largo como el vídeo.</item>
 /// </list>
 /// Tres fuentes: la del formato del propio preset (1080p25 si graba el nativo), la de las DeckLink de este equipo (1080i59.94 TFF en
@@ -31,6 +32,13 @@ namespace Baioss.Record.IntegrationTests;
 public sealed class FactoryPresetRecordingTests
 {
     private const double RecordSeconds = 10;
+
+    /// <summary>
+    /// La velocidad se mide de aquí al Detener (<see cref="SteadySpeed"/>). Antes, el proceso que graba arranca —su primer bloque de
+    /// progreso con tiempo de medios llega a ~1 s de Grabar, a ~2 s con x265— y alguno pesado aún no va a su ritmo (ProRes 4K desde el
+    /// 1080i: 0,65× su primer segundo). Más tarde, dentro de los 10 s, la ventana sería más corta y más ruidosa (de 6 a 10 s, ±2 %).
+    /// </summary>
+    private const double SettleSeconds = 3;
     private static readonly object ReportLock = new();
     private readonly ITestOutputHelper _output;
     public FactoryPresetRecordingTests(ITestOutputHelper output) => _output = output;
@@ -104,13 +112,16 @@ public sealed class FactoryPresetRecordingTests
 
             await channel.StartRecordingAsync(Guid.Empty, RecordingOrigin.Manual("prueba"));
             var clock = Stopwatch.StartNew();
-            var samples = new List<(double At, long MediaUs, double Cpu)>();
+            // Cada bloque de progreso del proceso que graba (FFmpeg manda uno por segundo), con su instante de llegada.
+            var blocks = new List<(double At, long MediaUs)>();
+            capture.StatsUpdated += (_, s) => { lock (blocks) blocks.Add((clock.Elapsed.TotalSeconds, s.MediaTimeUs)); };
+            var samples = new List<(double At, double Cpu)>();
             var states = new HashSet<RecordingState>();
             var channelAlarms = new HashSet<string>();
             while (clock.Elapsed.TotalSeconds < RecordSeconds)
             {
                 await Task.Delay(500);
-                samples.Add((clock.Elapsed.TotalSeconds, capture.Stats.MediaTimeUs, RecordedFileCheck.FfmpegCpuSeconds(started)));
+                samples.Add((clock.Elapsed.TotalSeconds, RecordedFileCheck.FfmpegCpuSeconds(started)));
                 states.Add(capture.State);
                 foreach (var a in channel.Status.Alarms ?? Array.Empty<ChannelAlarm>()) channelAlarms.Add(a.Type.ToString());
             }
@@ -118,10 +129,11 @@ public sealed class FactoryPresetRecordingTests
             await channel.StopRecordingAsync(RecordingStopReason.Operator);
             await RecordedFileCheck.WaitForTheEngineAsync(logs, capture.LastOutputFile, profile.Container);
 
-            // Tiempo real: medios procesados frente al reloj, y núcleos que se lleva el proceso del canal (preview incluido), del
-            // segundo 3 al final.
-            var steady = samples.Where(s => s.At >= 3 && s.MediaUs >= 0).ToList();
-            double speed = steady.Count >= 2 ? (steady[^1].MediaUs - steady[0].MediaUs) / 1e6 / (steady[^1].At - steady[0].At) : double.NaN;
+            // Tiempo real: medios procesados frente al reloj, y núcleos que se lleva el proceso del canal (preview incluido), de
+            // SettleSeconds al Detener.
+            double speed;
+            lock (blocks) speed = SteadySpeed(blocks, SettleSeconds, recorded);
+            var steady = samples.Where(s => s.At >= SettleSeconds).ToList();
             double cores = steady.Count >= 2 ? (steady[^1].Cpu - steady[0].Cpu) / (steady[^1].At - steady[0].At) : double.NaN;
             string encoder;
             lock (logs) encoder = logs.Where(l => l.Contains("grabación", StringComparison.Ordinal) && l.Contains("-c:v ", StringComparison.Ordinal))
@@ -135,9 +147,9 @@ public sealed class FactoryPresetRecordingTests
                 $"alarmas del motor: {string.Join(", ", alarms)}");
             Expect(!channelAlarms.Contains(nameof(AlarmType.FramesDropped)), "alarma de frames perdidos mientras grababa");
             lock (unverified) Expect(unverified.Count == 0, $"archivos sin verificar: {string.Join(", ", unverified)}");
-            Expect(!(speed < 0.97), $"el proceso va al {speed * 100:0} % del tiempo real");
+            Expect(!(speed < 0.97), $"el proceso va al {speed * 100:0.0} % del tiempo real");
 
-            string summary = $"{speed:0.00}× · {cores:0.0} núcleos · {encoder}";
+            string summary = $"{speed:0.000}× · {cores:0.0} núcleos · {encoder}";
             if (file is not null && File.Exists(file) && new FileInfo(file).Length > 0)
             {
                 var expected = new RecordedFileCheck.Expected(profile, profile.TargetResolution ?? feed.Size, profile.OutputFrameRate ?? feed.Rate,
@@ -165,6 +177,25 @@ public sealed class FactoryPresetRecordingTests
             TryDelete(dir);
         }
         Assert.True(problems.Count == 0, $"{name} ← {feed.Label}:\n" + string.Join("\n", problems));
+    }
+
+    /// <summary>
+    /// Medios por segundo de reloj entre el primer y el último bloque de progreso que llegan en [<paramref name="from"/>,
+    /// <paramref name="to"/>]: el tiempo de medios de cada bloque (<c>out_time</c>) frente al instante en que llegó, como
+    /// FilterThreadsCostTests. Antes se muestreaba <see cref="FfmpegChannelEngine.Stats"/> cada medio segundo, que guarda el último
+    /// bloque hasta el siguiente: cada muestra podía ir hasta 1 s por detrás de su instante y en ~7 s eso era ±7 % (la misma fila con
+    /// la misma línea de comandos daba 0,91× en una pasada y 1,09× en otra). Con los bloques, del segundo 3 al 10: ±0,4 %.
+    /// Con FFmpeg 8.0, el <c>-re</c> de la fuente lee al 1,05× sus primeros ~10 s (más si el proceso tardó en arrancar): un canal
+    /// holgado da ~1,05× y uno que no llega, lo que da (uno con la CPU llena varía más de una pasada a otra: es su ritmo, no la
+    /// medida). Un salto atrás del tiempo de medios es otro proceso (una pieza nueva): cuenta lo que va detrás.
+    /// </summary>
+    private static double SteadySpeed(IReadOnlyList<(double At, long MediaUs)> blocks, double from, double to)
+    {
+        var window = blocks.Where(b => b.At >= from && b.At <= to && b.MediaUs > 0).ToList();
+        int start = 0;
+        for (int i = 1; i < window.Count; i++) if (window[i].MediaUs < window[i - 1].MediaUs) start = i;
+        window = window.Skip(start).ToList();
+        return window.Count >= 2 ? (window[^1].MediaUs - window[0].MediaUs) / 1e6 / (window[^1].At - window[0].At) : double.NaN;
     }
 
     /// <summary>El perfil que ffprobe nombra en los DNx de fábrica: los DNxHD son los 1080i (CID clásico); los DNxHR, por perfil.</summary>
