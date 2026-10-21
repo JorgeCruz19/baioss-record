@@ -94,6 +94,11 @@ Recomendaciones prácticas:
 
 - Para **conservar todo sin pérdida**, usa un preset con audio PCM en **MXF**, **MKV** o **MOV** (los presets ProRes y DNx
   en MOV ya lo llevan). En MP4 y TS el programa pasa el audio a AAC.
+- **MOV con más de 2 canales en una pista** (5.1, 7.1 o *Multichannel*) y el FFmpeg 8.0 que se recomienda para las NVIDIA
+  Maxwell, Pascal y Volta: la pista sale con una descripción de audio antigua (v1) que la norma QuickTime no admite para
+  más de 2 canales. FFmpeg y el programa la leen bien; si tu editor no la abre, usa MXF o MKV, o *PairsAsTracks* (pistas
+  estéreo, que cumplen la norma con cualquier FFmpeg). Las compilaciones de FFmpeg desde el 2026-05-19, como la de junio,
+  ya la escriben como pide la norma.
 - En un preset de **solo audio** a **WAV** solo cabe una pista: con *PairsAsTracks* el programa guarda todos los canales
   elegidos en una pista WAV multicanal. A **MP3** (una pista y solo estéreo) va el primer par elegido.
 - Si tu SDI trae un **5.1 de verdad** en los canales 1-6, usa *Single* con un preset 5.1 (ahí el canal 4 sí es el LFE).

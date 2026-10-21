@@ -95,6 +95,11 @@ Practical recommendations:
 
 - To **keep everything lossless**, use a preset with PCM audio in **MXF**, **MKV** or **MOV** (the ProRes and DNx presets
   in MOV already have it). In MP4 and TS the program converts the audio to AAC.
+- **MOV with more than 2 channels in one track** (5.1, 7.1 or *Multichannel*) and the FFmpeg 8.0 recommended for NVIDIA
+  Maxwell, Pascal and Volta: the track is written with an old audio description (v1) that the QuickTime specification
+  does not allow for more than 2 channels. FFmpeg and the program read it fine; if your editor does not open it, use MXF
+  or MKV, or *PairsAsTracks* (stereo tracks, which meet the specification with any FFmpeg). FFmpeg builds from 2026-05-19
+  on, like the June one, already write it as the specification asks.
 - An **audio-only** preset to **WAV** only holds one track: with *PairsAsTracks* the program stores every chosen
   channel in one multichannel WAV track. To **MP3** (one track, stereo only) goes the first chosen pair.
 - If your SDI carries a **real 5.1** on channels 1-6, use *Single* with a 5.1 preset (there channel 4 really is the

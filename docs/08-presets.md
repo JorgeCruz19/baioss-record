@@ -369,14 +369,16 @@ Los dos FFmpeg dan lo mismo salvo FDK-AAC en AVI y WAV (¹).
   detrás), y los presets ProRes y DNx en MOV, que dicen «MOV, PCM», grababan AAC. Medido ese día con FFmpeg 8.0 y con el
   incluido: el muxer escribe el audio QuickTime `in24` (descripción de sonido v1 con `enda`, little-endian, y `chan` con la
   distribución), o `lpcm` v2 por encima de 65535 Hz. Con más de 2 canales en una pista el incluido escribe `lpcm` v2, como
-  pide la especificación QuickTime (commit de FFmpeg 9e71ea2d60, 2026-05-19), y 8.0 sigue con `in24` v1, que FFmpeg relee
-  igual. ffprobe lo ve como `pcm_s24le (in24)` de 24 bits, con el nombre de cada pista. Las muestras de 24 bits salen
-  idénticas a las de la fuente con ProRes 422 HQ y en solo audio: estéreo, mono, 5.1, 7.1, una pista de 16 canales y 8
-  pistas estéreo, en MOV estándar, en fMP4 y en fMP4 con el remux del Detener, en segmentos y de 10 Hz a 768 kHz. Matando
-  el proceso a los 6 s (fMP4), lo que queda es idéntico a la fuente salvo el último fragmento a medias, como con AAC. Ocupa
-  2,3 Mb/s por par (18,4 con 16 canales), poco al lado del vídeo de estos presets. Lo cubren `FfmpegArgumentBuilderTests`,
-  `RecordingProfileValidatorTests` y, con el FFmpeg real, `ContainerCodecTests` (PCM en MOV, con vídeo y en solo audio) y
-  `DecklinkHardwareTests` (los 16 canales de la tarjeta en una pista y en 8 pares).
+  pide la especificación QuickTime (commit de FFmpeg 9e71ea2d60, 2026-05-19), y 8.0 sigue con `in24` v1, que esa
+  especificación no admite para más de 2 canales: FFmpeg la relee igual, y si un editor no la abre quedan MXF, MKV o
+  *PairsAsTracks* (el modo de pistas no cambia solo por eso). ffprobe lo ve como `pcm_s24le (in24)` de 24 bits, con el
+  nombre de cada pista. Las muestras de 24 bits salen idénticas a las de la fuente con ProRes 422 HQ y en solo audio:
+  estéreo, mono, 5.1, 7.1, una pista de 16 canales y 8 pistas estéreo, en MOV estándar, en fMP4 y en fMP4 con el remux del
+  Detener, en segmentos y de 10 Hz a 768 kHz. Matando el proceso a los 6 s (fMP4), lo que queda es idéntico a la fuente
+  salvo el último fragmento a medias, como con AAC. Ocupa 2,3 Mb/s por par (18,4 con 16 canales), poco al lado del vídeo de
+  estos presets. Lo cubren `FfmpegArgumentBuilderTests`, `RecordingProfileValidatorTests` y, con el FFmpeg real,
+  `ContainerCodecTests` (PCM en MOV, con vídeo y en solo audio) y `DecklinkHardwareTests` (los 16 canales de la tarjeta en
+  una pista y en 8 pares).
 - En **segmentos fMP4** el MOV fragmentado no lleva lista de edición: si el primer paquete de audio de un segmento empieza
   después del corte del vídeo, FFmpeg lo pone en 0 y alarga su duración, y queda adelantado lo que sobresale. Con AAC son
   ≤ 21 ms (paquetes de 1024 muestras); con PCM, hasta un paquete de los que llegan (≤ 33–40 ms desde una DeckLink). En MOV
