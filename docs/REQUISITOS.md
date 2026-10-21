@@ -13,7 +13,7 @@ prudentes.
 | CPU | 4 núcleos / 8 hilos (Intel Core i5 de 10.ª gen., Ryzen 5) | 8 núcleos físicos (Core i7 / Ryzen 7) | 12–16 núcleos (Core i9 / Ryzen 9 o Xeon) |
 | GPU | NVIDIA con NVENC: Turing o posterior (GTX 1650 o superior) con driver ≥ 610, o Pascal/Maxwell (GTX 10xx, Quadro P) con la compilación de FFmpeg para driver 58x (ver Software); si no, QuickSync o CPU (x264) | NVIDIA RTX (Turing o posterior), driver ≥ 610 | RTX Ampere/Ada o RTX A-series/Quadro RTX (sesiones NVENC sin límite) |
 | RAM | 8 GB | 16 GB | 32 GB |
-| Disco de grabación | SSD del sistema + disco duro CMR 7200 rpm dedicado (o SSD SATA) | SSD del sistema + disco duro CMR 7200 rpm dedicado (SSD si ProRes/DNxHR/MXF o segmentos cortos) | NVMe ≥ 2 TB o RAID de discos CMR, dedicado |
+| Disco de grabación | SSD del sistema + disco duro CMR 7200 rpm dedicado (o SSD SATA) | SSD del sistema + disco duro CMR 7200 rpm dedicado (SSD si los ProRes/DNx suman más de ≈ 45 MB/s, o con segmentos cortos) | NVMe ≥ 2 TB o RAID de discos CMR, dedicado |
 | Red | 1 GbE | 1 GbE (2,5 GbE con varias fuentes NDI) | 10 GbE con NDI a full bandwidth |
 | Sistema | Windows 10 21H2 / 11 x64 | Windows 11 x64, SAI | Windows 11 x64, SAI |
 
@@ -125,9 +125,10 @@ equipo de referencia solo tiene NVMe); las de SSD, medidas.
 Tres cargas se suman sobre el disco de grabación:
 
 1. **Escritura continua:** la suma de bitrates. 8 Mbps = 1 MB/s por canal (3,6 GB/h); 20 Mbps = 9 GB/h; 50 Mbps = 22,5
-   GB/h; 100 Mbps (ProRes/DNxHR) = 45 GB/h. Grabar es escritura secuencial, lo que un disco duro hace bien: uno de
-   7200 rpm sostiene 150–250 MB/s en las pistas exteriores y 80–120 MB/s en las interiores, de sobra para 8 canales
-   H.264/HEVC a 50 Mbps (50 MB/s en total).
+   GB/h; ProRes 422 HQ con un programa de TV, 340 Mbps = 42,5 MB/s (≈ 150 GB/h) en 1080i59.94 y 650 Mbps = 81 MB/s
+   (≈ 290 GB/h) en 1080p59.94. Grabar es escritura secuencial, lo que un disco duro hace bien: uno de 7200 rpm sostiene
+   150–250 MB/s en las pistas exteriores y 80–120 MB/s en las interiores, de sobra para 8 canales H.264/HEVC a 50 Mbps
+   (50 MB/s en total), pero no para varios ProRes/DNx (ver «ProRes y DNx», más abajo).
 2. **Finalización de cada pieza (MP4/MOV):** al cerrarse un segmento se reescribe como MP4 normal: **medido** lee y
    escribe 1,7 veces el tamaño de la pieza cada uno (3,4× en total), una pieza a la vez en toda la aplicación. Va con
    prioridad de CPU baja, pero no de disco: en SSD no se nota (5–10 s por un segmento de 30 min a 8 Mbps, 1,8 GB); en
@@ -140,14 +141,51 @@ Tres cargas se suman sobre el disco de grabación:
    del archivo en curso, que suele seguir en la caché; un clip de 10 minutos a 8 Mbps (600 MB) tarda 2–3 s en NVMe.
    No preocupan en disco duro. MXF no admite clips en caliente (sin índice hasta cerrarse).
 
+**ProRes y DNx** (MOV o MXF) son otra escala: salvo los ligeros, con un programa de TV escriben de 180 a más de 900
+Mbps por canal, de 4 a 18 veces un H.264 de 50 Mbps, y hay que calcular con esa imagen, no con la de una prueba con
+grafismo. DNx es de tasa fija, la del perfil a esa cadencia: DNxHD 220/185 y DNxHR HQ/HQX en 1080 dan 183,5 Mbps a 25
+cuadros, 220 a 29,97, 367 a 50 y 440 a 59,94, y DNxHR 444, el doble. ProRes (prores_aw) es variable: con cámaras,
+exteriores y rótulos llega a su presupuesto (en HQ, ≈ 11 Mbit por cuadro 1080 y ≈ 44 por cuadro 4K: ≈ 275 Mbps a 25
+cuadros, ≈ 330 a 29,97, ≈ 660 a 59,94 y ≈ 1100 en 4K25) y puede pasarlo; con grafismo plano da del 25 al 40 % de eso.
+**Medido** el 2026-10-20 en el equipo de pruebas DeckLink con imágenes de TV grabadas de sus tarjetas (platós,
+exteriores, un informativo con grafismo); Mbps del vídeo, y MB/s y GB/h con la cifra alta (el audio suma poco: en PCM
+de 24 bits, 2,3 Mbps por par):
+
+| Preset | Vídeo, con un programa de TV | MB/s | GB/h | Canales en un disco duro de 7200 rpm |
+|---|---|---|---|---|
+| ProRes 422 HQ · 1080i59.94 | 330–340 Mbps (125 con grafismo plano) | 42,5 | 150 | uno |
+| ProRes 422 HQ · 1080p25 y «Archive · ProRes 422 1080p» | ≈ 270 Mbps | 34 | 120 | uno (dos, sin margen) |
+| ProRes 4444 · 1080p25 | 340–350 Mbps | 44 | 160 | uno |
+| ProRes 4444 XQ · 1080p25 | 460–490 Mbps (135 con grafismo plano) | 61 | 220 | uno, sin margen |
+| ProRes 422 HQ · 1080p59.94 | 535–650 Mbps (210 con grafismo plano) | 81 | 290 | ninguno |
+| ProRes 422 HQ · 4K 2160p25 | 765–926 Mbps escalando el HD de la tarjeta; con una señal 4K, hasta su presupuesto (≈ 1100) | 116–137 | 420–490 | ninguno |
+| DNxHD 220 1080i59.94 (MOV y MXF OP1A) | 220–223 Mbps | 28 | 100 | uno (dos, sin margen) |
+| DNxHR HQ 1080p59.94 (MOV y MXF OP1A) y DNxHR HQX 1080p59.94 10-bit (MXF OP1A) | 440–443 Mbps | 55 | 200 | uno, sin margen |
+| DNxHR 444 · 1080p25 10-bit | 367 Mbps | 46 | 165 | uno |
+
+Los ProRes ligeros a 25 cuadros pesan menos: Proxy ≈ 45 Mbps, LT ≈ 100 y 422 ≈ 175 (6, 13 y 22 MB/s). Las cifras por
+imagen y lo que piden de CPU están en [08-presets](08-presets.md): «Imagen detallada», en ProRes, y «Tiempo real», en
+DNxHD/DNxHR. En el i7-8700 del equipo de pruebas, ProRes 422 HQ 1080p59.94, ProRes 422 HQ 4K25 y DNxHR HQX 1080p59.94
+no llegan a tiempo real con un programa de TV, tenga el disco que tenga.
+
+**Un disco duro de 7200 rpm**, calculado como en las recomendaciones (pistas interiores, 80–120 MB/s, y la mitad libre),
+**aguanta un canal** de hasta ≈ 45 MB/s: un ProRes 422 HQ 1080i59.94 ocupa entre un tercio y la mitad de lo que el disco
+da en sus pistas interiores. **Dos no:** dos ProRes 422 HQ 1080i59.94 son 85 MB/s, todo lo que da un disco lento en esas
+pistas; irían bien mientras el disco está casi vacío (escribe en las pistas exteriores) y fallarían al llenarse. Dos
+DNxHD 220 (55 MB/s) o dos ProRes 422 HQ 1080p25 (68), un DNxHR HQ/HQX 1080p59.94 (55) o un ProRes 4444 XQ (61) van sin
+margen, y ProRes 422 HQ 1080p59.94 (81) y 4K (116–137) no caben ni solos. En capacidad, 1 TB son ≈ 6,5 h de ProRes 422
+HQ 1080i59.94, ≈ 10 h de DNxHD 220 y ≈ 3,4 h de ProRes 422 HQ 1080p59.94.
+
 Recomendaciones:
 
 - **Configuración normal: SSD para el sistema y un disco duro CMR de 7200 rpm, interno (SATA) y dedicado a las
-  grabaciones.** Sirve hasta 4 canales H.264/HEVC de hasta 50 Mbps con segmentos de 30 min o más. Calcular con la
-  cifra de las pistas interiores y dejar la mitad libre para finalizaciones y lecturas.
-- **SSD o NVMe para las grabaciones** cuando haya varios canales ProRes/DNxHR/MXF (100 Mbps o más cada uno),
-  segmentos cortos (menos de 15 min) con varios canales, o reproducción, copia o edición intensa desde el mismo disco
-  mientras se graba. Para 8 canales, NVMe o un RAID de discos CMR.
+  grabaciones.** Sirve hasta 4 canales H.264/HEVC de hasta 50 Mbps con segmentos de 30 min o más, o un canal ProRes/DNx
+  de hasta ≈ 45 MB/s (ProRes 422 HQ 1080i59.94, DNxHD 220, los de 25 cuadros salvo el 4444 XQ). Calcular con la cifra de
+  las pistas interiores y dejar la mitad libre para finalizaciones y lecturas.
+- **SSD o NVMe para las grabaciones** cuando los ProRes/DNx sumen más de ≈ 45 MB/s (dos canales de los de la tabla, o
+  uno de 1080p59.94, 4444 XQ o 4K), con segmentos cortos (menos de 15 min) con varios canales, o con reproducción, copia o
+  edición intensa desde el mismo disco mientras se graba. Para 8 canales, NVMe o un RAID de discos CMR. Con ProRes/DNx,
+  un SSD que sostenga la escritura (TLC): uno QLC, una vez llena su caché, escribe como un disco duro.
 - **CMR, nunca SMR:** los discos «shingled» (muchos de sobremesa y de archivo de 2–8 TB) se hunden con escritura
   sostenida. Clase vigilancia o empresarial: WD Purple / Red Plus / Ultrastar, Seagate SkyHawk / IronWolf / Exos.
 - **Ni USB ni ahorro de energía:** las carcasas USB se duermen o se desconectan; el apagado de discos del plan de
