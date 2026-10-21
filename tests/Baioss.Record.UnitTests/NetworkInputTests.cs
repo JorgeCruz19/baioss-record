@@ -260,10 +260,10 @@ public class NetworkInputTests : IDisposable
     {
         // Caso real (2026-09-24): ffplay abría esta URL y el Record no. Para FFmpeg (libsrt.c) todo lo que sigue al «?» son
         // opciones y el «#» es un carácter más; System.Uri abría un fragmento en el «#», así que la contraseña llegaba sin él
-        // («Televicentro2023»), el emisor rechazaba la conexión y el «mode» de detrás se perdía.
-        Assert.True(NetworkInput.TryParseUrl("srt://190.5.109.106:10000?passphrase=Televicentro2023#&mode=caller", out var input, out var error));
+        // («ClaveDePrueba2026»), el emisor rechazaba la conexión y el «mode» de detrás se perdía.
+        Assert.True(NetworkInput.TryParseUrl("srt://190.5.109.106:10000?passphrase=ClaveDePrueba2026#&mode=caller", out var input, out var error));
         Assert.Equal(NetworkInputError.None, error);
-        Assert.Equal("Televicentro2023#", input!.Passphrase);
+        Assert.Equal("ClaveDePrueba2026#", input!.Passphrase);
         Assert.Equal(NetworkRole.Connect, input.Role);
         Assert.Equal("190.5.109.106", input.Host);
         Assert.Equal(10000, input.Port);
@@ -383,7 +383,7 @@ public class NetworkInputTests : IDisposable
     }
 
     [Theory]
-    [InlineData("Televicentro2023#")]
+    [InlineData("ClaveDePrueba2026#")]
     [InlineData("a+b&c=d#e%f g")]
     public void EncoderHint_Srt_EncodesThePassphrase_SoTheSenderReadsItBackIntact(string passphrase)
     {
