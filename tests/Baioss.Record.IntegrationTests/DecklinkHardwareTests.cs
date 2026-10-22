@@ -1104,7 +1104,7 @@ public sealed class DecklinkHardwareTests
                 Assert.True(stops.Max() < 3.0, $"Un Detener tardó {stops.Max():0.0} s.");
                 var files = Directory.GetFiles(dir).OrderBy(f => f).ToArray();
                 Assert.Equal(8, files.Length);
-                foreach (var f in files) await AssertContinuousRecordingAsync(f, 5.3, rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.3, "h264");
+                foreach (var f in files) await AssertContinuousRecordingAsync(f, 5.3, profile.OutputFrameRate?.Value ?? rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.3, "h264");
                 Assert.Empty(rig.Unverified);
                 Assert.Equal(0, Interlocked.Read(ref rig.RelayDrops));
             }
@@ -1151,11 +1151,13 @@ public sealed class DecklinkHardwareTests
                     };
                     _out.WriteLine($"A: {windows[0].Detail}");
                     _out.WriteLine($"B: {windows[1].Detail}");
-                    foreach (var (rig, dir, codec, from, to, window) in new[] { (a, dirA, "h264", recFromA, recToA, windows[0]), (b, dirB, "mpeg2video", recFromB, recToB, windows[1]) })
+                    // Cada archivo, a la cadencia de SU preset: los dos fijan 29,97, y un 1080i59.94 graba 29,97 cuadros entrelazados
+                    // también desde una entrada 1080p59.94 (la de la fuente sería 59,94).
+                    foreach (var (rig, profile, dir, codec, from, to, window) in new[] { (a, pa, dirA, "h264", recFromA, recToA, windows[0]), (b, pb, dirB, "mpeg2video", recFromB, recToB, windows[1]) })
                     {
                         var files = Directory.GetFiles(dir);
                         Assert.Single(files);
-                        await AssertContinuousRecordingAsync(files[0], (window.Min + window.Max) / 2, rig.Source.CurrentSignal.FrameRate!.Value.Value,
+                        await AssertContinuousRecordingAsync(files[0], (window.Min + window.Max) / 2, profile.OutputFrameRate?.Value ?? rig.Source.CurrentSignal.FrameRate!.Value.Value,
                             (window.Max - window.Min) / 2, codec);
                         Assert.Equal(0, rig.Receiver.Restarts);
                         Assert.Equal(0, rig.RelayDropsBetween(from, to));
@@ -1522,7 +1524,7 @@ public sealed class DecklinkHardwareTests
                 Assert.Equal(2, files.Length);
                 Assert.Single(rig.Interruptions);
                 Assert.Equal(0, rig.Receiver.Restarts); // la captura no se tocó: solo murió el proceso del canal
-                await AssertContinuousRecordingAsync(files[1], 8.0, rig.Source.CurrentSignal.FrameRate!.Value.Value, 2.0, "h264");
+                await AssertContinuousRecordingAsync(files[1], 8.0, profile.OutputFrameRate?.Value ?? rig.Source.CurrentSignal.FrameRate!.Value.Value, 2.0, "h264");
                 var (_, err, exit) = await RunAsync(Locator().FfprobePath, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", files[0]);
                 _out.WriteLine($"Pieza cortada: ffprobe {exit} «{err.Trim()}»");
                 if (fragmentedMp4)
@@ -1595,7 +1597,7 @@ public sealed class DecklinkHardwareTests
                 var (sourceRaw, _) = await sourceAudio.CompleteAsync();
                 var files = Directory.GetFiles(dir);
                 Assert.Single(files);
-                var m = await AssertContinuousRecordingAsync(files[0], stop - started + 0.3, rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.5, null);
+                var m = await AssertContinuousRecordingAsync(files[0], stop - started + 0.3, profile.OutputFrameRate?.Value ?? rig.Source.CurrentSignal.FrameRate!.Value.Value, 1.5, null);
                 var audioStreams = m.Audio.ToArray();
                 Assert.Equal(tracks, audioStreams.Length);
                 Assert.All(audioStreams, s => Assert.Equal(channelsPerTrack, s.Channels));
