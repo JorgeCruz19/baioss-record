@@ -72,7 +72,8 @@ baioss-record/
 │
 └─ tests/
    ├─ Baioss.Record.UnitTests/         # value objects, builder de argumentos, parser
-   └─ Baioss.Record.IntegrationTests/  # FFmpeg real con clips de prueba, EF Core SQLite
+   ├─ Baioss.Record.IntegrationTests/  # FFmpeg real con clips de prueba, EF Core SQLite
+   └─ Baioss.Record.App.Tests/         # ViewModels de la App (net8.0-windows), sin ventanas
 ```
 
 ## Responsabilidad por proyecto

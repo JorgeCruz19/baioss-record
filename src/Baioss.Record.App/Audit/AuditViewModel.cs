@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using Baioss.Record.Domain;
 using Baioss.Record.Domain.Entities;
+using Baioss.Record.Domain.Events;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Audit;
 using Baioss.Record.Application.Persistence;
@@ -34,8 +35,9 @@ public sealed record AuditSeverityOption(string Label, EventSeverity? Minimum)
 /// ViewModel de la ventana «Registro de actividad»: lee la tabla de auditoría y la presenta EN PALABRAS
 /// (quién grabó, cómo, por qué terminó, y lo que no llegó a grabarse), con filtros y exportación a CSV.
 ///
-/// Solo lectura por diseño: una auditoría que se puede editar desde la propia aplicación no vale como
-/// auditoría. Tampoco se borra desde aquí — de la poda se encarga el escritor, por antigüedad.
+/// Lo que dice cada entrada no se edita. Sí se pueden BORRAR entradas (las marcadas, con confirmación), pero no sin
+/// rastro: queda una entrada nueva, «Actividad borrada» (<see cref="AuditEntriesDeleted"/>), con cuántas se borraron,
+/// de qué fechas y quién lo hizo. Además, el escritor poda solo las más antiguas.
 /// </summary>
 public sealed partial class AuditViewModel : ObservableObject, IDisposable
 {
@@ -44,12 +46,14 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
     {
         "RecordingStarted", "RecordingStopped", "RecordingRenamed", "RecordingStartFailed", "ScheduledRecordingSkipped", "ScheduleChanged",
         "SegmentCompleted", "RecordingPaused", "RecordingResumed", "RecordingRecovered", "OrphanSessionsClosed",
-        "RecordingInterrupted", "RecordingFileUnverified", "EncoderFailed",
+        "RecordingInterrupted", "RecordingFileUnverified", "EncoderFailed", "RecordingDeleted",
     };
 
     private readonly IEventLogRepository _events;
     private readonly IClock _clock;
     private readonly IReadOnlyDictionary<Guid, string> _channelKeys;
+    private readonly IEventBus _bus;
+    private readonly Func<string, string, bool> _confirm;
 
     public ObservableCollection<AuditRow> Entries { get; } = new();
     public ObservableCollection<RangeOption> Ranges { get; }
@@ -61,15 +65,44 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
     [ObservableProperty] private ChannelOption _selectedChannel;
     [ObservableProperty] private AuditKindOption _selectedKind;
     [ObservableProperty] private AuditSeverityOption _selectedLevel;
-    [ObservableProperty] private bool _busy;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
+    private bool _busy;
     [ObservableProperty] private string _summary = "";
     [ObservableProperty] private bool _isEmpty;
+    /// <summary>Resultado del último borrado (pie de la ventana).</summary>
+    [ObservableProperty] private string _statusMessage = "";
+    [ObservableProperty] private bool _statusIsError;
 
-    public AuditViewModel(IEventLogRepository events, IClock clock, IReadOnlyDictionary<Guid, string> channelKeys)
+    /// <summary>Casilla «todas» de la cabecera: true/false si están todas o ninguna, null si solo algunas.</summary>
+    [ObservableProperty] private bool? _allSelected = false;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DeleteSelectedText))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteSelectedCommand))]
+    private int _selectedCount;
+
+    public string DeleteSelectedText => Loc.F("Audit_DeleteSelected", SelectedCount);
+
+    /// <summary>Espera antes de recargar tras borrar: la entrada «Actividad borrada» la escribe el escritor del registro al
+    /// recibir el evento (en milisegundos), y sin la espera la lista recargada podía no traerla todavía.</summary>
+    public TimeSpan TraceSettleDelay { get; init; } = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>La carga en curso (o la última). La ventana no la necesita; las pruebas la esperan.</summary>
+    public Task Loading { get; private set; } = Task.CompletedTask;
+
+    private bool _syncingSelection;
+
+    /// <summary><paramref name="bus"/>: por donde sale la entrada «Actividad borrada». <paramref name="confirm"/>: muestra
+    /// la pregunta (texto, título) y devuelve true si el operador acepta.</summary>
+    public AuditViewModel(IEventLogRepository events, IClock clock, IReadOnlyDictionary<Guid, string> channelKeys,
+        IEventBus bus, Func<string, string, bool> confirm)
     {
         _events = events;
         _clock = clock;
         _channelKeys = channelKeys;
+        _bus = bus;
+        _confirm = confirm;
 
         Ranges = new ObservableCollection<RangeOption>();
         Channels = new ObservableCollection<ChannelOption>();
@@ -87,7 +120,7 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
         // (cabeceras en un idioma, filtros y filas en el otro).
         Localizer.LanguageChanged += OnLanguageChanged;
 
-        _ = LoadAsync();
+        Loading = LoadAsync();
     }
 
     /// <summary>Rehace las etiquetas de los filtros conservando lo elegido, y recarga las filas (el texto de
@@ -111,7 +144,8 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
                 SelectedLevel = Levels.FirstOrDefault(l => l.Minimum == level) ?? Levels[0];
             }
             finally { _reselecting = false; }
-            _ = LoadAsync();
+            OnPropertyChanged(nameof(DeleteSelectedText));
+            Loading = LoadAsync();
         });
 
     /// <summary>Verdadero mientras se re-seleccionan los filtros tras cambiar de idioma: evita que cada
@@ -146,13 +180,13 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
         Levels.Add(new AuditSeverityOption(Loc.T("Audit_Sev_Error"), EventSeverity.Error));
     }
 
-    partial void OnSelectedRangeChanged(RangeOption value) { if (!_reselecting) _ = LoadAsync(); }
-    partial void OnSelectedChannelChanged(ChannelOption value) { if (!_reselecting) _ = LoadAsync(); }
-    partial void OnSelectedKindChanged(AuditKindOption value) { if (!_reselecting) _ = LoadAsync(); }
-    partial void OnSelectedLevelChanged(AuditSeverityOption value) { if (!_reselecting) _ = LoadAsync(); }
+    partial void OnSelectedRangeChanged(RangeOption value) { if (!_reselecting) Loading = LoadAsync(); }
+    partial void OnSelectedChannelChanged(ChannelOption value) { if (!_reselecting) Loading = LoadAsync(); }
+    partial void OnSelectedKindChanged(AuditKindOption value) { if (!_reselecting) Loading = LoadAsync(); }
+    partial void OnSelectedLevelChanged(AuditSeverityOption value) { if (!_reselecting) Loading = LoadAsync(); }
 
     [RelayCommand]
-    private Task Refresh() => LoadAsync();
+    private Task Refresh() => Loading = LoadAsync();
 
     private async Task LoadAsync()
     {
@@ -168,8 +202,15 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
             bool filtering = SelectedKind?.Kind is not AuditKind.All || SelectedLevel?.Minimum is not null;
             var list = await _events.QueryAsync(SelectedChannel?.ChannelId, from, to, filtering ? 20_000 : 2_000);
 
+            foreach (var old in Entries) old.PropertyChanged -= OnRowChanged;
             Entries.Clear();
-            foreach (var e in list.Where(Matches).Take(2_000)) Entries.Add(ToRow(e));
+            foreach (var e in list.Where(Matches).Take(2_000))
+            {
+                var row = ToRow(e);
+                row.PropertyChanged += OnRowChanged;
+                Entries.Add(row);
+            }
+            UpdateSelection();
 
             IsEmpty = Entries.Count == 0;
             Summary = Loc.F(Entries.Count == 1 ? "Audit_Summary_One" : "Audit_Summary_Many", Entries.Count);
@@ -194,6 +235,7 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
     }
 
     private AuditRow ToRow(EventLogEntry e) => new(
+        e.Id,
         e.Timestamp,
         e.Severity,
         SeverityText(e.Severity),
@@ -233,4 +275,65 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) { Summary = Loc.F("Audit_Msg_ExportFailed", ex.Message); }
     }
+
+    // ---------------------------------------------------------------------
+    //  Selección y borrado
+    // ---------------------------------------------------------------------
+
+    partial void OnAllSelectedChanged(bool? value)
+    {
+        if (_syncingSelection || value is not bool all) return;
+        _syncingSelection = true;
+        try { foreach (var r in Entries) r.IsSelected = all; }
+        finally { _syncingSelection = false; }
+        UpdateSelection();
+    }
+
+    private void OnRowChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (!_syncingSelection && e.PropertyName == nameof(AuditRow.IsSelected)) UpdateSelection();
+    }
+
+    private void UpdateSelection()
+    {
+        int selected = Entries.Count(r => r.IsSelected);
+        SelectedCount = selected;
+        _syncingSelection = true;
+        try { AllSelected = selected == 0 ? false : selected == Entries.Count ? true : null; }
+        finally { _syncingSelection = false; }
+    }
+
+    /// <summary>Borra las entradas marcadas, tras confirmarlo, y deja constancia con una entrada «Actividad borrada».</summary>
+    [RelayCommand(CanExecute = nameof(CanDeleteSelected))]
+    private async Task DeleteSelected()
+    {
+        var picked = Entries.Where(r => r.IsSelected).ToList();
+        if (picked.Count == 0) return;
+        var text = Loc.Plural("Audit_Confirm_One", "Audit_Confirm_Many", picked.Count) + "\n\n" + Loc.T("Audit_Confirm_Trace");
+        if (!_confirm(text, Loc.T("Audit_Confirm_Title"))) return;
+
+        Busy = true;
+        int removed;
+        try
+        {
+            // SQLite es síncrono y la ventana puede borrar miles de una vez: fuera del hilo de la interfaz.
+            var ids = picked.Select(r => r.Id).ToList();
+            removed = await Task.Run(() => _events.DeleteAsync(ids));
+            if (removed > 0)
+                await _bus.PublishAsync(new AuditEntriesDeleted(removed, picked.Min(r => r.When), picked.Max(r => r.When), Environment.UserName));
+        }
+        catch (Exception ex)
+        {
+            StatusIsError = true;
+            StatusMessage = Loc.F("Audit_Msg_DeleteFailed", ex.Message);
+            return;
+        }
+        finally { Busy = false; }
+
+        if (removed > 0 && TraceSettleDelay > TimeSpan.Zero) await Task.Delay(TraceSettleDelay);
+        await (Loading = LoadAsync());
+        StatusIsError = false;
+        StatusMessage = Loc.Plural("Audit_Msg_Deleted_One", "Audit_Msg_Deleted_Many", removed);
+    }
+    private bool CanDeleteSelected() => !Busy && SelectedCount > 0;
 }

@@ -38,6 +38,8 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly IClock _clock;
     private readonly IRecordingSessionRepository _sessions;
     private readonly IEventLogRepository _events;
+    private readonly IRecordingDeletionService _deletion;
+    private readonly IEventBus _bus;
     private readonly IStorageStatusProvider _storageStatus;
     private readonly IStorageSettingsStore _storageSettings;
     // Opcional a propósito: si el subsistema de licencias no se pudo componer, la app funciona igual (sin restricciones).
@@ -61,6 +63,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public ShellViewModel(ChannelHost host, PreviewCatalog previews, IPresetStore presetStore,
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
         IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, IEventLogRepository events,
+        IRecordingDeletionService deletion, IEventBus bus,
         ILicenseService? license = null, ApiAccessState? apiAccess = null, IInputSourceRepository? inputSources = null)
     {
         _apiAccess = apiAccess;
@@ -73,6 +76,8 @@ public sealed partial class ShellViewModel : ObservableObject
         _clock = clock;
         _sessions = sessions;
         _events = events;
+        _deletion = deletion;
+        _bus = bus;
         _storageStatus = storageStatus;
         _storageSettings = storageSettings;
         _license = license;
@@ -351,7 +356,7 @@ public sealed partial class ShellViewModel : ObservableObject
         var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key);
         var window = new AuditWindow
         {
-            DataContext = new AuditViewModel(_events, _clock, channelKeys),
+            DataContext = new AuditViewModel(_events, _clock, channelKeys, _bus, ConfirmDelete),
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();
@@ -362,10 +367,35 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         var window = new StorageSettingsWindow
         {
-            DataContext = new StorageSettingsViewModel(_storageSettings),
+            DataContext = new StorageSettingsViewModel(_storageSettings, OpenRecordingCleanup),
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();
+    }
+
+    /// <summary>Ventana «Borrar grabaciones», desde «Almacenamiento». Su dueña es esa ventana (la activa): al cerrarla se
+    /// vuelve a ella.</summary>
+    private void OpenRecordingCleanup()
+    {
+        var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key); // mismo snapshot que el historial
+        var window = new RecordingCleanupWindow
+        {
+            DataContext = new RecordingCleanupViewModel(_sessions, _deletion, _clock, channelKeys, ConfirmDelete),
+            Owner = SecondaryWindow.ActiveOwner(),
+        };
+        window.Show();
+    }
+
+    /// <summary>Pregunta Sí/No antes de borrar, con «No» como botón por defecto (un Intro de más no borra nada).</summary>
+    private static bool ConfirmDelete(string text, string title)
+    {
+        var owner = SecondaryWindow.ActiveOwner();
+        var answer = owner is not null
+            ? System.Windows.MessageBox.Show(owner, text, title, System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No)
+            : System.Windows.MessageBox.Show(text, title, System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
+        return answer == System.Windows.MessageBoxResult.Yes;
     }
 
     [RelayCommand]

@@ -85,6 +85,11 @@ public sealed class RecordingSessionRepository(IDbContextFactory<BaiossDbContext
     public async Task<IReadOnlyList<RecordingSession>> GetHistoryAsync(
         Guid? channelId, DateTimeOffset from, DateTimeOffset to, int skip, int take, CancellationToken ct = default)
     {
+        // A UTC, como se guardan: la columna es el número del DateTimeOffsetToBinaryConverter (hora del reloj LOCAL de la fecha
+        // + su desfase), que solo se ordena bien entre fechas con el mismo desfase. Un límite en hora local (−06:00) dejaba
+        // fuera las grabaciones de las últimas seis horas del día.
+        from = from.ToUniversalTime();
+        to = to.ToUniversalTime();
         await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var query = db.Sessions.AsNoTracking()
             .Include(s => s.Segments)
@@ -150,11 +155,56 @@ public sealed class RecordingSessionRepository(IDbContextFactory<BaiossDbContext
             .Take(take)
             .ToListAsync(ct).ConfigureAwait(false);
     }
+
+    public async Task<RecordingSession?> GetWithSegmentsAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Sessions.AsNoTracking()
+            .Include(s => s.Segments)
+            .FirstOrDefaultAsync(s => s.Id == id, ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> RemoveRecordsAsync(Guid sessionId, IReadOnlyCollection<Guid> segmentIds, CancellationToken ct = default)
+    {
+        await using var db = await Factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        // Se cargan TODOS los segmentos de la sesión (unos pocos, o cientos en una segmentada de días) y se eligen en
+        // memoria: así se sabe si queda alguno sin una segunda consulta, y SaveChanges borra segmentos y sesión en una sola
+        // transacción.
+        var wanted = segmentIds as IReadOnlySet<Guid> ?? segmentIds.ToHashSet();
+        var all = await db.Segments.Where(s => s.SessionId == sessionId).ToListAsync(ct).ConfigureAwait(false);
+        var doomed = all.Where(s => wanted.Contains(s.Id)).ToList();
+        db.Segments.RemoveRange(doomed);
+
+        bool sessionRemoved = false;
+        if (doomed.Count == all.Count)
+        {
+            var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
+            if (session is not null) { db.Sessions.Remove(session); sessionRemoved = true; }
+        }
+        if (doomed.Count > 0 || sessionRemoved) await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return sessionRemoved;
+    }
 }
 
-/// <summary>Repositorio append-only del registro de eventos/auditoría (clave entera autoincremental).</summary>
+/// <summary>Repositorio del registro de eventos/auditoría (clave entera autoincremental). Lo escribe el sistema; se borra
+/// por antigüedad (poda del <c>EventLogWriter</c>) o por entradas concretas que elige el operador.</summary>
 public sealed class EventLogRepository(IDbContextFactory<BaiossDbContext> factory) : IEventLogRepository
 {
+    /// <summary>Entradas por DELETE: la ventana borra hasta miles de una vez y SQLite tiene un único escritor (las
+    /// grabaciones escriben sus segmentos mientras tanto); por lotes, ninguno lo retiene más de un momento.</summary>
+    internal const int DeleteBatchSize = 500;
+
+    public async Task<int> DeleteAsync(IReadOnlyCollection<long> ids, CancellationToken ct = default)
+    {
+        int removed = 0;
+        foreach (var batch in ids.Distinct().Chunk(DeleteBatchSize))
+        {
+            await using var db = await factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            removed += await db.EventLog.Where(e => batch.Contains(e.Id)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        }
+        return removed;
+    }
+
     public async Task AppendAsync(EventLogEntry entry, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -165,6 +215,8 @@ public sealed class EventLogRepository(IDbContextFactory<BaiossDbContext> factor
     public async Task<IReadOnlyList<EventLogEntry>> QueryAsync(
         Guid? channelId, DateTimeOffset from, DateTimeOffset to, int take, CancellationToken ct = default)
     {
+        from = from.ToUniversalTime(); // como en el historial de grabaciones: la columna solo se compara bien en UTC
+        to = to.ToUniversalTime();
         await using var db = await factory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var query = db.EventLog.AsNoTracking()
             .Where(e => e.Timestamp >= from && e.Timestamp <= to);

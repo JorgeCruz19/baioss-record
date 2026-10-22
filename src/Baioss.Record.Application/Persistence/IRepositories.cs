@@ -50,14 +50,28 @@ public interface IRecordingSessionRepository : IRepository<RecordingSession>
     /// «D:\») ACOTA a las grabaciones cuyo archivo está EN ESE VOLUMEN — imprescindible con varios discos, para
     /// no borrar de un disco distinto al que se quiere liberar; <c>null</c>/vacío = cualquier disco. (Fase 2 / multi-disco.)</summary>
     Task<IReadOnlyList<RecordingSession>> GetPurgeCandidatesAsync(int take, string? volumePrefix, CancellationToken ct = default);
+
+    /// <summary>Una sesión CON sus segmentos (<see cref="IRepository{T}.GetAsync"/> no los trae), o null si no existe.</summary>
+    Task<RecordingSession?> GetWithSegmentsAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Borra de la BD los segmentos <paramref name="segmentIds"/> de la sesión y, si con eso se queda sin ninguno, también
+    /// la sesión, en UNA transacción: nunca queda un segmento sin su sesión. Los archivos no se tocan (los borra quien
+    /// llama, antes). Devuelve true si la sesión se borró.
+    /// </summary>
+    Task<bool> RemoveRecordsAsync(Guid sessionId, IReadOnlyCollection<Guid> segmentIds, CancellationToken ct = default);
 }
 
-/// <summary>Append-only para el registro de eventos/auditoría.</summary>
+/// <summary>Registro de eventos/auditoría: lo escribe el sistema; solo se borra por antigüedad (poda) o cuando el
+/// operador elige entradas concretas en la ventana «Actividad» (que deja constancia con <c>AuditEntriesDeleted</c>).</summary>
 public interface IEventLogRepository
 {
     Task AppendAsync(EventLogEntry entry, CancellationToken ct = default);
     Task<IReadOnlyList<EventLogEntry>> QueryAsync(
         Guid? channelId, DateTimeOffset from, DateTimeOffset to, int take, CancellationToken ct = default);
+
+    /// <summary>Borra las entradas <paramref name="ids"/>. Devuelve cuántas borró (las que ya no existían no cuentan).</summary>
+    Task<int> DeleteAsync(IReadOnlyCollection<long> ids, CancellationToken ct = default);
 }
 
 /// <summary>Unidad de trabajo: transacción y SaveChanges para EF Core (SQLite/PostgreSQL).</summary>

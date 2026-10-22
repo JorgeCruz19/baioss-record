@@ -10,5 +10,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/Baioss.Record.UnitTests/Baioss.Record.UnitTests.csproj" />
     <Project Path="tests/Baioss.Record.IntegrationTests/Baioss.Record.IntegrationTests.csproj" />
+    <Project Path="tests/Baioss.Record.App.Tests/Baioss.Record.App.Tests.csproj" />
   </Folder>
 </Solution>

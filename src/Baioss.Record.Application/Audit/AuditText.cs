@@ -58,6 +58,8 @@ public static class AuditText
                 "StorageStalled" => Localizer.F("Audit_DiskStall_Detail", Str(j, "Volume") ?? "?"),
                 "StorageStallCleared" => Localizer.F("Audit_DiskStallCleared_Detail", Str(j, "Volume") ?? "?",
                     Duration(j, "Duration") ?? Str(j, "Duration") ?? "?"),
+                "RecordingDeleted" => Deleted(j),
+                "AuditEntriesDeleted" => EntriesDeleted(j),
                 _ => null,
             };
             if (detail is not null) return detail;
@@ -108,6 +110,43 @@ public static class AuditText
         int files = Int(j, "Files");
         if (files > 1) parts.Add(Localizer.F("Audit_Files_Many", files));
         if (Str(j, "Operator") is { Length: > 0 } op) parts.Add(op);
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>«A_20261021_200000.mp4» del 21/10/2026 20:00 · 3 archivos · 2,1 GB · 1 ya no estaba en el disco (solo se
+    /// quitó el registro). Cuando la grabación ya no existe, esto es todo lo que queda de ella.</summary>
+    private static string Deleted(JsonElement j)
+    {
+        var parts = new List<string>(4);
+        var name = Str(j, "FileName");
+        var when = Date(j, "StartedAt", "dd/MM/yyyy HH:mm");
+        if (!string.IsNullOrEmpty(name))
+            parts.Add(when is null ? $"«{name}»" : Localizer.F("Audit_Deleted_Name", name!, when));
+        else if (when is not null) parts.Add(when);
+
+        int files = Int(j, "Files"), missing = Int(j, "MissingFiles");
+        if (files > 0)
+        {
+            parts.Add(Localizer.F(files == 1 ? "Audit_Files_One" : "Audit_Files_Many", files));
+            parts.Add(Bytes(Long(j, "TotalBytes")));
+        }
+        if (missing > 0)
+            parts.Add(files == 0
+                ? Localizer.T("Audit_Deleted_NoFiles")
+                : Localizer.F(missing == 1 ? "Audit_Deleted_Missing_One" : "Audit_Deleted_Missing_Many", missing));
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>«25 entradas · del 14/10/2026 al 21/10/2026»: lo que queda de las entradas borradas del registro.</summary>
+    private static string EntriesDeleted(JsonElement j)
+    {
+        int count = Int(j, "Count");
+        var parts = new List<string>(2) { Localizer.F(count == 1 ? "Audit_Summary_One" : "Audit_Summary_Many", count) };
+        string? oldest = Date(j, "Oldest", "dd/MM/yyyy"), newest = Date(j, "Newest", "dd/MM/yyyy");
+        if (oldest is not null && newest is not null)
+            parts.Add(oldest == newest
+                ? Localizer.F("Audit_LogDeleted_Day", oldest)
+                : Localizer.F("Audit_LogDeleted_Range", oldest, newest));
         return string.Join(" · ", parts);
     }
 
@@ -255,6 +294,12 @@ public static class AuditText
 
     private static long Long(JsonElement j, string name)
         => j.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
+
+    /// <summary>Un instante del evento en la hora LOCAL del equipo, con <paramref name="format"/>; null si falta o no se lee.</summary>
+    private static string? Date(JsonElement j, string name, string format)
+        => j.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.TryGetDateTimeOffset(out var d)
+            ? d.ToLocalTime().ToString(format, CultureInfo.InvariantCulture)
+            : null;
 
     /// <summary>Duración «hh:mm:ss» → «1 h 05 min» / «40 s», que es como se lee de un vistazo.</summary>
     private static string? Duration(JsonElement j, string name)

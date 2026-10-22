@@ -4,7 +4,7 @@
         xmlns:app="clr-namespace:Baioss.Record.App"
         xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
         xmlns:local="clr-namespace:Baioss.Record.App.Storage"
-        Title="{loc:T Sto_Title}" Width="660" Height="720" MinWidth="560"
+        Title="{loc:T Sto_Title}" Width="660" Height="900" MinWidth="560"
         WindowStyle="ToolWindow" Background="#10131A" WindowStartupLocation="CenterOwner">
     <Window.Resources>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
@@ -143,6 +143,17 @@
                                   IsChecked="{Binding StopNewRecordingsOnEmergency}" Style="{StaticResource DarkCheck}"/>
                         <TextBlock Text="{loc:T Sto_ThresholdsHint}"
                                    FontSize="10" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- GRABACIONES EN DISCO: borrado a mano (otra ventana) -->
+                <Border Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="{loc:T Sto_RecordingsHeader}" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="{loc:T Sto_RecordingsHint}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}"
+                                   TextWrapping="Wrap" Margin="0,0,0,10"/>
+                        <Button Content="{loc:T Sto_OpenCleanup}" Command="{Binding OpenCleanupCommand}"
+                                Style="{StaticResource TransportButton}" HorizontalAlignment="Left" Height="32" Padding="16,0"/>
                     </StackPanel>
                 </Border>
             </StackPanel>

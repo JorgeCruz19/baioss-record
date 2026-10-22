@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Baioss.Record.Domain.Entities;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Capture;
+using Baioss.Record.Application.Channels;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Presets;
 using Baioss.Record.Application.Storage;
@@ -57,6 +58,15 @@ public static class DependencyInjection
         services.AddSingleton<IRepository<Segment>, EfRepository<Segment>>();
 
         services.AddSingleton<IStorageManager, StorageManager>();
+        // Borrado manual de grabaciones (ventana «Borrar grabaciones»). Lo que graban los canales AHORA se pregunta al
+        // gestor de canales en cada borrado, no al construir: lo registra el host de la aplicación (en los tests de
+        // persistencia no existe, y entonces solo cuenta el fin de la grabación en la BD).
+        services.AddSingleton<IRecordingDeletionService>(sp => new RecordingDeletionService(
+            sp.GetRequiredService<IRecordingSessionRepository>(),
+            sp.GetRequiredService<ILogger<RecordingDeletionService>>(),
+            sp.GetService<IEventBus>(),
+            () => sp.GetService<IChannelManager>()?.Channels.Select(c => c.Status.SessionId).OfType<Guid>().ToArray()
+                  ?? Array.Empty<Guid>()));
 
         // Presets de encoding: built-in + personalizados en JSON, junto a la base de datos.
         var presetsPath = Path.Combine(Path.GetDirectoryName(sqliteDbPath) ?? ".", "presets.json");

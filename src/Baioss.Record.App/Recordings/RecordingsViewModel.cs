@@ -30,7 +30,8 @@ public sealed record ChannelOption(string Label, Guid? ChannelId)
 /// ViewModel de la ventana «Grabaciones»: lista el historial de grabaciones (canal, fecha, duración, tamaño
 /// y protección) desde el repositorio, y permite MARCAR cada una como Protegida/Importante/Normal frente a la
 /// limpieza automática (Fase 1: cualquier valor ≠ Normal la excluye de la retención). Solo lectura + marcado;
-/// NO borra (el borrado es de la retención automática, opt-in). (Gestión de almacenamiento — Fase 4a.)
+/// NO borra: el borrado a mano está en «Borrar grabaciones» (desde Almacenamiento) y el automático es de la retención,
+/// opt-in. (Gestión de almacenamiento — Fase 4a.)
 /// </summary>
 public sealed partial class RecordingsViewModel : ObservableObject, IDisposable
 {

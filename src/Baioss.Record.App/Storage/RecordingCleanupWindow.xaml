@@ -1,0 +1,214 @@
+<app:SecondaryWindow x:Class="Baioss.Record.App.Storage.RecordingCleanupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Baioss.Record.App"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{loc:T Cln_Title}" Width="1120" Height="660" MinWidth="920" MinHeight="420"
+        Icon="/Assets/icon.ico"
+        Background="#10131A" WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <!-- Botón de acción compacto por fila (como en «Grabaciones») -->
+        <Style x:Key="RowButton" TargetType="Button" BasedOn="{StaticResource TransportButton}">
+            <Setter Property="Padding" Value="9,5"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="4,0,0,0"/>
+            <!-- El botón de borrar de una fila en curso o protegida está desactivado: su tooltip dice por qué -->
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
+        </Style>
+        <Style x:Key="FilterLabel" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+        </Style>
+        <Style x:Key="HeaderText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Cabecera -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,12">
+            <StackPanel>
+                <TextBlock Text="{loc:T Cln_Header}" FontSize="14" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                <TextBlock Text="{loc:T Cln_Subtitle}"
+                           FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Rango de fechas + resumen -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,0,16,10">
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{loc:T Cln_From}" Style="{StaticResource FilterLabel}"/>
+                    <DatePicker Width="140" Height="30" Margin="6,0,0,0" SelectedDate="{Binding FromDate}"/>
+                    <TextBlock Text="{loc:T Cln_To}" Style="{StaticResource FilterLabel}" Margin="14,0,0,0"/>
+                    <DatePicker Width="140" Height="30" Margin="6,0,0,0" SelectedDate="{Binding ToDate}"/>
+                    <Button Content="{loc:T Cln_AllDates}" Command="{Binding AllDatesCommand}" Style="{StaticResource TransportButton}"
+                            Height="30" Margin="10,0,0,0" Padding="14,0"/>
+                    <Button Content="{loc:T Rec_Refresh}" Command="{Binding RefreshCommand}" Style="{StaticResource TransportButton}"
+                            Height="30" Margin="8,0,0,0" Padding="14,0"/>
+                </StackPanel>
+                <TextBlock Text="{Binding Summary}" HorizontalAlignment="Right" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+            </Grid>
+        </Border>
+
+        <!-- Borrado de varias a la vez -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,0,16,12">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="{Binding DeleteSelectedText}" Command="{Binding DeleteSelectedCommand}"
+                        Style="{StaticResource StopButton}" ToolTip="{loc:T Cln_DeleteSelected_Tip}" Height="30" Padding="14,0"/>
+                <Button Content="{Binding DeleteRangeText}" Command="{Binding DeleteRangeCommand}"
+                        Style="{StaticResource StopButton}" ToolTip="{loc:T Cln_DeleteRange_Tip}" Height="30" Padding="14,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Pie: resultado del último borrado + cerrar -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" VerticalAlignment="Center" FontSize="12"
+                           TextWrapping="Wrap" Margin="0,0,12,0">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource SignalGreenBrush}"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <Button Grid.Column="1" Content="{loc:T Common_Close}" Click="Close_Click" VerticalAlignment="Center"
+                        Height="32" MinWidth="100" Padding="20,0" Style="{StaticResource TransportButton}"/>
+            </Grid>
+        </Border>
+
+        <!-- Encabezado de tabla -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="18,6,34,6" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="30"/>
+                    <ColumnDefinition Width="54"/>
+                    <ColumnDefinition Width="250"/>
+                    <ColumnDefinition Width="92"/>
+                    <ColumnDefinition Width="52"/>
+                    <ColumnDefinition Width="92"/>
+                    <ColumnDefinition Width="74"/>
+                    <ColumnDefinition Width="86"/>
+                    <ColumnDefinition Width="118"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" IsChecked="{Binding AllSelected}" VerticalAlignment="Center"
+                          ToolTip="{loc:T Cln_SelectAll_Tip}"/>
+                <TextBlock Grid.Column="1" Text="{loc:T Rec_Channel}"  Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="2" Text="{loc:T Rec_Name}"     Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="3" Text="{loc:T Rec_Date}"     Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="4" Text="{loc:T Rec_Time}"     Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="5" Text="{loc:T Rec_Duration}" Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="6" Text="{loc:T Cln_Col_Files}" Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="7" Text="{loc:T Rec_Size}"     Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="8" Text="{loc:T Cln_Col_State}" Style="{StaticResource HeaderText}"/>
+                <TextBlock Grid.Column="9" Text="{loc:T Rec_Actions}"  Style="{StaticResource HeaderText}" HorizontalAlignment="Right"/>
+            </Grid>
+        </Border>
+
+        <!-- Mensaje vacío -->
+        <TextBlock DockPanel.Dock="Top" Text="{loc:T Cln_Empty}"
+                   Foreground="{StaticResource TextSecondaryBrush}" FontSize="13" Margin="18,24,0,0"
+                   Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVis}}"/>
+
+        <!-- Filas. El ScrollViewer va DENTRO de la plantilla de la lista (no alrededor): solo así virtualiza, y la
+             lista puede tener miles de grabaciones. -->
+        <ItemsControl ItemsSource="{Binding Rows}" Margin="16,2"
+                      VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                      ScrollViewer.CanContentScroll="True">
+            <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" CanContentScroll="True" Padding="0,2" Focusable="False">
+                        <ItemsPresenter/>
+                    </ScrollViewer>
+                </ControlTemplate>
+            </ItemsControl.Template>
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource PanelBorderBrush}"
+                            BorderThickness="1" CornerRadius="6" Padding="8,6" Margin="0,0,0,6">
+                        <Grid VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="30"/>
+                                <ColumnDefinition Width="54"/>
+                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="92"/>
+                                <ColumnDefinition Width="52"/>
+                                <ColumnDefinition Width="92"/>
+                                <ColumnDefinition Width="74"/>
+                                <ColumnDefinition Width="86"/>
+                                <ColumnDefinition Width="118"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" IsEnabled="{Binding CanDelete}"
+                                      VerticalAlignment="Center"/>
+                            <Border Grid.Column="1" Background="{StaticResource AccentBrush}" CornerRadius="4"
+                                    Width="26" Height="24" HorizontalAlignment="Left">
+                                <TextBlock Text="{Binding ChannelKey}" FontWeight="Bold" FontSize="12"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Grid.Column="2" Text="{Binding FileName}" VerticalAlignment="Center" FontSize="12" Margin="0,0,10,0"
+                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding FileName}"/>
+                            <TextBlock Grid.Column="3" Text="{Binding DateText}" VerticalAlignment="Center" FontSize="12"/>
+                            <TextBlock Grid.Column="4" Text="{Binding TimeText}" VerticalAlignment="Center" FontSize="12"/>
+                            <TextBlock Grid.Column="5" Text="{Binding DurationText}" VerticalAlignment="Center" FontSize="12"/>
+                            <TextBlock Grid.Column="6" Text="{Binding FilesText}" VerticalAlignment="Center" FontSize="12"/>
+                            <TextBlock Grid.Column="7" Text="{Binding SizeText}" VerticalAlignment="Center" FontSize="12"/>
+
+                            <!-- Estado: en curso (rojo), protegida (verde) o importante (ámbar); vacío si es normal -->
+                            <Border Grid.Column="8" CornerRadius="4" Padding="8,3" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsMarkedProtected}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource SignalGreenBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsMarkedImportant}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource SignalAmberBrush}"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsInProgress}" Value="True">
+                                                <Setter Property="Background" Value="{StaticResource RecBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding StateText}" FontSize="11" FontWeight="SemiBold"/>
+                            </Border>
+
+                            <!-- Acciones -->
+                            <StackPanel Grid.Column="9" Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Content="🗑" Style="{StaticResource RowButton}" ToolTip="{Binding DeleteTip}"
+                                        Command="{Binding DataContext.DeleteOneCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                        CommandParameter="{Binding}"/>
+                                <Button Content="📂" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_OpenFolder}"
+                                        Command="{Binding DataContext.OpenFolderCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                        CommandParameter="{Binding}"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </DockPanel>
+</app:SecondaryWindow>
