@@ -581,7 +581,8 @@ material carried in the 1080i (soap operas, series, many commercials): that is r
 picture twice. Deinterlacing everything rebuilt each picture from a single field, and in the camera scenes of that material
 fine textures shimmered from one picture to the next, like noise. After a cut from progressive material to interlaced
 video, the first three frames (a tenth of a second) may show slight combing on whatever moves. NDI sources, which may send
-fewer frames than they declare, are deinterlaced whole.
+fewer frames than they declare, are deinterlaced whole. Telling one from the other costs some CPU with truly interlaced
+video: on a computer already at its limit (two 1080p59.94 channels from 1080i on an i7-8700) it leaves less headroom.
 
 ---
 

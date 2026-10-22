@@ -586,7 +586,9 @@ material progresivo metido en el 1080i (telenovelas, series, muchos anuncios): e
 cada imagen dos veces. Desentrelazarlo todo rehacía cada imagen desde un solo campo, y en las escenas de cámara de ese
 material las texturas finas temblaban de una imagen a otra, como si fuera ruido. Tras un corte de material progresivo a
 vídeo entrelazado, los tres primeros cuadros (una décima de segundo) pueden salir con un leve peine en lo que se mueve. Las
-fuentes NDI, que pueden mandar menos cuadros de los que declaran, se desentrelazan enteras.
+fuentes NDI, que pueden mandar menos cuadros de los que declaran, se desentrelazan enteras. Distinguir una cosa de otra
+cuesta algo de CPU con vídeo entrelazado de verdad: en un equipo que ya va al límite (dos canales 1080p59.94 desde 1080i
+en un i7-8700) deja menos margen.
 
 ---
 

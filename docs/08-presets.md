@@ -89,8 +89,10 @@ misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); 
   serie en el hilo del grafo (1,5 ms con el equipo libre, 7–10 ms con un codificador por CPU al lado): con progresivo sale
   más barato que antes, pero con entrelazado de verdad y el equipo cargado quita margen (un canal NVENC 1080p59.94 sigue a
   1,00×; dos a la vez, de 0,61–0,68× a 0,57–0,58×; x264 1080p29.97 desde la fuente sintética, de 1,05× a 0,90–0,94×).
-  `fieldmatch` cuesta más: un núcleo por canal y 0,94× con un informativo. Ver `FfmpegArgumentBuilder.DeinterlaceFilter` y
-  `DeinterlaceCadenceTests`.
+  `fieldmatch` cuesta más: un núcleo por canal y 0,94× con un informativo. Comprobado en una copia publicada grabando la
+  DeckLink en directo (anuncios, NVENC 1080p59.94, con el otro canal grabando a la vez): entre cada cuadro y el siguiente
+  cambian solo los de una paridad (cada fotograma, dos veces; con la cadena de antes cambiaban todos), sin cuadros perdidos.
+  Ver `FfmpegArgumentBuilder.DeinterlaceFilter` y `DeinterlaceCadenceTests`.
 - **8 bits:** NVENC pide `p010` para 10 bits y no acepta el `yuv420p10le` del catálogo, así que los HEVC 4K de 10 bits
   siguen siendo de CPU.
 - **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.

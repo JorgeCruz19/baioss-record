@@ -86,6 +86,12 @@ codifica la grabación. Lo que pesa:
   ≈ 0,68), ≈ 0,8 grabando NVENC 1080p59.94 (antes ≈ 2,2), ≈ 2,9 dos canales así a la vez (antes ≈ 5,6) y ≈ 7,2 grabando x264
   1080p59.94 (antes ≈ 8,6). Son los procesos de los canales, sin el receptor de la tarjeta ni la aplicación
   (`FilterThreadsCostTests`; ver «Hilos del grafo de filtros» en [01-arquitectura](01-arquitectura.md)).
+  Desde el 2026-10-22 va `idet` delante de `bwdif`, para desentrelazar solo lo que de verdad viene entrelazado (ver
+  [08-presets](08-presets.md)): con material progresivo dentro del 1080i (telenovelas, anuncios) el canal gasta menos —una
+  copia de la app grabando la DeckLink en directo, con anuncios, a NVENC 1080p59.94: 1,23 núcleos el proceso del canal—,
+  pero con entrelazado de verdad idet añade trabajo en serie al grafo (1,5 ms por cuadro con el equipo libre, 7–10 ms con
+  un codificador por CPU al lado) y, con el equipo cargado, quita margen: dos canales NVENC 1080p59.94 a la vez pasaron de
+  0,61–0,68× a 0,57–0,58× y x264 1080p29.97 de 1,05× a 0,90–0,94× (un canal NVENC 1080p59.94 sigue a tiempo real).
 - **Entradas de red (SRT/RTMP) y NDI:** la decodificación es por CPU. H.264 1080p ≈ 0,3–0,5 núcleos; HEVC 1080p ≈ 1;
   4K HEVC ≈ 2–3 (para 4K conviene NVENC para grabar y pocos canales). **Medido:** un núcleo decodifica H.264 1080p a
   143–215 fps, 5–7 veces el tiempo real.
