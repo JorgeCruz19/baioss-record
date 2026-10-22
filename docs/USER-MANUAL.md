@@ -375,7 +375,8 @@ language the first time, and the ES/EN switch at the bottom of its sidebar chang
 
 This is where you control **what happens to the disk space** in the long run. All changes apply **without restarting**.
 
-> **Safe by default:** the program **deletes nothing** unless YOU enable retention or auto-cleanup.
+> **Safe by default:** the program **deletes nothing** unless YOU enable retention or auto-cleanup, or delete by hand in
+> **🗑 Delete recordings…** (section 7.3).
 
 ### 7.1. Automatic retention
 
@@ -399,6 +400,42 @@ This is what **deletes (or archives) old recordings** so that you do not run out
 
 Remember to press **Save**.
 
+### 7.3. Deleting recordings by hand
+
+In the **RECORDINGS ON DISK** section, the **🗑 Delete recordings…** button opens a window with **every recording, by
+date** (the most recent at the top): channel, file name, date, time, duration, how many files it has, size and status.
+
+**To see only some dates**, choose **From** and **To** (both days are included). **All dates** clears the range.
+
+**There are three ways to delete:**
+- **One:** the **🗑** button on its row.
+- **Several:** tick their boxes and press **🗑 Delete selected (N)**. The box in the header ticks or unticks them all.
+- **A whole date range:** choose the range and press **🗑 Delete the whole range (N)**. It deletes everything in the list;
+  with no range, that is every recording.
+
+**Before deleting, the program asks** and tells you what is going to happen: how many recordings, how many files will
+be deleted from the disk and how much space they take, and which ones no longer have their file. The highlighted button
+is **No**: an extra Enter deletes nothing. **This cannot be undone.**
+
+**What exactly is deleted:**
+- **The recording's files on the disk**, all of them: if it was split into segments, or the program carried on in a new
+  file after a crash, **every piece** is deleted, not just the first one.
+- **Its record**: the recording disappears from the history and from this list, leaving nothing behind in the database.
+- **If a file is no longer on the disk** (you deleted it from Explorer, for example), **only its record** is deleted.
+- If **the whole disk or network folder is not responding** (a disk unplugged, the network down), the question warns you:
+  its files count as no longer there and only their records are deleted. If that disk comes back, the files will still
+  be on it, but the program will no longer show them. If that is not what you want, answer **No**, connect the disk and
+  delete them again.
+
+**What is NEVER deleted from here:**
+- **A recording in progress** (marked **● In progress**): it can be deleted once it ends.
+- **A Protected or Important recording**: first set it to **Normal** in **🗂 Recordings**.
+- **A recording with a file open in another program** (a player, for example): nothing of it is deleted, and the foot of
+  the window says so in red. Close that program and try again.
+
+Every deleted recording is noted in **📋 Activity** as "Recording deleted", with its name, its date, what was deleted and
+who did it.
+
 ---
 
 ## 8. Recording history — the 🗂 Recordings button
@@ -415,7 +452,9 @@ This is the list of **everything you have recorded**. It is for looking things u
 - **○ Normal:** removes the protection (it goes back into automatic cleanup).
 - **📂:** opens the folder where the file is.
 
-> **Use "Protect" or "Important"** on the recordings you never want to lose. Automatic cleanup (section 7) always respects those marks.
+> **Use "Protect" or "Important"** on the recordings you never want to lose. Automatic cleanup (section 7) always respects those marks, and they cannot be deleted by hand while they have them.
+
+> **To delete recordings** (their files and their record), use **🗄 Storage → 🗑 Delete recordings…** (section 7.3).
 
 ---
 
@@ -437,6 +476,8 @@ the **event** in plain words, the channel, the operator and the detail. For exam
 | Schedule skipped | «News» · The channel was already recording |
 | Recording interrupted | The recording process was forcibly terminated · carried on in a new piece |
 | Damaged file | 21-07-2026_News_9.mp4 · 2.7 GB · no index: cannot be played as is |
+| Recording deleted | «21-07-2026_News_1.mp4» from 21/07/2026 20:00 · 3 files · 6.1 GB |
+| Activity deleted | 25 entries · from 14/07/2026 to 21/07/2026 |
 
 The last two go together: if the recording process dies halfway through a file, the program **keeps recording
 in a new file** (numbered next in sequence) and tells you that the cut file cannot be played as it is. That
@@ -450,8 +491,13 @@ what went wrong.
 **⬇ Export** saves *what you are looking at* to a CSV file, with the filters applied. It opens in Excel and is
 what you would hand to a client or keep on file.
 
-> It is **read only**: nothing is deleted or changed here. Entries are kept for **30 days** and the oldest ones
-> retire on their own; that has nothing to do with your recordings, which are managed in 🗄 Storage.
+**Deleting entries:** tick the boxes of the ones you want to remove (the box in the header ticks or unticks every entry
+in the list) and press **🗑 Delete selected (N)**, at the bottom left. The program asks first ("No" is the highlighted
+button) and **this cannot be undone**. Deleting does not leave the log without a trace: a new entry, **"Activity
+deleted"**, says how many entries were deleted, from which dates and who did it. What an entry says cannot be changed.
+
+> Deleting entries here **does not delete recordings**: those are deleted in 🗄 Storage (section 7.3). Entries are kept
+> for **30 days** and the oldest ones retire on their own.
 
 ---
 
@@ -465,7 +511,7 @@ what you would hand to a client or keep on file.
 - **Split:** breaking a long recording into several files, for safety.
 - **Timecode:** the time counter of the recording in progress.
 - **24/7 recording:** continuous operation, with monitoring and automatic recovery.
-- **Protection (Protected / Important / Normal):** the mark that decides whether a recording can be deleted by automatic cleanup or not.
+- **Protection (Protected / Important / Normal):** the mark that decides whether a recording can be deleted, by automatic cleanup or by hand.
 
 ### Alarms you may see on the monitor
 The program warns you with a banner over the preview when it detects:
@@ -493,6 +539,10 @@ No. Once you choose it, it **is kept** until you change it.
 
 **Does the program delete my recordings on its own?**
 Only if you enable **retention** or **auto-cleanup** in 🗄 Storage. By default it deletes nothing. And it **never** deletes anything you have marked as **Protected** or **Important**.
+
+**How do I delete recordings I no longer want?**
+In **🗄 Storage → 🗑 Delete recordings…**: one by one, the ones you tick, or every recording in a date range (section
+7.3). Their files are deleted from the disk, every piece, along with their record.
 
 **What happens if the signal drops in the middle of a recording?**
 The file **is not lost**. If you enabled the test pattern, it keeps recording a warning screen; in any case the program watches and recovers on its own when the signal comes back.

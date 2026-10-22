@@ -37,11 +37,19 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
     /// <summary>True si <see cref="StatusMessage"/> es un aviso/error (la UI lo pinta en rojo en vez de verde).</summary>
     [ObservableProperty] private bool _statusIsError;
 
-    public StorageSettingsViewModel(IStorageSettingsStore store)
+    /// <summary>Abre la ventana «Borrar grabaciones» (la compone el shell, que tiene los repositorios y los canales).</summary>
+    private readonly Action? _openCleanup;
+
+    public StorageSettingsViewModel(IStorageSettingsStore store, Action? openCleanup = null)
     {
         _store = store;
+        _openCleanup = openCleanup;
         Load(store.Current);
     }
+
+    [RelayCommand(CanExecute = nameof(CanOpenCleanup))]
+    private void OpenCleanup() => _openCleanup?.Invoke();
+    private bool CanOpenCleanup() => _openCleanup is not null;
 
     private void Load(StorageSettings s)
     {

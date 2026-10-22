@@ -101,6 +101,23 @@ public sealed record RecordingPurged(Guid ChannelId, Guid SessionId, int Files, 
 /// <summary>La retención OMITIÓ una sesión candidata (protegida, archivo en uso/bloqueado…): motivo para la auditoría.</summary>
 public sealed record RetentionSkipped(Guid ChannelId, Guid SessionId, string Reason) : DomainEventBase;
 
+/// <summary>
+/// El operador BORRÓ una grabación desde la aplicación (ventana «Borrar grabaciones»). <paramref name="Files"/> y
+/// <paramref name="TotalBytes"/> son lo que se borró del disco; <paramref name="MissingFiles"/>, las piezas que ya no
+/// estaban en él (de esas solo se quitó el registro). <paramref name="FileName"/> (el primer archivo) y
+/// <paramref name="StartedAt"/> la identifican en la auditoría cuando ya no queda nada de ella.
+/// </summary>
+public sealed record RecordingDeleted(
+    Guid ChannelId, Guid SessionId, string? FileName, DateTimeOffset StartedAt,
+    int Files, long TotalBytes, int MissingFiles, string? Operator) : DomainEventBase;
+
+/// <summary>
+/// Alguien BORRÓ entradas del registro de actividad desde la aplicación: cuántas, de qué fechas (la más antigua y la
+/// más reciente) y quién. Es lo que queda de ellas: un registro que se puede vaciar desde la propia aplicación sin
+/// dejar rastro no valdría como auditoría.
+/// </summary>
+public sealed record AuditEntriesDeleted(int Count, DateTimeOffset? Oldest, DateTimeOffset? Newest, string? Operator) : DomainEventBase;
+
 // --- Emergencia de almacenamiento (Fase 3b): el coordinador global vigila el volumen de grabación (también en
 //     IDLE, que la guarda por-canal no cubre) y emite estas transiciones para auditoría/UI. ---
 /// <summary>El volumen de grabación ENTRÓ en emergencia de espacio (≥ umbral, p. ej. 95% ocupado): hay que liberar

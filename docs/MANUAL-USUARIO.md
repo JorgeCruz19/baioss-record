@@ -378,7 +378,8 @@ vez sigue el idioma del navegador, y el selector ES/EN de abajo de su barra late
 
 Aquí controlas **qué pasa con el espacio del disco** a largo plazo. Todos los cambios se aplican **sin reiniciar**.
 
-> **Seguro por defecto:** el programa **no borra nada** a menos que TÚ actives la retención o la auto-limpieza.
+> **Seguro por defecto:** el programa **no borra nada** a menos que TÚ actives la retención o la auto-limpieza, o que
+> borres tú a mano en **🗑 Borrar grabaciones…** (punto 7.3).
 
 ### 7.1. Retención automática
 
@@ -402,6 +403,44 @@ Sirve para **borrar (o archivar) las grabaciones viejas** y no quedarte sin espa
 
 Recuerda pulsar **Guardar**.
 
+### 7.3. Borrar grabaciones a mano
+
+En la sección **GRABACIONES EN DISCO**, el botón **🗑 Borrar grabaciones…** abre una ventana con **todas las grabaciones,
+por fecha** (la más reciente arriba): canal, nombre del archivo, fecha, hora, duración, cuántos archivos tiene, tamaño y
+estado.
+
+**Para ver solo unas fechas**, elige **Desde** y **Hasta** (los dos días entran). **Todas las fechas** quita el rango.
+
+**Hay tres formas de borrar:**
+- **Una:** el botón **🗑** de su fila.
+- **Varias:** marca sus casillas y pulsa **🗑 Borrar seleccionadas (N)**. La casilla de la cabecera las marca o desmarca
+  todas.
+- **Todo un rango de fechas:** elige el rango y pulsa **🗑 Borrar todo el rango (N)**. Borra todo lo que hay en la lista; sin
+  rango, son todas las grabaciones.
+
+**Antes de borrar, el programa pregunta** y te dice qué va a pasar: cuántas grabaciones son, cuántos archivos se borrarán
+del disco y cuánto ocupan, y cuáles ya no tienen su archivo. El botón que queda marcado es **No**: un Intro de más no borra
+nada. **No se puede deshacer.**
+
+**Qué se borra exactamente:**
+- **Los archivos del disco de la grabación**, todos: si se grabó partida en segmentos, o el programa la siguió en un
+  archivo nuevo tras una caída, se borran **todas sus piezas**, no solo la primera.
+- **Su registro**: la grabación desaparece del historial y de esta lista, sin dejar restos en la base de datos.
+- **Si un archivo ya no está en el disco** (lo borraste desde el Explorador, por ejemplo), de ese **solo se borra el
+  registro**.
+- Si **el disco o la carpeta de red entera no responde** (un disco desconectado, la red caída), la pregunta lo avisa: sus
+  archivos cuentan como que ya no están y solo se borran sus registros. Si ese disco vuelve, los archivos seguirán en él,
+  pero el programa ya no los mostrará. Si no es lo que quieres, contesta **No**, conecta el disco y vuelve a borrarlas.
+
+**Lo que NO se borra nunca desde aquí:**
+- **Una grabación en curso** (marcada **● En curso**): se podrá borrar cuando termine.
+- **Una grabación Protegida o Importante**: pásala antes a **Normal** en **🗂 Grabaciones**.
+- **Una grabación con algún archivo abierto en otro programa** (un reproductor, por ejemplo): de esa no se borra nada,
+  y el pie de la ventana lo dice en rojo. Cierra ese programa y vuelve a intentarlo.
+
+Cada grabación borrada queda anotada en **📋 Actividad** como «Grabación borrada», con su nombre, su fecha, lo que se
+borró y quién lo hizo.
+
 ---
 
 ## 8. El historial de grabaciones — botón 🗂 Grabaciones
@@ -418,7 +457,9 @@ Es la lista de **todo lo que has grabado**. Sirve para consultar, proteger y loc
 - **○ Normal:** le quita la protección (vuelve a entrar en la limpieza automática).
 - **📂:** abre la carpeta donde está el archivo.
 
-> **Usa "Proteger" o "Importante"** en las grabaciones que no quieres perder nunca. La limpieza automática (punto 7) respeta siempre esas marcas.
+> **Usa "Proteger" o "Importante"** en las grabaciones que no quieres perder nunca. La limpieza automática (punto 7) respeta siempre esas marcas, y tampoco se pueden borrar a mano mientras las tengan.
+
+> **Para borrar grabaciones** (sus archivos y su registro), usa **🗄 Almacenamiento → 🗑 Borrar grabaciones…** (punto 7.3).
 
 ---
 
@@ -440,6 +481,8 @@ los errores), el **suceso** en palabras, el canal, el operador y el detalle. Por
 | Programación omitida | «Noticias» · El canal ya estaba grabando |
 | Grabación interrumpida | El proceso de grabación fue terminado a la fuerza · siguió en una pieza nueva |
 | Archivo dañado | 21-07-2026_Noticias_9.mp4 · 2,7 GB · sin índice: no se puede reproducir tal cual |
+| Grabación borrada | «21-07-2026_Noticias_1.mp4» del 21/07/2026 20:00 · 3 archivos · 6,1 GB |
+| Actividad borrada | 25 entradas · del 14/07/2026 al 21/07/2026 |
 
 Las dos últimas van juntas: si el proceso que graba se cae a mitad de un archivo, el programa **sigue grabando
 en un archivo nuevo** (numerado a continuación) y te avisa de que el archivo cortado no se puede reproducir tal
@@ -452,8 +495,14 @@ nivel. Para revisar una noche entera, lo práctico es **Solo incidencias**: deja
 **⬇ Exportar** guarda en un archivo CSV *lo que estás viendo*, con los filtros puestos. Se abre con Excel y
 sirve para entregarlo a un cliente o archivarlo.
 
-> Es **solo lectura**: aquí no se borra ni se cambia nada. Las entradas se conservan **30 días** y las más
-> antiguas se van retirando solas; eso no afecta a las grabaciones, que se gestionan en 🗄 Almacenamiento.
+**Borrar entradas:** marca las casillas de las que quieras quitar (la casilla de la cabecera marca o desmarca todas las
+de la lista) y pulsa **🗑 Borrar seleccionadas (N)**, abajo a la izquierda. El programa pregunta antes («No» es el botón
+marcado) y **no se puede deshacer**. Borrar no deja el registro sin rastro: queda una entrada nueva, **«Actividad
+borrada»**, que dice cuántas entradas se borraron, de qué fechas y quién lo hizo. Lo que dice cada entrada no se puede
+cambiar.
+
+> Borrar entradas de aquí **no borra grabaciones**: esas se borran en 🗄 Almacenamiento (punto 7.3). Las entradas se
+> conservan **30 días** y las más antiguas se van retirando solas.
 
 ---
 
@@ -467,7 +516,7 @@ sirve para entregarlo a un cliente o archivarlo.
 - **Segmentar:** partir una grabación larga en varios archivos, para más seguridad.
 - **Timecode:** el contador de tiempo de la grabación en curso.
 - **Grabación 24/7:** modo de funcionamiento continuo, con vigilancia y recuperación automática.
-- **Protección (Protegida / Importante / Normal):** marca que decide si una grabación puede borrarse en la limpieza automática o no.
+- **Protección (Protegida / Importante / Normal):** marca que decide si una grabación puede borrarse, en la limpieza automática o a mano.
 
 ### Alarmas que puedes ver en el monitor
 El programa te avisa con un cartel sobre la vista previa cuando detecta:
@@ -495,6 +544,10 @@ No. Una vez la eliges, **queda guardada** hasta que la cambies.
 
 **¿El programa borra mis grabaciones solo?**
 Solo si activas la **retención** o la **auto-limpieza** en 🗄 Almacenamiento. Por defecto no borra nada. Y **nunca** borra lo que marques como **Protegida** o **Importante**.
+
+**¿Cómo borro grabaciones que ya no quiero?**
+En **🗄 Almacenamiento → 🗑 Borrar grabaciones…**: una a una, las que marques o todas las de un rango de fechas (punto
+7.3). Se borran sus archivos del disco, todas sus piezas, y su registro.
 
 **¿Qué pasa si se cae la señal en mitad de una grabación?**
 El archivo **no se pierde**. Si activaste la carta de ajuste, sigue grabando una pantalla de aviso; en cualquier caso el programa vigila y se recupera solo cuando la señal vuelve.
