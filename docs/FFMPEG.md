@@ -120,7 +120,8 @@ Las cifras de los primeros puntos son de la del 2026-03-12; el último resume la
   `send_frame` en el resto. Esos días la emisión estaba fuera del aire (negro, rótulo fijo y silencio) y con eso no se
   puede medir el peine, así que se comprobó con una señal sintética 1080i 4:2:2 por la misma cadena (`bwdif` → `scale` →
   `nv12` → NVENC): 121 de 121 cuadros progresivos en todos los planos. Con emisión real lo había medido la sesión del
-  2026-10-15 con QuickSync; el filtro es el mismo.
+  2026-10-15 con QuickSync; el filtro es el mismo. (Desde el 2026-10-22 delante va `idet` y bwdif solo desentrelaza lo que
+  idet ve entrelazado: ver `08-presets.md`.)
 - **Dos canales NVENC a la vez** (1080p29.97 ×2, 1080p59.94 ×2, HEVC 29.97 + 59.94): sin descartes, con el codificador del
   P400 al 20–57 %. Lo que limita es la CPU, ver `REQUISITOS.md`.
 - **Sesiones agotadas:** con las 8 ocupadas, el canal que no encuentra sesión degrada solo a `h264_qsv`, con la alarma, y
