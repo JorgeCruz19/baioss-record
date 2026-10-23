@@ -80,6 +80,19 @@ misma resolución, cadencia, bitrate y GOP (lo comprueba `PresetCatalogTests`); 
   (`SignalInfo.Scan`; el relé en crudo no conserva la marca en los cuadros). Si el preset dobla la cadencia (1080i59.94 →
   1080p59.94) sale un cuadro por campo. Antes se grababan los campos entretejidos en cuadros progresivos: peine en todo lo
   que se mueve.
+- **Solo lo que es entrelazado** (desde el 2026-10-22): `setfield,idet,bwdif=…:deint=interlaced` —y, por campo, un `fps` a
+  la cadencia de campo que repite el cuadro que bwdif deja pasar—. El material progresivo que la emisora mete en el 1080i
+  (telenovelas, series, anuncios) sale entero; desentrelazarlo todo lo rehacía desde un solo campo y las texturas finas
+  temblaban (el «ruido» de las escenas de cámara). Lo entrelazado sale bit a bit como antes; tras un corte de progresivo a
+  entrelazado, idet tarda tres cuadros en seguirlo (salen tejidos). Las fuentes con huecos (NDI) se desentrelazan enteras:
+  ahí idet compara cuadros lejanos y toma lo entrelazado por progresivo. **Coste:** idet lee tres cuadros por cada uno, en
+  serie en el hilo del grafo (1,5 ms con el equipo libre, 7–10 ms con un codificador por CPU al lado): con progresivo sale
+  más barato que antes, pero con entrelazado de verdad y el equipo cargado quita margen (un canal NVENC 1080p59.94 sigue a
+  1,00×; dos a la vez, de 0,61–0,68× a 0,57–0,58×; x264 1080p29.97 desde la fuente sintética, de 1,05× a 0,90–0,94×).
+  `fieldmatch` cuesta más: un núcleo por canal y 0,94× con un informativo. Comprobado en una copia publicada grabando la
+  DeckLink en directo (anuncios, NVENC 1080p59.94, con el otro canal grabando a la vez): entre cada cuadro y el siguiente
+  cambian solo los de una paridad (cada fotograma, dos veces; con la cadena de antes cambiaban todos), sin cuadros perdidos.
+  Ver `FfmpegArgumentBuilder.DeinterlaceFilter` y `DeinterlaceCadenceTests`.
 - **8 bits:** NVENC pide `p010` para 10 bits y no acepta el `yuv420p10le` del catálogo, así que los HEVC 4K de 10 bits
   siguen siendo de CPU.
 - **Píxel Auto:** el motor le entrega a NVENC `nv12`, su formato nativo, al final de la rama de grabación.

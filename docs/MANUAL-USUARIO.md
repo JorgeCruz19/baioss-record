@@ -150,13 +150,14 @@ Aquí decides **qué fuente de vídeo se conecta a cada canal**.
   siempre (el canal abre la tarjeta en cada Grabar/Detener): `Capture:DecklinkRelay=false` en la configuración embebida
   (hay que recompilar).
 - **Cámara / capturadora USB (DirectShow):** webcams, capturadoras HDMI-USB, etc.
-- **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red). Una fuente entrelazada (un 1080i
-  de vMix o de un conversor) se desentrelaza como la de la tarjeta, y una que no trae audio (salidas de grafismo, muchas
-  cámaras PTZ) se previsualiza y graba con una pista de silencio: por eso marca la alarma de silencio. Algunas salidas de
-  grafismo marcan como entrelazados cuadros que van a 50 o 60 por segundo, un entrelazado que no existe: se tratan como
-  progresivos (se ven como «1920×1080 · 60p · NDI»). El canal de alfa de una fuente NDI no se graba. Una fuente que manda
-  menos cuadros de los que declara (un grafismo que solo envía cuando cambia la imagen) se ve en el preview a su ritmo real
-  y se graba a la cadencia que declara, repitiendo cada imagen hasta la siguiente; **FPS OUT** dice esa cadencia.
+- **NDI:** vídeo por red (por ejemplo, la salida NDI de OBS u otra fuente NDI de tu red). Una fuente entrelazada (un
+  1080i de vMix o de un conversor) se desentrelaza entera al grabarla en progresivo, y una que no trae audio (salidas de
+  grafismo, muchas cámaras PTZ) se previsualiza y graba con una pista de silencio: por eso marca la alarma de silencio.
+  Algunas salidas de grafismo marcan como entrelazados cuadros que van a 50 o 60 por segundo, un entrelazado que no
+  existe: se tratan como progresivos (se ven como «1920×1080 · 60p · NDI»). El canal de alfa de una fuente NDI no se
+  graba. Una fuente que manda menos cuadros de los que declara (un grafismo que solo envía cuando cambia la imagen) se
+  ve en el preview a su ritmo real y se graba a la cadencia que declara, repitiendo cada imagen hasta la siguiente;
+  **FPS OUT** dice esa cadencia.
 - **Flujo de red (SRT o RTMP):** una señal que llega por la red desde un codificador, OBS, vMix o un servidor (ver
   «Fuentes de red» más abajo).
 - **Clip de demostración:** un vídeo de ejemplo que trae el programa (útil para pruebas).
@@ -578,6 +579,16 @@ cada cuadro: lo que se mueve sale una sola vez y nítido (reducir los dos campos
 como en la tele), `Preview:InterlacedFieldRate=true` en la configuración embebida (hay que recompilar): cuesta alrededor
 de un núcleo más de CPU por canal entre FFmpeg y la aplicación (medido en un i7-8700), así que solo conviene en equipos con
 CPU de sobra.
+
+**¿Cómo se graba una señal entrelazada (1080i) con un preset progresivo (1080p)?**
+Se desentrelaza solo lo que de verdad viene entrelazado. Una tele mezcla vídeo entrelazado (noticias, directos) con
+material progresivo metido en el 1080i (telenovelas, series, muchos anuncios): ese se graba entero, y en un preset a 59,94
+cada imagen dos veces. Desentrelazarlo todo rehacía cada imagen desde un solo campo, y en las escenas de cámara de ese
+material las texturas finas temblaban de una imagen a otra, como si fuera ruido. Tras un corte de material progresivo a
+vídeo entrelazado, los tres primeros cuadros (una décima de segundo) pueden salir con un leve peine en lo que se mueve. Las
+fuentes NDI, que pueden mandar menos cuadros de los que declaran, se desentrelazan enteras. Distinguir una cosa de otra
+cuesta algo de CPU con vídeo entrelazado de verdad: en un equipo que ya va al límite (dos canales 1080p59.94 desde 1080i
+en un i7-8700) deja menos margen.
 
 ---
 

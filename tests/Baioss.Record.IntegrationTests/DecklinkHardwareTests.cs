@@ -1040,11 +1040,12 @@ public sealed class DecklinkHardwareTests
                                 $"Peine en un preset progresivo: el archivo conserva peine en el {recorded.CombedShare(tff):P0} de lo que idet clasifica ({recorded}), " +
                                 $"con la señal en el {source.CombedShare(tff):P0} justo antes de grabar ({source}).");
                     }
-                    // Con cualquier imagen: la rama de grabación desentrelaza con bwdif, con la paridad de la señal y, si el preset
-                    // dobla su cadencia (1080i59.94 → 1080p59.94), un cuadro por campo.
+                    // Con cualquier imagen: la rama de grabación desentrelaza con bwdif lo que idet ve entrelazado, con la paridad
+                    // de la señal y, si el preset dobla su cadencia (1080i59.94 → 1080p59.94), un cuadro por campo.
                     bool perField = Math.Abs(expectedFps - 2 * sourceFps) < 0.01 * expectedFps;
                     string parity = rig.Source.CurrentSignal.Scan is ScanType.InterlacedBff ? "bff" : "tff";
-                    Assert.Contains($"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all", LastRecordingPipeline(log, "A"));
+                    Assert.Contains($"setfield={parity},idet,bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=interlaced",
+                        LastRecordingPipeline(log, "A"));
                 }
                 if (nvenc && !fallback)
                 {

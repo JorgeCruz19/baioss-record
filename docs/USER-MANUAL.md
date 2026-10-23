@@ -150,13 +150,14 @@ This is where you decide **which video source is connected to each channel**.
   To go back to the classic direct capture (the channel reopens the card on every Record/Stop):
   `Capture:DecklinkRelay=false` in the embedded configuration (requires a rebuild).
 - **USB camera / capture device (DirectShow):** webcams, HDMI-to-USB capture devices, etc.
-- **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network). An interlaced
-  source (a 1080i from vMix or from a converter) is deinterlaced like the card's, and one without audio (graphics outputs,
-  many PTZ cameras) is previewed and recorded with a silent track: that is why it shows the silence alarm. Some graphics
-  outputs flag as interlaced frames that run at 50 or 60 per second, an interlaced format that does not exist: they are
-  treated as progressive (shown as "1920×1080 · 60p · NDI"). The alpha channel of an NDI source is not recorded. A source
-  that sends fewer frames than it declares (a graphics output that only sends when the picture changes) is previewed at its
-  real pace and recorded at the rate it declares, each picture repeated until the next; **FPS OUT** shows that rate.
+- **NDI:** video over the network (for example the NDI output of OBS or another NDI source on your network). An
+  interlaced source (a 1080i from vMix or from a converter) is deinterlaced whole when recorded as progressive, and one
+  without audio (graphics outputs, many PTZ cameras) is previewed and recorded with a silent track: that is why it shows
+  the silence alarm. Some graphics outputs flag as interlaced frames that run at 50 or 60 per second, an interlaced
+  format that does not exist: they are treated as progressive (shown as "1920×1080 · 60p · NDI"). The alpha channel of
+  an NDI source is not recorded. A source that sends fewer frames than it declares (a graphics output that only sends
+  when the picture changes) is previewed at its real pace and recorded at the rate it declares, each picture repeated
+  until the next; **FPS OUT** shows that rate.
 - **Network stream (SRT or RTMP):** a signal arriving over the network from an encoder, OBS, vMix or a server (see
   "Network sources" below).
 - **Demonstration clip:** a sample video that ships with the program (handy for testing).
@@ -573,6 +574,15 @@ anything that moves comes out once and sharp (shrinking both fields together use
 same cost as before. The recording does not change. To see the motion at 59.94 (one picture per field, like on TV), set
 `Preview:InterlacedFieldRate=true` in the embedded configuration (requires a rebuild): it costs about one extra CPU core
 per channel between FFmpeg and the application (measured on an i7-8700), so it only suits computers with CPU to spare.
+
+**How is an interlaced signal (1080i) recorded with a progressive preset (1080p)?**
+Only what really is interlaced gets deinterlaced. A TV channel mixes interlaced video (news, live shows) with progressive
+material carried in the 1080i (soap operas, series, many commercials): that is recorded whole, and with a 59.94 preset each
+picture twice. Deinterlacing everything rebuilt each picture from a single field, and in the camera scenes of that material
+fine textures shimmered from one picture to the next, like noise. After a cut from progressive material to interlaced
+video, the first three frames (a tenth of a second) may show slight combing on whatever moves. NDI sources, which may send
+fewer frames than they declare, are deinterlaced whole. Telling one from the other costs some CPU with truly interlaced
+video: on a computer already at its limit (two 1080p59.94 channels from 1080i on an i7-8700) it leaves less headroom.
 
 ---
 

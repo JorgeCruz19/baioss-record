@@ -299,7 +299,7 @@ public sealed class FfmpegArgumentBuilder
             // Bifurca el vídeo: una rama a grabación (con su escala/escaneo/burn-in), otra a preview.
             var recChain = new List<string>();
             // Desentrelazar ANTES de escalar: escalar en vertical cuadros con dos campos entretejidos los mezcla.
-            string? deinterlace = DeinterlaceFilter(source.CurrentSignal, profile);
+            string? deinterlace = DeinterlaceFilter(source.CurrentSignal, profile, withGaps: source.DeliversSparseVideo);
             // Lo contrario: un preset entrelazado con una fuente progresiva al doble de su cadencia teje los campos (ver WeaveFilter).
             string? weave = WeaveFilter(source.CurrentSignal, profile);
             // Una fuente con huecos (NDI con marcas) se graba a cadencia constante: al final de la rama o, si algo de ella necesita un
@@ -435,18 +435,57 @@ public sealed class FfmpegArgumentBuilder
     /// 1080p…). Sin él, los dos campos de un 1080i se grababan entretejidos en cuadros marcados progresivos: peine en todo lo
     /// que se mueve (medido con una DeckLink en 1080i59.94 y el preset NVENC 1080p29.97: idet, 300 de 301 cuadros TFF). El
     /// relé en crudo no conserva la marca de entrelazado en los cuadros, así que el orden de campos sale de la señal (lo que
-    /// la tarjeta o el emisor dijeron al abrir) y se procesan todos los cuadros. Si el preset dobla la tasa de cuadro de la
-    /// señal (1080i59.94 → 1080p59.94) sale un cuadro por CAMPO —movimiento real a 59.94— en vez de repetir cada cuadro
-    /// entretejido. Señal progresiva o desconocida, o preset entrelazado: null (como siempre).
+    /// la tarjeta o el emisor dijeron al abrir). Si el preset dobla la tasa de cuadro de la señal (1080i59.94 → 1080p59.94)
+    /// sale un cuadro por CAMPO —movimiento real a 59.94— en vez de repetir cada cuadro entretejido.
+    ///
+    /// <para>Solo se desentrelaza lo que es entrelazado DE VERDAD: <c>idet</c> mira cada cuadro y lo marca, y <c>bwdif</c>
+    /// (<c>deint=interlaced</c>) deja pasar entero el que tiene los dos campos del mismo instante. Una tele mezcla vídeo
+    /// entrelazado (noticias de calle, directos) con material progresivo metido en el 1080i (telenovelas, series, anuncios:
+    /// la DeckLink del equipo de pruebas lo alterna). Antes se desentrelazaba todo: cada cuadro progresivo se rehacía desde un
+    /// solo campo, a media resolución vertical, y por campo cada repetición desde un campo distinto, así que las texturas finas
+    /// temblaban de una a otra —el «ruido» que veía el usuario en las escenas de cámara y no en los grafismos—. Medido con
+    /// grabaciones 1080i reales de la DeckLink (2026-10-22): una telenovela por campo pasa de ningún cuadro igual al anterior a
+    /// la mitad (cada fotograma entero, dos veces), y un informativo entrelazado sale bit a bit igual que antes.</para>
+    ///
+    /// <para>Coste: idet lee tres cuadros enteros por cada uno, en serie en el hilo del grafo. Con el equipo libre son 1,5 ms por
+    /// cuadro, y con material progresivo la cadena sale más barata que antes (bwdif deja pasar los cuadros: 0,32 núcleos frente a
+    /// 0,88 por campo); pero con un codificador por CPU al lado, que se disputa la caché y la memoria, sube a 7–10 ms. Con
+    /// entrelazado de verdad y el equipo cargado (A/B intercalado del 2026-10-22, con la app instalada abierta al lado): un canal
+    /// NVENC 1080p59.94 sigue a tiempo real (1,00× en las dos), dos a la vez bajan de 0,61–0,68× a 0,57–0,58×, x264
+    /// 1080p59.94 de 0,78× a 0,60–0,62× (volcado del relé con un informativo real) y x264 1080p29.97 de 1,05× a 0,90–0,94× (la
+    /// fuente sintética de FactoryPresetRecordingTests). <c>fieldmatch</c>, que también reconstruye el telecine 3:2, cuesta más:
+    /// un solo hilo, casi un núcleo por canal, y no llegaba a tiempo real con el informativo (0,94×).</para>
+    ///
+    /// <para>Límite conocido: idet no cambia de opinión hasta ver cuatro cuadros seguidos del otro tipo, así que tras un corte de
+    /// material progresivo a entrelazado los tres primeros cuadros salen tejidos (una décima de segundo con peine en lo que se
+    /// mueve) y, al revés, los tres primeros progresivos se desentrelazan como antes (ver DeinterlaceCadenceTests). En las
+    /// grabaciones reales solo se vio en un fundido a cadencia de campo que salía de material progresivo (7 de 3598 cuadros).</para>
+    ///
+    /// <para><c>setfield</c> delante marca todos los cuadros como entrelazados: idet reescribe la marca cuando decide, y lo que
+    /// aún no ha sabido clasificar (al empezar con una imagen fija) se desentrelaza como siempre. Por campo, bwdif saca un solo
+    /// cuadro de cada uno que deja pasar: el <c>fps</c> a la cadencia de campo rellena el hueco repitiéndolo, como hace el
+    /// filtro con las fuentes con huecos (<c>-fps_mode cfr</c> adelantaría un periodo los cuadros que siguen, ver
+    /// <see cref="SparseVideoFill"/>).</para>
+    ///
+    /// <para>Una fuente con huecos (<paramref name="withGaps"/>: NDI, ver <see cref="ICaptureSource.DeliversSparseVideo"/>) se
+    /// desentrelaza entera, como antes: idet compara cada cuadro con el anterior y el siguiente, que ahí pueden quedar a varios
+    /// periodos, y toma por progresivo lo que no lo es (medido con un 1080i sintético servido a un cuadro de cada tres, como el
+    /// vMix que manda ~10 de sus 29.97: 49 de 60 cuadros «progresivos», que habrían salido con peine).</para>
+    ///
+    /// Señal progresiva o desconocida, o preset entrelazado: null (como siempre).
     /// </summary>
-    internal static string? DeinterlaceFilter(SignalInfo signal, RecordingProfile profile)
+    internal static string? DeinterlaceFilter(SignalInfo signal, RecordingProfile profile, bool withGaps = false)
     {
         if (profile.AudioOnly || profile.ScanType is not ScanType.Progressive) return null;
         string? parity = signal.Scan switch { ScanType.InterlacedTff => "tff", ScanType.InterlacedBff => "bff", _ => null };
         if (parity is null) return null;
         bool perField = profile.OutputFrameRate is { Value: > 0 } output && signal.FrameRate is { Value: > 0 } input
                         && Math.Abs(output.Value - 2 * input.Value) < 0.01 * output.Value;
-        return $"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}:deint=all";
+        string bwdif = $"bwdif=mode={(perField ? "send_field" : "send_frame")}:parity={parity}";
+        if (withGaps) return $"{bwdif}:deint=all";
+        string detect = $"setfield={parity},idet,{bwdif}:deint=interlaced";
+        if (!perField || signal.FrameRate is not { } frames) return detect;
+        return string.Create(CultureInfo.InvariantCulture, $"{detect},fps={frames.Numerator * 2}/{frames.Denominator}");
     }
 
     /// <summary>

@@ -747,16 +747,54 @@ public class FfmpegArgumentBuilderTests : IDisposable
     {
         // Medido con una Duo 2 en 1080i59.94 y el preset NVENC 1080p29.97: sin esto, idet daba 300 de 301 cuadros TFF (peine).
         var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264Nvenc, FrameRate.P2997));
-        Assert.Contains("[vrec]bwdif=mode=send_frame:parity=tff:deint=all,scale=1920:1080,format=nv12[vmain]", joined);
+        Assert.Contains("[vrec]setfield=tff,idet,bwdif=mode=send_frame:parity=tff:deint=interlaced,scale=1920:1080,format=nv12[vmain]", joined);
     }
 
     [Fact]
     public void BuildLive_InterlacedSignal_PresetAtTheFieldRate_GetsOneFramePerField()
     {
-        // 1080i59.94 → 1080p59.94: un cuadro por campo (movimiento real), no cada cuadro entretejido repetido.
+        // 1080i59.94 → 1080p59.94: un cuadro por campo (movimiento real), no cada cuadro entretejido repetido. El fps repite el
+        // cuadro progresivo que bwdif deja pasar entero (uno donde van dos).
         var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P5994));
-        Assert.Contains("[vrec]bwdif=mode=send_field:parity=tff:deint=all,scale=1920:1080", joined);
+        Assert.Contains("[vrec]setfield=tff,idet,bwdif=mode=send_field:parity=tff:deint=interlaced,fps=60000/1001,scale=1920:1080", joined);
         Assert.Contains("-r 60000/1001", joined);
+    }
+
+    [Theory]
+    [InlineData(ScanType.InterlacedTff, 30000, 1001, 30000, 1001, "setfield=tff,idet,bwdif=mode=send_frame:parity=tff:deint=interlaced")]
+    [InlineData(ScanType.InterlacedBff, 30000, 1001, 30000, 1001, "setfield=bff,idet,bwdif=mode=send_frame:parity=bff:deint=interlaced")]
+    [InlineData(ScanType.InterlacedTff, 25, 1, 25, 1, "setfield=tff,idet,bwdif=mode=send_frame:parity=tff:deint=interlaced")]
+    [InlineData(ScanType.InterlacedTff, 30000, 1001, 60000, 1001, "setfield=tff,idet,bwdif=mode=send_field:parity=tff:deint=interlaced,fps=60000/1001")]
+    [InlineData(ScanType.InterlacedTff, 25, 1, 50, 1, "setfield=tff,idet,bwdif=mode=send_field:parity=tff:deint=interlaced,fps=50/1")]
+    // A 60 desde un 1080i59.94: por campo, rellenado a la cadencia de campo de la señal; el paso a 60 lo hace -r, como siempre.
+    [InlineData(ScanType.InterlacedBff, 30000, 1001, 60, 1, "setfield=bff,idet,bwdif=mode=send_field:parity=bff:deint=interlaced,fps=60000/1001")]
+    public void DeinterlaceFilter_DeinterlacesOnlyTheFramesIdetSeesInterlaced(ScanType scan, int srcN, int srcD, int outN, int outD, string expected)
+    {
+        // Una tele mezcla vídeo entrelazado con material progresivo metido en el 1080i (telenovelas, series): idet marca cada cuadro y
+        // bwdif solo desentrelaza los marcados. setfield delante: lo que idet aún no ha decidido se desentrelaza, como antes.
+        var profile = Progressive(VideoCodec.H264Nvenc, new FrameRate(outN, outD));
+        Assert.Equal(expected, FfmpegArgumentBuilder.DeinterlaceFilter(Signal1080(new FrameRate(srcN, srcD), scan), profile));
+    }
+
+    [Fact]
+    public void DeinterlaceFilter_WithoutTheSignalRate_DeinterlacesFrameByFrame()
+    {
+        // Sin la cadencia de la señal no se sabe si el preset la dobla: un cuadro por cuadro (y nada que rellenar).
+        var signal = new SignalInfo(SignalState.Locked, new Resolution(1920, 1080), FrameRate: null, AudioLayout.Stereo, HasAudio: true,
+            Timecode: null, Bitrate: null, Scan: ScanType.InterlacedTff);
+        Assert.Equal("setfield=tff,idet,bwdif=mode=send_frame:parity=tff:deint=interlaced",
+            FfmpegArgumentBuilder.DeinterlaceFilter(signal, Progressive(VideoCodec.H264Nvenc, FrameRate.P5994)));
+    }
+
+    [Theory]
+    [InlineData(30000, 1001, "bwdif=mode=send_frame:parity=tff:deint=all")]
+    [InlineData(60000, 1001, "bwdif=mode=send_field:parity=tff:deint=all")]
+    public void DeinterlaceFilter_ASourceWithGaps_IsDeinterlacedWhole_AsBefore(int outN, int outD, string expected)
+    {
+        // idet compara cada cuadro con el anterior y el siguiente: con huecos (NDI) quedan lejos y toma por progresivo lo que no lo
+        // es (un 1080i sintético a un cuadro de cada tres: 49 de 60 «progresivos»). Por campo, bwdif saca siempre dos: sin fps detrás.
+        var profile = Progressive(VideoCodec.H264Nvenc, new FrameRate(outN, outD));
+        Assert.Equal(expected, FfmpegArgumentBuilder.DeinterlaceFilter(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile, withGaps: true));
     }
 
     private static string BuildLiveSparse(SignalInfo signal, RecordingProfile profile, bool recording = true)
@@ -795,7 +833,8 @@ public class FfmpegArgumentBuilderTests : IDisposable
     public void BuildLive_ASourceWithGaps_DeinterlacedPerField_OrWithABurntTimecode_IsFilledFirst_AtItsRate()
     {
         // bwdif pone el segundo campo a medio camino del cuadro siguiente (tras un hueco, lejos): esa rama recibe un cuadro por periodo
-        // de la fuente, como antes. drawtext numera los cuadros que le entran: recibe los de la cadencia que se graba.
+        // de la fuente, como antes. drawtext numera los cuadros que le entran: recibe los de la cadencia que se graba. Con huecos se
+        // desentrelaza todo, sin idet (ver DeinterlaceFilter).
         var perField = BuildLiveSparse(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), Progressive(VideoCodec.H264x264, FrameRate.P5994));
         Assert.Contains("[vrec]fps=30000/1001,bwdif=mode=send_field:parity=tff:deint=all,scale=1920:1080", perField);
         Assert.DoesNotContain(",fps=", perField);
@@ -986,7 +1025,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
 
     [Fact]
     public void BuildLive_BottomFieldFirstSignal_DeinterlacesWithThatParity()
-        => Assert.Contains("bwdif=mode=send_frame:parity=bff:deint=all",
+        => Assert.Contains("setfield=bff,idet,bwdif=mode=send_frame:parity=bff:deint=interlaced",
             BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedBff), Progressive(VideoCodec.H264x264, FrameRate.P2997)));
 
     [Theory]
@@ -999,7 +1038,7 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var profile = Progressive(VideoCodec.H264x264, FrameRate.P2997);
         profile.ScanType = presetScan;
         Assert.DoesNotContain(RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile)),
-            f => f.StartsWith("bwdif", StringComparison.Ordinal));
+            f => f.StartsWith("bwdif", StringComparison.Ordinal) || f == "idet");
         // …ni el scale sin tamaño que acompaña a bwdif: a resolución nativa la rama sigue sin escalar.
         profile.TargetResolution = null;
         Assert.DoesNotContain("scale", RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, signalScan), profile)));
@@ -1033,7 +1072,8 @@ public class FfmpegArgumentBuilderTests : IDisposable
         Assert.Contains($"[vprev]{chain}", recording);
         Assert.Equal(1, builder.PreviewFramesPerSourceFrame);
         // La rama de grabación sigue a lo suyo: desentrelaza según el preset (aquí 1080p29.97, un cuadro por cuadro).
-        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity={parity}:deint=all,scale=1920:1080,format=nv12[vmain]", recording);
+        Assert.Contains($"[vrec]setfield={parity},idet,bwdif=mode=send_frame:parity={parity}:deint=interlaced,scale=1920:1080,format=nv12[vmain]",
+            recording);
     }
 
     [Theory]
@@ -1067,7 +1107,8 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var recording = string.Join(' ', builder.BuildLive(recording: true, 640, 360));
         Assert.Contains($"[vprev]{chain}", recording);
         Assert.Equal(2, builder.PreviewFramesPerSourceFrame);
-        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity={parity}:deint=all,scale=1920:1080,format=nv12[vmain]", recording);
+        Assert.Contains($"[vrec]setfield={parity},idet,bwdif=mode=send_frame:parity={parity}:deint=interlaced,scale=1920:1080,format=nv12[vmain]",
+            recording);
     }
 
     [Theory]
@@ -1139,14 +1180,15 @@ public class FfmpegArgumentBuilderTests : IDisposable
         var profile = Progressive(codec, FrameRate.P2997);
         profile.TargetResolution = null;
         var joined = BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile);
-        Assert.Contains($"[vrec]bwdif=mode=send_frame:parity=tff:deint=all,scale,format={encoderFormat}[vmain]", joined);
+        Assert.Contains($"[vrec]setfield=tff,idet,bwdif=mode=send_frame:parity=tff:deint=interlaced,scale,format={encoderFormat}[vmain]", joined);
     }
 
     [Fact]
     public void BuildLive_InterlacedSignal_EveryProgressiveCatalogPreset_ConvertsOnlyAfterDeinterlacing()
     {
-        // bwdif (y drawtext) salen en el formato en que entran: el filtro que sigue a bwdif tiene que ser un scale, con el
-        // tamaño del preset o sin tamaño, para que la conversión al formato del encoder ocurra DESPUÉS de desentrelazar.
+        // bwdif (y drawtext) salen en el formato en que entran: el filtro que sigue a bwdif —o al fps que, por campo, repite los
+        // cuadros que deja pasar enteros— tiene que ser un scale, con el tamaño del preset o sin tamaño, para que la conversión al
+        // formato del encoder ocurra DESPUÉS de desentrelazar. Delante de bwdif, solo la marca de campos y la detección (idet).
         // Cada preset progresivo del catálogo, con su tamaño y a resolución nativa, con el timecode quemado.
         var presets = Baioss.Record.Application.Presets.PresetCatalog.CreateBuiltIns()
             .Select(p => p.ToProfile())
@@ -1163,8 +1205,9 @@ public class FfmpegArgumentBuilderTests : IDisposable
                 profile.BurnTimecode = true;
                 var chain = RecordChain(BuildLiveFrom(Signal1080(FrameRate.P2997, ScanType.InterlacedTff), profile));
                 string why = $"{preset.Name}{(nativeSize ? " (nativa)" : "")}: {string.Join(',', chain)}";
-                Assert.True(chain[0].StartsWith("bwdif=", StringComparison.Ordinal), why);
-                Assert.True(chain[1] == "scale" || chain[1].StartsWith("scale=", StringComparison.Ordinal), why);
+                Assert.True(chain[0] == "setfield=tff" && chain[1] == "idet" && chain[2].StartsWith("bwdif=", StringComparison.Ordinal), why);
+                int next = chain[3].StartsWith("fps=", StringComparison.Ordinal) ? 4 : 3;
+                Assert.True(chain[next] == "scale" || chain[next].StartsWith("scale=", StringComparison.Ordinal), why);
                 Assert.True(chain[^1].StartsWith("format=", StringComparison.Ordinal), why);
             }
         }
