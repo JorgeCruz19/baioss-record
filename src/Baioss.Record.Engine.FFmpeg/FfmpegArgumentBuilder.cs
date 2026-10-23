@@ -1009,7 +1009,7 @@ public sealed class FfmpegArgumentBuilder
     /// <param name="p">Perfil de grabación.</param>
     /// <param name="frame">Tamaño de lo que se codifica (el del preset o el de la señal), si se conoce.</param>
     /// <param name="rate">Cadencia de lo que se codifica (la del preset o la de la señal), si se conoce.</param>
-    private IEnumerable<string> VideoEncoderArgs(RecordingProfile p, Resolution? frame, FrameRate? rate)
+    internal static IEnumerable<string> VideoEncoderArgs(RecordingProfile p, Resolution? frame, FrameRate? rate)
     {
         var list = new List<string> { "-c:v", FfmpegCodecMap.VideoEncoder(p.VideoCodec) };
         string bitrate = p.VideoBitrate.BitsPerSecond.ToString(CultureInfo.InvariantCulture);
@@ -1543,7 +1543,7 @@ public sealed class FfmpegArgumentBuilder
     /// <param name="p">Perfil de grabación.</param>
     /// <param name="channelCount">Emitir <c>-ac</c> según la distribución del perfil. Falso cuando un <c>pan</c> ya
     /// fijó los canales (repetirlo sería inocuo en estéreo, pero volvería a mezclar en mono/5.1 sobre lo elegido).</param>
-    private IEnumerable<string> AudioEncoderArgs(RecordingProfile p, bool channelCount = true)
+    internal static IEnumerable<string> AudioEncoderArgs(RecordingProfile p, bool channelCount = true)
     {
         var codec = FfmpegCodecMap.EffectiveAudioEncoder(p.AudioCodec, p.Container);
         var list = new List<string>

@@ -59,6 +59,7 @@ public static class AuditText
                 "StorageStallCleared" => Localizer.F("Audit_DiskStallCleared_Detail", Str(j, "Volume") ?? "?",
                     Duration(j, "Duration") ?? Str(j, "Duration") ?? "?"),
                 "RecordingDeleted" => Deleted(j),
+                "ClipExported" => Clip(j),
                 "AuditEntriesDeleted" => EntriesDeleted(j),
                 _ => null,
             };
@@ -135,6 +136,46 @@ public static class AuditText
                 ? Localizer.T("Audit_Deleted_NoFiles")
                 : Localizer.F(missing == 1 ? "Audit_Deleted_Missing_One" : "Audit_Deleted_Missing_Many", missing));
         return string.Join(" · ", parts);
+    }
+
+    /// <summary>«Noticias (00.12.05-00.12.35).mp4» de «Noticias_1.mp4» · 00:12:05.00 → 00:12:35.00 (30 s) · rápido (copia) · 41,2 MB.
+    /// Dice qué archivo quedó en la carpeta de clips, de qué grabación y de qué tramo salió.</summary>
+    private static string Clip(JsonElement j)
+    {
+        var parts = new List<string>(3);
+        string name = Str(j, "FileName") ?? "?";
+        var from = Span(j, "In");
+        var to = Span(j, "Out");
+        var source = Str(j, "SourceFileName");
+        if (from is { } a && to is { } b)
+            parts.Add(source is null
+                ? $"«{name}» · {Position(a)} → {Position(b)} ({Short(b - a)})"
+                : Localizer.F("Audit_Clip_Detail", name, source, Position(a), Position(b), Short(b - a)));
+        else parts.Add($"«{name}»");
+        parts.Add(Str(j, "Mode") is "1" or "Exact"
+            ? Localizer.F("Audit_Clip_Exact", Str(j, "Encoder") ?? "?")
+            : Localizer.T("Audit_Clip_Fast"));
+        long bytes = Long(j, "SizeBytes");
+        if (bytes > 0) parts.Add(Bytes(bytes));
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>Una posición del evento (TimeSpan serializado), o null si falta.</summary>
+    private static TimeSpan? Span(JsonElement j, string name)
+        => Str(j, name) is { } raw && TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var t) ? t : null;
+
+    /// <summary>«00:12:05.40»: posición en la grabación, con centésimas.</summary>
+    private static string Position(TimeSpan t)
+        => string.Create(CultureInfo.InvariantCulture, $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}.{t.Milliseconds / 10:00}");
+
+    /// <summary>«1 h 05 min», «2 min 10 s», «30 s», «0,48 s».</summary>
+    private static string Short(TimeSpan d)
+    {
+        if (d.TotalHours >= 1) return $"{(int)d.TotalHours} h {d.Minutes:00} min";
+        if (d.TotalMinutes >= 1) return $"{(int)d.TotalMinutes} min {d.Seconds:00} s";
+        return d.TotalSeconds < 10
+            ? d.TotalSeconds.ToString("0.##", CultureInfo.CurrentCulture) + " s"
+            : $"{(int)d.TotalSeconds} s";
     }
 
     /// <summary>«25 entradas · del 14/10/2026 al 21/10/2026»: lo que queda de las entradas borradas del registro.</summary>

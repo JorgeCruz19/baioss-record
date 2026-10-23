@@ -1,0 +1,258 @@
+<app:SecondaryWindow x:Class="Baioss.Record.App.Review.ReviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="clr-namespace:Baioss.Record.App"
+        xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
+        Title="{Binding Title}" Width="1180" Height="900" MinWidth="900" MinHeight="620"
+        Icon="/Assets/icon.ico"
+        Background="#10131A" WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="Tool" TargetType="Button" BasedOn="{StaticResource TransportButton}">
+            <Setter Property="Padding" Value="11,6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
+        </Style>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="Value" TargetType="TextBlock">
+            <!-- Un estilo con clave no hereda el implícito de TextBlock (texto claro): sin esto, negro sobre negro. -->
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="6,0,16,0"/>
+        </Style>
+        <!-- Barra de posición oscura: pista fina y un tirador visible. -->
+        <Style x:Key="Timeline" TargetType="Slider">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid Height="26" Background="Transparent">
+                            <Border Height="6" CornerRadius="3" Background="{StaticResource ButtonBrush}" VerticalAlignment="Center"/>
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="6" CornerRadius="3" Background="{StaticResource AccentBrush}" VerticalAlignment="Center"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="Transparent"/>
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Width="8" Height="22" CornerRadius="3" Background="{StaticResource TextPrimaryBrush}"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Cabecera -->
+        <Border DockPanel.Dock="Top" Background="#0C0F15" Padding="16,10">
+            <Grid>
+                <StackPanel>
+                    <TextBlock Text="{loc:T Rev_Header}" FontSize="14" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBlock Text="{loc:T Rev_Subtitle}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                               Margin="0,2,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                    <Border Background="{StaticResource AccentBrush}" CornerRadius="4" Width="26" Height="24" Margin="0,0,8,0">
+                        <TextBlock Text="{Binding ChannelKey}" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="{Binding RecordingName}" FontSize="12" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock Text="{Binding DateText}" FontSize="12" VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Exportar -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,10" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,0">
+            <StackPanel>
+                <TextBlock Text="{loc:T Rev_ExportHeader}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <RadioButton Content="{loc:T Rev_Mode_Fast}" IsChecked="{Binding Fast}" GroupName="mode" Foreground="{StaticResource TextPrimaryBrush}"
+                                     VerticalAlignment="Center" Margin="0,0,16,0" AutomationProperties.AutomationId="ModeFast"/>
+                        <RadioButton Content="{loc:T Rev_Mode_Exact}" IsChecked="{Binding Exact}" GroupName="mode" Foreground="{StaticResource TextPrimaryBrush}"
+                                     VerticalAlignment="Center" Margin="0,0,10,0" AutomationProperties.AutomationId="ModeExact"/>
+                        <ComboBox Width="190" ItemsSource="{Binding Encoders}" SelectedItem="{Binding SelectedEncoder}" IsEnabled="{Binding Exact}"
+                                  ToolTip="{loc:T Rev_Encoder_Tip}" AutomationProperties.AutomationId="Encoder"/>
+                    </StackPanel>
+                    <TextBlock Grid.Column="1" Text="{Binding ModeHint}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                </Grid>
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="260"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{loc:T Rev_Name}" Style="{StaticResource Label}" Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1" Text="{Binding ClipName, UpdateSourceTrigger=PropertyChanged}" Height="30"
+                             ToolTip="{loc:T Rev_Name_Tip}" AutomationProperties.AutomationId="ClipName"/>
+                    <TextBlock Grid.Column="2" Text="{loc:T Rev_Folder}" Style="{StaticResource Label}" Margin="16,0,8,0"/>
+                    <TextBlock Grid.Column="3" Text="{Binding ClipsFolder}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding ClipsFolder}"/>
+                    <Button Grid.Column="4" Content="{loc:T Rev_OpenFolder}" Command="{Binding OpenClipsFolderCommand}" Style="{StaticResource Tool}"
+                            ToolTip="{loc:T Rev_OpenFolder_Tip}" Margin="8,0,0,0"/>
+                </Grid>
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" Content="{loc:T Rev_Export}" Command="{Binding ExportCommand}" Style="{StaticResource StartButton}"
+                            Height="32" Padding="18,0" ToolTip="{loc:T Rev_Export_Tip}" ToolTipService.ShowOnDisabled="True"
+                            AutomationProperties.AutomationId="Export"/>
+                    <Button Grid.Column="1" Content="{loc:T Common_Cancel}" Command="{Binding CancelExportCommand}" Style="{StaticResource TransportButton}"
+                            Height="32" Padding="14,0" Visibility="{Binding Exporting, Converter={StaticResource BoolToVis}}"/>
+                    <ProgressBar Grid.Column="2" Height="8" Minimum="0" Maximum="100" Value="{Binding ExportProgress}" Margin="4,0,12,0"
+                                 Foreground="{StaticResource SignalGreenBrush}" Background="{StaticResource ButtonBrush}" BorderThickness="0"
+                                 Visibility="{Binding Exporting, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Grid.Column="3" Text="{Binding StatusMessage}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"
+                               AutomationProperties.AutomationId="Status">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource SignalGreenBrush}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource RecBrush}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <Button Grid.Column="4" Content="{loc:T Rev_ShowClip}" Command="{Binding ShowClipCommand}" Style="{StaticResource Tool}"
+                            Margin="8,0,0,0" Visibility="{Binding HasLastClip, Converter={StaticResource BoolToVis}}"/>
+                    <Button Grid.Column="5" Content="{loc:T Common_Close}" Click="Close_Click" Style="{StaticResource TransportButton}"
+                            Height="32" MinWidth="100" Padding="20,0" Margin="8,0,0,0"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Marcas -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,8">
+            <WrapPanel VerticalAlignment="Center">
+                <Button Content="{loc:T Rev_MarkIn}" Command="{Binding MarkInCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_MarkIn_Tip}"
+                        AutomationProperties.AutomationId="MarkIn"/>
+                <Button Content="{loc:T Rev_MarkOut}" Command="{Binding MarkOutCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_MarkOut_Tip}"
+                        AutomationProperties.AutomationId="MarkOut"/>
+                <TextBlock Text="{loc:T Rev_In}" Style="{StaticResource Label}" Margin="10,0,0,0"/>
+                <TextBlock Text="{Binding InText}" Style="{StaticResource Value}" AutomationProperties.AutomationId="InText"/>
+                <TextBlock Text="{loc:T Rev_Out}" Style="{StaticResource Label}"/>
+                <TextBlock Text="{Binding OutText}" Style="{StaticResource Value}" AutomationProperties.AutomationId="OutText"/>
+                <TextBlock Text="{loc:T Rev_Length}" Style="{StaticResource Label}"/>
+                <TextBlock Text="{Binding ClipDurationText}" FontSize="13" VerticalAlignment="Center" Margin="6,0,16,0"
+                           AutomationProperties.AutomationId="ClipDuration"/>
+                <Button Content="{loc:T Rev_GoToIn}" Command="{Binding GoToInCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_GoToIn_Tip}"/>
+                <Button Content="{loc:T Rev_GoToOut}" Command="{Binding GoToOutCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_GoToOut_Tip}"/>
+                <Button Content="{loc:T Rev_ClearMarks}" Command="{Binding ClearMarksCommand}" Style="{StaticResource Tool}"/>
+            </WrapPanel>
+        </Border>
+
+        <!-- Transporte -->
+        <Border DockPanel.Dock="Bottom" Background="#0C0F15" Padding="16,8,16,4">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                        <TextBlock Text="{Binding PositionText}" FontFamily="Consolas" FontSize="20" FontWeight="SemiBold"
+                                   AutomationProperties.AutomationId="Position"/>
+                        <TextBlock Text="{Binding WallClockText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center" Margin="10,0,0,0"/>
+                    </StackPanel>
+                    <Slider Grid.Column="1" Style="{StaticResource Timeline}" Minimum="0" Maximum="{Binding Maximum}"
+                            Value="{Binding Position}" IsMoveToPointEnabled="True" SmallChange="1" LargeChange="25"
+                            IsEnabled="{Binding IsLoaded}" VerticalAlignment="Center" Focusable="False"
+                            AutomationProperties.AutomationId="Timeline"/>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                        <TextBlock Text="{Binding TotalText}" FontFamily="Consolas" FontSize="13" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        <TextBlock Text="{Binding RateText}" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,4">
+                    <Button Content="|◀" Command="{Binding GoToStartCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_Start}"/>
+                    <Button Content="{loc:T Rev_SecondBack}" Command="{Binding SecondBackCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_SecondBack}"/>
+                    <Button Content="{loc:T Rev_StepBack}" Command="{Binding StepBackCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_StepBack}"
+                            AutomationProperties.AutomationId="StepBack"/>
+                    <Button Command="{Binding PlayPauseCommand}" Style="{StaticResource Tool}" MinWidth="90" ToolTip="{loc:T Rev_Tip_Play}"
+                            AutomationProperties.AutomationId="PlayPause">
+                        <Button.Content>
+                            <TextBlock>
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="{loc:T Rev_Play}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsPlaying}" Value="True">
+                                                <Setter Property="Text" Value="{loc:T Rev_Pause}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Button.Content>
+                    </Button>
+                    <Button Content="{loc:T Rev_StepForward}" Command="{Binding StepForwardCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_StepForward}"
+                            AutomationProperties.AutomationId="StepForward"/>
+                    <Button Content="{loc:T Rev_SecondForward}" Command="{Binding SecondForwardCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_SecondForward}"/>
+                    <Button Content="▶|" Command="{Binding GoToEndCommand}" Style="{StaticResource Tool}" ToolTip="{loc:T Rev_Tip_End}"/>
+                </StackPanel>
+                <TextBlock Text="{loc:T Rev_Keys}" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,2"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Aviso de archivos que no se pueden ver -->
+        <Border DockPanel.Dock="Bottom" Background="#2A2416" Padding="16,6"
+                Visibility="{Binding Warning, Converter={x:Static app:ReviewConverters.NotEmpty}}">
+            <TextBlock Text="{Binding Warning}" FontSize="12" Foreground="{StaticResource SignalAmberBrush}" TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- Imagen -->
+        <Grid Background="Black">
+            <Image Source="{Binding Image}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+            <TextBlock Text="{Binding LoadMessage}" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                       Margin="40" Foreground="{StaticResource TextSecondaryBrush}" AutomationProperties.AutomationId="LoadMessage"/>
+            <TextBlock Text="{loc:T Rev_AudioOnly}" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="{StaticResource TextSecondaryBrush}"
+                       Visibility="{Binding HasVideo, Converter={x:Static app:ReviewConverters.Not}}"/>
+        </Grid>
+    </DockPanel>
+</app:SecondaryWindow>

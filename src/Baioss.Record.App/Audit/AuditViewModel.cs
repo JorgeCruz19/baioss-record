@@ -46,7 +46,7 @@ public sealed partial class AuditViewModel : ObservableObject, IDisposable
     {
         "RecordingStarted", "RecordingStopped", "RecordingRenamed", "RecordingStartFailed", "ScheduledRecordingSkipped", "ScheduleChanged",
         "SegmentCompleted", "RecordingPaused", "RecordingResumed", "RecordingRecovered", "OrphanSessionsClosed",
-        "RecordingInterrupted", "RecordingFileUnverified", "EncoderFailed", "RecordingDeleted",
+        "RecordingInterrupted", "RecordingFileUnverified", "EncoderFailed", "RecordingDeleted", "ClipExported",
     };
 
     private readonly IEventLogRepository _events;

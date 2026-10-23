@@ -33,18 +33,39 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
     [ObservableProperty] private bool _autoCleanupOnEmergency;
     [ObservableProperty] private bool _stopNewRecordingsOnEmergency;
 
+    // --- Clips ---
+    /// <summary>Carpeta de los clips; vacía = la de por defecto (<see cref="ClipsHint"/> la nombra).</summary>
+    [ObservableProperty] private string _clipsFolder = "";
+
     [ObservableProperty] private string _statusMessage = "";
     /// <summary>True si <see cref="StatusMessage"/> es un aviso/error (la UI lo pinta en rojo en vez de verde).</summary>
     [ObservableProperty] private bool _statusIsError;
 
     /// <summary>Abre la ventana «Borrar grabaciones» (la compone el shell, que tiene los repositorios y los canales).</summary>
     private readonly Action? _openCleanup;
+    private readonly string? _defaultClipsFolder;
 
-    public StorageSettingsViewModel(IStorageSettingsStore store, Action? openCleanup = null)
+    /// <param name="store">Ajustes de almacenamiento.</param>
+    /// <param name="openCleanup">Abre «Borrar grabaciones» (null = no se ofrece).</param>
+    /// <param name="defaultClipsFolder">Carpeta de clips cuando no se elige ninguna (para el texto de ayuda).</param>
+    public StorageSettingsViewModel(IStorageSettingsStore store, Action? openCleanup = null, string? defaultClipsFolder = null)
     {
         _store = store;
         _openCleanup = openCleanup;
+        _defaultClipsFolder = defaultClipsFolder;
         Load(store.Current);
+    }
+
+    /// <summary>Qué es la carpeta de clips y cuál se usa si se deja vacía.</summary>
+    public string ClipsHint => Loc.F("Sto_ClipsHint", _defaultClipsFolder ?? "clips");
+
+    [RelayCommand]
+    private void BrowseClips()
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = Loc.T("Sto_ClipsBrowse_Title") };
+        var start = string.IsNullOrWhiteSpace(ClipsFolder) ? _defaultClipsFolder : ClipsFolder;
+        if (Directory.Exists(start)) dlg.InitialDirectory = start;
+        if (dlg.ShowDialog() == true) ClipsFolder = dlg.FolderName;
     }
 
     [RelayCommand(CanExecute = nameof(CanOpenCleanup))]
@@ -65,6 +86,7 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
         EmergencyPercent = s.EmergencyPercent;
         AutoCleanupOnEmergency = s.AutoCleanupOnEmergency;
         StopNewRecordingsOnEmergency = s.StopNewRecordingsOnEmergency;
+        ClipsFolder = s.ClipsFolder ?? "";
     }
 
     [RelayCommand]
@@ -100,6 +122,7 @@ public sealed partial class StorageSettingsViewModel : ObservableObject
             EmergencyPercent = EmergencyPercent,
             AutoCleanupOnEmergency = AutoCleanupOnEmergency,
             StopNewRecordingsOnEmergency = StopNewRecordingsOnEmergency,
+            ClipsFolder = string.IsNullOrWhiteSpace(ClipsFolder) ? null : ClipsFolder.Trim(),
         };
         var clean = s.Sanitized(); // para saber si el saneado AJUSTÓ algún valor (y avisarlo)
         _store.Save(s);            // el almacén sanea igual internamente y persiste

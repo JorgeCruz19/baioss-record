@@ -434,8 +434,17 @@ is **No**: an extra Enter deletes nothing. **This cannot be undone.**
 - **A recording with a file open in another program** (a player, for example): nothing of it is deleted, and the foot of
   the window says so in red. Close that program and try again.
 
+Each row also has **▶ Review**, which opens the recording in the player to watch it and cut clips (section 8.1).
+
 Every deleted recording is noted in **📋 Activity** as "Recording deleted", with its name, its date, what was deleted and
 who did it.
+
+### 7.4. Clips folder
+
+In the **CLIPS** section you choose **where the clips go** that you export from **▶ Review** (section 8.1) or that an
+external system requests through the API. Leave it empty and they go to the **clips** folder, next to the application's data
+(the window tells you which one). Press **Save**: it applies to the next clip, without restarting. **Automatic cleanup never
+touches this folder**: a clip is something someone cut on purpose.
 
 ---
 
@@ -451,11 +460,87 @@ This is the list of **everything you have recorded**. It is for looking things u
 - **🔒 Protect:** marks the recording as **protected** (green chip). Automatic cleanup will never delete it.
 - **★ Important:** marks it as important (amber chip). Also excluded from cleanup.
 - **○ Normal:** removes the protection (it goes back into automatic cleanup).
+- **▶ Review:** opens the recording in the player, to watch it frame by frame and export clips (section 8.1). Not a
+  recording in progress: it can be reviewed once it ends.
 - **📂:** opens the folder where the file is.
 
 > **Use "Protect" or "Important"** on the recordings you never want to lose. Automatic cleanup (section 7) always respects those marks, and they cannot be deleted by hand while they have them.
 
 > **To delete recordings** (their files and their record), use **🗄 Storage → 🗑 Delete recordings…** (section 7.3).
+### 8.1. Reviewing a recording and exporting a clip
+
+**▶ Review** (on a row of **🗂 Recordings** or of **🗑 Delete recordings…**) opens the finished recording in a player. If it
+was recorded split into segments, or the application carried on in a new file after a crash, you see **all its pieces one
+after another**, as one.
+
+**The player:**
+- **Every seek is exact:** when you jump somewhere (dragging the bar, with the buttons or the keyboard) the application
+  decodes from the previous keyframe up to the requested frame, so what you see is **always the exact, whole frame**, never
+  the half-built ("blocky") picture some players show when they jump.
+- Above the bar you see the **position** (`HH:MM:SS:FF`: elapsed time and the frame within that second) and the **time of day**
+  that frame was recorded.
+- **Buttons:** to the start ⏮, one second back, one frame back, **▶ Play / ⏸ Pause** (with sound), one frame forward, one
+  second forward and to the end ⏭.
+- **Keyboard:** **Space** plays or pauses · **←** **→** one frame · **Shift+←** **Shift+→** one second · **Home** / **End** ·
+  **I** marks the in point and **O** the out point · **Shift+I** / **Shift+O** go to them.
+- An **interlaced** recording (1080i) is shown deinterlaced in the player; the clip you export keeps its fields.
+- If a file of the recording **cannot be shown** (missing from the disk, or the one cut short by a crash, without an index),
+  an amber strip says so and the timeline skips it: the rest is reviewed and cut as usual.
+
+**The marks:** go to the frame where the clip starts and press **⇤ Mark in (I)**; go to the last frame you want and press
+**Mark out (O) ⇥**. **Both frames are part of the clip**, as in a video editor. Below you see the clip's **duration** (and how
+many frames). **Go to in / Go to out** take you to them; **Clear marks** removes them.
+
+**Exporting the clip:** choose the mode and press **✂ Export clip**. The green bar shows the progress and **Cancel** stops it
+without leaving any half-written file behind.
+
+| Mode | What it does | When to use it |
+|---|---|---|
+| **Fast (copy)** | Copies the span **without re-encoding**: takes seconds and loses no quality. Since a video file can only start on a keyframe, the clip starts at the **keyframe before** the in point and carries an **edit list** that tells the player to start at your frame. | Almost always: to send it, archive it or take it to an editor (Premiere, DaVinci Resolve, Final Cut and FFmpeg-based programs honour the edit list). |
+| **Exact (re-encode)** | Re-encodes **just the clip**: it starts and ends at the marked frames **in any player**. Takes longer (on the graphics card with NVENC, if you have one). | When the clip will be watched in the **Windows Media Player** (or Movies & TV, Photos…), which **ignores** the edit list, or when it must start exactly on its frame everywhere. |
+
+> **The Windows Media Player and Fast mode:** since it does not read the edit list, it shows the clip **from the keyframe
+> before**: up to one GOP extra at the start (with the 2 s GOP of many presets, up to 2 s), with that bit's sound too (it does
+> not go out of sync). When it finishes, the application tells you how much it is ("starts 0.36 s earlier"). If the recording
+> has **B-frames** (CPU ones with x264/x265, or QuickSync; NVENC does not use them), the fast clip may end **1 to 3 frames
+> after** the out point: the copy cuts in the order frames are decoded and takes just enough so that none is missing.
+
+**Encoder of Exact mode:**
+- **Same as the recording** (default): the same codec and quality as the recorded file (H.264, HEVC, ProRes, DNxHD/HR or
+  MPEG-2), with its preset's settings if it is still that codec. H.264 and HEVC use **NVENC** when the card has it; if its
+  sessions are taken by the recordings, the clip is made on the CPU, with no error.
+- **H.264 (MP4)** / **HEVC / H.265 (MP4)**: to share or upload.
+- **ProRes 422 HQ (MOV)**: to take the clip to editing; the audio goes in lossless PCM.
+
+**Name and folder:** if you do not type a **name**, the clip is named after the recording and the span, for example
+`News (00.12.05-00.12.35).mp4` (positions from the start of the recording). Nothing is ever overwritten: if it exists,
+" 2", " 3"… are added. It goes to the **clips folder** (section 7.4); **📂** opens it and, when done, **📂 Show the clip** opens
+Explorer with the clip selected. The clip is MP4 when its codecs fit (H.264/HEVC with AAC) and MOV otherwise (ProRes, DNxHD,
+MPEG-2 or PCM audio); an audio-only recording stays in its format (WAV, MP3…).
+
+Every clip is noted in **📋 Activity** as "Clip exported": which file, from which recording, which span, in which mode and
+who cut it.
+
+> **A clip that crosses two segments** (or two pieces after a crash) is joined automatically. If the signal changed format
+> between those two pieces (another size or frame rate), they cannot be joined: the application says so and you can export
+> each part separately. **A recording in progress cannot be reviewed** yet: as soon as it ends, it can.
+
+### 8.2. Clips from another system (API)
+
+An external system can request a clip from the API (`POST /api/v1/recordings/{id}/clip`, the `{id}` being the recording's
+in `GET /api/v1/recordings`) with a JSON like this:
+
+```json
+{ "in": "00:12:05:00", "out": "00:12:35:00", "mode": "exact", "encoder": "same", "name": "Goal", "operator": "automation" }
+```
+
+- **in / out:** positions from the start of the recording: seconds (`725.4`), `HH:MM:SS.mmm` or a timecode `HH:MM:SS:FF`.
+  **out is where the clip ends**: the frame that starts there is not included (from 00:12:05:00 to 00:12:35:00 is exactly
+  30 s).
+- **mode:** `fast` (default) or `exact`. **encoder** (exact only): `same`, `h264`, `hevc` or `prores`.
+- The call **waits until the clip is done** and returns its **path** (`path`), the span in frames and timecode, the duration
+  and, in fast mode, how much earlier the file starts (`preRollSeconds`). If something fails it answers 404 (does not exist),
+  409 (in progress, or pieces that cannot be joined), 422 (the span does not fit) or 400 (badly written data).
 
 ---
 
@@ -479,6 +564,7 @@ the **event** in plain words, the channel, the operator and the detail. For exam
 | Damaged file | 21-07-2026_News_9.mp4 · 2.7 GB · no index: cannot be played as is |
 | Recording deleted | «21-07-2026_News_1.mp4» from 21/07/2026 20:00 · 3 files · 6.1 GB |
 | Activity deleted | 25 entries · from 14/07/2026 to 21/07/2026 |
+| Clip exported | «News (00.12.05-00.12.35).mp4» from «News_1.mp4» · 00:12:05.00 → 00:12:35.00 (30 s) · fast (copy) · 41.2 MB |
 
 The last two go together: if the recording process dies halfway through a file, the program **keeps recording
 in a new file** (numbered next in sequence) and tells you that the cut file cannot be played as it is. That
@@ -544,6 +630,14 @@ Only if you enable **retention** or **auto-cleanup** in 🗄 Storage. By default
 **How do I delete recordings I no longer want?**
 In **🗄 Storage → 🗑 Delete recordings…**: one by one, the ones you tick, or every recording in a date range (section
 7.3). Their files are deleted from the disk, every piece, along with their record.
+
+**How do I cut a piece out of a recording?**
+In **🗂 Recordings**, **▶ Review** on its row: mark the in point (**I**) and the out point (**O**) and press **✂ Export clip**
+(section 8.1). **Fast** mode takes seconds; **Exact** re-encodes the clip.
+
+**Why does my "Fast" clip start a little earlier in the Windows player?**
+Because that player ignores the edit list inside the clip and shows it from the keyframe before your in point. Editors and
+FFmpeg-based players start at your frame. If it must start exactly in any player, export it in **Exact** mode.
 
 **What happens if the signal drops in the middle of a recording?**
 The file **is not lost**. If you enabled the test pattern, it keeps recording a warning screen; in any case the program watches and recovers on its own when the signal comes back.

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:app="clr-namespace:Baioss.Record.App"
         xmlns:loc="clr-namespace:Baioss.Record.App.Localization"
-        Title="{loc:T Rec_Title}" Width="1180" Height="640" MinWidth="900" MinHeight="420"
+        Title="{loc:T Rec_Title}" Width="1300" Height="640" MinWidth="1100" MinHeight="420"
         Icon="/Assets/icon.ico"
         Background="#10131A" WindowStartupLocation="CenterOwner">
     <Window.Resources>
@@ -52,14 +52,14 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="54"/>
-                    <ColumnDefinition Width="230"/>
+                    <ColumnDefinition Width="*" MinWidth="120"/>
                     <ColumnDefinition Width="92"/>
                     <ColumnDefinition Width="52"/>
                     <ColumnDefinition Width="92"/>
                     <ColumnDefinition Width="86"/>
                     <ColumnDefinition Width="110"/>
                     <ColumnDefinition Width="112"/>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="400"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{loc:T Rec_Channel}"     FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
                 <TextBlock Grid.Column="1" Text="{loc:T Rec_Name}"    FontSize="10" FontWeight="Bold" Foreground="{StaticResource TextSecondaryBrush}"/>
@@ -88,14 +88,14 @@
                             <Grid VerticalAlignment="Center">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="54"/>
-                                    <ColumnDefinition Width="230"/>
+                                    <ColumnDefinition Width="*" MinWidth="120"/>
                                     <ColumnDefinition Width="92"/>
                                     <ColumnDefinition Width="52"/>
                                     <ColumnDefinition Width="92"/>
                                     <ColumnDefinition Width="86"/>
                                     <ColumnDefinition Width="110"/>
                                     <ColumnDefinition Width="112"/>
-                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="400"/>
                                 </Grid.ColumnDefinitions>
 
                                 <Border Grid.Column="0" Background="{StaticResource AccentBrush}" CornerRadius="4"
@@ -132,6 +132,11 @@
 
                                 <!-- Acciones -->
                                 <StackPanel Grid.Column="8" Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="{loc:T Rev_Open}" Style="{StaticResource RowButton}" ToolTip="{loc:T Rev_Tip_Review}"
+                                            IsEnabled="{Binding CanReview}" ToolTipService.ShowOnDisabled="True"
+                                            Visibility="{Binding DataContext.ReviewAvailable, RelativeSource={RelativeSource AncestorType={x:Type Window}}, Converter={StaticResource BoolToVis}}"
+                                            Command="{Binding DataContext.ReviewCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                            CommandParameter="{Binding}"/>
                                     <Button Content="{loc:T Rec_Protect}" Style="{StaticResource RowButton}" ToolTip="{loc:T Rec_Tip_Protect}"
                                             Command="{Binding DataContext.ProtectCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                             CommandParameter="{Binding}"/>

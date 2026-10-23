@@ -439,8 +439,17 @@ nada. **No se puede deshacer.**
 - **Una grabación con algún archivo abierto en otro programa** (un reproductor, por ejemplo): de esa no se borra nada,
   y el pie de la ventana lo dice en rojo. Cierra ese programa y vuelve a intentarlo.
 
+Cada fila tiene también **▶ Revisar**, que abre la grabación en el reproductor para verla y sacar clips (punto 8.1).
+
 Cada grabación borrada queda anotada en **📋 Actividad** como «Grabación borrada», con su nombre, su fecha, lo que se
 borró y quién lo hizo.
+
+### 7.4. Carpeta de clips
+
+En la sección **CLIPS** eliges **dónde quedan los clips** que exportas desde **▶ Revisar** (punto 8.1) o que pide un sistema
+externo por la API. Si la dejas vacía, van a la carpeta **clips**, junto a los datos del programa (la ventana te dice cuál
+es). Pulsa **Guardar**: se aplica al siguiente clip, sin reiniciar. **La limpieza automática no toca esta carpeta**: un clip
+es algo que alguien sacó a propósito.
 
 ---
 
@@ -456,11 +465,88 @@ Es la lista de **todo lo que has grabado**. Sirve para consultar, proteger y loc
 - **🔒 Proteger:** marca la grabación como **protegida** (chip verde). Nunca la borrará la limpieza automática.
 - **★ Importante:** la marca como importante (chip ámbar). También queda excluida de la limpieza.
 - **○ Normal:** le quita la protección (vuelve a entrar en la limpieza automática).
+- **▶ Revisar:** abre la grabación en el reproductor, para verla cuadro a cuadro y exportar clips (punto 8.1). Una grabación
+  en curso no: se podrá cuando termine.
 - **📂:** abre la carpeta donde está el archivo.
 
 > **Usa "Proteger" o "Importante"** en las grabaciones que no quieres perder nunca. La limpieza automática (punto 7) respeta siempre esas marcas, y tampoco se pueden borrar a mano mientras las tengan.
 
 > **Para borrar grabaciones** (sus archivos y su registro), usa **🗄 Almacenamiento → 🗑 Borrar grabaciones…** (punto 7.3).
+### 8.1. Revisar una grabación y exportar un clip
+
+**▶ Revisar** (en una fila de **🗂 Grabaciones** o de **🗑 Borrar grabaciones…**) abre la grabación terminada en un
+reproductor. Si se grabó partida en segmentos, o el programa la siguió en un archivo nuevo tras una caída, ves **todas sus
+piezas seguidas**, como una sola.
+
+**El reproductor:**
+- **Cada búsqueda es exacta:** al saltar a un punto (arrastrando la barra, con los botones o con el teclado) el programa
+  decodifica desde el fotograma clave anterior hasta el cuadro pedido, así que lo que ves es **siempre el cuadro exacto y
+  entero**, nunca la imagen a medias («a cuadros») que enseñan algunos reproductores al saltar.
+- Arriba de la barra ves la **posición** (`HH:MM:SS:FF`: tiempo transcurrido y cuadro dentro de ese segundo) y la **hora del
+  día** a la que se grabó ese cuadro.
+- **Botones:** al principio ⏮, un segundo atrás, un cuadro atrás, **▶ Reproducir / ⏸ Pausa** (con sonido), un cuadro
+  adelante, un segundo adelante y al final ⏭.
+- **Teclado:** **Espacio** reproduce o para · **←** **→** un cuadro · **Mayús+←** **Mayús+→** un segundo · **Inicio** / **Fin**
+  · **I** marca la entrada y **O** la salida · **Mayús+I** / **Mayús+O** van a ellas.
+- Una grabación **entrelazada** (1080i) se ve desentrelazada en el reproductor; el clip que exportes conserva los campos.
+- Si algún archivo de la grabación **no se puede ver** (falta en el disco, o es el que quedó cortado en una caída y no tiene
+  índice), una franja ámbar lo dice y la línea de tiempo lo salta: el resto se revisa y se corta igual.
+
+**Las marcas:** pon el cuadro donde empieza el clip y pulsa **⇤ Marcar entrada (I)**; ve al último cuadro que quieres y
+pulsa **Marcar salida (O) ⇥**. **Los dos cuadros entran en el clip**, como en un editor de vídeo. Debajo ves la **duración**
+del clip (y cuántos cuadros son). **Ir a la entrada / Ir a la salida** te llevan a ellas; **Quitar marcas** las borra.
+
+**Exportar el clip:** elige el modo y pulsa **✂ Exportar clip**. La barra verde enseña el avance y **Cancelar** lo detiene
+sin dejar ningún archivo a medias.
+
+| Modo | Qué hace | Cuándo usarlo |
+|---|---|---|
+| **Rápido (copia)** | Copia el trozo **sin recodificar**: tarda segundos y no pierde calidad. Como un archivo de vídeo solo puede empezar en un fotograma clave, el clip empieza en el **fotograma clave anterior** a la entrada y lleva dentro una **lista de edición** que le dice al reproductor que empiece en tu cuadro. | Casi siempre: para enviarlo, archivarlo o llevarlo a un editor (Premiere, DaVinci Resolve, Final Cut y los programas basados en FFmpeg respetan la lista de edición). |
+| **Exacto (recodifica)** | Vuelve a codificar **solo el clip**: empieza y acaba en el cuadro marcado **en cualquier reproductor**. Tarda más (en la tarjeta gráfica con NVENC, si la tienes). | Cuando el clip se va a ver en el **Reproductor multimedia de Windows** (o Películas y TV, Fotos…), que **no respeta** la lista de edición, o cuando tiene que empezar exactamente en su cuadro en cualquier sitio. |
+
+> **El Reproductor multimedia de Windows y el modo Rápido:** como no lee la lista de edición, enseña el clip **desde el
+> fotograma clave anterior**: hasta un GOP de más al principio (con el GOP de 2 s de muchos presets, hasta 2 s), con el
+> sonido de ese trozo también (no se desincroniza). Al terminar, el programa te dice cuánto es («empieza 0,36 s antes»).
+> Si la grabación tiene **B-frames** (las de CPU con x264/x265 o QuickSync; NVENC no los usa), el clip rápido puede acabar
+> **1 a 3 cuadros después** de la salida: la copia corta en el orden en que se decodifican los cuadros y coge los justos
+> para que no falte ninguno.
+
+**Codificador del modo Exacto:**
+- **Como la grabación** (por defecto): el mismo códec y la misma calidad que el archivo grabado (H.264, HEVC, ProRes,
+  DNxHD/HR o MPEG-2), con los ajustes de su preset si sigue siendo el de ese códec. H.264 y HEVC van por **NVENC** si la
+  tarjeta lo tiene; si sus sesiones están ocupadas por las grabaciones, el clip se hace en la CPU, sin error.
+- **H.264 (MP4)** / **HEVC / H.265 (MP4)**: para compartir o subir a la web.
+- **ProRes 422 HQ (MOV)**: para llevar el clip a edición; el audio va en PCM, sin pérdida.
+
+**El nombre y la carpeta:** si no escribes un **nombre**, el clip se llama como la grabación con el tramo, por ejemplo
+`Noticias (00.12.05-00.12.35).mp4` (posiciones desde el principio de la grabación). Nunca se sobrescribe nada: si ya existe,
+se añade « 2», « 3»… Queda en la **carpeta de clips** (punto 7.4); **📂** la abre y, al terminar, **📂 Mostrar el clip**
+abre el Explorador con el clip seleccionado. El clip es MP4 si sus códecs caben (H.264/HEVC con AAC) y MOV si no (ProRes,
+DNxHD, MPEG-2 o audio PCM); una grabación de solo audio queda en su formato (WAV, MP3…).
+
+Cada clip queda anotado en **📋 Actividad** como «Clip exportado»: qué archivo, de qué grabación, qué tramo, en qué modo
+y quién lo sacó.
+
+> **Un clip que cruza dos segmentos** (o dos piezas tras una caída) se une solo. Si entre esas dos piezas la señal cambió de
+> formato (otro tamaño u otra cadencia), no se pueden unir: el programa lo dice y puedes exportar cada parte por separado.
+> **Una grabación en curso no se puede revisar** todavía: en cuanto termina, sí.
+
+### 8.2. Clips desde otro sistema (API)
+
+Un sistema externo puede pedir un clip a la API (`POST /api/v1/recordings/{id}/clip`, el `{id}` es el de la grabación en
+`GET /api/v1/recordings`) con un JSON como este:
+
+```json
+{ "in": "00:12:05:00", "out": "00:12:35:00", "mode": "exact", "encoder": "same", "name": "Gol", "operator": "automatización" }
+```
+
+- **in / out:** posiciones desde el principio de la grabación: segundos (`725.4`), `HH:MM:SS.mmm` o un timecode
+  `HH:MM:SS:FF`. **out es donde acaba el clip**: el cuadro que empieza ahí ya no entra (de 00:12:05:00 a 00:12:35:00 son 30 s
+  justos).
+- **mode:** `fast` (rápido, por defecto) o `exact`. **encoder** (solo exacto): `same`, `h264`, `hevc` o `prores`.
+- La llamada **espera a que el clip esté hecho** y devuelve su **ruta** (`path`), el tramo en cuadros y timecode, la duración
+  y, en rápido, cuánto antes empieza el archivo (`preRollSeconds`). Si algo falla responde 404 (no existe), 409 (en curso o
+  piezas que no se pueden unir), 422 (el tramo no cabe) o 400 (datos mal escritos).
 
 ---
 
@@ -484,6 +570,7 @@ los errores), el **suceso** en palabras, el canal, el operador y el detalle. Por
 | Archivo dañado | 21-07-2026_Noticias_9.mp4 · 2,7 GB · sin índice: no se puede reproducir tal cual |
 | Grabación borrada | «21-07-2026_Noticias_1.mp4» del 21/07/2026 20:00 · 3 archivos · 6,1 GB |
 | Actividad borrada | 25 entradas · del 14/07/2026 al 21/07/2026 |
+| Clip exportado | «Noticias (00.12.05-00.12.35).mp4» de «Noticias_1.mp4» · 00:12:05.00 → 00:12:35.00 (30 s) · rápido (copia) · 41,2 MB |
 
 Las dos últimas van juntas: si el proceso que graba se cae a mitad de un archivo, el programa **sigue grabando
 en un archivo nuevo** (numerado a continuación) y te avisa de que el archivo cortado no se puede reproducir tal
@@ -549,6 +636,15 @@ Solo si activas la **retención** o la **auto-limpieza** en 🗄 Almacenamiento.
 **¿Cómo borro grabaciones que ya no quiero?**
 En **🗄 Almacenamiento → 🗑 Borrar grabaciones…**: una a una, las que marques o todas las de un rango de fechas (punto
 7.3). Se borran sus archivos del disco, todas sus piezas, y su registro.
+
+**¿Cómo saco un trozo de una grabación?**
+En **🗂 Grabaciones**, **▶ Revisar** en su fila: marca la entrada (**I**) y la salida (**O**) y pulsa **✂ Exportar clip**
+(punto 8.1). El modo **Rápido** tarda segundos; el **Exacto** recodifica el clip.
+
+**¿Por qué mi clip «Rápido» empieza un poco antes en el Reproductor de Windows?**
+Porque ese reproductor no respeta la lista de edición que lleva el clip y lo enseña desde el fotograma clave anterior a tu
+entrada. Los editores y los reproductores basados en FFmpeg empiezan en tu cuadro. Si tiene que empezar exacto en cualquier
+reproductor, expórtalo en modo **Exacto**.
 
 **¿Qué pasa si se cae la señal en mitad de una grabación?**
 El archivo **no se pierde**. Si activaste la carta de ajuste, sigue grabando una pantalla de aviso; en cualquier caso el programa vigila y se recupera solo cuando la señal vuelve.

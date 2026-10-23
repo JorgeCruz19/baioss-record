@@ -443,6 +443,22 @@ public partial class App : System.Windows.Application
             Serilog.Log.Error(ex, "Licenciamiento: no se pudo componer el subsistema; la app funcionará SIN restricciones.");
         }
 
+        // Revisión de grabaciones terminadas y exportación de clips (ventana «Revisar» y POST /api/v1/recordings/{id}/clip). Solo
+        // con FFmpeg. Los clips van a la carpeta de «Almacenamiento» o, si no se eligió, a «clips» junto a los datos. Lo que graban
+        // los canales AHORA se pregunta en cada uso (una grabación en curso no se corta). Si NVENC H.264 no abrió al arrancar, los
+        // clips exactos van en la CPU sin volver a sondear la GPU.
+        if (real)
+            s.AddSingleton<Baioss.Record.Application.Clips.IClipExportService>(sp => new Baioss.Record.Infrastructure.Clips.ClipExportService(
+                sp.GetRequiredService<IRecordingSessionRepository>(),
+                sp.GetService<IFfmpegLocator>(),
+                sp.GetService<Baioss.Record.Application.Storage.IStorageSettingsStore>(),
+                Path.Combine(root, "clips"),
+                sp.GetRequiredService<ILogger<Baioss.Record.Infrastructure.Clips.ClipExportService>>(),
+                sp.GetService<IEventBus>(),
+                sp.GetService<IRecordingProfileRepository>(),
+                () => sp.GetService<IChannelManager>()?.Channels.Select(c => c.Status.SessionId).OfType<Guid>().ToArray() ?? Array.Empty<Guid>(),
+                gpuEncoders ? null : Baioss.Record.Engine.FFmpeg.Clips.ClipEncoderSupport.CpuOnly));
+
         s.AddSingleton<ShellViewModel>();
         s.AddSingleton<MainWindow>();
 

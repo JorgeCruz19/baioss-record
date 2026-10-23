@@ -65,6 +65,10 @@ public sealed partial class RecordingCleanupRow : ObservableObject
     public bool IsMarkedProtected => Session.Protection == RecordingProtection.Protected;
     public bool IsMarkedImportant => Session.Protection == RecordingProtection.Important;
     public bool CanDelete => !IsInProgress && !IsProtected;
+    /// <summary>Terminada y con archivos: se puede revisar y cortar.</summary>
+    public bool CanReview => !IsInProgress && Session.Segments.Count > 0;
+    /// <summary>Qué hace el botón «Revisar» de la fila o, si no se puede, por qué.</summary>
+    public string ReviewTip => IsInProgress ? Loc.T("Rev_Tip_InProgress") : Loc.T("Rev_Tip_Review");
     /// <summary>Qué hace el botón de borrar de la fila o, si no se puede, por qué.</summary>
     public string DeleteTip { get; }
 

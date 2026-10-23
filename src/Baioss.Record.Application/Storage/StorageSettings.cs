@@ -38,6 +38,11 @@ public sealed class StorageSettings
     /// <summary>Opt-in: mientras dure la emergencia, bloquea el inicio de nuevas grabaciones.</summary>
     public bool StopNewRecordingsOnEmergency { get; set; }
 
+    // --- Clips ---
+    /// <summary>Carpeta donde quedan los clips exportados desde «Revisar» o la API. null = la de por defecto (<c>clips</c>,
+    /// junto a la base de datos y las grabaciones). La retención no la toca: un clip es algo que alguien sacó a propósito.</summary>
+    public string? ClipsFolder { get; set; }
+
     public StorageSettings Clone() => (StorageSettings)MemberwiseClone();
 
     /// <summary>
@@ -61,6 +66,7 @@ public sealed class StorageSettings
         if (s.EmergencyPercent > 0 && s.WarnPercent > s.EmergencyPercent) s.WarnPercent = s.EmergencyPercent;
         if (s.Action == RetentionAction.Archive && string.IsNullOrWhiteSpace(s.ArchivePath))
             s.Action = RetentionAction.Delete; // archivar sin carpeta no tiene sentido → borrar
+        s.ClipsFolder = string.IsNullOrWhiteSpace(s.ClipsFolder) ? null : s.ClipsFolder.Trim();
         return s;
     }
 }

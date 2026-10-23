@@ -19,6 +19,10 @@ using Baioss.Record.App.Recordings;
 using Baioss.Record.App.Scheduling;
 using Baioss.Record.App.Localization;
 using Baioss.Record.App.Storage;
+using Baioss.Record.App.Review;
+using Baioss.Record.Application.Clips;
+using Baioss.Record.Infrastructure.Review;
+using Microsoft.Extensions.Logging;
 
 namespace Baioss.Record.App;
 
@@ -44,6 +48,10 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly IStorageSettingsStore _storageSettings;
     // Opcional a propósito: si el subsistema de licencias no se pudo componer, la app funciona igual (sin restricciones).
     private readonly ILicenseService? _license;
+    /// <summary>Revisión y clips (null en modo demostración, sin FFmpeg: no se ofrece «Revisar»).</summary>
+    private readonly IClipExportService? _clips;
+    private readonly IFfmpegLocator? _ffmpeg;
+    private readonly ILoggerFactory? _loggers;
 
     public ObservableCollection<ChannelViewModel> Channels { get; }
 
@@ -64,8 +72,12 @@ public sealed partial class ShellViewModel : ObservableObject
         IDeviceEnumerator devices, ISchedulerService scheduler, IClock clock, IRecordingSessionRepository sessions,
         IStorageStatusProvider storageStatus, IStorageSettingsStore storageSettings, IEventLogRepository events,
         IRecordingDeletionService deletion, IEventBus bus,
-        ILicenseService? license = null, ApiAccessState? apiAccess = null, IInputSourceRepository? inputSources = null)
+        ILicenseService? license = null, ApiAccessState? apiAccess = null, IInputSourceRepository? inputSources = null,
+        IClipExportService? clips = null, IFfmpegLocator? ffmpeg = null, ILoggerFactory? loggers = null)
     {
+        _clips = clips;
+        _ffmpeg = ffmpeg;
+        _loggers = loggers;
         _apiAccess = apiAccess;
         _inputSources = inputSources;
         _host = host;
@@ -340,7 +352,7 @@ public sealed partial class ShellViewModel : ObservableObject
         // grabación y poblar el filtro por canal. Se toma un snapshot al abrir (los canales no se crean/destruyen
         // en caliente, solo se reconstruyen conservando su Id/Key).
         var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key);
-        var viewModel = new RecordingsViewModel(_sessions, _clock, channelKeys);
+        var viewModel = new RecordingsViewModel(_sessions, _clock, channelKeys, CanReview ? OpenReview : null);
         var window = new RecordingsWindow
         {
             DataContext = viewModel,
@@ -367,7 +379,7 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         var window = new StorageSettingsWindow
         {
-            DataContext = new StorageSettingsViewModel(_storageSettings, OpenRecordingCleanup),
+            DataContext = new StorageSettingsViewModel(_storageSettings, OpenRecordingCleanup, _clips?.DefaultClipsFolder),
             Owner = System.Windows.Application.Current?.MainWindow,
         };
         window.Show();
@@ -380,7 +392,35 @@ public sealed partial class ShellViewModel : ObservableObject
         var channelKeys = Channels.ToDictionary(c => c.ChannelId, c => c.Key); // mismo snapshot que el historial
         var window = new RecordingCleanupWindow
         {
-            DataContext = new RecordingCleanupViewModel(_sessions, _deletion, _clock, channelKeys, ConfirmDelete),
+            DataContext = new RecordingCleanupViewModel(_sessions, _deletion, _clock, channelKeys, ConfirmDelete,
+                CanReview ? OpenReview : null),
+            Owner = SecondaryWindow.ActiveOwner(),
+        };
+        window.Show();
+    }
+
+    /// <summary>Hay con qué revisar: el servicio de clips y FFmpeg (no en modo demostración).</summary>
+    private bool CanReview => _clips is not null && _ffmpeg is not null;
+
+    /// <summary>
+    /// Ventana «Revisar» de una grabación terminada: reproductor con búsqueda exacta, marcas y exportación de clips. Su dueña es
+    /// la ventana desde la que se abre (la lista), como «Borrar grabaciones».
+    /// </summary>
+    private void OpenReview(RecordingSession session)
+    {
+        if (_clips is null || _ffmpeg is null) return;
+        string key = Channels.FirstOrDefault(c => c.ChannelId == session.ChannelId)?.Key ?? "?";
+        var ffmpeg = _ffmpeg.FfmpegPath;
+        var log = (ILogger?)_loggers?.CreateLogger("Review") ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+        var window = new ReviewWindow
+        {
+            DataContext = new ReviewViewModel(_clips, session, key, timeline =>
+            {
+                var audio = timeline.HasAudio ? WaveOutAudioOutput.TryOpen() : null;
+                if (timeline.HasAudio && audio is null)
+                    log.LogWarning("Revisión: no hay salida de audio utilizable (waveOut); se reproduce sin sonido.");
+                return new ReviewPlayer(ffmpeg, timeline, audio, log);
+            }),
             Owner = SecondaryWindow.ActiveOwner(),
         };
         window.Show();

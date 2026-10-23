@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Baioss.Record.Domain;
+using Baioss.Record.Domain.Entities;
 using Baioss.Record.App.Localization;
 
 namespace Baioss.Record.App.Recordings;
@@ -21,6 +22,10 @@ public sealed partial class RecordingRow : ObservableObject
     public string Operator { get; }
     /// <summary>Carpeta que contiene los archivos de la grabación (para «Abrir carpeta»); null si no se conoce.</summary>
     public string? FolderPath { get; }
+    /// <summary>La grabación tal como la leyó la lista (con sus segmentos), para abrirla en «Revisar».</summary>
+    public RecordingSession? Session { get; init; }
+    /// <summary>Terminada y con archivos: se puede revisar y cortar.</summary>
+    public bool CanReview { get; init; }
 
     public RecordingRow(Guid id, string channelKey, string fileName, string dateText, string timeText,
         string durationText, string sizeText, string @operator, string? folderPath, RecordingProtection protection)

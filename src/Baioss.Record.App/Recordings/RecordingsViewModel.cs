@@ -38,6 +38,7 @@ public sealed partial class RecordingsViewModel : ObservableObject, IDisposable
     private readonly IRecordingSessionRepository _sessions;
     private readonly IClock _clock;
     private readonly IReadOnlyDictionary<Guid, string> _channelKeys;
+    private readonly Action<RecordingSession>? _openReview;
     private long _lastTotalBytes;
 
     public ObservableCollection<RecordingRow> Recordings { get; } = new();
@@ -50,11 +51,14 @@ public sealed partial class RecordingsViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _summary = "";
     [ObservableProperty] private bool _isEmpty;
 
-    public RecordingsViewModel(IRecordingSessionRepository sessions, IClock clock, IReadOnlyDictionary<Guid, string> channelKeys)
+    /// <summary><paramref name="openReview"/>: abre la ventana «Revisar» de una grabación (null = sin FFmpeg: no se ofrece).</summary>
+    public RecordingsViewModel(IRecordingSessionRepository sessions, IClock clock, IReadOnlyDictionary<Guid, string> channelKeys,
+        Action<RecordingSession>? openReview = null)
     {
         _sessions = sessions;
         _clock = clock;
         _channelKeys = channelKeys;
+        _openReview = openReview;
 
         Ranges = new ObservableCollection<RangeOption>();
         Channels = new ObservableCollection<ChannelOption>();
@@ -159,7 +163,21 @@ public sealed partial class RecordingsViewModel : ObservableObject, IDisposable
             StorageFormat.Bytes(s.TotalBytes),
             string.IsNullOrWhiteSpace(s.Operator) ? "—" : s.Operator!,
             string.IsNullOrEmpty(folder) ? null : folder,
-            s.Protection);
+            s.Protection)
+        {
+            Session = s,
+            CanReview = _openReview is not null && s.EndedAt is not null && s.Segments.Count > 0,
+        };
+    }
+
+    /// <summary>¿Se ofrece «Revisar»? (sin FFmpeg, no).</summary>
+    public bool ReviewAvailable => _openReview is not null;
+
+    /// <summary>Abre la grabación en la ventana «Revisar» (reproductor y clips).</summary>
+    [RelayCommand]
+    private void Review(RecordingRow? row)
+    {
+        if (row is { CanReview: true, Session: { } session }) _openReview?.Invoke(session);
     }
 
     private void UpdateSummary()

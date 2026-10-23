@@ -156,6 +156,23 @@
                                 Style="{StaticResource TransportButton}" HorizontalAlignment="Left" Height="32" Padding="16,0"/>
                     </StackPanel>
                 </Border>
+
+                <!-- CLIPS: dónde quedan los clips exportados desde «Revisar» o la API -->
+                <Border Style="{StaticResource SectionCard}">
+                    <StackPanel>
+                        <TextBlock Text="{loc:T Sto_ClipsHeader}" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="{loc:T Sto_ClipsFolder}" Style="{StaticResource FieldLabel}" Margin="0,0,0,6"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding ClipsFolder}" Height="30" VerticalContentAlignment="Center"
+                                     AutomationProperties.AutomationId="ClipsFolder"/>
+                            <Button Grid.Column="1" Content="{loc:T Common_Browse}" Command="{Binding BrowseClipsCommand}"
+                                    Style="{StaticResource TransportButton}" Height="30" Padding="14,0" Margin="8,0,0,0"/>
+                        </Grid>
+                        <TextBlock Text="{Binding ClipsHint}" FontSize="10" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,8,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
     </DockPanel>

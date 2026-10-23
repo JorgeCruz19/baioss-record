@@ -97,14 +97,14 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="30"/>
                     <ColumnDefinition Width="54"/>
-                    <ColumnDefinition Width="250"/>
+                    <ColumnDefinition Width="*" MinWidth="110"/>
                     <ColumnDefinition Width="92"/>
                     <ColumnDefinition Width="52"/>
                     <ColumnDefinition Width="92"/>
                     <ColumnDefinition Width="74"/>
                     <ColumnDefinition Width="86"/>
                     <ColumnDefinition Width="118"/>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="210"/>
                 </Grid.ColumnDefinitions>
                 <CheckBox Grid.Column="0" IsChecked="{Binding AllSelected}" VerticalAlignment="Center"
                           ToolTip="{loc:T Cln_SelectAll_Tip}"/>
@@ -150,14 +150,14 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="30"/>
                                 <ColumnDefinition Width="54"/>
-                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="*" MinWidth="110"/>
                                 <ColumnDefinition Width="92"/>
                                 <ColumnDefinition Width="52"/>
                                 <ColumnDefinition Width="92"/>
                                 <ColumnDefinition Width="74"/>
                                 <ColumnDefinition Width="86"/>
                                 <ColumnDefinition Width="118"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="210"/>
                             </Grid.ColumnDefinitions>
 
                             <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected}" IsEnabled="{Binding CanDelete}"
@@ -198,6 +198,11 @@
 
                             <!-- Acciones -->
                             <StackPanel Grid.Column="9" Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Content="{loc:T Rev_Open}" Style="{StaticResource RowButton}" ToolTip="{Binding ReviewTip}"
+                                        IsEnabled="{Binding CanReview}"
+                                        Visibility="{Binding DataContext.ReviewAvailable, RelativeSource={RelativeSource AncestorType={x:Type Window}}, Converter={StaticResource BoolToVis}}"
+                                        Command="{Binding DataContext.ReviewCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                        CommandParameter="{Binding}"/>
                                 <Button Content="🗑" Style="{StaticResource RowButton}" ToolTip="{Binding DeleteTip}"
                                         Command="{Binding DataContext.DeleteOneCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                         CommandParameter="{Binding}"/>

@@ -112,6 +112,17 @@ public sealed record RecordingDeleted(
     int Files, long TotalBytes, int MissingFiles, string? Operator) : DomainEventBase;
 
 /// <summary>
+/// Se EXPORTÓ un clip de una grabación terminada (ventana «Revisar» o la API): <paramref name="FileName"/> es el archivo que
+/// quedó en la carpeta de clips, <paramref name="In"/> y <paramref name="Out"/> el tramo de la grabación (desde su principio;
+/// <paramref name="Out"/> es el final del último cuadro incluido) y <paramref name="Encoder"/> el codificador de vídeo del modo
+/// exacto (null en el rápido, que copia). <paramref name="SourceFileName"/> (el primer archivo de la grabación) dice de qué
+/// grabación salió aunque esta se borre después.
+/// </summary>
+public sealed record ClipExported(
+    Guid ChannelId, Guid SessionId, string FileName, string? SourceFileName, TimeSpan In, TimeSpan Out, ClipMode Mode,
+    string? Encoder, long SizeBytes, string? Operator) : DomainEventBase;
+
+/// <summary>
 /// Alguien BORRÓ entradas del registro de actividad desde la aplicación: cuántas, de qué fechas (la más antigua y la
 /// más reciente) y quién. Es lo que queda de ellas: un registro que se puede vaciar desde la propia aplicación sin
 /// dejar rastro no valdría como auditoría.

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Baioss.Record.Application.Abstractions;
 using Baioss.Record.Application.Channels;
+using Baioss.Record.Application.Clips;
 using Baioss.Record.Application.Persistence;
 using Baioss.Record.Application.Storage;
 using Baioss.Record.Application.UseCases.Queries;
@@ -174,6 +175,81 @@ public static class ApiEndpoints
                 return Results.BadRequest(new { error = "Nivel inválido. Usa None, Important o Protected." });
             var ok = await sessions.SetProtectionAsync(id, level, ct);
             return ok ? Results.Ok(new { id, protection = level.ToString() }) : Results.NotFound();
+        });
+
+        // CLIP de una grabación terminada: corta el tramo [in, out) y lo deja en la carpeta de clips (la de «Almacenamiento»).
+        //   in, out   posición desde el principio de la grabación: segundos (75.5 o "75.5"), "HH:MM:SS(.fff)" o un timecode
+        //             "HH:MM:SS:FF". «out» es donde ACABA el clip: el cuadro que empieza ahí ya no entra.
+        //   mode      "fast" (rápido: copia sin recodificar; el archivo empieza en el fotograma clave anterior con una lista de
+        //             edición) o "exact" (recodifica solo el clip: empieza y acaba en el cuadro pedido). Por defecto "fast".
+        //   encoder   (exacto) "same" (el de la grabación, por defecto), "h264", "hevc" o "prores".
+        //   name      nombre del archivo sin extensión (opcional); operator, quién lo pide (auditoría «Clip exportado»).
+        // La llamada espera a que el clip esté hecho y devuelve su ruta. 404 si la grabación no existe; 409 si se está grabando,
+        // le faltan archivos o el tramo cruza piezas que no se pueden unir; 422 si el tramo no cabe; 503 sin FFmpeg.
+        api.MapPost("/recordings/{id:guid}/clip", async (Guid id, HttpContext http, CancellationToken ct) =>
+        {
+            var clips = http.RequestServices.GetService<IClipExportService>();
+            if (clips is null) return Results.Problem("Este equipo no puede exportar clips (sin FFmpeg).", statusCode: 503);
+            ClipBody? body;
+            try { body = await http.Request.ReadFromJsonAsync<ClipBody>(ct); }
+            catch (Exception ex) when (ex is JsonException or BadHttpRequestException or InvalidOperationException or NotSupportedException)
+            { return Results.BadRequest(new { error = "Cuerpo inválido: se espera JSON con in, out y mode." }); }
+            if (body is null) return Results.BadRequest(new { error = "Falta el cuerpo: se espera JSON con in, out y mode." });
+
+            ClipMode mode;
+            switch ((body.Mode ?? "fast").Trim().ToLowerInvariant())
+            {
+                case "fast" or "rapido" or "rápido" or "copy": mode = ClipMode.Fast; break;
+                case "exact" or "exacto" or "reencode": mode = ClipMode.Exact; break;
+                default: return Results.BadRequest(new { error = "Modo inválido. Usa fast o exact." });
+            }
+            ClipVideoEncoder encoder;
+            switch ((body.Encoder ?? "same").Trim().ToLowerInvariant())
+            {
+                case "same" or "recording" or "": encoder = ClipVideoEncoder.SameAsRecording; break;
+                case "h264" or "h.264" or "avc": encoder = ClipVideoEncoder.H264; break;
+                case "hevc" or "h265" or "h.265": encoder = ClipVideoEncoder.Hevc; break;
+                case "prores": encoder = ClipVideoEncoder.ProRes; break;
+                default: return Results.BadRequest(new { error = "Codificador inválido. Usa same, h264, hevc o prores." });
+            }
+
+            try
+            {
+                var timeline = await clips.LoadTimelineAsync(id, ct);
+                if (!timeline.TryParse(Position(body.In), end: false, out long inFrame))
+                    return Results.BadRequest(new { error = "«in» inválido: segundos, HH:MM:SS(.fff) o HH:MM:SS:FF." });
+                if (!timeline.TryParse(Position(body.Out), end: true, out long outFrame))
+                    return Results.BadRequest(new { error = "«out» inválido: segundos, HH:MM:SS(.fff) o HH:MM:SS:FF." });
+                var r = await clips.ExportAsync(new ClipRequest(id, inFrame, outFrame, mode)
+                {
+                    Encoder = encoder, Name = body.Name, Operator = body.Operator,
+                }, null, ct);
+                return Results.Ok(new
+                {
+                    path = r.FilePath, fileName = Path.GetFileName(r.FilePath),
+                    mode = r.Mode == ClipMode.Exact ? "exact" : "fast", encoder = r.VideoEncoder,
+                    inFrame = r.InFrame, outFrame = r.OutFrame,
+                    @in = timeline.Timecode(r.InFrame), @out = timeline.Timecode(r.OutFrame),
+                    inSeconds = r.In.TotalSeconds, outSeconds = r.Out.TotalSeconds, durationSeconds = r.Duration.TotalSeconds,
+                    frames = r.OutFrame - r.InFrame, sizeBytes = r.SizeBytes,
+                    // Rápido: el archivo empieza este tanto antes (su fotograma clave) en los reproductores que no respetan la
+                    // lista de edición; y, con B-frames, estos cuadros de más al final.
+                    preRollSeconds = r.PreRoll.TotalSeconds, extraFrames = r.ExtraFrames,
+                });
+            }
+            catch (ClipException ex)
+            {
+                var payload = new { error = ex.Error.ToString(), detail = ex.Detail };
+                return ex.Error switch
+                {
+                    ClipError.NotFound => Results.NotFound(payload),
+                    ClipError.InProgress or ClipError.NoFiles or ClipError.FileMissing or ClipError.Unreadable or ClipError.PiecesDiffer
+                        => Results.Conflict(payload),
+                    ClipError.OutOfRange or ClipError.Empty => Results.UnprocessableEntity(payload),
+                    ClipError.Unavailable => Results.Json(payload, statusCode: 503),
+                    _ => Results.Json(payload, statusCode: 500),
+                };
+            }
         });
 
         // --- Ajustes de almacenamiento (Fase 4c): retención + alertas por % + modo emergencia, editables en
@@ -416,6 +492,16 @@ public static class ApiEndpoints
     /// <summary>Cuerpo OPCIONAL de «detener»: el nombre (sin extensión) con el que guardar la grabación y quién lo pone.</summary>
     public sealed record StopBody(string? Name, string? Operator);
     public sealed record ProtectionBody(string Level);
+    /// <summary>Cuerpo de «clip»: <see cref="In"/> y <see cref="Out"/> pueden ser número (segundos) o texto (ver el endpoint).</summary>
+    public sealed record ClipBody(JsonElement In, JsonElement Out, string? Mode, string? Encoder, string? Name, string? Operator);
+
+    /// <summary>Una posición del cuerpo como texto: un número JSON tal cual («75.5»), una cadena sin tocar; nada → null.</summary>
+    private static string? Position(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Number => value.GetRawText(),
+        JsonValueKind.String => value.GetString(),
+        _ => null,
+    };
     /// <summary>Cuerpo de la activación de licencia: la clave tal como la recibió el cliente.</summary>
     public sealed record ActivateBody(string? Key);
 }

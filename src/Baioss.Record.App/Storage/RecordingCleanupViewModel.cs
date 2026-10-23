@@ -30,6 +30,7 @@ public sealed partial class RecordingCleanupViewModel : ObservableObject, IDispo
     private readonly IClock _clock;
     private readonly IReadOnlyDictionary<Guid, string> _channelKeys;
     private readonly Func<string, string, bool> _confirm;
+    private readonly Action<Domain.Entities.RecordingSession>? _openReview;
 
     public ObservableCollection<RecordingCleanupRow> Rows { get; } = new();
 
@@ -64,10 +65,13 @@ public sealed partial class RecordingCleanupViewModel : ObservableObject, IDispo
     public string DeleteSelectedText => Loc.F("Cln_DeleteSelected", SelectedCount);
     public string DeleteRangeText => Loc.F("Cln_DeleteRange", DeletableCount);
 
-    /// <summary><paramref name="confirm"/>: muestra la pregunta (texto, título) y devuelve true si el operador acepta.</summary>
+    /// <summary><paramref name="confirm"/>: muestra la pregunta (texto, título) y devuelve true si el operador acepta.
+    /// <paramref name="openReview"/>: abre la ventana «Revisar» de una grabación (null = sin FFmpeg: no se ofrece).</summary>
     public RecordingCleanupViewModel(IRecordingSessionRepository sessions, IRecordingDeletionService deletion, IClock clock,
-        IReadOnlyDictionary<Guid, string> channelKeys, Func<string, string, bool> confirm)
+        IReadOnlyDictionary<Guid, string> channelKeys, Func<string, string, bool> confirm,
+        Action<Domain.Entities.RecordingSession>? openReview = null)
     {
+        _openReview = openReview;
         _sessions = sessions;
         _deletion = deletion;
         _clock = clock;
@@ -343,6 +347,16 @@ public sealed partial class RecordingCleanupViewModel : ObservableObject, IDispo
         if (inProgress > 0) parts.Add(Loc.F("Cln_Excl_InProgress", inProgress));
         if (protectedCount > 0) parts.Add(Loc.Plural("Cln_Excl_Protected_One", "Cln_Excl_Protected_Many", protectedCount));
         return string.Join($" {Loc.T("Common_And")} ", parts);
+    }
+
+    /// <summary>¿Se ofrece «Revisar»? (sin FFmpeg, no).</summary>
+    public bool ReviewAvailable => _openReview is not null;
+
+    /// <summary>Abre la grabación en la ventana «Revisar» (reproductor y clips). Una en curso no: se puede cuando termine.</summary>
+    [RelayCommand]
+    private void Review(RecordingCleanupRow? row)
+    {
+        if (row is { CanReview: true }) _openReview?.Invoke(row.Session);
     }
 
     /// <summary>Abre en el Explorador la carpeta de la grabación (si se conoce y existe).</summary>

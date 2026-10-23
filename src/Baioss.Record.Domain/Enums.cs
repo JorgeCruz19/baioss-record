@@ -231,6 +231,18 @@ public enum ScheduleChangeKind
     Resumed = 5,
 }
 
+/// <summary>
+/// Cómo se exporta un clip de una grabación terminada. Se persiste (en la auditoría) como entero: NO reordenar.
+/// </summary>
+public enum ClipMode
+{
+    /// <summary>Copia sin recodificar: rápido y sin pérdida, pero el archivo empieza en el fotograma clave anterior a la
+    /// entrada (una lista de edición le dice al reproductor que empiece en el cuadro pedido; no todos la respetan).</summary>
+    Fast = 0,
+    /// <summary>Se recodifica solo el clip: empieza y acaba en el cuadro pedido en cualquier reproductor.</summary>
+    Exact = 1,
+}
+
 /// <summary>Tipo de repetición de un trabajo programado.</summary>
 public enum RecurrenceKind
 {

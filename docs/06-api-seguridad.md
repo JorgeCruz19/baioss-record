@@ -17,6 +17,7 @@ mutación exigen rol con permiso; las de lectura, sesión válida.
 | GET | `/inputs` | Fuentes disponibles / descubiertas | Operador |
 | GET | `/storage?volume=D:\` | Espacio, tiempo restante, consumo por canal | Operador |
 | GET | `/recordings?channel=&from=&to=` | Historial de grabaciones (paginado) | Supervisor |
+| POST | `/recordings/{id}/clip` | Corta un clip de una grabación TERMINADA y lo deja en la carpeta de clips (ver abajo) | Operador |
 | GET | `/events?days=&channel=&category=&severity=&take=` | Registro de auditoría (ver `AUDITORIA-GRABACIONES.md`) | Supervisor |
 | GET | `/schedule?channel=` | Tareas automáticas (todas o las de un canal) con próxima ejecución, estado, ocurrencia de HOY y las que están en marcha (ver abajo) | Supervisor |
 | GET | `/schedule/active` | Solo las grabaciones programadas EN MARCHA (lo que enseña la tarjeta del canal) | Operador |
@@ -62,6 +63,32 @@ en la auditoría como `RecordingRenamed`.
   válidos o archivo que no se pudo mover). La grabación se detiene en todos los casos.
 - `GET /channels` y `/status` llevan `sessionTrigger` (1 manual · 2 programada · 3 API; `null` en reposo) para que el
   cliente sepa si tiene sentido pedir nombre.
+
+### Clip de una grabación terminada
+
+```http
+POST /api/v1/recordings/9d4e.../clip
+Content-Type: application/json
+
+{ "in": "00:12:05:00", "out": "00:12:35:00", "mode": "exact", "encoder": "same", "name": "Gol", "operator": "automatización" }
+→ 200 OK { "path": "D:\\Clips\\Gol.mp4", "fileName": "Gol.mp4", "mode": "exact", "encoder": "h264_nvenc",
+           "inFrame": 18126, "outFrame": 18876, "in": "00:12:05:00", "out": "00:12:35:00", "inSeconds": 725.0,
+           "outSeconds": 755.0, "durationSeconds": 30.0, "frames": 750, "sizeBytes": 43200000,
+           "preRollSeconds": 0, "extraFrames": 0 }
+```
+
+Lo mismo que «✂ Exportar clip» de la ventana «Revisar» (`IClipExportService`): la llamada espera a que el clip esté hecho.
+
+- `in` / `out`: posición desde el principio de la grabación (todas sus piezas seguidas): número de segundos, `HH:MM:SS(.fff)`,
+  `MM:SS` o un timecode `HH:MM:SS:FF` (FF = cuadro dentro de ese segundo, el que enseña la ventana). `out` es donde ACABA el
+  clip: el cuadro que empieza ahí no entra.
+- `mode`: `fast` (por defecto: copia sin recodificar; empieza en el fotograma clave anterior con una lista de edición que lleva
+  al cuadro pedido; `preRollSeconds` dice cuánto antes empieza el archivo para los reproductores que no la respetan, y
+  `extraFrames` los cuadros de más al final con B-frames) o `exact` (recodifica solo el clip: cuadro exacto en cualquier
+  reproductor). `encoder` (exacto): `same` (por defecto), `h264`, `hevc` o `prores`.
+- Errores: 400 cuerpo o posición mal escritos; 404 la grabación no existe; 409 en curso, sin archivos o con piezas que no se
+  pueden unir (`error`: `InProgress`, `FileMissing`, `Unreadable`, `PiecesDiffer`…); 422 el tramo no cabe o está vacío; 503
+  sin FFmpeg; 500 si FFmpeg falla (`detail` lleva lo que dijo). Queda en la auditoría como `ClipExported`.
 
 ### Programación (tareas automáticas de cada canal)
 
