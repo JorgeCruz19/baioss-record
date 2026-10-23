@@ -496,13 +496,19 @@ without leaving any half-written file behind.
 
 | Mode | What it does | When to use it |
 |---|---|---|
-| **Fast (copy)** | Copies the span **without re-encoding**: takes seconds and loses no quality. Since a video file can only start on a keyframe, the clip starts at the **keyframe before** the in point and carries an **edit list** that tells the player to start at your frame. | Almost always: to send it, archive it or take it to an editor (Premiere, DaVinci Resolve, Final Cut and FFmpeg-based programs honour the edit list). |
-| **Exact (re-encode)** | Re-encodes **just the clip**: it starts and ends at the marked frames **in any player**. Takes longer (on the graphics card with NVENC, if you have one). | When the clip will be watched in the **Windows Media Player** (or Movies & TV, Photos…), which **ignores** the edit list, or when it must start exactly on its frame everywhere. |
+| **Fast (copy)** | Copies the span **without re-encoding**: takes seconds and loses no quality. Since a video file can only start on a keyframe, the clip starts at the **keyframe before** the in point and carries an **edit list** that tells the player to start at your frame. | Almost always: to send or archive it without losing quality. FFmpeg-based programs start right on your frame; VLC and the Windows Media Player, not quite (see the note). For an editor, try a clip first. |
+| **Exact (re-encode)** | Re-encodes **just the clip**: it starts and ends at the marked frames **in any player**. Takes longer (on the graphics card with NVENC, if you have one). | When the clip will be watched in the **Windows Media Player** (or Movies & TV, Photos…), which **ignores** the edit list, or when it must start cleanly on its frame everywhere (VLC or an editor too). |
 
-> **The Windows Media Player and Fast mode:** since it does not read the edit list, it shows the clip **from the keyframe
-> before**: up to one GOP extra at the start (with the 2 s GOP of many presets, up to 2 s), with that bit's sound too (it does
-> not go out of sync). When it finishes, the application tells you how much it is ("starts 0.36 s earlier"). If the recording
-> has **B-frames** (CPU ones with x264/x265, or QuickSync; NVENC does not use them), the fast clip may end **1 to 3 frames
+> **Fast mode in players** (checked with clips that carry each frame's number in the picture):
+> - **Windows Media Player** (and Movies & TV, Photos…): it does not read the edit list and shows the clip **from the keyframe
+>   before**: up to one GOP extra at the start (with the 2 s GOP of many presets, up to 2 s), with that bit's sound too (it
+>   does not go out of sync). When it finishes, the application tells you how much it is ("starts 0.36 s earlier").
+> - **VLC** (3.0): honours the edit list's timing (the sound starts at your in point and the clip lasts what you marked), but
+>   at the start it flashes what lies from the keyframe on for an instant (a few hundredths of a second; up to 0.2 s if the
+>   recording has B-frames) and the clip's first frame may not show (up to the first 6 with B-frames).
+> - **FFmpeg and FFmpeg-based programs**: start right on your frame.
+>
+> If the recording has **B-frames** (CPU ones with x264/x265, or QuickSync; NVENC does not use them), the fast clip may end **1 to 3 frames
 > after** the out point: the copy cuts in the order frames are decoded and takes just enough so that none is missing.
 
 **Encoder of Exact mode:**
@@ -636,8 +642,9 @@ In **🗂 Recordings**, **▶ Review** on its row: mark the in point (**I**) and
 (section 8.1). **Fast** mode takes seconds; **Exact** re-encodes the clip.
 
 **Why does my "Fast" clip start a little earlier in the Windows player?**
-Because that player ignores the edit list inside the clip and shows it from the keyframe before your in point. Editors and
-FFmpeg-based players start at your frame. If it must start exactly in any player, export it in **Exact** mode.
+Because that player ignores the edit list inside the clip and shows it from the keyframe before your in point. FFmpeg-based
+programs start at your frame; VLC starts on time but flashes what comes before for an instant at the start. If it must start
+exactly in any player, export it in **Exact** mode.
 
 **What happens if the signal drops in the middle of a recording?**
 The file **is not lost**. If you enabled the test pattern, it keeps recording a warning screen; in any case the program watches and recovers on its own when the signal comes back.

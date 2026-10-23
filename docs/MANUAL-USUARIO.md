@@ -501,12 +501,18 @@ sin dejar ningún archivo a medias.
 
 | Modo | Qué hace | Cuándo usarlo |
 |---|---|---|
-| **Rápido (copia)** | Copia el trozo **sin recodificar**: tarda segundos y no pierde calidad. Como un archivo de vídeo solo puede empezar en un fotograma clave, el clip empieza en el **fotograma clave anterior** a la entrada y lleva dentro una **lista de edición** que le dice al reproductor que empiece en tu cuadro. | Casi siempre: para enviarlo, archivarlo o llevarlo a un editor (Premiere, DaVinci Resolve, Final Cut y los programas basados en FFmpeg respetan la lista de edición). |
-| **Exacto (recodifica)** | Vuelve a codificar **solo el clip**: empieza y acaba en el cuadro marcado **en cualquier reproductor**. Tarda más (en la tarjeta gráfica con NVENC, si la tienes). | Cuando el clip se va a ver en el **Reproductor multimedia de Windows** (o Películas y TV, Fotos…), que **no respeta** la lista de edición, o cuando tiene que empezar exactamente en su cuadro en cualquier sitio. |
+| **Rápido (copia)** | Copia el trozo **sin recodificar**: tarda segundos y no pierde calidad. Como un archivo de vídeo solo puede empezar en un fotograma clave, el clip empieza en el **fotograma clave anterior** a la entrada y lleva dentro una **lista de edición** que le dice al reproductor que empiece en tu cuadro. | Casi siempre: para enviarlo o archivarlo sin perder calidad. Los programas basados en FFmpeg empiezan justo en tu cuadro; VLC y el Reproductor de Windows, no del todo (mira la nota). Para un editor, prueba antes con un clip. |
+| **Exacto (recodifica)** | Vuelve a codificar **solo el clip**: empieza y acaba en el cuadro marcado **en cualquier reproductor**. Tarda más (en la tarjeta gráfica con NVENC, si la tienes). | Cuando el clip se va a ver en el **Reproductor multimedia de Windows** (o Películas y TV, Fotos…), que **no respeta** la lista de edición, o cuando tiene que empezar limpio en su cuadro en cualquier sitio (también en VLC o en un editor). |
 
-> **El Reproductor multimedia de Windows y el modo Rápido:** como no lee la lista de edición, enseña el clip **desde el
-> fotograma clave anterior**: hasta un GOP de más al principio (con el GOP de 2 s de muchos presets, hasta 2 s), con el
-> sonido de ese trozo también (no se desincroniza). Al terminar, el programa te dice cuánto es («empieza 0,36 s antes»).
+> **El modo Rápido en los reproductores** (comprobado con clips que llevan el número de cada cuadro en la imagen):
+> - **Reproductor multimedia de Windows** (y Películas y TV, Fotos…): no lee la lista de edición y enseña el clip **desde el
+>   fotograma clave anterior**: hasta un GOP de más al principio (con el GOP de 2 s de muchos presets, hasta 2 s), con el
+>   sonido de ese trozo también (no se desincroniza). Al terminar, el programa te dice cuánto es («empieza 0,36 s antes»).
+> - **VLC** (3.0): respeta la lista de edición en el tiempo —el sonido empieza en tu entrada y el clip dura lo que
+>   marcaste—, pero al arrancar asoma un instante lo que hay desde el fotograma clave (unas centésimas; hasta 0,2 s si la
+>   grabación tiene B-frames) y el primer cuadro del clip puede no verse (hasta los 6 primeros con B-frames).
+> - **FFmpeg y los programas basados en él**: empiezan justo en tu cuadro.
+>
 > Si la grabación tiene **B-frames** (las de CPU con x264/x265 o QuickSync; NVENC no los usa), el clip rápido puede acabar
 > **1 a 3 cuadros después** de la salida: la copia corta en el orden en que se decodifican los cuadros y coge los justos
 > para que no falte ninguno.
@@ -643,8 +649,8 @@ En **🗂 Grabaciones**, **▶ Revisar** en su fila: marca la entrada (**I**) y 
 
 **¿Por qué mi clip «Rápido» empieza un poco antes en el Reproductor de Windows?**
 Porque ese reproductor no respeta la lista de edición que lleva el clip y lo enseña desde el fotograma clave anterior a tu
-entrada. Los editores y los reproductores basados en FFmpeg empiezan en tu cuadro. Si tiene que empezar exacto en cualquier
-reproductor, expórtalo en modo **Exacto**.
+entrada. Los programas basados en FFmpeg empiezan en tu cuadro; VLC empieza a su hora, pero al arrancar asoma un instante
+lo de antes. Si tiene que empezar exacto en cualquier reproductor, expórtalo en modo **Exacto**.
 
 **¿Qué pasa si se cae la señal en mitad de una grabación?**
 El archivo **no se pierde**. Si activaste la carta de ajuste, sigue grabando una pantalla de aviso; en cualquier caso el programa vigila y se recupera solo cuando la señal vuelve.
