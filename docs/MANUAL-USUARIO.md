@@ -484,10 +484,17 @@ piezas seguidas**, como una sola.
   entero**, nunca la imagen a medias («a cuadros») que enseñan algunos reproductores al saltar.
 - Arriba de la barra ves la **posición** (`HH:MM:SS:FF`: tiempo transcurrido y cuadro dentro de ese segundo) y la **hora del
   día** a la que se grabó ese cuadro.
-- **Botones:** al principio ⏮, un segundo atrás, un cuadro atrás, **▶ Reproducir / ⏸ Pausa** (con sonido), un cuadro
-  adelante, un segundo adelante y al final ⏭.
+- **Botones:** al principio |◀, un segundo atrás, un cuadro atrás, **▶ Reproducir / ⏸ Pausa** (con sonido), un cuadro
+  adelante, un segundo adelante y al final ▶|.
 - **Teclado:** **Espacio** reproduce o para · **←** **→** un cuadro · **Mayús+←** **Mayús+→** un segundo · **Inicio** / **Fin**
   · **I** marca la entrada y **O** la salida · **Mayús+I** / **Mayús+O** van a ellas.
+- **El sonido** sale por la salida de audio de Windows por defecto, **nunca por una DeckLink**: lo que sonara por ella saldría
+  por la SDI de la tarjeta, que puede ir a un equipo de la emisión. Si la salida por defecto es una DeckLink, suena por la
+  siguiente que haya y la ventana dice cuál («🔊 El sonido sale por…»); si las únicas salidas del equipo son de la DeckLink, se
+  revisa **sin sonido** y la ventana lo avisa.
+- **Con el equipo justo de CPU** (por ejemplo, grabando varios canales con codificación por CPU) mandan las grabaciones: si el
+  vídeo de la revisión no llega a tiempo, **salta adelante para seguir al sonido** (se ve a saltos, pero sincronizado) y la
+  ventana lo avisa («⚠ El equipo va justo de CPU…»).
 - Una grabación **entrelazada** (1080i) se ve desentrelazada en el reproductor; el clip que exportes conserva los campos.
 - Si algún archivo de la grabación **no se puede ver** (falta en el disco, o es el que quedó cortado en una caída y no tiene
   índice), una franja ámbar lo dice y la línea de tiempo lo salta: el resto se revisa y se corta igual.
@@ -651,6 +658,12 @@ En **🗂 Grabaciones**, **▶ Revisar** en su fila: marca la entrada (**I**) y 
 Porque ese reproductor no respeta la lista de edición que lleva el clip y lo enseña desde el fotograma clave anterior a tu
 entrada. Los programas basados en FFmpeg empiezan en tu cuadro; VLC empieza a su hora, pero al arrancar asoma un instante
 lo de antes. Si tiene que empezar exacto en cualquier reproductor, expórtalo en modo **Exacto**.
+
+**¿Por qué no oigo el sonido en «Revisar»?**
+Mira la franja de avisos de la ventana: el sonido de la revisión nunca sale por una DeckLink. Si la salida de audio de Windows
+por defecto es una DeckLink, suena por otra (la ventana dice cuál); si el equipo no tiene otra, se revisa sin sonido. Para oírlo,
+conecta unos auriculares o altavoces al equipo (o usa el sonido del escritorio remoto) y pon esa salida como predeterminada en
+Windows.
 
 **¿Qué pasa si se cae la señal en mitad de una grabación?**
 El archivo **no se pierde**. Si activaste la carta de ajuste, sigue grabando una pantalla de aviso; en cualquier caso el programa vigila y se recupera solo cuando la señal vuelve.

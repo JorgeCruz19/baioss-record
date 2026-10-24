@@ -48,6 +48,11 @@
     <ProjectReference Include="..\Baioss.Record.Api\Baioss.Record.Api.csproj" />
   </ItemGroup>
 
+  <!-- Las pruebas de la app miran por qué salida de audio sonaría «Revisar» (WaveOutAudioOutput es interna). -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Baioss.Record.App.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />

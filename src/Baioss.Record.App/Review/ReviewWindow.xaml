@@ -245,6 +245,13 @@
             <TextBlock Text="{Binding Warning}" FontSize="12" Foreground="{StaticResource SignalAmberBrush}" TextWrapping="Wrap"/>
         </Border>
 
+        <!-- Por dónde suena (nunca por una DeckLink) y si el vídeo va a saltos porque la CPU no da abasto -->
+        <Border DockPanel.Dock="Bottom" Background="#2A2416" Padding="16,6"
+                Visibility="{Binding PlaybackNote, Converter={x:Static app:ReviewConverters.NotEmpty}}">
+            <TextBlock Text="{Binding PlaybackNote}" FontSize="12" Foreground="{StaticResource SignalAmberBrush}" TextWrapping="Wrap"
+                       AutomationProperties.AutomationId="PlaybackNote"/>
+        </Border>
+
         <!-- Imagen -->
         <Grid Background="Black">
             <Image Source="{Binding Image}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>

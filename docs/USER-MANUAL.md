@@ -479,10 +479,17 @@ after another**, as one.
   the half-built ("blocky") picture some players show when they jump.
 - Above the bar you see the **position** (`HH:MM:SS:FF`: elapsed time and the frame within that second) and the **time of day**
   that frame was recorded.
-- **Buttons:** to the start ⏮, one second back, one frame back, **▶ Play / ⏸ Pause** (with sound), one frame forward, one
-  second forward and to the end ⏭.
+- **Buttons:** to the start |◀, one second back, one frame back, **▶ Play / ⏸ Pause** (with sound), one frame forward, one
+  second forward and to the end ▶|.
 - **Keyboard:** **Space** plays or pauses · **←** **→** one frame · **Shift+←** **Shift+→** one second · **Home** / **End** ·
   **I** marks the in point and **O** the out point · **Shift+I** / **Shift+O** go to them.
+- **Sound** plays through Windows' default audio output, **never through a DeckLink**: whatever played there would go out of
+  the card's SDI, which may feed broadcast equipment. If the default output is a DeckLink, it plays through the next one there
+  is and the window says which ("🔊 Sound plays through…"); if the computer's only outputs are on the DeckLink, you review
+  **without sound** and the window says so.
+- **When the computer is short of CPU** (for example, recording several channels with CPU encoding) recordings come first: if
+  the review video can't keep up, it **jumps ahead to keep up with the sound** (it looks jumpy, but stays in sync) and the
+  window says so ("⚠ The computer is short of CPU…").
 - An **interlaced** recording (1080i) is shown deinterlaced in the player; the clip you export keeps its fields.
 - If a file of the recording **cannot be shown** (missing from the disk, or the one cut short by a crash, without an index),
   an amber strip says so and the timeline skips it: the rest is reviewed and cut as usual.
@@ -645,6 +652,12 @@ In **🗂 Recordings**, **▶ Review** on its row: mark the in point (**I**) and
 Because that player ignores the edit list inside the clip and shows it from the keyframe before your in point. FFmpeg-based
 programs start at your frame; VLC starts on time but flashes what comes before for an instant at the start. If it must start
 exactly in any player, export it in **Exact** mode.
+
+**Why can't I hear the sound in Review?**
+Look at the notice band in the window: review sound never goes out through a DeckLink. If Windows' default audio output is a
+DeckLink, it plays through another one (the window says which); if the computer has no other, you review without sound. To hear
+it, connect headphones or speakers to the computer (or use the remote desktop's sound) and make that output the default in
+Windows.
 
 **What happens if the signal drops in the middle of a recording?**
 The file **is not lost**. If you enabled the test pattern, it keeps recording a warning screen; in any case the program watches and recovers on its own when the signal comes back.

@@ -565,6 +565,51 @@ public sealed class ClipExportTests : IClassFixture<ClipMaterial>
         Assert.False(player.IsPlaying);
     }
 
+    /// <summary>
+    /// Con la CPU llena, los FFmpeg del reproductor (por debajo de las grabaciones) no decodifican a tiempo: antes el vídeo se iba
+    /// quedando segundos atrás del audio (medido con la CPU al 100 %: 2–10 s). Aquí se frena su FFmpeg al 30 % del tiempo real
+    /// (filtro <c>realtime</c>): el vídeo tiene que saltar adelante, a fotogramas clave, y seguir al reloj.
+    /// </summary>
+    [SkippableFact]
+    public async Task ThePlayer_JumpsAheadToKeepUpWithTheClock_WhenItCannotDecodeInTime()
+    {
+        Skip.IfNot(_m.Ready, "FFmpeg no disponible en tools/.");
+        var (service, sessions, _, _) = Service();
+        var session = ClipTools.Session(_m.Files("nobf")); // GOP de 50 cuadros (2 s)
+        sessions.All.Add(session);
+        var timeline = await service.LoadTimelineAsync(session.Id);
+        var shown = new List<(long Frame, int Code, double At)>();
+        var clock = new Stopwatch();
+        int jumps = 0;
+        await using var player = new ReviewPlayer(ClipTools.Ffmpeg, timeline, audio: null, NullLogger.Instance)
+        {
+            TestVideoFilter = "realtime=speed=0.3",
+        };
+        player.FellBehind += (_, _) => Interlocked.Increment(ref jumps);
+        player.FrameShown += (_, f) => { lock (shown) shown.Add((f.Frame, ClipTools.Code(f), clock.Elapsed.TotalSeconds)); };
+        player.Seek(0);
+        await player.WhenIdleAsync(TimeSpan.FromSeconds(20));
+        lock (shown) shown.Clear();
+
+        clock.Start();
+        player.Play(); // desde el cuadro 1
+        await Task.Delay(8000);
+        player.Pause();
+        await player.WhenIdleAsync(TimeSpan.FromSeconds(5));
+        List<(long Frame, int Code, double At)> played;
+        lock (shown) played = shown.ToList();
+        // Retraso de cada cuadro enseñado sobre el reloj de la reproducción (sin audio, el reloj es el del reproductor).
+        var lags = played.Select(p => p.At - (p.Frame - 1) / 25.0).ToList();
+        _out.WriteLine($"{played.Count} cuadros, hasta el {played.Last().Frame}; {jumps} saltos; retraso máximo {lags.Max():0.00} s; " +
+                       $"cuadros: {string.Join(" ", played.Select(p => p.Frame).Take(60))}");
+
+        Assert.True(jumps > 0, "no saltó nunca");
+        Assert.All(played, p => Assert.Equal(p.Frame % 4096, p.Code));
+        // Sin saltar, a los 8 s el vídeo iría unos 5,5 s detrás; saltando, nunca más de lo que espera antes de saltar.
+        Assert.True(lags.Max() < 1.5, $"el vídeo llegó a ir {lags.Max():0.00} s detrás del reloj");
+        Assert.True(played.Last().Frame > 6 * 25, $"a los 8 s solo había llegado al cuadro {played.Last().Frame}");
+    }
+
     [SkippableFact]
     public async Task TheApi_CutsAClip_AndSaysWhereItIs()
     {

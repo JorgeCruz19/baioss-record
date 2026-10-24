@@ -6,7 +6,8 @@ namespace Baioss.Record.Engine.FFmpeg.Clips;
 /// <summary>
 /// Lanza un ffmpeg/ffprobe de la revisión o de un clip y espera a que termine, con la salida y los errores por separado (la de
 /// ffprobe es JSON: cualquier aviso en medio lo rompería). Prioridad por debajo de lo normal y en el Job de la aplicación: un
-/// corte o una revisión nunca deben quitarle CPU a las grabaciones en curso, ni sobrevivir a la aplicación.
+/// corte o una revisión nunca deben quitarle CPU a las grabaciones en curso, ni sobrevivir a la aplicación. Lo que no cuesta
+/// casi nada y no puede esperar (el audio del reproductor, que es su reloj) va con prioridad normal (<c>belowNormal: false</c>).
 /// </summary>
 internal static class ClipProcess
 {
@@ -14,9 +15,9 @@ internal static class ClipProcess
     public const int TimedOut = -110;
 
     public static async Task<(string Out, string Err, int Exit)> RunAsync(string exe, IReadOnlyList<string> args, TimeSpan timeout,
-        CancellationToken ct, Action<string>? onOutputLine = null)
+        CancellationToken ct, Action<string>? onOutputLine = null, bool belowNormal = true)
     {
-        using var p = Start(exe, args, redirectInput: false);
+        using var p = Start(exe, args, redirectInput: false, belowNormal);
         using var timer = new CancellationTokenSource(timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timer.Token);
         var output = new StringBuilder();
@@ -44,8 +45,9 @@ internal static class ClipProcess
         }
     }
 
-    /// <summary>Arranca el proceso (salida y errores redirigidos) ya metido en el Job y con prioridad baja.</summary>
-    public static Process Start(string exe, IReadOnlyList<string> args, bool redirectInput)
+    /// <summary>Arranca el proceso (salida y errores redirigidos) ya metido en el Job y, salvo <paramref name="belowNormal"/> =
+    /// false, con prioridad baja.</summary>
+    public static Process Start(string exe, IReadOnlyList<string> args, bool redirectInput, bool belowNormal = true)
     {
         var psi = new ProcessStartInfo(exe)
         {
@@ -61,7 +63,8 @@ internal static class ClipProcess
         foreach (var a in args) psi.ArgumentList.Add(a);
         var p = Process.Start(psi) ?? throw new InvalidOperationException("No se pudo iniciar " + Path.GetFileName(exe));
         ChildProcessTracker.Track(p);
-        try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* ya terminó */ }
+        if (belowNormal)
+            try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { /* ya terminó */ }
         return p;
     }
 

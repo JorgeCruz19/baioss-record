@@ -96,6 +96,26 @@ public static class FfprobeMedia
         return Packets(json).Where(p => p.Key).Select(p => (double?)p.Pts).FirstOrDefault();
     }
 
+    /// <summary>
+    /// Marca (s) del primer fotograma clave del vídeo que empieza en <paramref name="time"/> o después, buscando hasta
+    /// <paramref name="window"/> s más allá: adonde salta el reproductor de la revisión cuando la CPU no da abasto (desde una clave
+    /// no hay que decodificar nada antes). Null si no hay ninguna en ese tramo o ffprobe no lo dice. Con prioridad normal: solo
+    /// lee paquetes (no decodifica) y con la CPU llena, por debajo de lo normal, tardaba segundos en contestar.
+    /// </summary>
+    public static async Task<double?> KeyframeAtOrAfterAsync(string ffprobe, string file, double time, double window, CancellationToken ct = default)
+    {
+        var (json, _, exit) = await ClipProcess.RunAsync(ffprobe, new[]
+        {
+            "-v", "error", "-of", "json", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags",
+            "-read_intervals", string.Create(CultureInfo.InvariantCulture, $"{Math.Max(0, time):0.000000}%+{window:0.###}"), file,
+        }, TimeSpan.FromSeconds(30), ct, belowNormal: false).ConfigureAwait(false);
+        return exit == 0 ? FirstKeyframeAtOrAfter(Packets(json), time) : null;
+    }
+
+    /// <summary>La primera clave (por su marca de presentación) en <paramref name="time"/> o después, con 1 ms de margen.</summary>
+    internal static double? FirstKeyframeAtOrAfter(IEnumerable<(double Pts, double Dts, bool Key)> packets, double time)
+        => packets.Where(p => p.Key && p.Pts >= time - 0.001).Select(p => (double?)p.Pts).Min();
+
     /// <summary>Paquetes de vídeo (marca de presentación y de decodificación, en s, en orden de decodificación) entre
     /// <paramref name="from"/> y <paramref name="to"/>, empezando en el fotograma clave anterior a <paramref name="from"/>.</summary>
     public static async Task<IReadOnlyList<(double Pts, double Dts)>> VideoPacketsAsync(string ffprobe, string file, double from, double to,

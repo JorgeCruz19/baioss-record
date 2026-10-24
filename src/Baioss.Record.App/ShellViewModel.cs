@@ -410,16 +410,21 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         if (_clips is null || _ffmpeg is null) return;
         string key = Channels.FirstOrDefault(c => c.ChannelId == session.ChannelId)?.Key ?? "?";
-        var ffmpeg = _ffmpeg.FfmpegPath;
+        var (ffmpeg, ffprobe) = (_ffmpeg.FfmpegPath, _ffmpeg.FfprobePath);
         var log = (ILogger?)_loggers?.CreateLogger("Review") ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         var window = new ReviewWindow
         {
             DataContext = new ReviewViewModel(_clips, session, key, timeline =>
             {
-                var audio = timeline.HasAudio ? WaveOutAudioOutput.TryOpen() : null;
-                if (timeline.HasAudio && audio is null)
+                // El sonido de la revisión nunca sale por una DeckLink (iría a la SDI de la tarjeta): ver WaveOutAudioOutput.Open.
+                var (audio, sound, output) = timeline.HasAudio ? WaveOutAudioOutput.Open() : (null, ReviewSound.Default, null);
+                if (sound == ReviewSound.OtherOutput)
+                    log.LogInformation("Revisión: la salida de audio por defecto de Windows es una DeckLink; suena por «{Output}».", output);
+                else if (sound == ReviewSound.OnlyDeckLink)
+                    log.LogWarning("Revisión: las únicas salidas de audio son de la DeckLink; se reproduce sin sonido.");
+                else if (timeline.HasAudio && audio is null)
                     log.LogWarning("Revisión: no hay salida de audio utilizable (waveOut); se reproduce sin sonido.");
-                return new ReviewPlayer(ffmpeg, timeline, audio, log);
+                return new ReviewPlayback(new ReviewPlayer(ffmpeg, timeline, audio, log, ffprobe), sound, output);
             }),
             Owner = SecondaryWindow.ActiveOwner(),
         };

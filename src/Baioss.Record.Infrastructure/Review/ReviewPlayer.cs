@@ -33,14 +33,24 @@ public interface IReviewAudioOutput : IDisposable
 /// —como el preview— desde el FOTOGRAMA CLAVE ANTERIOR al cuadro pedido y tira los de antes, así que lo que se ve es siempre el
 /// cuadro exacto y entero (nunca los macrobloques de un reproductor que salta al GOP); otro, el audio en PCM. Avanzar un cuadro
 /// lee el siguiente del mismo proceso (instantáneo); retroceder o saltar abre otro. Las órdenes se atienden en orden en un solo
-/// hilo y las búsquedas seguidas (arrastrar la barra) se funden: solo se decodifica la última.
+/// hilo y las búsquedas seguidas (arrastrar la barra) se funden: solo se decodifica la última. Al reproducir, el vídeo va al
+/// reloj del audio; si la CPU no le da para decodificar a tiempo (sus FFmpeg van por debajo de las grabaciones), salta adelante
+/// a un fotograma clave y espera ahí al audio en vez de quedarse atrás (<see cref="FellBehind"/>).
 /// </summary>
 public sealed class ReviewPlayer : IAsyncDisposable
 {
     /// <summary>Tamaño máximo de lo que se decodifica para ver (el aspecto se conserva).</summary>
     public const int MaxWidth = 1280, MaxHeight = 720;
 
+    /// <summary>Retraso del vídeo sobre el reloj (s) a partir del cual se mira si se recupera.</summary>
+    internal const double BehindLag = 0.3;
+    /// <summary>Lo que se le deja para recuperarse saltándose cuadros (s) antes de saltar adelante.</summary>
+    internal const double RecoverWindow = 0.4;
+    /// <summary>Hasta dónde se busca el fotograma clave al que saltar (s).</summary>
+    internal const double KeyframeSearch = 5;
+
     private readonly string _ffmpeg;
+    private readonly string? _ffprobe;
     private readonly RecordingTimeline _timeline;
     private readonly IReviewAudioOutput? _audio;
     private readonly IReviewAudioOutput? _audioOwned; // la salida que se recibió (se cierra con el reproductor, aunque no haya audio)
@@ -59,10 +69,14 @@ public sealed class ReviewPlayer : IAsyncDisposable
     private volatile bool _playing;
     private int _pending;
 
-    /// <summary><paramref name="audio"/>: la salida de audio (null = sin sonido); pasa a ser del reproductor, que la cierra al cerrarse.</summary>
-    public ReviewPlayer(string ffmpegPath, RecordingTimeline timeline, IReviewAudioOutput? audio, ILogger log)
+    /// <summary><paramref name="audio"/>: la salida de audio (null = sin sonido); pasa a ser del reproductor, que la cierra al cerrarse.
+    /// <paramref name="ffprobePath"/>: para buscar el fotograma clave al que saltar si la CPU no da abasto (por defecto, el que
+    /// está junto a FFmpeg; sin él, el salto decodifica desde la clave anterior).</summary>
+    public ReviewPlayer(string ffmpegPath, RecordingTimeline timeline, IReviewAudioOutput? audio, ILogger log, string? ffprobePath = null)
     {
         _ffmpeg = ffmpegPath;
+        ffprobePath ??= Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe" + Path.GetExtension(ffmpegPath));
+        _ffprobe = File.Exists(ffprobePath) ? ffprobePath : null;
         _timeline = timeline;
         _audioOwned = audio;
         _audio = timeline.HasAudio ? audio : null;
@@ -92,6 +106,13 @@ public sealed class ReviewPlayer : IAsyncDisposable
 
     /// <summary>Empezó o paró la reproducción (también al llegar al final).</summary>
     public event EventHandler? PlayingChanged;
+
+    /// <summary>El vídeo no llegaba a tiempo y saltó adelante para seguir al audio (en el hilo del reproductor).</summary>
+    public event EventHandler? FellBehind;
+
+    /// <summary>Solo pruebas: filtro que se antepone a los del FFmpeg del vídeo (<c>realtime=speed=0.3</c> lo frena como una CPU que
+    /// no da abasto; <c>-readrate</c> no sirve: tras buscar cuenta desde la marca 0 y retiene el primer cuadro).</summary>
+    internal string? TestVideoFilter { get; init; }
 
     /// <summary>Enseña el cuadro <paramref name="frame"/> (y para la reproducción).</summary>
     public void Seek(long frame) => Post(new Command(CommandKind.Seek, Math.Clamp(frame, 0, Math.Max(0, _timeline.TotalFrames - 1))));
@@ -207,6 +228,10 @@ public sealed class ReviewPlayer : IAsyncDisposable
         }
         long frame = start;
         long lastShownAt = 0;
+        double behindSince = -1, lagWhenBehind = 0; // desde cuándo va atrasado (reloj) y cuánto iba entonces
+        double lead = 0.4;                           // lo que tarda un salto en dar su primer cuadro (se mide en cada uno)
+        double jumpedAt = -1;                        // cuándo se decidió el último salto, hasta que llega su primer cuadro
+        bool told = false;
         while (_playing && frame < _timeline.TotalFrames)
         {
             if (_commands.Reader.TryPeek(out _)) return; // otra orden: se atiende (la de pausa para la reproducción)
@@ -223,8 +248,34 @@ public sealed class ReviewPlayer : IAsyncDisposable
                 frame = index;
                 double due = (frame - start) * frameSeconds;
                 double now = Now(clock);
-                // Muy atrasado (la CPU va justa): se salta el cuadro, salvo que haga mucho que no se enseña ninguno.
-                if (now - due > 2 * frameSeconds && clock.ElapsedMilliseconds - lastShownAt < 250) { frame++; continue; }
+                if (jumpedAt >= 0) { lead = Math.Clamp((now - jumpedAt) * 1.25, 0.15, 3); jumpedAt = -1; }
+                double lag = now - due;
+                // La CPU no da abasto (los FFmpeg del reproductor van por debajo de las grabaciones): saltarse cuadros no ahorra
+                // decodificarlos, y el vídeo se iría quedando segundos atrás del audio (medido con la CPU al 100 %: 2–10 s). Si en
+                // RecoverWindow no recupera nada, salta adelante, a un fotograma clave por delante del audio, y lo espera ahí.
+                if (lag > BehindLag)
+                {
+                    if (behindSince < 0) { behindSince = now; lagWhenBehind = lag; }
+                    else if (now - behindSince > RecoverWindow && lag > lagWhenBehind - 0.1)
+                    {
+                        long aim = start + (long)Math.Ceiling((now + lead) / frameSeconds);
+                        long target = await ResyncTargetAsync(Math.Max(aim, frame + 1), ct).ConfigureAwait(false);
+                        if (target > frame && target < _timeline.TotalFrames)
+                        {
+                            if (!told) _log.LogInformation("Revisión: el vídeo no llega a tiempo (CPU ocupada); salta para seguir al audio.");
+                            _log.LogDebug("Revisión: {Lag:0.00} s atrasado en el cuadro {Frame}; salta al {Target}.", lag, frame, target);
+                            told = true;
+                            jumpedAt = now;
+                            behindSince = -1;
+                            OpenReader(target);
+                            FellBehind?.Invoke(this, EventArgs.Empty);
+                            continue;
+                        }
+                    }
+                }
+                else behindSince = -1;
+                // Algo atrasado: se salta el cuadro, salvo que haga mucho que no se enseña ninguno.
+                if (lag > 2 * frameSeconds && clock.ElapsedMilliseconds - lastShownAt < 250) { frame++; continue; }
                 while (due - now > 0.002 && _playing && !_commands.Reader.TryPeek(out _))
                 {
                     await Task.Delay(TimeSpan.FromSeconds(Math.Min(due - now, 0.02)), ct).ConfigureAwait(false);
@@ -244,6 +295,28 @@ public sealed class ReviewPlayer : IAsyncDisposable
             frame++;
         }
         if (frame >= _timeline.TotalFrames) { SetPlaying(false); StopAudio(); }
+    }
+
+    /// <summary>
+    /// Adónde salta el vídeo para alcanzar al audio: el primer fotograma clave desde <paramref name="aim"/> (donde irá el audio
+    /// cuando el proceso nuevo dé su primer cuadro), que se decodifica sin nada antes; si no se encuentra (sin ffprobe, GOP de más
+    /// de <see cref="KeyframeSearch"/> s), ese mismo cuadro, decodificado desde la clave anterior.
+    /// </summary>
+    private async Task<long> ResyncTargetAsync(long aim, CancellationToken ct)
+    {
+        aim = Math.Clamp(aim, 0, Math.Max(0, _timeline.TotalFrames - 1));
+        if (_ffprobe is null) return aim;
+        var (piece, local) = _timeline.Locate(aim);
+        var p = _timeline.Pieces[piece];
+        var rate = _timeline.Rate;
+        double time = p.FirstStart + (double)((decimal)local * rate.Denominator / rate.Numerator);
+        double? key = null;
+        try { key = await FfprobeMedia.KeyframeAtOrAfterAsync(_ffprobe, p.FilePath, time, KeyframeSearch, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "Revisión: no se pudo buscar el fotograma clave."); }
+        if (key is not { } k) return aim;
+        long keyLocal = Math.Max(local, (long)Math.Round((k - p.FirstStart) * rate.Value));
+        if (keyLocal < p.Frames) return _timeline.PieceStart(piece) + keyLocal;
+        return piece + 1 < _timeline.Pieces.Count ? _timeline.PieceStart(piece + 1) : aim; // cada pieza empieza en una clave
     }
 
     /// <summary>Segundos de reproducción: lo que ha sonado si hay audio sonando; si no (sin audio, o se acabó), el reloj.</summary>
@@ -289,6 +362,13 @@ public sealed class ReviewPlayer : IAsyncDisposable
         _reader?.Dispose();
         var (input, path) = InputFor(frame);
         var args = ClipCommandBuilder.PlayerVideo(input, path, input.TimeOf(frame), FrameWidth, FrameHeight, _deinterlace, _timeline.Rate);
+        if (TestVideoFilter is { } filter)
+        {
+            var list = args.ToList();
+            int vf = list.IndexOf("-vf");
+            list[vf + 1] = filter + "," + list[vf + 1];
+            args = list;
+        }
         _reader = new FrameReader(_ffmpeg, args, frame, input.EndFrame, FrameWidth * FrameHeight * 4, _log);
     }
 
@@ -395,7 +475,10 @@ public sealed class ReviewPlayer : IAsyncDisposable
                     while (!_cts.IsCancellationRequested && from < timeline.TotalFrames)
                     {
                         var (input, path) = inputFor(from);
-                        var p = ClipProcess.Start(ffmpeg, ClipCommandBuilder.PlayerAudio(input, path, input.TimeOf(from), timeline.Rate), redirectInput: false);
+                        // Prioridad normal: decodificar el audio no cuesta casi nada (AAC estéreo, < 1 % de un núcleo) y es el reloj
+                        // de la reproducción; por debajo de lo normal, con la CPU llena, se quedaba segundos sin sonar (medido).
+                        var p = ClipProcess.Start(ffmpeg, ClipCommandBuilder.PlayerAudio(input, path, input.TimeOf(from), timeline.Rate),
+                            redirectInput: false, belowNormal: false);
                         _process = p;
                         ProcessOutput.ReadLines(p.StandardError, l => log.LogDebug("revisión ffmpeg (audio): {Line}", l), $"review-{p.Id}-alog");
                         var stdout = p.StandardOutput.BaseStream;

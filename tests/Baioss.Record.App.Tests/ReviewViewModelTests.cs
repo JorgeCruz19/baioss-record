@@ -200,6 +200,29 @@ public sealed class ReviewViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task TheWindow_SaysWhereTheSoundGoes_WhenItIsNotTheDefaultOutput()
+    {
+        var other = new ReviewViewModel(new FakeClips(), Session(), "A",
+            _ => new ReviewPlayback(null, ReviewSound.OtherOutput, "Altavoces (NoMachine Microphone Adapter)"));
+        await other.Loading;
+        Assert.Contains("«Altavoces (NoMachine Microphone Adapter)»", other.PlaybackNote);
+        Assert.Contains("DeckLink", other.PlaybackNote);
+
+        var onlyDeckLink = new ReviewViewModel(new FakeClips(), Session(), "A", _ => new ReviewPlayback(null, ReviewSound.OnlyDeckLink));
+        await onlyDeckLink.Loading;
+        Assert.StartsWith("🔇 Sin sonido", onlyDeckLink.PlaybackNote);
+        Localizer.Language = AppLanguage.English;
+        Assert.StartsWith("🔇 No sound", onlyDeckLink.PlaybackNote);
+
+        var normal = new ReviewViewModel(new FakeClips(), Session(), "A", _ => new ReviewPlayback(null));
+        await normal.Loading;
+        Assert.Equal("", normal.PlaybackNote);
+        await other.DisposeAsync();
+        await onlyDeckLink.DisposeAsync();
+        await normal.DisposeAsync();
+    }
+
+    [Fact]
     public void TheRecordingLists_OfferReview_OnlyForFinishedRecordings()
     {
         var reviewed = new List<RecordingSession>();

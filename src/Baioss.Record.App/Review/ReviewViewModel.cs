@@ -31,12 +31,19 @@ public sealed record EncoderOption(string Label, ClipVideoEncoder Value)
 /// </summary>
 public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
 {
+    /// <summary>Lo que se deja el aviso de «la CPU no da abasto» después del último salto del vídeo.</summary>
+    private static readonly TimeSpan BehindNoteTime = TimeSpan.FromSeconds(5);
+
     private readonly IClipExportService _clips;
     private readonly RecordingSession _session;
-    private readonly Func<RecordingTimeline, ReviewPlayer?> _playerFactory;
+    private readonly Func<RecordingTimeline, ReviewPlayback?> _playerFactory;
     private readonly object _frameLock = new();
     private RecordingTimeline? _timeline;
     private ReviewPlayer? _player;
+    private ReviewSound _sound;
+    private string? _soundOutput;
+    /// <summary>Cuándo saltó el vídeo por última vez para seguir al audio (null: no salta).</summary>
+    private DateTime? _fellBehindAt;
     private byte[] _back = Array.Empty<byte>();
     private long _backFrame = -1;
     private bool _renderQueued;
@@ -45,9 +52,10 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
     private long _requested = -1;
     private CancellationTokenSource? _export;
 
-    /// <summary><paramref name="playerFactory"/> crea el reproductor de la línea de tiempo (null = sin imagen: en las pruebas).</summary>
+    /// <summary><paramref name="playerFactory"/> crea el reproductor de la línea de tiempo y dice por dónde suena (null = sin imagen:
+    /// en las pruebas).</summary>
     public ReviewViewModel(IClipExportService clips, RecordingSession session, string channelKey,
-        Func<RecordingTimeline, ReviewPlayer?> playerFactory)
+        Func<RecordingTimeline, ReviewPlayback?> playerFactory)
     {
         _clips = clips;
         _session = session;
@@ -83,6 +91,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ModeHint));
             OnPropertyChanged(nameof(ClipDurationText));
             if (_timeline is { } t) { ApplyTimelineTexts(t); UpdatePositionTexts(Current); }
+            UpdatePlaybackNote();
         }
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         if (dispatcher is null) Apply(); else dispatcher.BeginInvoke(Apply);
@@ -103,6 +112,9 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty] private string _loadMessage = Loc.T("Rev_Loading");
     /// <summary>Archivos de la grabación que no se pueden ver (faltan, están dañados…); vacío si están todos.</summary>
     [ObservableProperty] private string _warning = "";
+    /// <summary>Por dónde suena (si no es por la salida por defecto) y si el vídeo va a saltos porque la CPU no da abasto; vacío si
+    /// todo es normal.</summary>
+    [ObservableProperty] private string _playbackNote = "";
     [ObservableProperty] private ImageSource? _image;
     [ObservableProperty] private bool _hasVideo = true;
 
@@ -176,7 +188,10 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
             TotalText = timeline.Timecode(timeline.TotalFrames);
             HasVideo = timeline.HasVideo;
             ApplyTimelineTexts(timeline);
-            _player = _playerFactory(timeline);
+            var playback = _playerFactory(timeline);
+            _player = playback?.Player;
+            (_sound, _soundOutput) = (playback?.Sound ?? ReviewSound.Default, playback?.Output);
+            UpdatePlaybackNote();
             if (_player is { } player)
             {
                 if (player.FrameWidth > 0)
@@ -186,6 +201,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
                 }
                 player.FrameShown += OnFrameShown;
                 player.PlayingChanged += OnPlayingChanged;
+                player.FellBehind += OnFellBehind;
                 player.Seek(0);
             }
             IsLoaded = true;
@@ -250,13 +266,44 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
         try { Position = frame; }
         finally { _positionFromPlayer = false; }
         UpdatePositionTexts(frame);
+        if (_fellBehindAt is { } at && DateTime.UtcNow - at > BehindNoteTime) { _fellBehindAt = null; UpdatePlaybackNote(); }
     }
 
     private void OnPlayingChanged(object? sender, EventArgs e)
     {
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
-        void Apply() => IsPlaying = _player?.IsPlaying ?? false;
+        void Apply()
+        {
+            IsPlaying = _player?.IsPlaying ?? false;
+            if (!IsPlaying && _fellBehindAt is not null) { _fellBehindAt = null; UpdatePlaybackNote(); }
+        }
         if (dispatcher is null) Apply(); else dispatcher.BeginInvoke(Apply);
+    }
+
+    /// <summary>El vídeo saltó para seguir al audio (hilo del reproductor): la CPU no da abasto y se le dice al operador.</summary>
+    private void OnFellBehind(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        void Apply()
+        {
+            _fellBehindAt = DateTime.UtcNow;
+            UpdatePlaybackNote();
+        }
+        if (dispatcher is null) Apply(); else dispatcher.BeginInvoke(Apply);
+    }
+
+    /// <summary>Compone el aviso del sonido y de la CPU en el idioma vigente.</summary>
+    private void UpdatePlaybackNote()
+    {
+        string sound = _sound switch
+        {
+            ReviewSound.OtherOutput => Loc.F("Rev_Sound_Other", _soundOutput ?? "?"),
+            ReviewSound.OnlyDeckLink => Loc.T("Rev_Sound_OnlyDeckLink"),
+            ReviewSound.NoOutput => Loc.T("Rev_Sound_None"),
+            _ => "",
+        };
+        string behind = _fellBehindAt is null ? "" : Loc.T("Rev_Behind");
+        PlaybackNote = string.Join("\n", new[] { sound, behind }.Where(s => s.Length > 0));
     }
 
     partial void OnPositionChanged(double value)
@@ -449,6 +496,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IAsyncDisposable
         {
             p.FrameShown -= OnFrameShown;
             p.PlayingChanged -= OnPlayingChanged;
+            p.FellBehind -= OnFellBehind;
             await p.DisposeAsync();
         }
     }
